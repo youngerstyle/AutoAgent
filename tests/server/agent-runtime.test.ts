@@ -82,6 +82,30 @@ describe("AgentRuntime", () => {
     expect(pmSession.messages[0].content).toContain("Plan work");
     expect(devSession.messages[0].content).toContain("Build work");
   });
+
+  it("uses workspace agent provider and model overrides during assignment execution", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    dev.provider = "anthropic";
+    dev.model = "claude-test-model";
+    const provider = new CapturingProvider();
+    const runtime = new AgentRuntime(new EventLedger(), provider);
+
+    await runtime.runAssignment({
+      workspace,
+      agent: dev,
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      goal: "Use configured model",
+      type: "implementation",
+      brief: "Build work",
+      expectedArtifact: "Code"
+    });
+
+    expect(provider.lastInput?.provider).toBe("anthropic");
+    expect(provider.lastInput?.model).toBe("claude-test-model");
+  });
 });
 
 class StaticProvider implements ProviderRunner {
@@ -97,6 +121,15 @@ class StaticProvider implements ProviderRunner {
       events: [{ type: "text", text: "ok" }],
       usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 }
     };
+  }
+}
+
+class CapturingProvider extends StaticProvider {
+  lastInput?: AgentTurnInput;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    this.lastInput = input;
+    return super.runWithRetry(input);
   }
 }
 

@@ -62,6 +62,8 @@ export class AgentRuntime {
     };
     const sessionId = input.sessionId ?? input.taskRunId;
     const profile = profileForRole(input.agent.roleInWorkspace);
+    const provider = input.agent.provider ?? profile.defaultProvider;
+    const model = input.agent.model ?? profile.defaultModel;
     const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
     const prompt = buildAgentPrompt({ ...input, assignment, session });
 
@@ -69,20 +71,20 @@ export class AgentRuntime {
     await this.emit(input, "assignment.started", `${profile.name} started ${input.type}`, { assignmentId: assignment.id, assignmentRun });
     await this.emit(input, "agent.status_changed", `${profile.name} is running`, { agentId: input.agent.id, status: "running" });
     await this.emit(input, "agent.step_started", `${profile.name}: ${input.brief}`, { agentId: input.agent.id, step: input.brief });
-    await this.emit(input, "provider.started", `${profile.name} requested ${profile.defaultProvider}`, { provider: profile.defaultProvider, model: profile.defaultModel });
+    await this.emit(input, "provider.started", `${profile.name} requested ${provider}`, { provider, model });
 
     try {
       const providerResult = await this.providerRunner.runWithRetry({
         role: input.agent.roleInWorkspace,
         assignmentType: input.type,
         prompt,
-        provider: profile.defaultProvider,
-        model: profile.defaultModel,
+        provider,
+        model,
         context: { ...input.context, goal: input.goal }
       });
       await this.emit(input, "provider.completed", `${profile.name} provider turn completed`, {
-        provider: profile.defaultProvider,
-        model: profile.defaultModel,
+        provider,
+        model,
         usage: providerResult.usage,
         providerEvents: providerResult.events
       });

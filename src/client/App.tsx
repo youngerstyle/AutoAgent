@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AutoAgentEvent, Workspace, WorkspaceSnapshot } from "../shared/types";
-import { createWorkspace, getSnapshot, listWorkspaces, pauseTask, resumeTask, startTask, stopTask } from "./api";
+import type { AgentPolicy, AutoAgentEvent, ProviderConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import {
+  createWorkspace,
+  getProviderConfig,
+  getSnapshot,
+  listAgents,
+  listWorkspaces,
+  pauseTask,
+  resumeTask,
+  saveProviderConfig,
+  startTask,
+  stopTask,
+  updateAgent,
+  type WorkspaceAgentConfig
+} from "./api";
 import { buildAgentNodes, taskControlMode } from "./view-model";
 
 export function App() {
@@ -11,6 +24,13 @@ export function App() {
   const [goal, setGoal] = useState("");
   const [workspaceForm, setWorkspaceForm] = useState({ name: "Demo workspace", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [view, setView] = useState<"run" | "agents" | "providers">("run");
+  const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
+  const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>>({});
+  const [providerDrafts, setProviderDrafts] = useState<Record<Exclude<ProviderName, "mock">, ProviderConfig>>({
+    openai: { provider: "openai", model: "gpt-4.1-mini" },
+    anthropic: { provider: "anthropic", model: "claude-3-5-sonnet-latest" }
+  });
   const [error, setError] = useState("");
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
   const mode = taskControlMode(snapshot);
@@ -22,6 +42,8 @@ export function App() {
   useEffect(() => {
     if (!selectedId) return;
     void refreshSnapshot(selectedId);
+    void refreshAgents(selectedId);
+    void refreshProviderConfig();
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
@@ -54,12 +76,37 @@ export function App() {
     }
   }
 
+  async function refreshAgents(workspaceId = selectedId) {
+    if (!workspaceId) return;
+    try {
+      const result = await listAgents(workspaceId);
+      setAgents(result.agents);
+      setSnapshot((current) => current ? { ...current, agents: mergeSnapshotAgents(current.agents, result.agents) } : current);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function refreshProviderConfig() {
+    try {
+      const result = await getProviderConfig();
+      setProviderConfigs(result.providers);
+      setProviderDrafts({
+        openai: { provider: "openai", model: result.providers.openai?.model ?? "gpt-4.1-mini", baseUrl: result.providers.openai?.baseUrl },
+        anthropic: { provider: "anthropic", model: result.providers.anthropic?.model ?? "claude-3-5-sonnet-latest", baseUrl: result.providers.anthropic?.baseUrl }
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   async function submitWorkspace(event: React.FormEvent) {
     event.preventDefault();
     try {
       const result = await createWorkspace(workspaceForm);
       await refreshWorkspaces();
       setSelectedId(result.workspace.id);
+      await refreshAgents(result.workspace.id);
       setWorkspaceForm((current) => ({ ...current, rootPath: "" }));
     } catch (err) {
       setError((err as Error).message);
@@ -91,6 +138,33 @@ export function App() {
     }
   }
 
+  async function saveAgent(agent: WorkspaceAgentConfig) {
+    if (!selectedId) return;
+    try {
+      await updateAgent(selectedId, agent.id, {
+        provider: agent.provider ?? "mock",
+        model: agent.model ?? "",
+        policyOverride: normalizePolicy(agent.policyOverride)
+      });
+      await refreshAgents(selectedId);
+      await refreshSnapshot(selectedId);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function saveProvider(provider: Exclude<ProviderName, "mock">) {
+    try {
+      const draft = providerDrafts[provider];
+      await saveProviderConfig(provider, draft);
+      await refreshProviderConfig();
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId) ?? snapshot?.agents[0];
 
   return (
@@ -98,8 +172,13 @@ export function App() {
       <header className="topbar">
         <div>
           <h1>AutoAgent</h1>
-          <span>Local autonomous team console</span>
+          <span>本地自动化团队平台</span>
         </div>
+        <nav className="topnav">
+          <button className={view === "run" ? "selected" : ""} onClick={() => setView("run")}>运行台</button>
+          <button className={view === "agents" ? "selected" : ""} onClick={() => setView("agents")}>Agent 配置</button>
+          <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>Provider</button>
+        </nav>
         <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{snapshot?.status ?? "idle"}</strong>
       </header>
       <section className="workspace-shell">
@@ -131,10 +210,11 @@ export function App() {
             ))}
           </div>
         </aside>
-        <section className="console-region">
-          <section className="task-panel">
+        <section className={view === "run" ? "console-region" : "management-region"}>
+          {view === "run" ? <>
+            <section className="task-panel">
             <form onSubmit={submitTask}>
-              <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="Describe the workspace goal for the team" />
+              <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="描述这个 workspace 要交给团队完成的目标" />
               <button type="submit" disabled={!selectedId || mode === "running"}>Start</button>
             </form>
             <div className="control-row">
@@ -143,9 +223,9 @@ export function App() {
               <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused"}>Stop</button>
             </div>
             {error ? <p className="error-text">{error}</p> : null}
-          </section>
+            </section>
 
-          <section className="canvas-panel">
+            <section className="canvas-panel">
             <div className="team-canvas">
               <div className="canvas-phase">{snapshot?.phase ?? "idle"}</div>
               {nodes.map((node) => (
@@ -163,24 +243,157 @@ export function App() {
               ))}
             </div>
             <div className="agent-detail">
-              <strong>{selectedAgent?.name ?? "No agent selected"}</strong>
+              <strong>{selectedAgent?.name ?? "未选择 Agent"}</strong>
               <span>{selectedAgent?.roleInWorkspace ?? "idle"}</span>
-              <p>{selectedAgent?.currentStep ?? selectedAgent?.capabilities?.join(", ") ?? "Create a workspace to seed the team."}</p>
+              <p>{selectedAgent?.currentStep ?? selectedAgent?.capabilities?.join(", ") ?? "创建 workspace 后会生成固定团队。"}</p>
             </div>
-          </section>
+            </section>
 
-          <aside className="event-panel">
+            <aside className="event-panel">
             {events.map((event) => (
               <article key={event.id} className="event-item">
                 <span>{event.type}</span>
                 <strong>{event.summary}</strong>
               </article>
             ))}
-          </aside>
+            </aside>
+          </> : null}
+
+          {view === "agents" ? (
+            <section className="management-panel">
+              <header className="management-header">
+                <h2>Agent 配置</h2>
+                <button type="button" onClick={() => void refreshAgents()}>刷新团队</button>
+              </header>
+              <div className="agent-config-grid">
+                {agents.map((agent, index) => (
+                  <AgentConfigCard
+                    key={agent.id}
+                    agent={agent}
+                    onChange={(next) => setAgents((current) => current.map((item, itemIndex) => itemIndex === index ? next : item))}
+                    onSave={() => void saveAgent(agent)}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {view === "providers" ? (
+            <section className="management-panel">
+              <header className="management-header">
+                <h2>Provider 配置</h2>
+                <button type="button" onClick={() => void refreshProviderConfig()}>刷新配置</button>
+              </header>
+              <div className="provider-grid">
+                {(["openai", "anthropic"] as const).map((provider) => (
+                  <ProviderConfigCard
+                    key={provider}
+                    provider={provider}
+                    configured={Boolean(providerConfigs[provider]?.apiKey)}
+                    draft={providerDrafts[provider]}
+                    onChange={(next) => setProviderDrafts((current) => ({ ...current, [provider]: next }))}
+                    onSave={() => void saveProvider(provider)}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
         </section>
       </section>
     </main>
   );
+}
+
+function AgentConfigCard(props: {
+  agent: WorkspaceAgentConfig;
+  onChange: (agent: WorkspaceAgentConfig) => void;
+  onSave: () => void;
+}) {
+  const agent = props.agent;
+  const policy = normalizePolicy(agent.policyOverride);
+  return (
+    <article className="config-card">
+      <header>
+        <strong>{agent.name ?? agent.roleInWorkspace}</strong>
+        <span>{agent.roleInWorkspace}</span>
+      </header>
+      <label>
+        <span>Provider</span>
+        <select value={agent.provider ?? "mock"} onChange={(event) => props.onChange({ ...agent, provider: event.target.value as ProviderName })}>
+          <option value="mock">mock</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+        </select>
+      </label>
+      <label>
+        <span>Model</span>
+        <input value={agent.model ?? ""} onChange={(event) => props.onChange({ ...agent, model: event.target.value })} />
+      </label>
+      <div className="policy-grid">
+        <Toggle label="读 workspace" checked={policy.canReadWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canReadWorkspace: checked } })} />
+        <Toggle label="写 workspace" checked={policy.canWriteWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
+        <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canExecuteCommands: checked } })} />
+        <Toggle label="Host access" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, allowHostAccess: checked } })} />
+      </div>
+      <p>{agent.capabilities?.join(", ")}</p>
+      <button type="button" onClick={props.onSave}>保存 Agent</button>
+    </article>
+  );
+}
+
+function ProviderConfigCard(props: {
+  provider: Exclude<ProviderName, "mock">;
+  configured: boolean;
+  draft: ProviderConfig;
+  onChange: (config: ProviderConfig) => void;
+  onSave: () => void;
+}) {
+  return (
+    <article className="config-card">
+      <header>
+        <strong>{props.provider}</strong>
+        <span>{props.configured ? "已配置 key" : "未配置 key"}</span>
+      </header>
+      <label>
+        <span>Model</span>
+        <input value={props.draft.model} onChange={(event) => props.onChange({ ...props.draft, model: event.target.value })} />
+      </label>
+      <label>
+        <span>API Key</span>
+        <input type="password" placeholder={props.configured ? "保留现有 key" : "输入 API key"} onChange={(event) => props.onChange({ ...props.draft, apiKey: event.target.value })} />
+      </label>
+      <label>
+        <span>Base URL</span>
+        <input value={props.draft.baseUrl ?? ""} onChange={(event) => props.onChange({ ...props.draft, baseUrl: event.target.value })} />
+      </label>
+      <button type="button" onClick={props.onSave}>保存 Provider</button>
+    </article>
+  );
+}
+
+function Toggle(props: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="toggle-row">
+      <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} />
+      <span>{props.label}</span>
+    </label>
+  );
+}
+
+function normalizePolicy(policy: Partial<AgentPolicy> | undefined): Required<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "allowHostAccess">> {
+  return {
+    canReadWorkspace: Boolean(policy?.canReadWorkspace),
+    canWriteWorkspace: Boolean(policy?.canWriteWorkspace),
+    canExecuteCommands: Boolean(policy?.canExecuteCommands),
+    allowHostAccess: Boolean(policy?.allowHostAccess)
+  };
+}
+
+function mergeSnapshotAgents(snapshotAgents: WorkspaceSnapshot["agents"], configAgents: WorkspaceAgentConfig[]): WorkspaceSnapshot["agents"] {
+  return snapshotAgents.map((agent) => {
+    const configured = configAgents.find((item) => item.id === agent.id);
+    return configured ? { ...agent, ...configured } : agent;
+  });
 }
 
 function initials(label: string): string {

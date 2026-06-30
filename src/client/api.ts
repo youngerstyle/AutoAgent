@@ -1,4 +1,4 @@
-import type { Workspace, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -41,4 +41,29 @@ export function resumeTask(workspaceId: string, taskId: string): Promise<{ snaps
 
 export function stopTask(workspaceId: string, taskId: string): Promise<unknown> {
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/stop`, { method: "POST" });
+}
+
+export type WorkspaceAgentConfig = WorkspaceAgent & {
+  name?: string;
+  capabilities?: string[];
+};
+
+export function listAgents(workspaceId: string): Promise<{ agents: WorkspaceAgentConfig[] }> {
+  return api(`/api/workspaces/${workspaceId}/agents`);
+}
+
+export function updateAgent(
+  workspaceId: string,
+  agentId: string,
+  input: { provider: ProviderName; model: string; policyOverride: Partial<AgentPolicy> }
+): Promise<{ agent: WorkspaceAgentConfig }> {
+  return api(`/api/workspaces/${workspaceId}/agents/${agentId}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function getProviderConfig(): Promise<{ providers: Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>> }> {
+  return api("/api/providers/config");
+}
+
+export function saveProviderConfig(provider: Exclude<ProviderName, "mock">, input: Partial<ProviderConfig>): Promise<{ provider: ProviderConfig }> {
+  return api(`/api/providers/${provider}`, { method: "PATCH", body: JSON.stringify(input) });
 }

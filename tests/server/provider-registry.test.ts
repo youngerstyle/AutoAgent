@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +45,31 @@ describe("ProviderRegistry", () => {
     registry.get = async () => new TerminalProvider();
 
     await expect(registry.runWithRetry(input("pm", "pm_plan"))).rejects.toMatchObject({ retryable: false });
+  });
+
+  it("saves provider config and redacts stored secrets in API responses", async () => {
+    const home = await tempHome();
+    const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+
+    const saved = await registry.saveConfig("openai", { provider: "openai", model: "gpt-test", apiKey: "secret", baseUrl: "https://example.test" });
+
+    expect(saved).toMatchObject({ provider: "openai", model: "gpt-test", apiKey: "********" });
+    await expect(registry.configs()).resolves.toMatchObject({ openai: { apiKey: "********" } });
+    const raw = JSON.parse(await readFile(path.join(home, "providers.json"), "utf8"));
+    expect(raw.openai.apiKey).toBe("secret");
+  });
+
+  it("projects environment provider config without leaking secrets", async () => {
+    const registry = new ProviderRegistry({
+      homeDir: await tempHome(),
+      env: { OPENAI_API_KEY: "env-secret", OPENAI_BASE_URL: "https://gateway.test" },
+      retryCount: 0
+    });
+
+    await expect(registry.configs()).resolves.toMatchObject({
+      openai: { provider: "openai", model: "gpt-4.1-mini", apiKey: "********", baseUrl: "https://gateway.test" },
+      anthropic: { provider: "anthropic", model: "claude-3-5-sonnet-latest", apiKey: undefined }
+    });
   });
 });
 

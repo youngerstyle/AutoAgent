@@ -54,6 +54,15 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
 
 export type CoreRole = Exclude<AgentRole, "specialist">;
 
+const ROLE_ORDER: Record<AgentRole, number> = {
+  boss: 0,
+  pm: 1,
+  architect: 2,
+  dev: 3,
+  qa: 4,
+  specialist: 5
+};
+
 export async function ensureCoreTeam(workspace: Workspace): Promise<WorkspaceAgent[]> {
   const agents: WorkspaceAgent[] = [];
   for (const profile of CORE_AGENT_PROFILES) {
@@ -71,7 +80,13 @@ export async function listWorkspaceAgents(workspace: Workspace): Promise<Workspa
         .filter((entry) => entry.isDirectory())
         .map((entry) => readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, entry.name), undefined))
     );
-    return agents.filter((agent): agent is WorkspaceAgent => Boolean(agent));
+    return agents
+      .filter((agent): agent is WorkspaceAgent => Boolean(agent))
+      .sort((left, right) => {
+        const roleDiff = ROLE_ORDER[left.roleInWorkspace] - ROLE_ORDER[right.roleInWorkspace];
+        if (roleDiff !== 0) return roleDiff;
+        return left.id.localeCompare(right.id);
+      });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
@@ -103,6 +118,8 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
     roleInWorkspace: profile.role,
     agentDir: workspaceAgentDir(workspace.rootPath, workspaceAgentId),
     status: "idle",
+    provider: profile.defaultProvider,
+    model: profile.defaultModel,
     policyOverride: profile.defaultPolicy
   };
   await mkdir(workspaceAgentSessionsDir(workspace.rootPath, workspaceAgentId), { recursive: true });
@@ -113,4 +130,21 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
 export function profileMetadata(agent: WorkspaceAgent): Pick<AgentProfile, "name" | "role" | "capabilities"> {
   const profile = profileForRole(agent.roleInWorkspace);
   return { name: profile.name, role: profile.role, capabilities: profile.capabilities };
+}
+
+export async function updateWorkspaceAgent(
+  workspace: Workspace,
+  workspaceAgentId: string,
+  patch: Partial<Pick<WorkspaceAgent, "provider" | "model" | "policyOverride">>
+): Promise<WorkspaceAgent> {
+  const existing = await readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, workspaceAgentId), undefined);
+  if (!existing) throw new Error(`Workspace agent not found: ${workspaceAgentId}`);
+  const updated: WorkspaceAgent = {
+    ...existing,
+    provider: patch.provider ?? existing.provider,
+    model: patch.model ?? existing.model,
+    policyOverride: patch.policyOverride ?? existing.policyOverride
+  };
+  await writeJson(workspaceAgentFile(workspace.rootPath, workspaceAgentId), updated);
+  return updated;
 }

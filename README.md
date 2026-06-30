@@ -33,7 +33,9 @@ npm.cmd run dev
 
 ## Provider Config
 
-The mock provider is always available and is used in tests. OpenAI and Anthropic can be configured with environment variables:
+The mock provider is always available and is used in tests. In the UI, use the `Provider` tab to configure OpenAI and Anthropic model, API key, and optional base URL. Secrets are stored under `AUTOAGENT_HOME/providers.json` and are redacted when read back through the API.
+
+OpenAI and Anthropic can also be configured with environment variables:
 
 ```powershell
 $env:OPENAI_API_KEY="..."
@@ -57,9 +59,30 @@ Or with `providers.json` under `AUTOAGENT_HOME`:
 }
 ```
 
+Provider configuration API:
+
+- `GET /api/providers/config` returns redacted provider configs.
+- `PATCH /api/providers/:provider` saves `openai` or `anthropic` config.
+
+## Agent Config
+
+Use the `Agent 配置` tab to inspect and edit the workspace team. Every workspace is seeded with Boss, PM, Architect, Dev, and QA. Specialist agents can be recruited by the runtime when a capability gap is detected.
+
+Each workspace agent has independent persisted state under `<workspace>/.autoagent/agents/<workspaceAgentId>/agent.json`:
+
+- `provider`: `mock`, `openai`, or `anthropic`.
+- `model`: the model used by that agent's runtime loop.
+- `policyOverride`: read, write, command execution, and host access permissions.
+
+Agent configuration API:
+
+- `GET /api/workspaces/:workspaceId/agents` seeds and lists the workspace roster.
+- `PATCH /api/workspaces/:workspaceId/agents/:agentId` updates provider, model, and policy override.
+
 ## Storage Model
 
 - Global state: `AUTOAGENT_HOME`
+- Provider state: `AUTOAGENT_HOME/providers.json`
 - Workspace state: `<workspace>/.autoagent`
 - Agent state: `<workspace>/.autoagent/agents/<workspaceAgentId>`
 - Agent sessions: `<workspace>/.autoagent/agents/<workspaceAgentId>/sessions`
@@ -71,11 +94,14 @@ Workspace `.autoagent/` is automatically added to the workspace `.gitignore`.
 ## Runtime Flow
 
 1. Create or select a workspace.
-2. Start a task from the console.
-3. Mission Control runs Boss, PM, Architect, Dev, QA, and Boss acceptance.
-4. If the Architect reports a capability gap, Boss recruits a Specialist and the Specialist appears on the canvas.
-5. QA failure emits `qa.failed` and returns the task to Dev, up to the retry budget.
-6. UI receives live events over SSE and refreshes the workspace snapshot.
+2. Configure provider credentials globally when using OpenAI or Anthropic.
+3. Configure per-agent provider, model, and policy when the workspace needs role-specific behavior.
+4. Start a task from the console.
+5. Mission Control runs Boss, PM, Architect, Dev, QA, and Boss acceptance.
+6. The agent runtime reads each workspace agent's provider/model/policy before executing its assignment.
+7. If the Architect reports a capability gap, Boss recruits a Specialist and the Specialist appears on the canvas.
+8. QA failure emits `qa.failed` and returns the task to Dev, up to the retry budget.
+9. UI receives live events over SSE and refreshes the workspace snapshot.
 
 Only one active `TaskRun` is allowed per workspace.
 

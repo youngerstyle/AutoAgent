@@ -47,6 +47,8 @@ export interface WorkspaceAgent {
   roleInWorkspace: AgentRole;
   agentDir: string;
   status: EntityStatus;
+  provider?: ProviderName;
+  model?: string;
   policyOverride?: Partial<AgentPolicy>;
 }
 

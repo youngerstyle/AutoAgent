@@ -1,4 +1,4 @@
-import { readJson } from "../storage/json.js";
+import { readJson, writeJson } from "../storage/json.js";
 import { globalProvidersFile } from "../storage/paths.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { MockProvider } from "./mock-provider.js";
@@ -51,6 +51,27 @@ export class ProviderRegistry {
     };
   }
 
+  async configs(): Promise<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>> {
+    return {
+      openai: redactRequiredConfig(await this.configFor("openai")),
+      anthropic: redactRequiredConfig(await this.configFor("anthropic"))
+    };
+  }
+
+  async saveConfig(provider: Exclude<ProviderName, "mock">, config: Partial<ProviderConfig>): Promise<ProviderConfig> {
+    const configs = await this.readConfig();
+    const existing = configs[provider];
+    const next: ProviderConfig = {
+      provider,
+      model: config.model?.trim() || existing?.model || (provider === "openai" ? "gpt-4.1-mini" : "claude-3-5-sonnet-latest"),
+      apiKey: config.apiKey === undefined || config.apiKey === "" ? existing?.apiKey : config.apiKey,
+      baseUrl: config.baseUrl === undefined ? existing?.baseUrl : config.baseUrl || undefined
+    };
+    configs[provider] = next;
+    await writeJson(globalProvidersFile(this.options.homeDir), configs);
+    return redactRequiredConfig(next);
+  }
+
   private async configFor(provider: Exclude<ProviderName, "mock">): Promise<ProviderConfig> {
     const configs = await this.readConfig();
     const env = this.options.env ?? process.env;
@@ -73,4 +94,11 @@ export class ProviderRegistry {
   private async readConfig(): Promise<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>> {
     return readJson(globalProvidersFile(this.options.homeDir), {});
   }
+}
+
+function redactRequiredConfig(config: ProviderConfig): ProviderConfig {
+  return {
+    ...config,
+    apiKey: config.apiKey ? "********" : undefined
+  };
 }

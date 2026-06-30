@@ -1,5 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const writeQueues = new Map<string, Promise<void>>();
 
 export async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   try {
@@ -13,8 +16,49 @@ export async function readJson<T>(filePath: string, fallback: T): Promise<T> {
 }
 
 export async function writeJson(filePath: string, value: unknown): Promise<void> {
+  const key = path.resolve(filePath).toLowerCase();
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(() => writeJsonNow(filePath, value));
+  writeQueues.set(key, next);
+  try {
+    await next;
+  } finally {
+    if (writeQueues.get(key) === next) {
+      writeQueues.delete(key);
+    }
+  }
+}
+
+async function writeJsonNow(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tmp, filePath);
+  try {
+    await renameWithRetry(tmp, filePath);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  const maxAttempts = 6;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      if (!isRetriableRenameError(error) || attempt === maxAttempts - 1) throw error;
+      await delay(25 * (attempt + 1));
+    }
+  }
+}
+
+function isRetriableRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
