@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentPolicy, AutoAgentEvent, ProviderConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, AutoAgentEvent, ProviderConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import {
   createWorkspace,
   getProviderConfig,
   getSnapshot,
+  listAgentProfiles,
   listAgents,
   listWorkspaces,
   pauseTask,
@@ -13,9 +14,10 @@ import {
   startTask,
   stopTask,
   updateAgent,
+  updateAgentProfile,
   type WorkspaceAgentConfig
 } from "./api";
-import { buildAgentNodes, buildAgentProfiles, taskControlMode, type AgentProfileView } from "./view-model";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, taskControlMode, type AgentProfileView } from "./view-model";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -25,8 +27,10 @@ export function App() {
   const [goal, setGoal] = useState("");
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>>({});
   const [providerDrafts, setProviderDrafts] = useState<Record<Exclude<ProviderName, "mock">, ProviderConfig>>({
     openai: { provider: "openai", model: "gpt-4.1-mini" },
@@ -34,17 +38,20 @@ export function App() {
   });
   const [error, setError] = useState("");
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
-  const profiles = useMemo(() => buildAgentProfiles(snapshot), [snapshot]);
+  const profiles = useMemo(() => buildAgentProfiles(snapshot, agentProfiles), [snapshot, agentProfiles]);
+  const catalogProfiles = useMemo(() => buildAgentCatalogProfiles(agentProfiles), [agentProfiles]);
   const mode = taskControlMode(snapshot);
 
   useEffect(() => {
     void refreshWorkspaces();
+    void refreshAgentProfiles();
   }, []);
 
   useEffect(() => {
     if (!selectedId) return;
     void refreshSnapshot(selectedId);
     void refreshAgents(selectedId);
+    void refreshAgentProfiles();
     void refreshProviderConfig();
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
@@ -97,6 +104,16 @@ export function App() {
         openai: { provider: "openai", model: result.providers.openai?.model ?? "gpt-4.1-mini", baseUrl: result.providers.openai?.baseUrl },
         anthropic: { provider: "anthropic", model: result.providers.anthropic?.model ?? "claude-3-5-sonnet-latest", baseUrl: result.providers.anthropic?.baseUrl }
       });
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function refreshAgentProfiles() {
+    try {
+      const result = await listAgentProfiles();
+      setAgentProfiles(result.profiles);
+      setSelectedProfileId((current) => current || result.profiles[0]?.id || "");
     } catch (err) {
       setError((err as Error).message);
     }
@@ -167,9 +184,30 @@ export function App() {
     }
   }
 
+  async function saveAgentProfile(profile: AgentProfile) {
+    try {
+      const result = await updateAgentProfile(profile.id, {
+        name: profile.name,
+        identity: profile.identity,
+        soul: profile.soul,
+        loopDefinition: profile.loopDefinition,
+        capabilities: profile.capabilities,
+        defaultProvider: profile.defaultProvider,
+        defaultModel: profile.defaultModel,
+        defaultPolicy: profile.defaultPolicy
+      });
+      setAgentProfiles((current) => current.map((item) => item.id === result.profile.id ? result.profile : item));
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId) ?? snapshot?.agents[0];
   const selectedProfile = profiles.find((profile) => profile.id === selectedAgentId) ?? profiles[0];
   const selectedDraft = selectedProfile ? agents.find((agent) => agent.id === selectedProfile.id) : undefined;
+  const selectedCatalogProfile = catalogProfiles.find((profile) => profile.id === selectedProfileId) ?? catalogProfiles[0];
+  const selectedCatalogDefinition = agentProfiles.find((profile) => profile.id === selectedCatalogProfile?.id) ?? agentProfiles[0];
 
   return (
     <main className="app-shell">
@@ -180,8 +218,8 @@ export function App() {
         </div>
         <nav className="topnav">
           <button className={view === "run" ? "selected" : ""} onClick={() => setView("run")}>运行台</button>
-          <button className={view === "studio" ? "selected" : ""} onClick={() => setView("studio")}>Agent 中心</button>
-          <button className={view === "team" ? "selected" : ""} onClick={() => setView("team")}>项目团队</button>
+          <button className={view === "studio" ? "selected" : ""} onClick={() => setView("studio")}>智能体档案库</button>
+          <button className={view === "team" ? "selected" : ""} onClick={() => setView("team")}>项目团队实例</button>
           <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
         </nav>
         <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{statusLabel(snapshot?.status ?? "idle")}</strong>
@@ -266,9 +304,12 @@ export function App() {
 
           {view === "studio" ? (
             <AgentHub
-              profiles={profiles}
-              selectedId={selectedProfile?.id}
-              onSelect={setSelectedAgentId}
+              profileViews={catalogProfiles}
+              profiles={agentProfiles}
+              selectedId={selectedCatalogDefinition?.id}
+              onSelect={setSelectedProfileId}
+              onProfileChange={(next) => setAgentProfiles((current) => current.map((item) => item.id === next.id ? next : item))}
+              onSave={(profile) => void saveAgentProfile(profile)}
             />
           ) : null}
 
@@ -312,38 +353,132 @@ export function App() {
 }
 
 function AgentHub(props: {
-  profiles: AgentProfileView[];
+  profileViews: AgentProfileView[];
+  profiles: AgentProfile[];
   selectedId?: string;
   onSelect: (id: string) => void;
+  onProfileChange: (profile: AgentProfile) => void;
+  onSave: (profile: AgentProfile) => void;
 }) {
+  const selected = props.profiles.find((profile) => profile.id === props.selectedId) ?? props.profiles[0];
+  const selectedView = props.profileViews.find((profile) => profile.id === selected?.id);
   return (
     <section className="management-panel agent-studio">
       <header className="management-header">
         <div>
-          <h2>Agent 中心</h2>
-          <p>可复用 Agent 档案。这里看身份、Soul、Loop、工具和记忆边界。</p>
+          <h2>智能体档案库</h2>
+          <p>这里编辑全局身份、人格边界、循环方式和默认能力；项目团队只引用这些档案，不在这里产生项目状态。</p>
         </div>
       </header>
-      <div className="agent-studio-grid">
-        {props.profiles.map((profile) => (
-          <button
-            key={profile.id}
-            type="button"
-            className={profile.id === props.selectedId ? "agent-profile-card selected" : "agent-profile-card"}
-            onClick={() => props.onSelect(profile.id)}
-          >
-            <span className="profile-avatar">{profile.identity.avatar}</span>
-            <strong>{profile.identity.title}</strong>
-            <small>{profile.identity.subtitle}</small>
-            <p>{profile.soul}</p>
-            <div className="profile-meta">
-              <span>{profile.model.providerLabel}</span>
-              <span>{profile.memory.sessionLabel}</span>
-            </div>
-          </button>
-        ))}
+      <div className="studio-layout">
+        <div className="agent-studio-grid">
+          {props.profileViews.map((profile) => (
+            <button
+              key={profile.id}
+              type="button"
+              className={profile.id === props.selectedId ? "agent-profile-card selected" : "agent-profile-card"}
+              onClick={() => props.onSelect(profile.id)}
+            >
+              <span className="profile-avatar">{profile.identity.avatar}</span>
+              <strong>{profile.identity.title}</strong>
+              <small>{profile.identity.subtitle}</small>
+              <p>{profile.soul}</p>
+              <div className="profile-meta">
+                <span>全局定义</span>
+                <span>{profile.model.providerLabel}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+        {selected && selectedView ? (
+          <AgentDefinitionEditor
+            profile={selected}
+            view={selectedView}
+            onChange={props.onProfileChange}
+            onSave={props.onSave}
+          />
+        ) : (
+          <aside className="agent-detail-panel empty-state">还没有可编辑的智能体档案。</aside>
+        )}
       </div>
     </section>
+  );
+}
+
+function AgentDefinitionEditor(props: {
+  profile: AgentProfile;
+  view: AgentProfileView;
+  onChange: (profile: AgentProfile) => void;
+  onSave: (profile: AgentProfile) => void;
+}) {
+  const loopText = (props.profile.loopDefinition ?? []).join("\n");
+  const capabilitiesText = props.profile.capabilities.join("、");
+  return (
+    <aside className="agent-detail-panel agent-definition-editor">
+      <header className="agent-hero">
+        <span className="profile-avatar large">{props.view.identity.avatar}</span>
+        <div>
+          <h3>{props.profile.name}</h3>
+          <p>{props.profile.identity}</p>
+          <small>全局智能体档案，保存后会被项目团队实例引用。</small>
+        </div>
+      </header>
+
+      <section className="agent-section">
+        <h4>身份定义</h4>
+        <label>
+          <span>名称</span>
+          <input value={props.profile.name} onChange={(event) => props.onChange({ ...props.profile, name: event.target.value })} />
+        </label>
+        <label>
+          <span>身份说明</span>
+          <textarea aria-label="身份说明" value={props.profile.identity ?? ""} onChange={(event) => props.onChange({ ...props.profile, identity: event.target.value })} />
+        </label>
+      </section>
+
+      <section className="agent-section">
+        <h4>人格边界</h4>
+        <label>
+          <span>行为原则和人格边界</span>
+          <textarea aria-label="人格边界" value={props.profile.soul ?? ""} onChange={(event) => props.onChange({ ...props.profile, soul: event.target.value })} />
+        </label>
+      </section>
+
+      <section className="agent-section">
+        <h4>循环定义</h4>
+        <label>
+          <span>每行一个循环步骤</span>
+          <textarea aria-label="循环步骤" value={loopText} onChange={(event) => props.onChange({ ...props.profile, loopDefinition: event.target.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) })} />
+        </label>
+      </section>
+
+      <section className="agent-section">
+        <h4>能力标签</h4>
+        <label>
+          <span>用顿号分隔</span>
+          <input value={capabilitiesText} onChange={(event) => props.onChange({ ...props.profile, capabilities: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} />
+        </label>
+      </section>
+
+      <section className="agent-section runtime-config">
+        <h4>默认模型</h4>
+        <div className="runtime-fields">
+          <label>
+            <span>模型服务</span>
+            <select value={props.profile.defaultProvider} onChange={(event) => props.onChange({ ...props.profile, defaultProvider: event.target.value as ProviderName })}>
+              <option value="mock">模拟服务</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </label>
+          <label>
+            <span>默认模型</span>
+            <input value={props.profile.defaultModel} onChange={(event) => props.onChange({ ...props.profile, defaultModel: event.target.value })} />
+          </label>
+        </div>
+        <button type="button" onClick={() => props.onSave(props.profile)}>保存智能体档案</button>
+      </section>
+    </aside>
   );
 }
 
@@ -361,8 +496,8 @@ function ProjectTeam(props: {
     <section className="management-panel team-workbench">
       <header className="management-header">
         <div>
-          <h2>项目团队</h2>
-          <p>项目里的 Agent 实例。全局档案不在这里被改写，项目只覆盖模型和权限。</p>
+          <h2>项目团队实例</h2>
+          <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目只覆盖模型、权限和当前状态。</p>
         </div>
         <button type="button" onClick={props.onRefresh}>刷新团队</button>
       </header>
@@ -417,24 +552,24 @@ function AgentDetailPanel(props: {
       </header>
 
       <section className="agent-section">
-        <h4>Identity</h4>
-        <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle} Agent。</p>
+        <h4>身份定义</h4>
+        <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle}智能体。</p>
       </section>
 
       <section className="agent-section">
-        <h4>Soul</h4>
+        <h4>人格边界</h4>
         <p>{props.profile.soul}</p>
       </section>
 
       <section className="agent-section">
-        <h4>Loop</h4>
+        <h4>循环定义</h4>
         <ol className="loop-list">
           {props.profile.loopSteps.map((step) => <li key={step}>{step}</li>)}
         </ol>
       </section>
 
       <section className="agent-section">
-        <h4>Tools</h4>
+        <h4>工具权限</h4>
         <div className="tool-list">
           {props.profile.toolGroups.map((tool) => (
             <span key={tool.label} className={tool.enabled ? "tool-pill enabled" : "tool-pill"}>
@@ -445,7 +580,7 @@ function AgentDetailPanel(props: {
       </section>
 
       <section className="agent-section">
-        <h4>Memory</h4>
+        <h4>记忆与状态</h4>
         <p>{props.profile.memory.sessionLabel}，{props.profile.memory.workspaceLabel}</p>
         <code>{props.profile.memory.statePath}</code>
       </section>

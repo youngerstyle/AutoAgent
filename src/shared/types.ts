@@ -34,6 +34,9 @@ export interface AgentProfile {
   id: string;
   name: string;
   role: AgentRole;
+  identity?: string;
+  soul?: string;
+  loopDefinition?: string[];
   capabilities: string[];
   defaultProvider: ProviderName;
   defaultModel: string;

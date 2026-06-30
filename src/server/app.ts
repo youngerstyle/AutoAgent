@@ -6,6 +6,7 @@ import { errorMiddleware } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { MissionControl } from "./mission/mission-control.js";
 import { ProviderRegistry } from "./providers/provider-registry.js";
+import { createAgentProfileRouter } from "./routes/agent-profiles.js";
 import { createAgentRouter } from "./routes/agents.js";
 import { createEventRouter } from "./routes/events.js";
 import { createProviderRouter } from "./routes/providers.js";
@@ -30,6 +31,7 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, name: "AutoAgent" });
   });
+  app.use("/api/agent-profiles", createAgentProfileRouter());
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(workspaceStore));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore));

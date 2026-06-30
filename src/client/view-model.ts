@@ -1,4 +1,4 @@
-import type { AgentPolicy, ProviderName, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, ProviderName, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import { capabilityLabels, displayText, roleLabel, statusLabel } from "../shared/labels";
 
 export interface AgentNodeView {
@@ -78,12 +78,32 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
     });
 }
 
-export function buildAgentProfiles(snapshot?: WorkspaceSnapshot): AgentProfileView[] {
+export function buildAgentProfiles(snapshot?: WorkspaceSnapshot, profileDefs: AgentProfile[] = []): AgentProfileView[] {
   if (!snapshot) return [];
+  const profilesById = new Map(profileDefs.map((profile) => [profile.id, profile]));
   return snapshot.agents
     .slice()
     .sort((a, b) => ROLE_ORDER.indexOf(a.roleInWorkspace) - ROLE_ORDER.indexOf(b.roleInWorkspace))
-    .map((agent) => agentProfile(agent));
+    .map((agent) => agentProfile(agent, profilesById.get(agent.profileId)));
+}
+
+export function buildAgentCatalogProfiles(profileDefs: AgentProfile[]): AgentProfileView[] {
+  return profileDefs
+    .slice()
+    .sort((a, b) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role))
+    .map((profile) => agentProfile({
+      id: profile.id,
+      workspaceId: "global",
+      profileId: profile.id,
+      roleInWorkspace: profile.role,
+      agentDir: "",
+      status: "idle",
+      provider: profile.defaultProvider,
+      model: profile.defaultModel,
+      policyOverride: profile.defaultPolicy,
+      name: profile.name,
+      capabilities: profile.capabilities
+    }, profile));
 }
 
 export function taskControlMode(snapshot?: WorkspaceSnapshot): "empty" | "running" | "paused" | "terminal" {
@@ -93,22 +113,23 @@ export function taskControlMode(snapshot?: WorkspaceSnapshot): "empty" | "runnin
   return "running";
 }
 
-function agentProfile(agent: WorkspaceSnapshot["agents"][number]): AgentProfileView {
+function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: AgentProfile): AgentProfileView {
   const policy = normalizePolicy(agent.policyOverride);
   const role = agent.roleInWorkspace;
+  const title = profileDef?.name ?? roleLabel(role);
   return {
     id: agent.id,
     role,
     status: agent.status,
     statusLabel: statusLabel(agent.status),
     identity: {
-      title: roleLabel(role),
-      subtitle: identitySubtitle(role),
-      avatar: roleLabel(role).slice(0, 1),
-      scope: "项目实例，继承全局 Agent 档案"
+      title,
+      subtitle: profileDef?.identity ?? identitySubtitle(role),
+      avatar: title.slice(0, 1),
+      scope: "项目实例，继承全局智能体档案"
     },
-    soul: soulForRole(role),
-    loopSteps: loopForRole(role),
+    soul: profileDef?.soul ?? soulForRole(role),
+    loopSteps: profileDef?.loopDefinition?.length ? profileDef.loopDefinition : loopForRole(role),
     toolGroups: [
       { label: "文件", enabled: policy.canReadWorkspace || policy.canWriteWorkspace, description: fileToolDescription(policy) },
       { label: "命令", enabled: policy.canExecuteCommands, description: policy.canExecuteCommands ? "可在策略范围内执行本地命令" : "默认不执行本地命令" },
@@ -124,7 +145,7 @@ function agentProfile(agent: WorkspaceSnapshot["agents"][number]): AgentProfileV
       workspaceLabel: "工作事实写入 .autoagent",
       statePath: `.autoagent/agents/${agent.id}`
     },
-    capabilities: capabilityLabels(role, agent.capabilities),
+    capabilities: profileDef?.capabilities?.length ? profileDef.capabilities : capabilityLabels(role, agent.capabilities),
     currentStep: displayText(agent.currentStep),
     policy
   };

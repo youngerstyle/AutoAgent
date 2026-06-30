@@ -12,6 +12,10 @@ export function globalProvidersFile(home: string): string {
   return path.join(home, "providers.json");
 }
 
+export function globalAgentProfilesFile(home: string): string {
+  return path.join(home, "agent-profiles.json");
+}
+
 export function globalWorkspacesFile(home: string): string {
   return path.join(home, "workspaces.json");
 }

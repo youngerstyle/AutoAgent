@@ -377,6 +377,20 @@ button:disabled {
   gap: 12px;
 }
 
+.studio-layout {
+  height: calc(100% - 56px);
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(460px, 1.1fr);
+  gap: 14px;
+}
+
+.studio-layout .agent-studio-grid {
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+}
+
 .agent-profile-card,
 .team-member {
   text-align: left;
@@ -590,6 +604,10 @@ button:disabled {
   gap: 10px;
 }
 
+.agent-definition-editor textarea {
+  min-height: 92px;
+}
+
 .config-card {
   display: grid;
   gap: 12px;
@@ -646,7 +664,8 @@ button:disabled {
 @media (max-width: 1120px) {
   .workspace-shell,
   .console-region,
-  .team-layout {
+  .team-layout,
+  .studio-layout {
     grid-template-columns: 1fr;
   }
 

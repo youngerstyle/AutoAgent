@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentNodes, buildAgentProfiles, taskControlMode } from "../../src/client/view-model";
-import type { WorkspaceSnapshot } from "../../src/shared/types";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, taskControlMode } from "../../src/client/view-model";
+import type { AgentProfile, WorkspaceSnapshot } from "../../src/shared/types";
 
 describe("client view model", () => {
   it("marks the currently running agent as active and places core roles on canvas", () => {
@@ -27,6 +27,28 @@ describe("client view model", () => {
     expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["文件", "命令", "浏览器/MCP"]));
     expect(dev?.model.providerLabel).toBe("模拟服务");
     expect(dev?.memory.sessionLabel).toBe("项目会话隔离");
+  });
+
+  it("uses editable global agent definitions for catalog and project team projections", () => {
+    const definitions: AgentProfile[] = [{
+      id: "prof_dev",
+      name: "全栈工程师",
+      role: "dev",
+      identity: "负责把任务变成可运行变更",
+      soul: "先读上下文，再用证据交付。",
+      loopDefinition: ["读需求", "读项目", "改代码", "跑验证"],
+      capabilities: ["TypeScript", "验证"],
+      defaultProvider: "mock",
+      defaultModel: "mock-dev",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
+    }];
+
+    const catalog = buildAgentCatalogProfiles(definitions);
+    const team = buildAgentProfiles(snapshot("running"), definitions);
+
+    expect(catalog[0].identity.title).toBe("全栈工程师");
+    expect(team.find((profile) => profile.role === "dev")?.soul).toBe("先读上下文，再用证据交付。");
+    expect(team.find((profile) => profile.role === "dev")?.loopSteps).toEqual(["读需求", "读项目", "改代码", "跑验证"]);
   });
 });
 

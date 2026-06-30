@@ -1,4 +1,4 @@
-import type { AgentPolicy, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -58,6 +58,14 @@ export function updateAgent(
   input: { provider: ProviderName; model: string; policyOverride: Partial<AgentPolicy> }
 ): Promise<{ agent: WorkspaceAgentConfig }> {
   return api(`/api/workspaces/${workspaceId}/agents/${agentId}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function listAgentProfiles(): Promise<{ profiles: AgentProfile[] }> {
+  return api("/api/agent-profiles");
+}
+
+export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "loopDefinition" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
+  return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
 export function getProviderConfig(): Promise<{ providers: Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>> }> {
