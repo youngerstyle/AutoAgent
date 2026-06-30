@@ -5,6 +5,7 @@ import { errorMiddleware } from "./errors.js";
 import { loadConfig } from "./config.js";
 import { MissionControl } from "./mission/mission-control.js";
 import { ProviderRegistry } from "./providers/provider-registry.js";
+import { createEventRouter } from "./routes/events.js";
 import { createProviderRouter } from "./routes/providers.js";
 import { createTaskRouter } from "./routes/tasks.js";
 import { createWorkspaceRouter } from "./routes/workspaces.js";
@@ -29,6 +30,7 @@ export function createApp() {
   });
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(workspaceStore));
+  app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
