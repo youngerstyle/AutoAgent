@@ -1,0 +1,30 @@
+export const EVENT_TYPES = [
+  "task.created",
+  "task.phase_changed",
+  "assignment.created",
+  "assignment.started",
+  "assignment.completed",
+  "assignment.failed",
+  "agent.status_changed",
+  "agent.step_started",
+  "agent.step_completed",
+  "tool.started",
+  "tool.completed",
+  "tool.failed",
+  "tool.denied",
+  "handoff.created",
+  "qa.feedback",
+  "qa.failed",
+  "recruitment.requested",
+  "recruitment.approved",
+  "recruitment.failed",
+  "agent.created",
+  "agent.joined_workspace",
+  "run.completed",
+  "run.failed",
+  "run.interrupted",
+  "provider.failed",
+  "assignment.blocked"
+] as const;
+
+export type AutoAgentEventType = (typeof EVENT_TYPES)[number];
