@@ -14,11 +14,11 @@ export interface AgentNodeView {
 const ROLE_ORDER = ["boss", "pm", "architect", "dev", "specialist", "qa"];
 const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
   boss: { x: 50, y: 12 },
-  pm: { x: 20, y: 36 },
-  architect: { x: 50, y: 36 },
-  dev: { x: 30, y: 68 },
-  specialist: { x: 52, y: 68 },
-  qa: { x: 75, y: 68 }
+  pm: { x: 28, y: 36 },
+  architect: { x: 72, y: 36 },
+  dev: { x: 20, y: 68 },
+  specialist: { x: 50, y: 68 },
+  qa: { x: 80, y: 68 }
 };
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
@@ -28,7 +28,7 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
     .sort((a, b) => ROLE_ORDER.indexOf(a.roleInWorkspace) - ROLE_ORDER.indexOf(b.roleInWorkspace))
     .map((agent, index) => {
       const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
-      const specialistOffset = agent.roleInWorkspace === "specialist" ? index * 5 : 0;
+      const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
       return {
         id: agent.id,
         label: agent.name ?? agent.roleInWorkspace,

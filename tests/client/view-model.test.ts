@@ -8,6 +8,7 @@ describe("client view model", () => {
 
     expect(nodes.find((node) => node.role === "dev")?.active).toBe(true);
     expect(nodes.find((node) => node.role === "boss")?.y).toBeLessThan(nodes.find((node) => node.role === "dev")!.y);
+    expect(nodes.find((node) => node.role === "qa")?.x).toBeGreaterThan(nodes.find((node) => node.role === "dev")!.x);
   });
 
   it("derives task controls from snapshot status", () => {
@@ -24,7 +25,8 @@ function snapshot(status: WorkspaceSnapshot["status"]): WorkspaceSnapshot {
     activeTaskRun: { id: "tr_1", taskId: "task_1", workspaceId: "ws_1", status, phase: status === "paused" ? "paused" : "implementation", startedAt: "now" },
     agents: [
       { id: "wa_boss", workspaceId: "ws_1", profileId: "prof_boss", roleInWorkspace: "boss", agentDir: "boss", status: "waiting", name: "Boss" },
-      { id: "wa_dev", workspaceId: "ws_1", profileId: "prof_dev", roleInWorkspace: "dev", agentDir: "dev", status: "running", name: "Dev", currentStep: "Editing" }
+      { id: "wa_dev", workspaceId: "ws_1", profileId: "prof_dev", roleInWorkspace: "dev", agentDir: "dev", status: "running", name: "Dev", currentStep: "Editing" },
+      { id: "wa_qa", workspaceId: "ws_1", profileId: "prof_qa", roleInWorkspace: "qa", agentDir: "qa", status: "waiting", name: "QA" }
     ],
     assignments: [],
     recentEvents: [],
