@@ -25,6 +25,21 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).toContain("run.completed");
   });
 
+  it("keeps the latest completed TaskRun visible in the workspace snapshot", async () => {
+    const fixture = await missionFixture();
+
+    const completed = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a persistent snapshot" },
+      { runSynchronously: true }
+    );
+    const snapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
+
+    expect(completed.status).toBe("completed");
+    expect(snapshot.status).toBe("completed");
+    expect(snapshot.activeTask?.id).toBe(completed.activeTask?.id);
+    expect(snapshot.recentEvents.map((event) => event.type)).toContain("run.completed");
+  });
+
   it("enforces one active TaskRun per workspace", async () => {
     const fixture = await missionFixture();
 

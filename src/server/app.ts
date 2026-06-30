@@ -1,4 +1,5 @@
 import express from "express";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorMiddleware } from "./errors.js";
@@ -34,7 +35,8 @@ export function createApp() {
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const clientDir = path.resolve(__dirname, "../client");
+  const clientDirCandidate = path.resolve(__dirname, "../client");
+  const clientDir = existsSync(clientDirCandidate) ? clientDirCandidate : path.resolve(__dirname, "../../client");
   app.use(express.static(clientDir));
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) {

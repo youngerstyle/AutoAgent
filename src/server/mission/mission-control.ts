@@ -145,8 +145,8 @@ export class MissionControl {
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     const workspace = await this.workspaceStore.get(workspaceId);
-    const active = await this.findActiveState(workspace);
-    if (!active) {
+    const state = (await this.findActiveState(workspace)) ?? (await this.findLatestState(workspace));
+    if (!state) {
       const agents = await listWorkspaceAgents(workspace);
       return {
         workspace,
@@ -157,7 +157,7 @@ export class MissionControl {
         status: "idle"
       };
     }
-    return this.snapshot(workspace, active.task.id, active.taskRun.id);
+    return this.snapshot(workspace, state.task.id, state.taskRun.id);
   }
 
   async runUntilIdle(workspace: Workspace, taskId: string, taskRunId: string): Promise<void> {
@@ -290,20 +290,29 @@ export class MissionControl {
   }
 
   private async findActiveState(workspace: Workspace): Promise<MissionState | undefined> {
+    return (await this.readAllStates(workspace)).find((state) => state.status === "running" || state.status === "paused");
+  }
+
+  private async findLatestState(workspace: Workspace): Promise<MissionState | undefined> {
+    return (await this.readAllStates(workspace)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  }
+
+  private async readAllStates(workspace: Workspace): Promise<MissionState[]> {
     const tasksRoot = path.join(workspaceAutoAgentDir(workspace.rootPath), "tasks");
     try {
+      const states: MissionState[] = [];
       const taskEntries = await readdir(tasksRoot, { withFileTypes: true });
       for (const taskEntry of taskEntries.filter((entry) => entry.isDirectory())) {
         const runsRoot = path.join(tasksRoot, taskEntry.name, "runs");
         const runEntries = await readdir(runsRoot, { withFileTypes: true });
         for (const runEntry of runEntries.filter((entry) => entry.isDirectory())) {
           const state = await readJson<MissionState | undefined>(stateFile(workspace.rootPath, taskEntry.name, runEntry.name), undefined);
-          if (state && (state.status === "running" || state.status === "paused")) return state;
+          if (state) states.push(state);
         }
       }
-      return undefined;
+      return states;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
   }

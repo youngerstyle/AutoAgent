@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/index.ts",
-    "build": "tsc --noEmit && vite build && tsc -p tsconfig.server.json",
-    "start": "node dist/server/index.js",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc --noEmit && vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/server/index.js",
     "test": "vitest",
     "test:run": "vitest run",
     "test:e2e": "vitest run tests/e2e",
