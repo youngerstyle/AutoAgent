@@ -72,6 +72,38 @@ describe("ProviderRegistry", () => {
       anthropic: { provider: "anthropic", model: "claude-3-5-sonnet-latest", apiKey: undefined }
     });
   });
+
+  it("adds, renames, and sets a single default model config while preserving legacy config", async () => {
+    const home = await tempHome();
+    const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+    await registry.saveConfig("openai", { provider: "openai", model: "gpt-legacy", apiKey: "legacy-secret" });
+
+    const created = await registry.createModelConfig({
+      name: "OpenAI 备用网关",
+      provider: "openai",
+      model: "gpt-4.1",
+      apiKey: "new-secret",
+      baseUrl: "https://gateway.test"
+    });
+    expect(created).toMatchObject({
+      name: "OpenAI 备用网关",
+      provider: "openai",
+      model: "gpt-4.1",
+      apiKey: "********",
+      isDefault: false
+    });
+
+    const renamed = await registry.updateModelConfig(created.id, { name: "OpenAI 主力网关" });
+    expect(renamed.name).toBe("OpenAI 主力网关");
+
+    await registry.setDefaultModelConfig(created.id);
+    const configs = await registry.modelConfigs();
+
+    expect(configs.find((config) => config.model === "gpt-legacy")).toMatchObject({ name: "OpenAI 默认", apiKey: "********" });
+    expect(configs.filter((config) => config.isDefault)).toHaveLength(1);
+    expect(configs.find((config) => config.id === created.id)).toMatchObject({ name: "OpenAI 主力网关", isDefault: true });
+    await expect(registry.status()).resolves.toMatchObject({ openai: { configured: true } });
+  });
 });
 
 function input(role: AgentTurnInput["role"], assignmentType: string, provider: AgentTurnInput["provider"] = "mock"): AgentTurnInput {

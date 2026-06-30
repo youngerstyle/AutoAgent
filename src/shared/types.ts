@@ -156,3 +156,12 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl?: string;
 }
+
+export interface ModelConfig extends ProviderConfig {
+  id: string;
+  name: string;
+  provider: Exclude<ProviderName, "mock">;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+}

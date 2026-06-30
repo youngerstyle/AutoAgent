@@ -1,4 +1,4 @@
-import type { AgentPolicy, AgentProfile, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -74,4 +74,20 @@ export function getProviderConfig(): Promise<{ providers: Partial<Record<Exclude
 
 export function saveProviderConfig(provider: Exclude<ProviderName, "mock">, input: Partial<ProviderConfig>): Promise<{ provider: ProviderConfig }> {
   return api(`/api/providers/${provider}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function listModelConfigs(): Promise<{ configs: ModelConfig[] }> {
+  return api("/api/providers/model-configs");
+}
+
+export function createModelConfig(input: Partial<ModelConfig> & Pick<ModelConfig, "provider">): Promise<{ config: ModelConfig }> {
+  return api("/api/providers/model-configs", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateModelConfig(configId: string, input: Partial<ModelConfig>): Promise<{ config: ModelConfig }> {
+  return api(`/api/providers/model-configs/${configId}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function setDefaultModelConfig(configId: string): Promise<{ config: ModelConfig }> {
+  return api(`/api/providers/model-configs/${configId}/default`, { method: "POST" });
 }

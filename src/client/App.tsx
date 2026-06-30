@@ -1,23 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
-import type { AgentPolicy, AgentProfile, AutoAgentEvent, ProviderConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, AutoAgentEvent, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import {
+  createModelConfig,
   createWorkspace,
-  getProviderConfig,
   getSnapshot,
   listAgentProfiles,
   listAgents,
+  listModelConfigs,
   listWorkspaces,
   pauseTask,
   resumeTask,
-  saveProviderConfig,
+  setDefaultModelConfig,
   startTask,
   stopTask,
   updateAgent,
   updateAgentProfile,
+  updateModelConfig,
   type WorkspaceAgentConfig
 } from "./api";
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, taskControlMode, type AgentProfileView } from "./view-model";
+
+type RealProviderName = Exclude<ProviderName, "mock">;
+type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
+  provider: RealProviderName;
+  apiKey: string;
+  baseUrl: string;
+};
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -31,10 +40,13 @@ export function App() {
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
-  const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>>({});
-  const [providerDrafts, setProviderDrafts] = useState<Record<Exclude<ProviderName, "mock">, ProviderConfig>>({
-    openai: { provider: "openai", model: "gpt-4.1-mini" },
-    anthropic: { provider: "anthropic", model: "claude-3-5-sonnet-latest" }
+  const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
+  const [modelConfigDraft, setModelConfigDraft] = useState<ModelConfigDraft>({
+    name: "",
+    provider: "openai",
+    model: "",
+    apiKey: "",
+    baseUrl: ""
   });
   const [error, setError] = useState("");
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
@@ -45,6 +57,7 @@ export function App() {
   useEffect(() => {
     void refreshWorkspaces();
     void refreshAgentProfiles();
+    void refreshModelConfigs();
   }, []);
 
   useEffect(() => {
@@ -52,7 +65,7 @@ export function App() {
     void refreshSnapshot(selectedId);
     void refreshAgents(selectedId);
     void refreshAgentProfiles();
-    void refreshProviderConfig();
+    void refreshModelConfigs();
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
@@ -96,14 +109,11 @@ export function App() {
     }
   }
 
-  async function refreshProviderConfig() {
+  async function refreshModelConfigs() {
     try {
-      const result = await getProviderConfig();
-      setProviderConfigs(result.providers);
-      setProviderDrafts({
-        openai: { provider: "openai", model: result.providers.openai?.model ?? "gpt-4.1-mini", baseUrl: result.providers.openai?.baseUrl },
-        anthropic: { provider: "anthropic", model: result.providers.anthropic?.model ?? "claude-3-5-sonnet-latest", baseUrl: result.providers.anthropic?.baseUrl }
-      });
+      const result = await listModelConfigs();
+      setModelConfigs(result.configs);
+      setError("");
     } catch (err) {
       setError((err as Error).message);
     }
@@ -173,11 +183,43 @@ export function App() {
     }
   }
 
-  async function saveProvider(provider: Exclude<ProviderName, "mock">) {
+  async function addModelConfig() {
     try {
-      const draft = providerDrafts[provider];
-      await saveProviderConfig(provider, draft);
-      await refreshProviderConfig();
+      const result = await createModelConfig({
+        name: modelConfigDraft.name,
+        provider: modelConfigDraft.provider,
+        model: modelConfigDraft.model,
+        apiKey: modelConfigDraft.apiKey,
+        baseUrl: modelConfigDraft.baseUrl
+      });
+      setModelConfigs((current) => [...current, result.config]);
+      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "" });
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function saveModelConfig(config: ModelConfig) {
+    try {
+      const result = await updateModelConfig(config.id, {
+        name: config.name,
+        provider: config.provider,
+        model: config.model,
+        apiKey: config.apiKey === "********" ? undefined : config.apiKey,
+        baseUrl: config.baseUrl
+      });
+      setModelConfigs((current) => current.map((item) => item.id === result.config.id ? result.config : item));
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function makeDefaultModelConfig(configId: string) {
+    try {
+      await setDefaultModelConfig(configId);
+      await refreshModelConfigs();
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -327,24 +369,16 @@ export function App() {
           ) : null}
 
           {view === "providers" ? (
-            <section className="management-panel">
-              <header className="management-header">
-                <h2>模型服务配置</h2>
-                <button type="button" onClick={() => void refreshProviderConfig()}>刷新配置</button>
-              </header>
-              <div className="provider-grid">
-                {(["openai", "anthropic"] as const).map((provider) => (
-                  <ProviderConfigCard
-                    key={provider}
-                    provider={provider}
-                    configured={Boolean(providerConfigs[provider]?.apiKey)}
-                    draft={providerDrafts[provider]}
-                    onChange={(next) => setProviderDrafts((current) => ({ ...current, [provider]: next }))}
-                    onSave={() => void saveProvider(provider)}
-                  />
-                ))}
-              </div>
-            </section>
+            <ModelConfigLibrary
+              configs={modelConfigs}
+              draft={modelConfigDraft}
+              onDraftChange={setModelConfigDraft}
+              onAdd={() => void addModelConfig()}
+              onRefresh={() => void refreshModelConfigs()}
+              onChange={(next) => setModelConfigs((current) => current.map((item) => item.id === next.id ? next : item))}
+              onSave={(config) => void saveModelConfig(config)}
+              onSetDefault={(configId) => void makeDefaultModelConfig(configId)}
+            />
           ) : null}
         </section>
       </section>
@@ -619,32 +653,115 @@ function AgentDetailPanel(props: {
   );
 }
 
-function ProviderConfigCard(props: {
-  provider: Exclude<ProviderName, "mock">;
-  configured: boolean;
-  draft: ProviderConfig;
-  onChange: (config: ProviderConfig) => void;
-  onSave: () => void;
+function ModelConfigLibrary(props: {
+  configs: ModelConfig[];
+  draft: ModelConfigDraft;
+  onDraftChange: (draft: ModelConfigDraft) => void;
+  onAdd: () => void;
+  onRefresh: () => void;
+  onChange: (config: ModelConfig) => void;
+  onSave: (config: ModelConfig) => void;
+  onSetDefault: (configId: string) => void;
+}) {
+  return (
+    <section className="management-panel model-config-library">
+      <header className="management-header">
+        <div>
+          <h2>模型配置库</h2>
+          <p>添加多个模型服务配置，给每个配置命名，并指定团队默认模型。默认配置会作为未特别指定时的优先选择。</p>
+        </div>
+        <button type="button" onClick={props.onRefresh}>刷新配置</button>
+      </header>
+
+      <section className="config-card model-create-card">
+        <header>
+          <strong>添加模型配置</strong>
+          <span>新增 OpenAI 或 Anthropic 配置</span>
+        </header>
+        <div className="runtime-fields">
+          <label>
+            <span>配置名称</span>
+            <input value={props.draft.name} onChange={(event) => props.onDraftChange({ ...props.draft, name: event.target.value })} placeholder="例如：OpenAI 主账号" />
+          </label>
+          <label>
+            <span>服务商</span>
+            <select value={props.draft.provider} onChange={(event) => props.onDraftChange({ ...props.draft, provider: event.target.value as RealProviderName })}>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </label>
+          <label>
+            <span>模型</span>
+            <input value={props.draft.model} onChange={(event) => props.onDraftChange({ ...props.draft, model: event.target.value })} placeholder="例如：gpt-4.1" />
+          </label>
+        </div>
+        <div className="runtime-fields">
+          <label>
+            <span>接口密钥</span>
+            <input type="password" value={props.draft.apiKey} onChange={(event) => props.onDraftChange({ ...props.draft, apiKey: event.target.value })} placeholder="保存后只显示已配置" />
+          </label>
+          <label>
+            <span>服务地址</span>
+            <input value={props.draft.baseUrl} onChange={(event) => props.onDraftChange({ ...props.draft, baseUrl: event.target.value })} placeholder="可选，自定义网关地址" />
+          </label>
+        </div>
+        <button type="button" onClick={props.onAdd}>添加配置</button>
+      </section>
+
+      <div className="provider-grid">
+        {props.configs.map((config) => (
+          <ModelConfigCard
+            key={config.id}
+            config={config}
+            onChange={props.onChange}
+            onSave={props.onSave}
+            onSetDefault={props.onSetDefault}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ModelConfigCard(props: {
+  config: ModelConfig;
+  onChange: (config: ModelConfig) => void;
+  onSave: (config: ModelConfig) => void;
+  onSetDefault: (configId: string) => void;
 }) {
   return (
     <article className="config-card">
       <header>
-        <strong>{props.provider}</strong>
-        <span>{props.configured ? "已配置密钥" : "未配置密钥"}</span>
+        <strong>{props.config.name}</strong>
+        <span>{props.config.isDefault ? "默认配置" : "可选配置"}</span>
       </header>
       <label>
-        <span>默认模型</span>
-        <input value={props.draft.model} onChange={(event) => props.onChange({ ...props.draft, model: event.target.value })} />
+        <span>配置名称</span>
+        <input value={props.config.name} onChange={(event) => props.onChange({ ...props.config, name: event.target.value })} />
+      </label>
+      <label>
+        <span>服务商</span>
+        <select value={props.config.provider} onChange={(event) => props.onChange({ ...props.config, provider: event.target.value as RealProviderName })}>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </label>
+      <label>
+        <span>模型</span>
+        <input value={props.config.model} onChange={(event) => props.onChange({ ...props.config, model: event.target.value })} />
       </label>
       <label>
         <span>接口密钥</span>
-        <input type="password" placeholder={props.configured ? "保留现有密钥" : "输入接口密钥"} onChange={(event) => props.onChange({ ...props.draft, apiKey: event.target.value })} />
+        <input type="password" placeholder={props.config.apiKey ? "保留现有密钥" : "输入接口密钥"} onChange={(event) => props.onChange({ ...props.config, apiKey: event.target.value })} />
       </label>
       <label>
         <span>服务地址</span>
-        <input value={props.draft.baseUrl ?? ""} onChange={(event) => props.onChange({ ...props.draft, baseUrl: event.target.value })} />
+        <input value={props.config.baseUrl ?? ""} onChange={(event) => props.onChange({ ...props.config, baseUrl: event.target.value })} />
       </label>
-      <button type="button" onClick={props.onSave}>保存模型服务</button>
+      <div className="button-row">
+        <button type="button" onClick={() => props.onSave(props.config)}>保存配置</button>
+        <button type="button" disabled={props.config.isDefault} onClick={() => props.onSetDefault(props.config.id)}>设为默认</button>
+      </div>
     </article>
   );
 }

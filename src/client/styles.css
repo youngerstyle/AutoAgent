@@ -371,6 +371,13 @@ button:disabled {
   gap: 12px;
 }
 
+.model-config-library {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  padding-top: 22px;
+}
+
 .agent-studio-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -617,6 +624,10 @@ button:disabled {
   padding: 14px;
 }
 
+.model-create-card {
+  background: #f8fbfc;
+}
+
 .config-card header {
   display: flex;
   align-items: baseline;
@@ -637,6 +648,12 @@ button:disabled {
   min-height: 38px;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .policy-grid {
