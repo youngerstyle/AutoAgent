@@ -359,11 +359,235 @@ button:disabled {
   font-size: 18px;
 }
 
-.agent-config-grid,
+.management-header p {
+  margin: 4px 0 0;
+  color: #657384;
+  max-width: 720px;
+}
+
 .provider-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
+}
+
+.agent-studio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.agent-profile-card,
+.team-member {
+  text-align: left;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid #d7dde5;
+  background: #ffffff;
+}
+
+.agent-profile-card {
+  min-height: 232px;
+  padding: 16px;
+}
+
+.agent-profile-card.selected,
+.team-member.selected {
+  border-color: #248a8a;
+  background: #f2fbfb;
+}
+
+.agent-profile-card strong,
+.team-member strong {
+  font-size: 17px;
+}
+
+.agent-profile-card small,
+.team-member small,
+.agent-hero small {
+  color: #657384;
+}
+
+.agent-profile-card p {
+  margin: 0;
+  color: #344456;
+  line-height: 1.5;
+}
+
+.profile-avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: #203040;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.profile-avatar.large {
+  width: 54px;
+  height: 54px;
+  font-size: 20px;
+}
+
+.profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.profile-meta span,
+.tool-pill {
+  border: 1px solid #d7dde5;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: #435160;
+  background: #f8fafb;
+  font-size: 12px;
+}
+
+.team-layout {
+  height: calc(100% - 56px);
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 360px) minmax(420px, 1fr);
+  gap: 14px;
+}
+
+.team-roster {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.team-member {
+  min-height: 108px;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "avatar title status"
+    "avatar subtitle subtitle";
+  padding: 14px;
+}
+
+.team-member .profile-avatar {
+  grid-area: avatar;
+}
+
+.team-member strong {
+  grid-area: title;
+}
+
+.team-member small {
+  grid-area: subtitle;
+}
+
+.team-member em {
+  grid-area: status;
+  align-self: start;
+  font-style: normal;
+  color: #0b6666;
+}
+
+.agent-detail-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border: 1px solid #d7dde5;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 16px;
+}
+
+.agent-detail-panel.empty-state {
+  color: #657384;
+}
+
+.agent-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e1e6ec;
+}
+
+.agent-hero h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.agent-hero p {
+  margin: 3px 0;
+  color: #344456;
+}
+
+.agent-section {
+  display: grid;
+  gap: 8px;
+  padding: 2px 0 10px;
+  border-bottom: 1px solid #eef2f5;
+}
+
+.agent-section h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #111b26;
+}
+
+.agent-section p {
+  margin: 0;
+  color: #344456;
+  line-height: 1.5;
+}
+
+.agent-section code {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid #d7dde5;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #344456;
+  background: #f8fafb;
+}
+
+.loop-list {
+  margin: 0;
+  padding-left: 22px;
+  color: #344456;
+}
+
+.loop-list li + li {
+  margin-top: 5px;
+}
+
+.tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tool-pill.enabled {
+  border-color: #86c9b1;
+  background: #effaf5;
+  color: #126242;
+}
+
+.runtime-config {
+  border-bottom: 0;
+}
+
+.runtime-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .config-card {
@@ -421,7 +645,8 @@ button:disabled {
 
 @media (max-width: 1120px) {
   .workspace-shell,
-  .console-region {
+  .console-region,
+  .team-layout {
     grid-template-columns: 1fr;
   }
 

@@ -66,9 +66,11 @@ $env:ANTHROPIC_API_KEY="..."
 - `GET /api/providers/config`：返回脱敏后的模型服务配置。
 - `PATCH /api/providers/:provider`：保存 `openai` 或 `anthropic` 配置。
 
-## 团队运行配置
+## Agent 中心和项目团队
 
-使用“团队配置”页查看和编辑当前项目里的团队成员运行设置。每个项目会初始化老板、产品/项目、架构师、开发和测试。运行时发现能力缺口后，可以招募专家。
+使用“Agent 中心”查看可复用 Agent 档案，包括身份、Soul、Loop、工具、模型和记忆边界。使用“项目团队”查看当前项目里的 Agent 实例。每个项目会初始化老板、产品/项目、架构师、开发和测试。运行时发现能力缺口后，可以招募专家。
+
+项目团队页不是一组裸模型表单。它的主视图是团队成员和 Agent 详情；模型服务、模型名和权限只作为“项目级覆盖”出现在详情里的“模型与项目权限”区域。
 
 每个项目成员都有独立状态，保存在 `<workspace>/.autoagent/agents/<workspaceAgentId>/agent.json`：
 
@@ -76,7 +78,7 @@ $env:ANTHROPIC_API_KEY="..."
 - `model`：该成员运行时使用的模型。
 - `policyOverride`：读项目、写项目、执行命令、访问本机等权限覆盖。
 
-团队配置 API：
+项目团队 API：
 
 - `GET /api/workspaces/:workspaceId/agents`：初始化并列出项目团队。
 - `PATCH /api/workspaces/:workspaceId/agents/:agentId`：更新模型服务、模型名和权限覆盖。

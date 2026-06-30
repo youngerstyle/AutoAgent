@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentNodes, taskControlMode } from "../../src/client/view-model";
+import { buildAgentNodes, buildAgentProfiles, taskControlMode } from "../../src/client/view-model";
 import type { WorkspaceSnapshot } from "../../src/shared/types";
 
 describe("client view model", () => {
@@ -15,6 +15,18 @@ describe("client view model", () => {
     expect(taskControlMode(undefined)).toBe("empty");
     expect(taskControlMode(snapshot("paused"))).toBe("paused");
     expect(taskControlMode(snapshot("completed"))).toBe("terminal");
+  });
+
+  it("projects agents as platform profiles with identity, soul, loop, tools, model, and memory", () => {
+    const profiles = buildAgentProfiles(snapshot("running"));
+    const dev = profiles.find((profile) => profile.role === "dev");
+
+    expect(dev?.identity.title).toBe("开发");
+    expect(dev?.soul).toContain("交付");
+    expect(dev?.loopSteps).toEqual(expect.arrayContaining(["理解任务", "修改项目", "本地验证", "交付说明"]));
+    expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["文件", "命令", "浏览器/MCP"]));
+    expect(dev?.model.providerLabel).toBe("模拟服务");
+    expect(dev?.memory.sessionLabel).toBe("项目会话隔离");
   });
 });
 

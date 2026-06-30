@@ -15,7 +15,7 @@ import {
   updateAgent,
   type WorkspaceAgentConfig
 } from "./api";
-import { buildAgentNodes, taskControlMode } from "./view-model";
+import { buildAgentNodes, buildAgentProfiles, taskControlMode, type AgentProfileView } from "./view-model";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -25,7 +25,7 @@ export function App() {
   const [goal, setGoal] = useState("");
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
-  const [view, setView] = useState<"run" | "agents" | "providers">("run");
+  const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [providerConfigs, setProviderConfigs] = useState<Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>>>({});
   const [providerDrafts, setProviderDrafts] = useState<Record<Exclude<ProviderName, "mock">, ProviderConfig>>({
@@ -34,6 +34,7 @@ export function App() {
   });
   const [error, setError] = useState("");
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
+  const profiles = useMemo(() => buildAgentProfiles(snapshot), [snapshot]);
   const mode = taskControlMode(snapshot);
 
   useEffect(() => {
@@ -167,6 +168,8 @@ export function App() {
   }
 
   const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId) ?? snapshot?.agents[0];
+  const selectedProfile = profiles.find((profile) => profile.id === selectedAgentId) ?? profiles[0];
+  const selectedDraft = selectedProfile ? agents.find((agent) => agent.id === selectedProfile.id) : undefined;
 
   return (
     <main className="app-shell">
@@ -177,7 +180,8 @@ export function App() {
         </div>
         <nav className="topnav">
           <button className={view === "run" ? "selected" : ""} onClick={() => setView("run")}>运行台</button>
-          <button className={view === "agents" ? "selected" : ""} onClick={() => setView("agents")}>团队配置</button>
+          <button className={view === "studio" ? "selected" : ""} onClick={() => setView("studio")}>Agent 中心</button>
+          <button className={view === "team" ? "selected" : ""} onClick={() => setView("team")}>项目团队</button>
           <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
         </nav>
         <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{statusLabel(snapshot?.status ?? "idle")}</strong>
@@ -260,23 +264,25 @@ export function App() {
             </aside>
           </> : null}
 
-          {view === "agents" ? (
-            <section className="management-panel">
-              <header className="management-header">
-                <h2>团队运行配置</h2>
-                <button type="button" onClick={() => void refreshAgents()}>刷新团队</button>
-              </header>
-              <div className="agent-config-grid">
-                {agents.map((agent, index) => (
-                  <AgentConfigCard
-                    key={agent.id}
-                    agent={agent}
-                    onChange={(next) => setAgents((current) => current.map((item, itemIndex) => itemIndex === index ? next : item))}
-                    onSave={() => void saveAgent(agent)}
-                  />
-                ))}
-              </div>
-            </section>
+          {view === "studio" ? (
+            <AgentHub
+              profiles={profiles}
+              selectedId={selectedProfile?.id}
+              onSelect={setSelectedAgentId}
+            />
+          ) : null}
+
+          {view === "team" ? (
+            <ProjectTeam
+              profiles={profiles}
+              selectedId={selectedProfile?.id}
+              selectedProfile={selectedProfile}
+              selectedDraft={selectedDraft}
+              onSelect={setSelectedAgentId}
+              onRefresh={() => void refreshAgents()}
+              onDraftChange={(next) => setAgents((current) => current.map((item) => item.id === next.id ? next : item))}
+              onSave={(agent) => void saveAgent(agent)}
+            />
           ) : null}
 
           {view === "providers" ? (
@@ -305,40 +311,176 @@ export function App() {
   );
 }
 
-function AgentConfigCard(props: {
-  agent: WorkspaceAgentConfig;
-  onChange: (agent: WorkspaceAgentConfig) => void;
-  onSave: () => void;
+function AgentHub(props: {
+  profiles: AgentProfileView[];
+  selectedId?: string;
+  onSelect: (id: string) => void;
 }) {
-  const agent = props.agent;
-  const policy = normalizePolicy(agent.policyOverride);
   return (
-    <article className="config-card">
-      <header>
-        <strong>{agent.name ?? roleLabel(agent.roleInWorkspace)}</strong>
-        <span>{roleLabel(agent.roleInWorkspace)}</span>
+    <section className="management-panel agent-studio">
+      <header className="management-header">
+        <div>
+          <h2>Agent 中心</h2>
+          <p>可复用 Agent 档案。这里看身份、Soul、Loop、工具和记忆边界。</p>
+        </div>
       </header>
-      <label>
-        <span>模型服务</span>
-        <select value={agent.provider ?? "mock"} onChange={(event) => props.onChange({ ...agent, provider: event.target.value as ProviderName })}>
-          <option value="mock">模拟服务</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
-        </select>
-      </label>
-      <label>
-        <span>模型</span>
-        <input value={agent.model ?? ""} onChange={(event) => props.onChange({ ...agent, model: event.target.value })} />
-      </label>
-      <div className="policy-grid">
-        <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canReadWorkspace: checked } })} />
-        <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
-        <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canExecuteCommands: checked } })} />
-        <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, allowHostAccess: checked } })} />
+      <div className="agent-studio-grid">
+        {props.profiles.map((profile) => (
+          <button
+            key={profile.id}
+            type="button"
+            className={profile.id === props.selectedId ? "agent-profile-card selected" : "agent-profile-card"}
+            onClick={() => props.onSelect(profile.id)}
+          >
+            <span className="profile-avatar">{profile.identity.avatar}</span>
+            <strong>{profile.identity.title}</strong>
+            <small>{profile.identity.subtitle}</small>
+            <p>{profile.soul}</p>
+            <div className="profile-meta">
+              <span>{profile.model.providerLabel}</span>
+              <span>{profile.memory.sessionLabel}</span>
+            </div>
+          </button>
+        ))}
       </div>
-      <p>{capabilityLabels(agent.roleInWorkspace, agent.capabilities).join("、")}</p>
-      <button type="button" onClick={props.onSave}>保存团队配置</button>
-    </article>
+    </section>
+  );
+}
+
+function ProjectTeam(props: {
+  profiles: AgentProfileView[];
+  selectedId?: string;
+  selectedProfile?: AgentProfileView;
+  selectedDraft?: WorkspaceAgentConfig;
+  onSelect: (id: string) => void;
+  onRefresh: () => void;
+  onDraftChange: (agent: WorkspaceAgentConfig) => void;
+  onSave: (agent: WorkspaceAgentConfig) => void;
+}) {
+  return (
+    <section className="management-panel team-workbench">
+      <header className="management-header">
+        <div>
+          <h2>项目团队</h2>
+          <p>项目里的 Agent 实例。全局档案不在这里被改写，项目只覆盖模型和权限。</p>
+        </div>
+        <button type="button" onClick={props.onRefresh}>刷新团队</button>
+      </header>
+      <div className="team-layout">
+        <section className="team-roster">
+          {props.profiles.map((profile) => (
+            <button
+              key={profile.id}
+              type="button"
+              className={profile.id === props.selectedId ? "team-member selected" : "team-member"}
+              onClick={() => props.onSelect(profile.id)}
+            >
+              <span className="profile-avatar">{profile.identity.avatar}</span>
+              <strong>{profile.identity.title}</strong>
+              <small>{profile.identity.subtitle}</small>
+              <em>{profile.statusLabel}</em>
+            </button>
+          ))}
+        </section>
+        <AgentDetailPanel
+          profile={props.selectedProfile}
+          draft={props.selectedDraft}
+          onDraftChange={props.onDraftChange}
+          onSave={props.onSave}
+        />
+      </div>
+    </section>
+  );
+}
+
+function AgentDetailPanel(props: {
+  profile?: AgentProfileView;
+  draft?: WorkspaceAgentConfig;
+  onDraftChange: (agent: WorkspaceAgentConfig) => void;
+  onSave: (agent: WorkspaceAgentConfig) => void;
+}) {
+  if (!props.profile) {
+    return <aside className="agent-detail-panel empty-state">创建或选择项目后会生成项目团队。</aside>;
+  }
+
+  const draft = props.draft;
+  const policy = normalizePolicy(draft?.policyOverride ?? props.profile.policy);
+  return (
+    <aside className="agent-detail-panel">
+      <header className="agent-hero">
+        <span className="profile-avatar large">{props.profile.identity.avatar}</span>
+        <div>
+          <h3>{props.profile.identity.title}</h3>
+          <p>{props.profile.identity.subtitle}</p>
+          <small>{props.profile.identity.scope}</small>
+        </div>
+      </header>
+
+      <section className="agent-section">
+        <h4>Identity</h4>
+        <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle} Agent。</p>
+      </section>
+
+      <section className="agent-section">
+        <h4>Soul</h4>
+        <p>{props.profile.soul}</p>
+      </section>
+
+      <section className="agent-section">
+        <h4>Loop</h4>
+        <ol className="loop-list">
+          {props.profile.loopSteps.map((step) => <li key={step}>{step}</li>)}
+        </ol>
+      </section>
+
+      <section className="agent-section">
+        <h4>Tools</h4>
+        <div className="tool-list">
+          {props.profile.toolGroups.map((tool) => (
+            <span key={tool.label} className={tool.enabled ? "tool-pill enabled" : "tool-pill"}>
+              {tool.label}：{tool.description}
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="agent-section">
+        <h4>Memory</h4>
+        <p>{props.profile.memory.sessionLabel}，{props.profile.memory.workspaceLabel}</p>
+        <code>{props.profile.memory.statePath}</code>
+      </section>
+
+      <section className="agent-section runtime-config">
+        <h4>模型与项目权限</h4>
+        {draft ? (
+          <>
+            <div className="runtime-fields">
+              <label>
+                <span>模型服务</span>
+                <select value={draft.provider ?? "mock"} onChange={(event) => props.onDraftChange({ ...draft, provider: event.target.value as ProviderName })}>
+                  <option value="mock">模拟服务</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </label>
+              <label>
+                <span>模型</span>
+                <input value={draft.model ?? ""} onChange={(event) => props.onDraftChange({ ...draft, model: event.target.value })} />
+              </label>
+            </div>
+            <div className="policy-grid">
+              <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canReadWorkspace: checked } })} />
+              <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
+              <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canExecuteCommands: checked } })} />
+              <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, allowHostAccess: checked } })} />
+            </div>
+            <button type="button" onClick={() => props.onSave(draft)}>保存项目覆盖</button>
+          </>
+        ) : (
+          <p>团队配置加载后可编辑项目级覆盖。</p>
+        )}
+      </section>
+    </aside>
   );
 }
 
