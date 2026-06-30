@@ -1,22 +1,25 @@
 import { Router } from "express";
 import type { AgentPolicy, ProviderName } from "../../shared/types.js";
+import { AgentProfileStore } from "../agents/profile-store.js";
 import { asyncHandler, HttpError } from "../errors.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileMetadata, updateWorkspaceAgent } from "../agents/roster.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 
-export function createAgentRouter(workspaceStore: WorkspaceStore) {
+export function createAgentRouter(workspaceStore: WorkspaceStore, profileStore?: AgentProfileStore) {
   const router = Router({ mergeParams: true });
 
   router.get("/", asyncHandler(async (req, res) => {
     const workspace = await workspaceStore.get(String((req.params as { workspaceId: string }).workspaceId));
-    await ensureCoreTeam(workspace);
+    const profiles = profileStore ? await profileStore.list() : undefined;
+    await ensureCoreTeam(workspace, profiles);
     const agents = await listWorkspaceAgents(workspace);
-    res.json({ agents: agents.map((agent) => ({ ...agent, ...profileMetadata(agent) })) });
+    res.json({ agents: agents.map((agent) => ({ ...agent, ...profileMetadata(agent, profiles) })) });
   }));
 
   router.patch("/:agentId", asyncHandler(async (req, res) => {
     const workspace = await workspaceStore.get(String((req.params as { workspaceId: string }).workspaceId));
-    await ensureCoreTeam(workspace);
+    const profiles = profileStore ? await profileStore.list() : undefined;
+    await ensureCoreTeam(workspace, profiles);
     const provider = req.body.provider === undefined ? undefined : assertProvider(String(req.body.provider));
     const policyOverride = req.body.policyOverride === undefined ? undefined : sanitizePolicy(req.body.policyOverride as Record<string, unknown>);
     const agent = await updateWorkspaceAgent(workspace, String(req.params.agentId), {
@@ -24,7 +27,7 @@ export function createAgentRouter(workspaceStore: WorkspaceStore) {
       model: req.body.model === undefined ? undefined : String(req.body.model),
       policyOverride
     });
-    res.json({ agent: { ...agent, ...profileMetadata(agent) } });
+    res.json({ agent: { ...agent, ...profileMetadata(agent, profiles) } });
   }));
 
   return router;

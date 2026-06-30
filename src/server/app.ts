@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorMiddleware } from "./errors.js";
 import { loadConfig } from "./config.js";
+import { AgentProfileStore } from "./agents/profile-store.js";
 import { MissionControl } from "./mission/mission-control.js";
 import { ProviderRegistry } from "./providers/provider-registry.js";
 import { createAgentProfileRouter } from "./routes/agent-profiles.js";
@@ -19,22 +20,23 @@ export function createApp() {
   const app = express();
   const config = loadConfig();
   const workspaceStore = new WorkspaceStore(config.autoAgentHome);
+  const profileStore = new AgentProfileStore(config.autoAgentHome);
   const ledger = new EventLedger();
   const providerRegistry = new ProviderRegistry({
     homeDir: config.autoAgentHome,
     retryCount: config.providerRetryCount,
     env: process.env
   });
-  const mission = new MissionControl(workspaceStore, ledger, providerRegistry);
+  const mission = new MissionControl(workspaceStore, ledger, providerRegistry, profileStore);
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, name: "AutoAgent" });
   });
-  app.use("/api/agent-profiles", createAgentProfileRouter());
+  app.use("/api/agent-profiles", createAgentProfileRouter(profileStore));
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(workspaceStore));
-  app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore));
+  app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));
 

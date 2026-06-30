@@ -52,4 +52,27 @@ describe("agents route", () => {
     expect(raw.provider).toBe("openai");
     expect(raw.policyOverride.canExecuteCommands).toBe(false);
   });
+
+  it("seeds workspace agents from editable global agent profile defaults", async () => {
+    const app = createApp();
+    const profiles = await request(app).get("/api/agent-profiles").expect(200);
+    for (const profile of profiles.body.profiles) {
+      await request(app)
+        .patch(`/api/agent-profiles/${profile.id}`)
+        .send({ defaultProvider: "openai", defaultModel: "gpt-default" })
+        .expect(200);
+    }
+
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "autoagent-agents-profile-ws-"));
+    const created = await request(app)
+      .post("/api/workspaces")
+      .send({ name: "Profile defaults", rootPath, policyProfile: "development" })
+      .expect(201);
+    const workspaceId = created.body.workspace.id as string;
+
+    const listed = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
+
+    expect(listed.body.agents).toHaveLength(5);
+    expect(listed.body.agents.every((agent: { provider: string; model: string }) => agent.provider === "openai" && agent.model === "gpt-default")).toBe(true);
+  });
 });

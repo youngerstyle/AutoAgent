@@ -6,6 +6,7 @@ import { MissionControl } from "../../src/server/mission/mission-control";
 import { EventLedger } from "../../src/server/storage/event-ledger";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry";
+import { AgentProfileStore } from "../../src/server/agents/profile-store";
 import type { ProviderRunner } from "../../src/server/agents/agent-runtime";
 import type { AgentTurnInput, AgentTurnResult } from "../../src/server/providers/types";
 
@@ -70,7 +71,10 @@ describe("MissionControl", () => {
   });
 
   it("recruits a specialist when the architect reports a capability gap", async () => {
-    const fixture = await missionFixture();
+    const fixture = await missionFixture(new NeedsSpecialistProvider());
+    for (const profile of await fixture.profileStore.list()) {
+      await fixture.profileStore.update(profile.id, { defaultProvider: "openai", defaultModel: "gpt-default" });
+    }
 
     const snapshot = await fixture.mission.startTask(
       { workspaceId: fixture.workspace.id, goal: "Build auth security checks" },
@@ -79,6 +83,9 @@ describe("MissionControl", () => {
 
     expect(snapshot.status).toBe("completed");
     expect(snapshot.agents.some((agent) => agent.roleInWorkspace === "specialist")).toBe(true);
+    const specialist = snapshot.agents.find((agent) => agent.roleInWorkspace === "specialist");
+    expect(specialist?.provider).toBe("openai");
+    expect(specialist?.model).toBe("gpt-default");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["recruitment.requested", "recruitment.approved"]));
     expect(events.find((event) => event.type === "recruitment.requested")?.summary).toBe("老板发起专家招聘：安全/认证");
@@ -106,9 +113,10 @@ async function missionFixture(providerOverride?: ProviderRunner) {
   const store = new WorkspaceStore(home);
   const workspace = await store.create({ name: "Mission", rootPath: root, policyProfile: "development" });
   const ledger = new EventLedger();
+  const profileStore = new AgentProfileStore(home);
   const provider = new ProviderRegistry({ homeDir: home, env: { NODE_ENV: "test" }, retryCount: 0 });
-  const mission = new MissionControl(store, ledger, providerOverride ?? provider);
-  return { home, root, store, workspace, ledger, mission };
+  const mission = new MissionControl(store, ledger, providerOverride ?? provider, profileStore);
+  return { home, root, store, workspace, ledger, mission, profileStore };
 }
 
 class QaFailsOnceProvider implements ProviderRunner {
@@ -121,6 +129,13 @@ class QaFailsOnceProvider implements ProviderRunner {
       return result({ passed, report: passed ? "Pass" : "Needs changes" });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    return result({ ok: true });
+  }
+}
+
+class NeedsSpecialistProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: true, capabilityGap: "安全/认证" });
     return result({ ok: true });
   }
 }

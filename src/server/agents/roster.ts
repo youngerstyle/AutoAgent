@@ -63,9 +63,9 @@ const ROLE_ORDER: Record<AgentRole, number> = {
   specialist: 5
 };
 
-export async function ensureCoreTeam(workspace: Workspace): Promise<WorkspaceAgent[]> {
+export async function ensureCoreTeam(workspace: Workspace, profiles = CORE_AGENT_PROFILES): Promise<WorkspaceAgent[]> {
   const agents: WorkspaceAgent[] = [];
-  for (const profile of CORE_AGENT_PROFILES) {
+  for (const profile of profiles.filter((profile) => profile.role !== "specialist")) {
     agents.push(await ensureWorkspaceAgent(workspace, profile, `wa_${profile.role}`));
   }
   return agents;
@@ -93,8 +93,8 @@ export async function listWorkspaceAgents(workspace: Workspace): Promise<Workspa
   }
 }
 
-export function profileForRole(role: AgentRole): AgentProfile {
-  const profile = CORE_AGENT_PROFILES.find((item) => item.role === role);
+export function profileForRole(role: AgentRole, profiles = CORE_AGENT_PROFILES): AgentProfile {
+  const profile = profiles.find((item) => item.role === role);
   if (profile) return profile;
   return {
     id: "prof_specialist",
@@ -127,8 +127,8 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
   return agent;
 }
 
-export function profileMetadata(agent: WorkspaceAgent): Pick<AgentProfile, "name" | "role" | "capabilities"> {
-  const profile = profileForRole(agent.roleInWorkspace);
+export function profileMetadata(agent: WorkspaceAgent, profiles = CORE_AGENT_PROFILES): Pick<AgentProfile, "name" | "role" | "capabilities"> {
+  const profile = profileForRole(agent.roleInWorkspace, profiles);
   return { name: profile.name, role: profile.role, capabilities: profile.capabilities };
 }
 

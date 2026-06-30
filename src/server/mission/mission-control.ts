@@ -4,6 +4,7 @@ import type { Assignment, AutoAgentEvent, MissionPhase, Task, TaskRun, Workspace
 import { createId } from "../../shared/ids.js";
 import { phaseLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
+import { AgentProfileStore } from "../agents/profile-store.js";
 import { recruitSpecialist } from "../agents/recruitment.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileMetadata } from "../agents/roster.js";
 import { HttpError } from "../errors.js";
@@ -38,7 +39,8 @@ export class MissionControl {
   constructor(
     private readonly workspaceStore: WorkspaceStore,
     private readonly ledger: EventLedger,
-    providerRunner: ProviderRunner
+    providerRunner: ProviderRunner,
+    private readonly profileStore?: AgentProfileStore
   ) {
     this.runtime = new AgentRuntime(ledger, providerRunner);
   }
@@ -80,9 +82,10 @@ export class MissionControl {
     await this.writeState(workspace, state);
     await this.append(workspace, state, "task.created", "Task run created", { task, taskRun });
 
-    for (const agent of await ensureCoreTeam(workspace)) {
-      await this.append(workspace, state, "agent.joined_workspace", `${profileMetadata(agent).name} joined workspace`, {
-        agent: { ...agent, ...profileMetadata(agent) }
+    const profiles = await this.agentProfiles();
+    for (const agent of await ensureCoreTeam(workspace, profiles)) {
+      await this.append(workspace, state, "agent.joined_workspace", `${profileMetadata(agent, profiles).name} joined workspace`, {
+        agent: { ...agent, ...profileMetadata(agent, profiles) }
       });
     }
 
@@ -148,10 +151,11 @@ export class MissionControl {
     const workspace = await this.workspaceStore.get(workspaceId);
     const state = (await this.findActiveState(workspace)) ?? (await this.findLatestState(workspace));
     if (!state) {
+      const profiles = await this.agentProfiles();
       const agents = await listWorkspaceAgents(workspace);
       return {
         workspace,
-        agents: agents.map((agent) => ({ ...agent, ...profileMetadata(agent) })),
+        agents: agents.map((agent) => ({ ...agent, ...profileMetadata(agent, profiles) })),
         assignments: [],
         recentEvents: [],
         phase: "idle",
@@ -222,7 +226,17 @@ export class MissionControl {
 
     if (phase === "architect_plan" && result.providerResult.structured?.needsSpecialist) {
       const gap = String(result.providerResult.structured.capabilityGap ?? "通用专项能力");
-      const specialist = await recruitSpecialist({ workspace, taskId: state.task.id, taskRunId: state.taskRun.id, capabilityGap: gap, ledger: this.ledger });
+      const profiles = await this.agentProfiles();
+      const defaultProfile = profiles?.[0];
+      const specialist = await recruitSpecialist({
+        workspace,
+        taskId: state.task.id,
+        taskRunId: state.taskRun.id,
+        capabilityGap: gap,
+        ledger: this.ledger,
+        defaultProvider: defaultProfile?.defaultProvider,
+        defaultModel: defaultProfile?.defaultModel
+      });
       await this.runtime.runAssignment({
         workspace,
         agent: specialist,
@@ -278,7 +292,8 @@ export class MissionControl {
           : phase === "qa"
             ? "qa"
             : "dev";
-    const agents = await ensureCoreTeam(workspace);
+    const profiles = await this.agentProfiles();
+    const agents = await ensureCoreTeam(workspace, profiles);
     const agent = agents.find((item) => item.roleInWorkspace === role);
     if (!agent) throw new HttpError(500, `Missing ${role} agent`, "MISSING_AGENT");
     return agent;
@@ -288,6 +303,10 @@ export class MissionControl {
     setImmediate(() => {
       void this.runUntilIdle(workspace, taskId, taskRunId).catch(() => undefined);
     });
+  }
+
+  private async agentProfiles() {
+    return this.profileStore ? this.profileStore.list() : undefined;
   }
 
   private async findActiveState(workspace: Workspace): Promise<MissionState | undefined> {

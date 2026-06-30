@@ -1,4 +1,4 @@
-import type { Workspace, WorkspaceAgent } from "../../shared/types.js";
+import type { ProviderName, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import type { EventLedger } from "../storage/event-ledger.js";
 import { ensureWorkspaceAgent, listWorkspaceAgents, profileMetadata } from "./roster.js";
@@ -9,6 +9,8 @@ export async function recruitSpecialist(input: {
   taskRunId: string;
   capabilityGap: string;
   ledger: EventLedger;
+  defaultProvider?: ProviderName;
+  defaultModel?: string;
 }): Promise<WorkspaceAgent> {
   const existing = (await listWorkspaceAgents(input.workspace)).find(
     (agent) => agent.roleInWorkspace === "specialist" && agent.profileId.toLowerCase().includes(slug(input.capabilityGap))
@@ -32,8 +34,8 @@ export async function recruitSpecialist(input: {
       name: `${input.capabilityGap}专家`,
       role: "specialist",
       capabilities: [input.capabilityGap],
-      defaultProvider: "mock",
-      defaultModel: "mock-specialist",
+      defaultProvider: input.defaultProvider ?? "mock",
+      defaultModel: input.defaultModel ?? "mock-specialist",
       defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
     },
     createId("wa")
