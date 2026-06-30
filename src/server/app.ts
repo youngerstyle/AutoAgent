@@ -2,6 +2,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorMiddleware } from "./errors.js";
+import { createProviderRouter } from "./routes/providers.js";
 import { createWorkspaceRouter } from "./routes/workspaces.js";
 
 export function createApp() {
@@ -11,6 +12,7 @@ export function createApp() {
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true, name: "AutoAgent" });
   });
+  app.use("/api/providers", createProviderRouter());
   app.use("/api/workspaces", createWorkspaceRouter());
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
