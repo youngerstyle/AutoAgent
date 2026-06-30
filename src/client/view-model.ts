@@ -1,4 +1,5 @@
 import type { WorkspaceSnapshot } from "../shared/types";
+import { displayText, roleLabel } from "../shared/labels";
 
 export interface AgentNodeView {
   id: string;
@@ -31,10 +32,10 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
       return {
         id: agent.id,
-        label: agent.name ?? agent.roleInWorkspace,
+        label: roleLabel(agent.roleInWorkspace),
         role: agent.roleInWorkspace,
         status: agent.status,
-        currentStep: agent.currentStep,
+        currentStep: displayText(agent.currentStep),
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
         active: agent.status === "running" || Boolean(agent.currentStep)

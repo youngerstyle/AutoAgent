@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { roleLabel } from "../../shared/labels.js";
 import type { AgentModelProvider, AgentTurnInput, AgentTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 
@@ -14,7 +15,7 @@ export class OpenAIProvider implements AgentModelProvider {
       const response = await client.chat.completions.create({
         model: input.model,
         messages: [
-          { role: "system", content: `You are the ${input.role} agent. Return concise JSON when possible.` },
+          { role: "system", content: `你是${roleLabel(input.role)} Agent。尽量返回简洁 JSON。` },
           { role: "user", content: input.prompt }
         ]
       });
@@ -44,7 +45,7 @@ function parseJsonObject(text: string): Record<string, unknown> | undefined {
 
 export function normalizeProviderError(error: unknown, code: string): ProviderError {
   const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: number }).status) : undefined;
-  const message = error instanceof Error ? error.message : "Provider request failed";
+  const message = error instanceof Error ? error.message : "模型服务请求失败";
   const retryable = status === 429 || (status !== undefined && status >= 500);
   return new ProviderError(message, retryable, code);
 }

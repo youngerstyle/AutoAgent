@@ -40,6 +40,9 @@ describe("AgentRuntime", () => {
       "tool.completed",
       "assignment.completed"
     ]));
+    expect(events.find((event) => event.type === "assignment.created")?.summary).toBe("已创建开发执行任务");
+    expect(events.find((event) => event.type === "provider.completed")?.summary).toBe("开发的模型调用已完成");
+    expect(events.find((event) => event.type === "assignment.completed")?.summary).toBe("开发已完成开发执行");
     const session = await new SessionStore().read(root, dev.id, "tr_1");
     expect(session.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
   });

@@ -15,6 +15,7 @@ describe("ProviderRegistry", () => {
     expect(result.structured?.next).toBe("pm_plan");
     expect(result.usage?.totalTokens).toBe(50);
     expect(result.events.some((event) => event.type === "usage")).toBe(true);
+    expect(result.events.find((event) => event.type === "status")?.text).toBe("老板开始需求接收");
   });
 
   it("reports missing real provider credentials without leaking secrets", async () => {

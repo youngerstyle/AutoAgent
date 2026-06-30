@@ -1,5 +1,6 @@
 import type { Assignment, AssignmentRun, AutoAgentEvent, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
+import { assignmentLabel, roleLabel } from "../../shared/labels.js";
 import type { AgentTurnInput, AgentTurnResult } from "../providers/types.js";
 import type { EventLedger } from "../storage/event-ledger.js";
 import { SessionStore } from "../storage/session-store.js";
@@ -67,11 +68,13 @@ export class AgentRuntime {
     const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
     const prompt = buildAgentPrompt({ ...input, assignment, session });
 
-    await this.emit(input, "assignment.created", `Created ${input.type} assignment`, { assignment, assignmentRun });
-    await this.emit(input, "assignment.started", `${profile.name} started ${input.type}`, { assignmentId: assignment.id, assignmentRun });
-    await this.emit(input, "agent.status_changed", `${profile.name} is running`, { agentId: input.agent.id, status: "running" });
+    const assignmentName = assignmentLabel(input.type);
+    const roleName = roleLabel(input.agent.roleInWorkspace);
+    await this.emit(input, "assignment.created", `已创建${assignmentName}任务`, { assignment, assignmentRun });
+    await this.emit(input, "assignment.started", `${roleName}开始${assignmentName}`, { assignmentId: assignment.id, assignmentRun });
+    await this.emit(input, "agent.status_changed", `${roleName}正在运行`, { agentId: input.agent.id, status: "running" });
     await this.emit(input, "agent.step_started", `${profile.name}: ${input.brief}`, { agentId: input.agent.id, step: input.brief });
-    await this.emit(input, "provider.started", `${profile.name} requested ${provider}`, { provider, model });
+    await this.emit(input, "provider.started", `${roleName}正在调用模型服务：${provider}`, { provider, model });
 
     try {
       const providerResult = await this.providerRunner.runWithRetry({
@@ -82,7 +85,7 @@ export class AgentRuntime {
         model,
         context: { ...input.context, goal: input.goal }
       });
-      await this.emit(input, "provider.completed", `${profile.name} provider turn completed`, {
+      await this.emit(input, "provider.completed", `${roleName}的模型调用已完成`, {
         provider,
         model,
         usage: providerResult.usage,
@@ -101,22 +104,22 @@ export class AgentRuntime {
       assignment.status = "completed";
       assignmentRun.status = "completed";
       assignmentRun.endedAt = new Date().toISOString();
-      await this.emit(input, "agent.step_completed", `${profile.name} completed ${input.type}`, { agentId: input.agent.id, step: input.brief });
-      await this.emit(input, "assignment.completed", `${profile.name} completed ${input.type}`, {
+      await this.emit(input, "agent.step_completed", `${roleName}已完成${assignmentName}`, { agentId: input.agent.id, step: input.brief });
+      await this.emit(input, "assignment.completed", `${roleName}已完成${assignmentName}`, {
         assignmentId: assignment.id,
         assignmentRun,
         result: providerResult.structured ?? providerResult.text,
         toolResults
       });
-      await this.emit(input, "agent.status_changed", `${profile.name} is waiting`, { agentId: input.agent.id, status: "waiting" });
+      await this.emit(input, "agent.status_changed", `${roleName}正在等待`, { agentId: input.agent.id, status: "waiting" });
       return { assignment, assignmentRun, providerResult, toolResults };
     } catch (error) {
       assignment.status = "failed";
       assignmentRun.status = "failed";
       assignmentRun.endedAt = new Date().toISOString();
-      await this.emit(input, "provider.failed", `${profile.name} provider/tool turn failed`, { error: (error as Error).message });
-      await this.emit(input, "assignment.failed", `${profile.name} failed ${input.type}`, { assignmentId: assignment.id, assignmentRun, error: (error as Error).message });
-      await this.emit(input, "agent.status_changed", `${profile.name} failed`, { agentId: input.agent.id, status: "failed" });
+      await this.emit(input, "provider.failed", `${roleName}的模型或工具调用失败`, { error: (error as Error).message });
+      await this.emit(input, "assignment.failed", `${roleName}执行${assignmentName}失败`, { assignmentId: assignment.id, assignmentRun, error: (error as Error).message });
+      await this.emit(input, "agent.status_changed", `${roleName}执行失败`, { agentId: input.agent.id, status: "failed" });
       throw error;
     }
   }
@@ -148,8 +151,8 @@ export class AgentRuntime {
         const result = await runWorkspaceCommand(context, String(intent.command ?? ""));
         results.push({ tool, command: String(intent.command ?? ""), ...result });
       } else if (tool) {
-        await this.emit(input, "tool.denied", `Unknown tool ${tool}`, { tool, error: "Unknown tool" });
-        results.push({ tool, ok: false, error: "Unknown tool" });
+        await this.emit(input, "tool.denied", `未知工具：${tool}`, { tool, error: "未知工具" });
+        results.push({ tool, ok: false, error: "未知工具" });
       }
     }
     return results;

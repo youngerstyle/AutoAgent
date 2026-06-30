@@ -23,6 +23,7 @@ describe("MissionControl", () => {
     expect(snapshot.agents.map((agent) => agent.roleInWorkspace)).toEqual(expect.arrayContaining(["boss", "pm", "architect", "dev", "qa"]));
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toContain("run.completed");
+    expect(events.find((event) => event.type === "run.completed")?.summary).toBe("任务已完成");
   });
 
   it("keeps the latest completed TaskRun visible in the workspace snapshot", async () => {
@@ -80,6 +81,8 @@ describe("MissionControl", () => {
     expect(snapshot.agents.some((agent) => agent.roleInWorkspace === "specialist")).toBe(true);
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["recruitment.requested", "recruitment.approved"]));
+    expect(events.find((event) => event.type === "recruitment.requested")?.summary).toBe("老板发起专家招聘：安全/认证");
+    expect(events.find((event) => event.type === "recruitment.approved")?.summary).toBe("老板已招募安全/认证专家");
   });
 
   it("routes failed QA back to implementation before completing", async () => {
@@ -93,7 +96,7 @@ describe("MissionControl", () => {
     expect(snapshot.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toContain("qa.failed");
-    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("implementation"))).toHaveLength(2);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
   });
 });
 

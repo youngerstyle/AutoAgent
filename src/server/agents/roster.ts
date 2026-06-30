@@ -7,45 +7,45 @@ import { readJson, writeJson } from "../storage/json.js";
 export const CORE_AGENT_PROFILES: AgentProfile[] = [
   {
     id: "prof_boss",
-    name: "Boss",
+    name: "老板",
     role: "boss",
-    capabilities: ["goal intake", "approval", "staffing"],
+    capabilities: ["需求接收", "验收", "人员调度"],
     defaultProvider: "mock",
     defaultModel: "mock-boss",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false }
   },
   {
     id: "prof_pm",
-    name: "PM",
+    name: "产品/项目",
     role: "pm",
-    capabilities: ["planning", "scope control", "handoff"],
+    capabilities: ["计划拆解", "范围控制", "交接协作"],
     defaultProvider: "mock",
     defaultModel: "mock-pm",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false }
   },
   {
     id: "prof_architect",
-    name: "Architect",
+    name: "架构师",
     role: "architect",
-    capabilities: ["technical design", "capability gap detection"],
+    capabilities: ["技术方案", "能力缺口判断"],
     defaultProvider: "mock",
     defaultModel: "mock-architect",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: false }
   },
   {
     id: "prof_dev",
-    name: "Dev",
+    name: "开发",
     role: "dev",
-    capabilities: ["implementation", "tool use", "local verification"],
+    capabilities: ["开发实现", "工具执行", "本地验证"],
     defaultProvider: "mock",
     defaultModel: "mock-dev",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
   },
   {
     id: "prof_qa",
-    name: "QA",
+    name: "测试",
     role: "qa",
-    capabilities: ["test planning", "quality review", "acceptance checks"],
+    capabilities: ["测试计划", "质量检查", "验收检查"],
     defaultProvider: "mock",
     defaultModel: "mock-qa",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: true }
@@ -98,9 +98,9 @@ export function profileForRole(role: AgentRole): AgentProfile {
   if (profile) return profile;
   return {
     id: "prof_specialist",
-    name: "Specialist",
+    name: "专家",
     role: "specialist",
-    capabilities: ["specialized delivery"],
+    capabilities: ["专项交付"],
     defaultProvider: "mock",
     defaultModel: "mock-specialist",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }

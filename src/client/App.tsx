@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentPolicy, AutoAgentEvent, ProviderConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import {
   createWorkspace,
   getProviderConfig,
@@ -22,7 +23,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>();
   const [events, setEvents] = useState<AutoAgentEvent[]>([]);
   const [goal, setGoal] = useState("");
-  const [workspaceForm, setWorkspaceForm] = useState({ name: "Demo workspace", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
+  const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [view, setView] = useState<"run" | "agents" | "providers">("run");
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
@@ -176,35 +177,35 @@ export function App() {
         </div>
         <nav className="topnav">
           <button className={view === "run" ? "selected" : ""} onClick={() => setView("run")}>运行台</button>
-          <button className={view === "agents" ? "selected" : ""} onClick={() => setView("agents")}>Agent 配置</button>
-          <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>Provider</button>
+          <button className={view === "agents" ? "selected" : ""} onClick={() => setView("agents")}>团队配置</button>
+          <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
         </nav>
-        <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{snapshot?.status ?? "idle"}</strong>
+        <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{statusLabel(snapshot?.status ?? "idle")}</strong>
       </header>
       <section className="workspace-shell">
         <aside className="workspace-list">
           <form className="workspace-form" onSubmit={submitWorkspace}>
             <label>
-              <span>Name</span>
+              <span>项目名称</span>
               <input value={workspaceForm.name} onChange={(event) => setWorkspaceForm({ ...workspaceForm, name: event.target.value })} />
             </label>
             <label>
-              <span>Path</span>
-              <input value={workspaceForm.rootPath} onChange={(event) => setWorkspaceForm({ ...workspaceForm, rootPath: event.target.value })} placeholder="C:\\path\\to\\project" />
+              <span>项目路径</span>
+              <input value={workspaceForm.rootPath} onChange={(event) => setWorkspaceForm({ ...workspaceForm, rootPath: event.target.value })} placeholder="C:\\项目\\路径" />
             </label>
             <label>
-              <span>Policy</span>
+              <span>安全策略</span>
               <select value={workspaceForm.policyProfile} onChange={(event) => setWorkspaceForm({ ...workspaceForm, policyProfile: event.target.value as Workspace["policyProfile"] })}>
-                <option value="production">production</option>
-                <option value="development">development</option>
+                <option value="production">生产：限制在项目内</option>
+                <option value="development">开发：允许本机访问</option>
               </select>
             </label>
-            <button type="submit">Create</button>
+            <button type="submit">创建项目</button>
           </form>
           <div className="workspace-items">
             {workspaces.map((workspace) => (
               <button key={workspace.id} className={workspace.id === selectedId ? "workspace-item selected" : "workspace-item"} onClick={() => setSelectedId(workspace.id)}>
-                <strong>{workspace.name}</strong>
+                <strong>{displayWorkspaceName(workspace.name)}</strong>
                 <span>{workspace.rootPath}</span>
               </button>
             ))}
@@ -214,38 +215,38 @@ export function App() {
           {view === "run" ? <>
             <section className="task-panel">
             <form onSubmit={submitTask}>
-              <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="描述这个 workspace 要交给团队完成的目标" />
-              <button type="submit" disabled={!selectedId || mode === "running"}>Start</button>
+              <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="描述这个项目要交给团队完成的目标" />
+              <button type="submit" disabled={!selectedId || mode === "running"}>开始</button>
             </form>
             <div className="control-row">
-              <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>Pause</button>
-              <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused"}>Resume</button>
-              <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused"}>Stop</button>
+              <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
+              <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused"}>继续</button>
+              <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused"}>停止</button>
             </div>
             {error ? <p className="error-text">{error}</p> : null}
             </section>
 
             <section className="canvas-panel">
             <div className="team-canvas">
-              <div className="canvas-phase">{snapshot?.phase ?? "idle"}</div>
+              <div className="canvas-phase">{phaseLabel(snapshot?.phase ?? "idle")}</div>
               {nodes.map((node) => (
                 <button
                   key={node.id}
                   className={node.active ? "agent-node active" : `agent-node ${node.status}`}
                   style={{ left: `${node.x}%`, top: `${node.y}%` }}
                   onClick={() => setSelectedAgentId(node.id)}
-                  title={node.currentStep ?? node.status}
+                  title={node.currentStep ?? statusLabel(node.status)}
                 >
                   <span className="avatar">{initials(node.label)}</span>
                   <strong>{node.label}</strong>
-                  <small>{node.currentStep ?? node.status}</small>
+                  <small>{node.currentStep ?? statusLabel(node.status)}</small>
                 </button>
               ))}
             </div>
             <div className="agent-detail">
-              <strong>{selectedAgent?.name ?? "未选择 Agent"}</strong>
-              <span>{selectedAgent?.roleInWorkspace ?? "idle"}</span>
-              <p>{selectedAgent?.currentStep ?? selectedAgent?.capabilities?.join(", ") ?? "创建 workspace 后会生成固定团队。"}</p>
+              <strong>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "未选择成员"}</strong>
+              <span>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "空闲"}</span>
+              <p>{(displayText(selectedAgent?.currentStep) ?? (selectedAgent ? capabilityLabels(selectedAgent.roleInWorkspace, selectedAgent.capabilities).join("、") : "")) || "创建项目后会生成固定团队。"}</p>
             </div>
             </section>
 
@@ -253,7 +254,7 @@ export function App() {
             {events.map((event) => (
               <article key={event.id} className="event-item">
                 <span>{event.type}</span>
-                <strong>{event.summary}</strong>
+                <strong>{displayText(event.summary)}</strong>
               </article>
             ))}
             </aside>
@@ -262,7 +263,7 @@ export function App() {
           {view === "agents" ? (
             <section className="management-panel">
               <header className="management-header">
-                <h2>Agent 配置</h2>
+                <h2>团队运行配置</h2>
                 <button type="button" onClick={() => void refreshAgents()}>刷新团队</button>
               </header>
               <div className="agent-config-grid">
@@ -281,7 +282,7 @@ export function App() {
           {view === "providers" ? (
             <section className="management-panel">
               <header className="management-header">
-                <h2>Provider 配置</h2>
+                <h2>模型服务配置</h2>
                 <button type="button" onClick={() => void refreshProviderConfig()}>刷新配置</button>
               </header>
               <div className="provider-grid">
@@ -314,29 +315,29 @@ function AgentConfigCard(props: {
   return (
     <article className="config-card">
       <header>
-        <strong>{agent.name ?? agent.roleInWorkspace}</strong>
-        <span>{agent.roleInWorkspace}</span>
+        <strong>{agent.name ?? roleLabel(agent.roleInWorkspace)}</strong>
+        <span>{roleLabel(agent.roleInWorkspace)}</span>
       </header>
       <label>
-        <span>Provider</span>
+        <span>模型服务</span>
         <select value={agent.provider ?? "mock"} onChange={(event) => props.onChange({ ...agent, provider: event.target.value as ProviderName })}>
-          <option value="mock">mock</option>
-          <option value="openai">openai</option>
-          <option value="anthropic">anthropic</option>
+          <option value="mock">模拟服务</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
         </select>
       </label>
       <label>
-        <span>Model</span>
+        <span>模型</span>
         <input value={agent.model ?? ""} onChange={(event) => props.onChange({ ...agent, model: event.target.value })} />
       </label>
       <div className="policy-grid">
-        <Toggle label="读 workspace" checked={policy.canReadWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canReadWorkspace: checked } })} />
-        <Toggle label="写 workspace" checked={policy.canWriteWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
+        <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canReadWorkspace: checked } })} />
+        <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
         <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, canExecuteCommands: checked } })} />
-        <Toggle label="Host access" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, allowHostAccess: checked } })} />
+        <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onChange({ ...agent, policyOverride: { ...policy, allowHostAccess: checked } })} />
       </div>
-      <p>{agent.capabilities?.join(", ")}</p>
-      <button type="button" onClick={props.onSave}>保存 Agent</button>
+      <p>{capabilityLabels(agent.roleInWorkspace, agent.capabilities).join("、")}</p>
+      <button type="button" onClick={props.onSave}>保存团队配置</button>
     </article>
   );
 }
@@ -352,21 +353,21 @@ function ProviderConfigCard(props: {
     <article className="config-card">
       <header>
         <strong>{props.provider}</strong>
-        <span>{props.configured ? "已配置 key" : "未配置 key"}</span>
+        <span>{props.configured ? "已配置密钥" : "未配置密钥"}</span>
       </header>
       <label>
-        <span>Model</span>
+        <span>默认模型</span>
         <input value={props.draft.model} onChange={(event) => props.onChange({ ...props.draft, model: event.target.value })} />
       </label>
       <label>
-        <span>API Key</span>
-        <input type="password" placeholder={props.configured ? "保留现有 key" : "输入 API key"} onChange={(event) => props.onChange({ ...props.draft, apiKey: event.target.value })} />
+        <span>接口密钥</span>
+        <input type="password" placeholder={props.configured ? "保留现有密钥" : "输入接口密钥"} onChange={(event) => props.onChange({ ...props.draft, apiKey: event.target.value })} />
       </label>
       <label>
-        <span>Base URL</span>
+        <span>服务地址</span>
         <input value={props.draft.baseUrl ?? ""} onChange={(event) => props.onChange({ ...props.draft, baseUrl: event.target.value })} />
       </label>
-      <button type="button" onClick={props.onSave}>保存 Provider</button>
+      <button type="button" onClick={props.onSave}>保存模型服务</button>
     </article>
   );
 }
@@ -394,6 +395,10 @@ function mergeSnapshotAgents(snapshotAgents: WorkspaceSnapshot["agents"], config
     const configured = configAgents.find((item) => item.id === agent.id);
     return configured ? { ...agent, ...configured } : agent;
   });
+}
+
+function displayWorkspaceName(name: string): string {
+  return name === "Demo workspace" ? "演示项目" : name;
 }
 
 function initials(label: string): string {

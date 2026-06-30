@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { roleLabel } from "../../shared/labels.js";
 import type { AgentModelProvider, AgentTurnInput, AgentTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 import { normalizeProviderError } from "./openai-provider.js";
@@ -15,7 +16,7 @@ export class AnthropicProvider implements AgentModelProvider {
       const response = await client.messages.create({
         model: input.model,
         max_tokens: 1200,
-        system: `You are the ${input.role} agent. Return concise JSON when possible.`,
+        system: `你是${roleLabel(input.role)} Agent。尽量返回简洁 JSON。`,
         messages: [{ role: "user", content: input.prompt }]
       });
       const text = response.content

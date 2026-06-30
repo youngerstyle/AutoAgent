@@ -35,7 +35,7 @@ describe("mock team loop E2E", () => {
     expect(snapshot.recentEvents.map((event: { type: string }) => event.type)).toEqual(
       expect.arrayContaining(["task.created", "recruitment.approved", "run.completed"])
     );
-    await expect(readFile(path.join(rootPath, "AUTOAGENT_RESULT.md"), "utf8")).resolves.toContain("Completed:");
+    await expect(readFile(path.join(rootPath, "AUTOAGENT_RESULT.md"), "utf8")).resolves.toContain("已完成：");
   });
 });
 

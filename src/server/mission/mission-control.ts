@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { Assignment, AutoAgentEvent, MissionPhase, Task, TaskRun, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
+import { phaseLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
 import { recruitSpecialist } from "../agents/recruitment.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileMetadata } from "../agents/roster.js";
@@ -105,7 +106,7 @@ export class MissionControl {
     state.taskRun.status = "paused";
     state.taskRun.phase = "paused";
     await this.writeState(workspace, state);
-    await this.append(workspace, state, "task.phase_changed", "Task paused", { phase: "paused", status: "paused", nextPhase: state.nextPhase });
+    await this.append(workspace, state, "task.phase_changed", "任务已暂停", { phase: "paused", status: "paused", nextPhase: state.nextPhase });
     return state;
   }
 
@@ -182,7 +183,7 @@ export class MissionControl {
         state.taskRun.phase = "completed";
         state.taskRun.endedAt = new Date().toISOString();
         await this.writeState(workspace, state);
-        await this.append(workspace, state, "run.completed", "Task completed", { task: state.task, taskRun: state.taskRun });
+        await this.append(workspace, state, "run.completed", "任务已完成", { task: state.task, taskRun: state.taskRun });
       }
     } catch (error) {
       const state = await this.readState(workspace, taskId, taskRunId);
@@ -192,7 +193,7 @@ export class MissionControl {
       state.taskRun.phase = "failed";
       state.taskRun.endedAt = new Date().toISOString();
       await this.writeState(workspace, state);
-      await this.append(workspace, state, "run.failed", "Task failed", { error: (error as Error).message, task: state.task, taskRun: state.taskRun });
+      await this.append(workspace, state, "run.failed", "任务失败", { error: (error as Error).message, task: state.task, taskRun: state.taskRun });
       throw error;
     } finally {
       this.running.delete(runKey);
@@ -201,7 +202,7 @@ export class MissionControl {
 
   private async runPhase(workspace: Workspace, state: MissionState): Promise<MissionState> {
     const phase = state.nextPhase;
-    await this.append(workspace, state, "task.phase_changed", `Phase: ${phase}`, { phase, status: "running" });
+    await this.append(workspace, state, "task.phase_changed", `进入阶段：${phaseLabel(phase)}`, { phase, status: "running" });
     const agent = await this.agentForPhase(workspace, phase);
     const result = await this.runtime.runAssignment({
       workspace,
@@ -220,7 +221,7 @@ export class MissionControl {
     state.updatedAt = new Date().toISOString();
 
     if (phase === "architect_plan" && result.providerResult.structured?.needsSpecialist) {
-      const gap = String(result.providerResult.structured.capabilityGap ?? "Specialist");
+      const gap = String(result.providerResult.structured.capabilityGap ?? "通用专项能力");
       const specialist = await recruitSpecialist({ workspace, taskId: state.task.id, taskRunId: state.taskRun.id, capabilityGap: gap, ledger: this.ledger });
       await this.runtime.runAssignment({
         workspace,
@@ -229,8 +230,8 @@ export class MissionControl {
         taskRunId: state.taskRun.id,
         goal: state.task.goal,
         type: "specialist",
-        brief: `Address capability gap: ${gap}`,
-        expectedArtifact: "Specialist guidance",
+        brief: `处理能力缺口：${gap}`,
+        expectedArtifact: "专家建议",
         context: state.context,
         sessionId: state.taskRun.id
       });
@@ -241,7 +242,7 @@ export class MissionControl {
       state.qaAttempts += 1;
       const passed = result.providerResult.structured?.passed !== false;
       if (!passed && state.qaAttempts < 3) {
-        await this.append(workspace, state, "qa.failed", "QA requested implementation changes", {
+        await this.append(workspace, state, "qa.failed", "测试要求开发返工", {
           feedback: result.providerResult.structured?.report ?? result.providerResult.text,
           attempt: state.qaAttempts
         });
@@ -256,7 +257,7 @@ export class MissionControl {
         state.taskRun.phase = "failed";
         state.taskRun.endedAt = new Date().toISOString();
         await this.writeState(workspace, state);
-        await this.append(workspace, state, "run.failed", "QA failed after retry budget", { task: state.task, taskRun: state.taskRun });
+        await this.append(workspace, state, "run.failed", "测试重试次数耗尽，任务失败", { task: state.task, taskRun: state.taskRun });
         return state;
       }
     }
@@ -364,21 +365,21 @@ export class MissionControl {
 }
 
 function briefForPhase(phase: MissionPhase, state: MissionState): string {
-  if (phase === "boss_intake") return `Decide if the goal is actionable: ${state.task.goal}`;
-  if (phase === "pm_plan") return "Break the goal into a small execution plan";
-  if (phase === "architect_plan") return "Identify architecture, technical approach, and capability gaps";
-  if (phase === "implementation") return "Implement the planned work and produce a delivery artifact";
-  if (phase === "qa") return "Verify the implementation and report pass/fail";
-  if (phase === "boss_acceptance") return "Accept or reject the completed task";
-  return "Specialist contribution";
+  if (phase === "boss_intake") return `判断需求是否可执行：${state.task.goal}`;
+  if (phase === "pm_plan") return "把目标拆成小规模执行计划";
+  if (phase === "architect_plan") return "判断架构方案、技术路径和能力缺口";
+  if (phase === "implementation") return "按计划开发并产出交付物";
+  if (phase === "qa") return "验证实现并给出通过或失败结论";
+  if (phase === "boss_acceptance") return "验收或驳回已完成任务";
+  return "专家专项处理";
 }
 
 function expectedArtifactForPhase(phase: MissionPhase): string {
-  if (phase === "boss_intake") return "Actionability decision";
-  if (phase === "pm_plan") return "Execution plan";
-  if (phase === "architect_plan") return "Technical plan";
-  if (phase === "implementation") return "Working change or implementation report";
-  if (phase === "qa") return "QA report";
-  if (phase === "boss_acceptance") return "Acceptance decision";
-  return "Specialist guidance";
+  if (phase === "boss_intake") return "可执行性判断";
+  if (phase === "pm_plan") return "执行计划";
+  if (phase === "architect_plan") return "技术方案";
+  if (phase === "implementation") return "可运行变更或实现报告";
+  if (phase === "qa") return "测试报告";
+  if (phase === "boss_acceptance") return "验收结论";
+  return "专家建议";
 }

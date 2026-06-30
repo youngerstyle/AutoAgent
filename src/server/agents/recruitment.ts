@@ -20,7 +20,7 @@ export async function recruitSpecialist(input: {
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     type: "recruitment.requested",
-    summary: `Boss requested specialist: ${input.capabilityGap}`,
+    summary: `老板发起专家招聘：${input.capabilityGap}`,
     payload: { capabilityGap: input.capabilityGap }
   });
 
@@ -29,7 +29,7 @@ export async function recruitSpecialist(input: {
     input.workspace,
     {
       id: `prof_specialist_${capabilitySlug}`,
-      name: `${input.capabilityGap} Specialist`,
+      name: `${input.capabilityGap}专家`,
       role: "specialist",
       capabilities: [input.capabilityGap],
       defaultProvider: "mock",
@@ -45,7 +45,7 @@ export async function recruitSpecialist(input: {
     taskRunId: input.taskRunId,
     actorId: agent.id,
     type: "recruitment.approved",
-    summary: `Boss hired ${input.capabilityGap} specialist`,
+    summary: `老板已招募${input.capabilityGap}专家`,
     payload: { capabilityGap: input.capabilityGap, agent: { ...agent, ...profileMetadata(agent), capabilities: [input.capabilityGap] } }
   });
   await input.ledger.append(input.workspace.rootPath, {
@@ -54,12 +54,18 @@ export async function recruitSpecialist(input: {
     taskRunId: input.taskRunId,
     actorId: agent.id,
     type: "agent.joined_workspace",
-    summary: `${input.capabilityGap} specialist joined workspace`,
+    summary: `${input.capabilityGap}专家已加入项目`,
     payload: { agent: { ...agent, ...profileMetadata(agent), capabilities: [input.capabilityGap] } }
   });
   return agent;
 }
 
 function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "general";
+  const ascii = value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  if (ascii) return ascii;
+  return Array.from(value)
+    .map((char) => char.codePointAt(0)?.toString(36) ?? "")
+    .filter(Boolean)
+    .join("_")
+    .slice(0, 40) || "general";
 }
