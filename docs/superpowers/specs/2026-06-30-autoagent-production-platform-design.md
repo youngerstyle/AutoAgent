@@ -32,6 +32,61 @@ AutoAgent is production-ready for P0 when a local user can:
 
 This definition is intentionally narrower than the long-term fully automated company. It excludes hosted multi-user mode, marketplace, visual loop graph editing, complex performance management, and multi-task concurrent scheduling.
 
+## P0 User Journeys
+
+Production readiness should be judged against concrete user journeys.
+
+### Journey 1: First Local Setup
+
+The user starts AutoAgent locally, opens the web app, configures a provider, tests the connection, and sees whether the system can run real tasks.
+
+Done means:
+
+- The app starts from documented commands.
+- Provider state is understandable without reading logs.
+- Invalid credentials produce an actionable UI error.
+- The user can continue with mock mode for demos or tests.
+
+### Journey 2: Define a Reusable Agent
+
+The user creates or edits an agent in Agent Studio and can understand its identity, soul, loop, capabilities, and runtime defaults.
+
+Done means:
+
+- The agent definition can be saved, reopened, duplicated, and versioned.
+- Soul and loop are visible product concepts, not hidden prompt fragments.
+- The user can tell whether they are editing a reusable agent or a workspace override.
+
+### Journey 3: Assemble a Workspace Team
+
+The user creates or selects a workspace, adds existing agents to the team, and configures project-specific overrides.
+
+Done means:
+
+- Adding an agent creates a workspace-scoped instance.
+- The same reusable agent can join multiple workspaces without shared mutable session state.
+- The team page shows role, responsibility, effective provider/model, policy, and current status.
+
+### Journey 4: Run and Control a Task
+
+The user submits a task and watches the team execute.
+
+Done means:
+
+- The user can see the active phase, active agent, current step, recent events, and task controls.
+- Pause, resume, and stop work from the UI.
+- The canvas and event stream reflect backend facts.
+
+### Journey 5: Audit a Result or Failure
+
+The user reviews what happened after a run completes or fails.
+
+Done means:
+
+- The user can inspect assignment history, model calls, tool calls, artifacts, QA result, and Boss acceptance.
+- Failure pages explain whether the issue was provider, policy, tool, loop, QA, or user interruption.
+- Restarting the app does not erase run facts.
+
 ## Product Architecture
 
 The platform has three primary product layers.
@@ -455,6 +510,88 @@ Required verification:
 - Manual smoke with a real configured provider when credentials are available.
 - Failure-path smoke for missing key, tool denied, stop, resume, and QA retry.
 
+## P0 Delivery Slices
+
+Implementation should not attempt the entire platform in one pass. Each slice must leave the app in a coherent state and preserve the current runnable loop.
+
+### Slice 1: Model Boundary
+
+Introduce the new domain model while preserving current behavior.
+
+Exit criteria:
+
+- System Boss/PM/Architect/Dev/QA exist as `AgentDefinition` records.
+- Current workspaces can still seed a team.
+- Existing E2E mock loop still passes.
+
+### Slice 2: Team Binding
+
+Move workspace membership from implicit fixed roster toward explicit workspace team bindings.
+
+Exit criteria:
+
+- Workspace team state can be listed and updated through APIs.
+- Workspace-specific provider/model/policy overrides continue to work.
+- A single agent definition can be bound into two test workspaces with isolated sessions.
+
+### Slice 3: Agent Studio UI
+
+Expose reusable agent definitions.
+
+Exit criteria:
+
+- Users can inspect and edit identity, soul, loop, capabilities, and defaults.
+- The old `Agent 配置` meaning is removed or renamed to `Team`.
+- Browser QA covers Run Console, Agent Studio, Team, and Provider navigation.
+
+### Slice 4: Runtime Contract Upgrade
+
+Make soul and loop operational.
+
+Exit criteria:
+
+- Runtime prompt construction reads identity, soul, loop, and capabilities.
+- Assignment events record agent definition and loop version.
+- Tests prove loop changes affect runtime input.
+
+### Slice 5: Runtime Ops History
+
+Make completed and failed work inspectable.
+
+Exit criteria:
+
+- Users can navigate previous task runs.
+- Assignment runs, tool calls, provider events, artifacts, QA, and acceptance are inspectable.
+- Failure reasons are categorized.
+
+### Slice 6: Release Gate Hardening
+
+Close the operational gaps.
+
+Exit criteria:
+
+- Provider connection test exists.
+- Effective policy is visible and understandable.
+- Release commands and browser QA are documented and repeatable.
+
+## Spec Review Notes
+
+This spec was reviewed against the active product objective and current codebase facts.
+
+Findings addressed in this revision:
+
+- The original V1 design treated "fixed team can run" as shippable; this spec redefines production readiness around reusable agents, workspace team composition, runtime controls, and auditability.
+- The earlier Agent configuration page mixed reusable agent identity with workspace runtime settings; this spec separates `AgentDefinition` from `WorkspaceAgent`.
+- Identity, soul, and loop definition were not first-class enough; this spec promotes them into required domain model sections and runtime inputs.
+- P0 was too broad to execute safely; this spec adds delivery slices with exit criteria.
+- Runtime success was underdefined; this spec adds concrete user journeys and audit requirements.
+
+Open review items for the user:
+
+- Whether `Agent Studio -> Workspace Team -> Runtime Ops` is the approved P0 direction.
+- Whether Agent soul should be mostly freeform text in P0 or more structured from day one.
+- Whether the current workspace-local path should be migrated immediately from `.autoagent/agents` to `.autoagent/team`, or kept as an internal compatibility detail for one implementation phase.
+
 ## P1 Workstreams
 
 - Dedicated recruiter agent.
@@ -507,4 +644,3 @@ That direction matches the user's product intent:
 - Agents can join many projects through shadow-clone workspace instances.
 - The human is in flow as owner and observer, not a mandatory approval loop.
 - Boss can own initial routing and recruitment before a dedicated recruiter exists.
-
