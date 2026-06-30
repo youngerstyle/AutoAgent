@@ -24,7 +24,6 @@ export interface AgentProfileView {
     scope: string;
   };
   soul: string;
-  loopSteps: string[];
   toolGroups: Array<{
     label: string;
     enabled: boolean;
@@ -129,7 +128,6 @@ function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: A
       scope: "项目实例，继承全局智能体档案"
     },
     soul: profileDef?.soul ?? soulForRole(role),
-    loopSteps: profileDef?.loopDefinition?.length ? profileDef.loopDefinition : loopForRole(role),
     toolGroups: [
       { label: "文件", enabled: policy.canReadWorkspace || policy.canWriteWorkspace, description: fileToolDescription(policy) },
       { label: "命令", enabled: policy.canExecuteCommands, description: policy.canExecuteCommands ? "可在策略范围内执行本地命令" : "默认不执行本地命令" },
@@ -195,18 +193,6 @@ function soulForRole(role: string): string {
     specialist: "围绕专项能力补位，交付可被主团队吸收的建议或实现。"
   };
   return labels[role] ?? "围绕项目目标提供专业判断和交付。";
-}
-
-function loopForRole(role: string): string[] {
-  const labels: Record<string, string[]> = {
-    boss: ["接收目标", "判断可执行性", "调度人员", "验收结果"],
-    pm: ["理解目标", "拆解任务", "明确交接", "控制范围"],
-    architect: ["分析约束", "设计方案", "发现缺口", "给出边界"],
-    dev: ["理解任务", "修改项目", "本地验证", "交付说明"],
-    qa: ["读取产物", "执行检查", "形成报告", "反馈闭环"],
-    specialist: ["接收缺口", "专项分析", "补齐能力", "交接结论"]
-  };
-  return labels[role] ?? ["理解任务", "执行工作", "记录结果", "交接反馈"];
 }
 
 function fileToolDescription(policy: AgentPolicyView): string {

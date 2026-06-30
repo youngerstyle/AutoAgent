@@ -232,7 +232,6 @@ export function App() {
         name: profile.name,
         identity: profile.identity,
         soul: profile.soul,
-        loopDefinition: profile.loopDefinition,
         capabilities: profile.capabilities,
         defaultProvider: profile.defaultProvider,
         defaultModel: profile.defaultModel,
@@ -401,7 +400,7 @@ function AgentHub(props: {
       <header className="management-header">
         <div>
           <h2>智能体档案库</h2>
-          <p>这里编辑全局身份、人格边界、循环方式和默认能力；项目团队只引用这些档案，不在这里产生项目状态。</p>
+          <p>这里编辑全局身份、人格边界、能力和默认模型；项目团队只引用这些档案，不在这里产生项目状态。</p>
         </div>
       </header>
       <div className="studio-layout">
@@ -445,7 +444,6 @@ function AgentDefinitionEditor(props: {
   onChange: (profile: AgentProfile) => void;
   onSave: (profile: AgentProfile) => void;
 }) {
-  const loopText = (props.profile.loopDefinition ?? []).join("\n");
   const capabilitiesText = props.profile.capabilities.join("、");
   return (
     <aside className="agent-detail-panel agent-definition-editor">
@@ -475,14 +473,6 @@ function AgentDefinitionEditor(props: {
         <label>
           <span>行为原则和人格边界</span>
           <textarea aria-label="人格边界" value={props.profile.soul ?? ""} onChange={(event) => props.onChange({ ...props.profile, soul: event.target.value })} />
-        </label>
-      </section>
-
-      <section className="agent-section">
-        <h4>循环定义</h4>
-        <label>
-          <span>每行一个循环步骤</span>
-          <textarea aria-label="循环步骤" value={loopText} onChange={(event) => props.onChange({ ...props.profile, loopDefinition: event.target.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) })} />
         </label>
       </section>
 
@@ -593,13 +583,6 @@ function AgentDetailPanel(props: {
       <section className="agent-section">
         <h4>人格边界</h4>
         <p>{props.profile.soul}</p>
-      </section>
-
-      <section className="agent-section">
-        <h4>循环定义</h4>
-        <ol className="loop-list">
-          {props.profile.loopSteps.map((step) => <li key={step}>{step}</li>)}
-        </ol>
       </section>
 
       <section className="agent-section">

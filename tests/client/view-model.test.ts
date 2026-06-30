@@ -17,13 +17,13 @@ describe("client view model", () => {
     expect(taskControlMode(snapshot("completed"))).toBe("terminal");
   });
 
-  it("projects agents as platform profiles with identity, soul, loop, tools, model, and memory", () => {
+  it("projects agents as platform profiles with identity, soul, tools, model, and memory", () => {
     const profiles = buildAgentProfiles(snapshot("running"));
     const dev = profiles.find((profile) => profile.role === "dev");
 
     expect(dev?.identity.title).toBe("开发");
     expect(dev?.soul).toContain("交付");
-    expect(dev?.loopSteps).toEqual(expect.arrayContaining(["理解任务", "修改项目", "本地验证", "交付说明"]));
+    expect(dev && "loopSteps" in dev).toBe(false);
     expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["文件", "命令", "浏览器/MCP"]));
     expect(dev?.model.providerLabel).toBe("模拟服务");
     expect(dev?.memory.sessionLabel).toBe("项目会话隔离");
@@ -36,7 +36,6 @@ describe("client view model", () => {
       role: "dev",
       identity: "负责把任务变成可运行变更",
       soul: "先读上下文，再用证据交付。",
-      loopDefinition: ["读需求", "读项目", "改代码", "跑验证"],
       capabilities: ["TypeScript", "验证"],
       defaultProvider: "mock",
       defaultModel: "mock-dev",
@@ -48,7 +47,7 @@ describe("client view model", () => {
 
     expect(catalog[0].identity.title).toBe("全栈工程师");
     expect(team.find((profile) => profile.role === "dev")?.soul).toBe("先读上下文，再用证据交付。");
-    expect(team.find((profile) => profile.role === "dev")?.loopSteps).toEqual(["读需求", "读项目", "改代码", "跑验证"]);
+    expect(team.find((profile) => profile.role === "dev") && "loopSteps" in team.find((profile) => profile.role === "dev")!).toBe(false);
   });
 });
 

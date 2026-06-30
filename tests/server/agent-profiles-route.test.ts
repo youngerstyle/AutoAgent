@@ -11,7 +11,7 @@ describe("agent profiles route", () => {
     process.env.AUTOAGENT_HOME = await mkdtemp(path.join(os.tmpdir(), "autoagent-profiles-home-"));
   });
 
-  it("persists editable global identity, soul, and loop separately from workspace overrides", async () => {
+  it("persists editable global identity and soul separately from workspace overrides", async () => {
     const app = createApp();
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
@@ -29,12 +29,14 @@ describe("agent profiles route", () => {
     expect(updated.body.profile).toMatchObject({
       name: "全栈工程师",
       identity: "负责把任务变成可运行变更",
-      soul: "先理解上下文，再小步交付，所有结论都要有验证证据。",
-      loopDefinition: ["读需求", "读项目", "修改代码", "运行验证", "交付说明"]
+      soul: "先理解上下文，再小步交付，所有结论都要有验证证据。"
     });
+    expect(updated.body.profile.loopDefinition).toBeUndefined();
 
     const relisted = await request(app).get("/api/agent-profiles").expect(200);
-    expect(relisted.body.profiles.find((profile: { id: string }) => profile.id === dev.id).soul).toContain("验证证据");
+    const relistedDev = relisted.body.profiles.find((profile: { id: string }) => profile.id === dev.id);
+    expect(relistedDev.soul).toContain("验证证据");
+    expect(relistedDev.loopDefinition).toBeUndefined();
 
     const policyUpdated = await request(app)
       .patch(`/api/agent-profiles/${dev.id}`)

@@ -64,7 +64,7 @@ export function listAgentProfiles(): Promise<{ profiles: AgentProfile[] }> {
   return api("/api/agent-profiles");
 }
 
-export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "loopDefinition" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
+export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
   return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
