@@ -20,6 +20,8 @@ export const EVENT_TYPES = [
   "recruitment.failed",
   "agent.created",
   "agent.joined_workspace",
+  "provider.started",
+  "provider.completed",
   "run.completed",
   "run.failed",
   "run.interrupted",
