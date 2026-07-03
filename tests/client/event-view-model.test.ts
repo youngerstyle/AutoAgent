@@ -148,6 +148,32 @@ describe("event view model", () => {
     expect(groups[0].summary).toContain("模型 1 次");
     expect(groups[0].summary).toContain("工具 2 次");
   });
+
+  it("merges repeated phase change markers for the same actor and phase", () => {
+    const events = [
+      event("task.phase_changed", "任务继续：计划拆解", { phase: "pm_plan" }, "ev_1"),
+      event("task.phase_changed", "进入阶段：计划拆解", { phase: "pm_plan" }, "ev_2"),
+      event("assignment.created", "已创建计划拆解任务", { assignment: { type: "pm_plan" } }, "ev_3")
+    ];
+
+    const groups = buildEventTimelineGroups(events);
+
+    expect(groups.map((group) => group.title)).toEqual(["产品/项目 · 计划拆解"]);
+    expect(groups[0].events.map((item) => item.id)).toEqual(["ev_1", "ev_2", "ev_3"]);
+  });
+
+  it("shows autonomous handoff records as task-flow events instead of fake agents", () => {
+    const item = buildEventTimelineItem(event("handoff.created", "Agent 自治返工：需要人工修改地图数据并验证。", {
+      phase: "boss_intake",
+      reason: "需要人工修改地图数据并验证。"
+    }));
+
+    expect(item).toMatchObject({
+      actor: "任务流",
+      title: "自治返工",
+      detail: "需求接收：需要人工修改地图数据并验证。"
+    });
+  });
 });
 
 function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>, id = `ev_${type}`): AutoAgentEvent {

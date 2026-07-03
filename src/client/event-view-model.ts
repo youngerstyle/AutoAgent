@@ -46,7 +46,7 @@ export function buildEventTimelineGroups(events: AutoAgentEvent[]): EventTimelin
     const actor = actorForTimelineGroup(event, item, groups.at(-1));
     const key = `${actor}::${phase}`;
     const previous = groups.at(-1);
-    if (previous && `${previous.actor}::${previous.phase}` === key && !startsNewTimelineGroup(event)) {
+    if (previous && `${previous.actor}::${previous.phase}` === key) {
       previous.events.push(event);
       previous.tone = strongerTone(previous.tone, item.tone);
       previous.summary = timelineGroupSummary(previous.events);
@@ -109,6 +109,12 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, "human", "补充说明", resumePhase ? `继续到${phaseLabel(resumePhase)}` : followupDetail(event), "running");
   }
 
+  if (event.type === "handoff.created") {
+    const phase = stringPayload(event, "phase") as MissionPhase | undefined;
+    const reason = stringPayload(event, "reason") ?? displayText(event.summary.replace(/^Agent 自治返工[:：]\s*/, ""));
+    return item(event, "任务流", "自治返工", [phase ? phaseLabel(phase) : undefined, reason].filter(Boolean).join("：") || undefined, "warning");
+  }
+
   if (event.type === "assignment.created") {
     const assignmentType = nestedStringPayload(event, "assignment", "type") as AssignmentType | undefined;
     const assignment = assignmentType ? assignmentLabel(assignmentType) : assignmentLabelFromSummary(event.summary);
@@ -161,6 +167,7 @@ function actorForTimelineGroup(event: AutoAgentEvent, item: EventTimelineItem, p
 }
 
 function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): string | undefined {
+  if (event.type === "handoff.created") return "自治返工";
   const phase = stringPayload(event, "phase") as MissionPhase | undefined;
   if (phase) return phaseLabel(phase);
   const assignmentType = nestedStringPayload(event, "assignment", "type") as AssignmentType | undefined;
@@ -170,13 +177,6 @@ function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): 
   if (event.type === "human.followup") return "人工补充";
   if (event.type.startsWith("recruitment.")) return "专家招聘";
   return undefined;
-}
-
-function startsNewTimelineGroup(event: AutoAgentEvent): boolean {
-  return event.type === "task.phase_changed"
-    || event.type === "human.followup"
-    || event.type === "run.completed"
-    || event.type.startsWith("recruitment.");
 }
 
 function timelineGroupSummary(events: AutoAgentEvent[]): string {
