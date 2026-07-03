@@ -9,6 +9,10 @@ export function createTaskRouter(mission: MissionControl) {
     res.json({ snapshot: await mission.snapshotByWorkspace(String(req.params.workspaceId)) });
   }));
 
+  router.get("/debug-log", asyncHandler(async (req, res) => {
+    res.json({ log: await mission.loopDebugLogByWorkspace(String(req.params.workspaceId)) });
+  }));
+
   router.post("/tasks", asyncHandler(async (req, res) => {
     const snapshot = await mission.startTask({
       workspaceId: String(req.params.workspaceId),

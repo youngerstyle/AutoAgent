@@ -690,7 +690,7 @@ button:disabled {
   top: -14px;
   z-index: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
   margin: -14px -14px 4px;
   padding: 10px 14px;
@@ -711,23 +711,110 @@ button:disabled {
 }
 
 .ticket-inspector,
-.ticket-inspector-empty {
+.ticket-inspector-empty,
+.loop-debug-panel,
+.loop-debug-empty {
   display: grid;
   gap: 8px;
 }
 
-.ticket-inspector-empty {
+.ticket-inspector-empty,
+.loop-debug-empty {
   border: 1px solid #dde4ea;
   border-radius: 6px;
   background: #ffffff;
   padding: 12px;
 }
 
-.ticket-inspector-empty p {
+.ticket-inspector-empty p,
+.loop-debug-empty p {
   margin: 0;
   color: #607084;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.loop-debug-panel > header {
+  display: grid;
+  gap: 2px;
+  border: 1px solid #dde4ea;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 10px;
+}
+
+.loop-debug-panel > header strong {
+  color: #111b26;
+  line-height: 1.35;
+}
+
+.loop-debug-panel > header span {
+  color: #607084;
+  font-size: 12px;
+}
+
+.loop-debug-card {
+  border: 1px solid #dde4ea;
+  border-left: 4px solid #657384;
+  border-radius: 6px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.loop-debug-card.prompt {
+  border-left-color: #7b61c9;
+}
+
+.loop-debug-card.llm {
+  border-left-color: #248a8a;
+}
+
+.loop-debug-card.tool {
+  border-left-color: #c58b18;
+}
+
+.loop-debug-card.flow {
+  border-left-color: #2f80c0;
+}
+
+.loop-debug-card summary {
+  display: grid;
+  gap: 3px;
+  cursor: pointer;
+  padding: 10px;
+}
+
+.loop-debug-card summary span,
+.loop-debug-card summary small {
+  color: #657384;
+  font-size: 12px;
+}
+
+.loop-debug-card summary strong {
+  color: #111b26;
+  line-height: 1.35;
+}
+
+.loop-debug-card p {
+  margin: 0;
+  padding: 0 10px 8px;
+  color: #607084;
+  font-size: 12px;
+}
+
+.loop-debug-card pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid #e8edf2;
+  background: #f8fafc;
+  padding: 10px;
+  color: #223142;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .raw-ticket-card {

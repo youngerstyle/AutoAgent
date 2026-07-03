@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentPolicy, AgentProfile, AutoAgentEvent, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import {
   createModelConfig,
   createWorkspace,
   deleteWorkspace,
+  getLoopDebugLog,
   getSnapshot,
   listAgentProfiles,
   listAgents,
@@ -67,8 +68,9 @@ export function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
-  const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
+  const [rightPanelView, setRightPanelView] = useState<"events" | "tickets" | "debug">("events");
   const [rawTicketDialog, setRawTicketDialog] = useState<TicketInspectorItem>();
+  const [loopDebugLog, setLoopDebugLog] = useState<LoopDebugLog>({ entries: [] });
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
@@ -93,8 +95,9 @@ export function App() {
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
   const rightPanelScrollKey = useMemo(() => {
     if (rightPanelView === "events") return visibleEvents.map((event) => event.id).join("|");
+    if (rightPanelView === "debug") return loopDebugLog.entries.map((entry) => entry.id).join("|");
     return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
-  }, [rightPanelView, ticketItems, visibleEvents]);
+  }, [loopDebugLog.entries, rightPanelView, ticketItems, visibleEvents]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -148,9 +151,10 @@ export function App() {
       setWorkspaces(result.workspaces);
       setSelectedId(nextSelectedId);
       if (!nextSelectedId) {
-        setSnapshot(undefined);
-        setEvents([]);
-        setAgents([]);
+      setSnapshot(undefined);
+      setEvents([]);
+      setLoopDebugLog({ entries: [] });
+      setAgents([]);
         setSelectedAgentId("");
       }
     } catch (err) {
@@ -164,6 +168,7 @@ export function App() {
       const result = await getSnapshot(workspaceId);
       setSnapshot(result.snapshot);
       setEvents(result.snapshot.recentEvents);
+      void refreshLoopDebugLog(workspaceId);
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -176,6 +181,16 @@ export function App() {
       const result = await listAgents(workspaceId);
       setAgents(result.agents);
       setSnapshot((current) => current ? { ...current, agents: mergeSnapshotAgents(current.agents, result.agents) } : current);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function refreshLoopDebugLog(workspaceId = selectedId) {
+    if (!workspaceId) return;
+    try {
+      const result = await getLoopDebugLog(workspaceId);
+      setLoopDebugLog(result.log);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -625,13 +640,27 @@ export function App() {
                 >
                   原始工单
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightPanelView === "debug"}
+                  className={rightPanelView === "debug" ? "selected" : ""}
+                  onClick={() => {
+                    setRightPanelView("debug");
+                    void refreshLoopDebugLog();
+                  }}
+                >
+                  Loop 日志
+                </button>
               </div>
               {rightPanelView === "events" ? (
                 visibleEvents.map((event) => (
                   <EventTimelineCard key={event.id} event={event} />
                 ))
-              ) : (
+              ) : rightPanelView === "tickets" ? (
                 <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
+              ) : (
+                <LoopDebugPanel log={loopDebugLog} />
               )}
             </aside>
           </> : null}
@@ -779,6 +808,54 @@ function TicketInspector(props: { items: TicketInspectorItem[]; onShowRaw: (item
       ))}
     </section>
   );
+}
+
+function LoopDebugPanel(props: { log: LoopDebugLog }) {
+  if (props.log.entries.length === 0) {
+    return (
+      <section className="loop-debug-empty">
+        <strong>还没有 Loop 日志</strong>
+        <p>开始任务后，这里会按时间展示 prompt、LLM 返回、工具结果和 flow 决策。</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="loop-debug-panel">
+      <header>
+        <strong>{props.log.task?.title ?? "当前任务"}</strong>
+        <span>{props.log.entries.length} 条调试记录</span>
+      </header>
+      {props.log.entries.map((entry) => (
+        <LoopDebugCard key={entry.id} entry={entry} />
+      ))}
+    </section>
+  );
+}
+
+function LoopDebugCard(props: { entry: LoopDebugEntry }) {
+  const entry = props.entry;
+  return (
+    <details className={`loop-debug-card ${entry.kind}`}>
+      <summary>
+        <span>{entry.actor}</span>
+        <strong>{entry.title}</strong>
+        <small>{debugKindLabel(entry.kind)} · {new Date(entry.timestamp).toLocaleTimeString()}</small>
+      </summary>
+      {entry.detail ? <p>{entry.detail}</p> : null}
+      <pre>{entry.content}</pre>
+    </details>
+  );
+}
+
+function debugKindLabel(kind: LoopDebugEntry["kind"]): string {
+  const labels: Record<LoopDebugEntry["kind"], string> = {
+    flow: "Flow",
+    prompt: "Prompt",
+    llm: "LLM",
+    tool: "Tool"
+  };
+  return labels[kind];
 }
 
 function EventTimelineCard(props: { event: AutoAgentEvent }) {

@@ -1,6 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentInboxMessage, Assignment, AutoAgentEvent, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentInboxMessage, Assignment, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
@@ -14,6 +14,7 @@ import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
 import { readJson, writeJson } from "../storage/json.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import { assignmentTypeForPhase, nextPhase } from "./phases.js";
+import { buildLoopDebugLog } from "./loop-debug-log.js";
 import { createTicketRuntime, type TicketRuntime } from "./ticket-runtime.js";
 
 export interface MissionState {
@@ -229,6 +230,19 @@ export class MissionControl {
       };
     }
     return this.snapshot(workspace, state.task.id, state.taskRun.id);
+  }
+
+  async loopDebugLogByWorkspace(workspaceId: string): Promise<LoopDebugLog> {
+    const workspace = await this.workspaceStore.get(workspaceId);
+    const state = (await this.findActiveState(workspace)) ?? (await this.findLatestState(workspace));
+    if (!state) return { entries: [] };
+    const events = await this.ledger.read(workspace.rootPath, state.task.id, state.taskRun.id);
+    return buildLoopDebugLog({
+      workspace,
+      task: state.task,
+      taskRun: state.taskRun,
+      events
+    });
   }
 
   async runUntilIdle(workspace: Workspace, taskId: string, taskRunId: string): Promise<void> {

@@ -220,6 +220,26 @@ export interface WorkspaceSnapshot {
   currentStep?: string;
 }
 
+export type LoopDebugEntryKind = "flow" | "prompt" | "llm" | "tool";
+
+export interface LoopDebugEntry {
+  id: string;
+  kind: LoopDebugEntryKind;
+  timestamp: string;
+  actor: string;
+  title: string;
+  content: string;
+  detail?: string;
+  sequence?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LoopDebugLog {
+  task?: Task;
+  taskRun?: TaskRun;
+  entries: LoopDebugEntry[];
+}
+
 export interface ProviderConfig {
   provider: ProviderName;
   model: string;

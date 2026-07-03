@@ -1,4 +1,4 @@
-import type { AgentPolicy, AgentProfile, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -29,6 +29,10 @@ export function deleteWorkspace(workspaceId: string, input: { deleteLocalFolder:
 
 export function getSnapshot(workspaceId: string): Promise<{ snapshot: WorkspaceSnapshot }> {
   return api(`/api/workspaces/${workspaceId}/snapshot`);
+}
+
+export function getLoopDebugLog(workspaceId: string): Promise<{ log: LoopDebugLog }> {
+  return api(`/api/workspaces/${workspaceId}/debug-log`);
 }
 
 export function startTask(workspaceId: string, goal: string): Promise<{ snapshot: WorkspaceSnapshot }> {
