@@ -642,11 +642,15 @@ export function App() {
                 </button>
               </div>
               {rightPanelView === "events" ? (
-                eventGroups.map((group) => (
-                  <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} />
-                ))
+                <div className="event-panel-content">
+                  {eventGroups.map((group) => (
+                    <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} />
+                  ))}
+                </div>
               ) : (
-                <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
+                <div className="event-panel-content">
+                  <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
+                </div>
               )}
             </aside>
           </> : null}
