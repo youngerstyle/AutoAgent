@@ -988,6 +988,7 @@ button:disabled {
 
 .event-item {
   display: block;
+  flex: 0 0 auto;
   min-height: 68px;
   border: 1px solid #dde4ea;
   border-left: 4px solid #248a8a;
