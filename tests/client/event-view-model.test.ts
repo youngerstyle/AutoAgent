@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEventTimelineItem } from "../../src/client/event-view-model";
+import { buildEventTimelineItem, buildVisibleTimelineEvents } from "../../src/client/event-view-model";
 import type { AutoAgentEvent } from "../../src/shared/types";
 
 describe("event view model", () => {
@@ -71,6 +71,30 @@ describe("event view model", () => {
       title: "补充说明",
       detail: "继续到计划拆解"
     });
+  });
+
+  it("hides task-level blocked echo when an assignment already explains the same blocker", () => {
+    const assignmentBlocked = event("assignment.blocked", "质量检查受阻：需要人工测试", {
+      assignmentId: "as_qa",
+      reason: "需要人工测试"
+    });
+    const runBlocked = event("run.blocked", "任务受阻：质量检查受阻：需要人工测试", {
+      phase: "qa",
+      reason: "需要人工测试"
+    });
+
+    expect(buildVisibleTimelineEvents([runBlocked, assignmentBlocked]).map((item) => item.type)).toEqual([
+      "assignment.blocked"
+    ]);
+  });
+
+  it("keeps task-level blocked events when no assignment blocker exists", () => {
+    const runBlocked = event("run.blocked", "任务受阻：需求不清", {
+      phase: "boss_intake",
+      reason: "需求不清"
+    });
+
+    expect(buildVisibleTimelineEvents([runBlocked])).toEqual([runBlocked]);
   });
 });
 

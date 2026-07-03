@@ -9,6 +9,22 @@ export interface EventTimelineItem {
   debugType: AutoAgentEvent["type"];
 }
 
+export function buildVisibleTimelineEvents(events: AutoAgentEvent[]): AutoAgentEvent[] {
+  const assignmentBlockers = new Set(
+    events
+      .filter((event) => event.type === "assignment.blocked")
+      .map(blockerReason)
+      .filter((reason): reason is string => Boolean(reason))
+  );
+  if (assignmentBlockers.size === 0) return events;
+
+  return events.filter((event) => {
+    if (event.type !== "run.blocked") return true;
+    const reason = blockerReason(event);
+    return !reason || !assignmentBlockers.has(reason);
+  });
+}
+
 export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem {
   if (event.type === "provider.started") {
     const provider = providerLabel(stringPayload(event, "provider"));
@@ -100,6 +116,20 @@ function item(event: AutoAgentEvent, actor: string, title: string, detail: strin
     tone,
     debugType: event.type
   };
+}
+
+function blockerReason(event: AutoAgentEvent): string | undefined {
+  const reason = stringPayload(event, "reason");
+  if (reason) return normalizeBlocker(reason);
+  return normalizeBlocker(event.summary);
+}
+
+function normalizeBlocker(value: string): string | undefined {
+  const normalized = value
+    .replace(/^任务受阻[:：]\s*/, "")
+    .replace(/^(需求接收|计划拆解|架构设计|开发执行|质量检查|老板验收|专家交付|任务)受阻[:：]\s*/, "")
+    .trim();
+  return normalized || undefined;
 }
 
 function stringPayload(event: AutoAgentEvent, key: string): string | undefined {

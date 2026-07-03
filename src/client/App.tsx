@@ -24,7 +24,7 @@ import {
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, taskControlMode, type AgentProfileView } from "./view-model";
-import { buildEventTimelineItem } from "./event-view-model";
+import { buildEventTimelineItem, buildVisibleTimelineEvents } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
@@ -89,6 +89,7 @@ export function App() {
   const mode = taskControlMode(snapshot);
   const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
   const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
+  const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -612,7 +613,7 @@ export function App() {
                 </button>
               </div>
               {rightPanelView === "events" ? (
-                events.map((event) => (
+                visibleEvents.map((event) => (
                   <EventTimelineCard key={event.id} event={event} />
                 ))
               ) : (
