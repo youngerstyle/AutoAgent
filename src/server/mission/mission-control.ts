@@ -2,7 +2,7 @@ import { access, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { AgentInboxMessage, Assignment, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
-import { phaseLabel } from "../../shared/labels.js";
+import { phaseLabel, roleLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
 import { AgentProfileStore } from "../agents/profile-store.js";
 import { recruitSpecialist } from "../agents/recruitment.js";
@@ -337,6 +337,7 @@ export class MissionControl {
     state.updatedAt = new Date().toISOString();
 
     const manualTestingReason = phase === "qa" ? manualTestingReasonForPhase(result.providerResult.structured, result.providerResult.text) : undefined;
+    const roleToolBoundaryReason = roleToolBoundaryReasonForPhase(phase, agent, result.toolResults);
     const humanAuthorizationReason = humanAuthorizationReasonForPhase(result.providerResult.structured)
       ?? toolFailureReason(result.toolResults);
     const agentObstacle = agentObstacleReasonForPhase(phase, result.providerResult.structured);
@@ -345,6 +346,13 @@ export class MissionControl {
       : undefined;
     const qaDefectReason = phase === "qa" ? qaDefectReasonForPhase(result.providerResult.structured) : undefined;
     const manualOnlyReason = manualTestingReason && !qaDefectReason ? `需要人工测试：${manualTestingReason}` : undefined;
+    if (roleToolBoundaryReason) {
+      ticketRuntime.ack(ticket.id, phaseResult);
+      this.syncTickets(state, ticketRuntime);
+      const targetPhase = phaseForAgentObstacle(phase, roleToolBoundaryReason);
+      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, roleToolBoundaryReason, `${targetPhase}RoleBoundaryRetries`);
+    }
+
     if (humanAuthorizationReason || manualOnlyReason) {
       const reason = humanAuthorizationReason ?? manualOnlyReason ?? "需要 human 处理";
       const blockerManualReason = manualOnlyReason ? manualTestingReason : undefined;
@@ -714,6 +722,18 @@ function qaDefectReasonForPhase(structured?: Record<string, unknown>): string | 
   const failedQa = status === "fail" || status === "failed" || status === "not_passed";
   const reworkSignal = collectStructuredStrings(structured.report ?? structured).find(isQaReworkSignal);
   return failedQa && reworkSignal ? `QA 检查未通过：${reworkSignal}` : undefined;
+}
+
+function roleToolBoundaryReasonForPhase(phase: MissionPhase, agent: WorkspaceAgent, toolResults: Array<Record<string, unknown>>): string | undefined {
+  const failedWrite = toolResults.find((result) => {
+    return result.ok === false
+      && String(result.tool ?? "") === "writeFile"
+      && isPolicyOrPermissionFailure(String(result.error ?? ""));
+  });
+  if (!failedWrite) return undefined;
+  if (agent.roleInWorkspace === "dev" || agent.roleInWorkspace === "specialist") return undefined;
+  const target = String(failedWrite.path || "");
+  return `${phaseLabel(phase)}阶段的${roleLabel(agent.roleInWorkspace)}没有写项目文件权限，写入${target || "项目文件"}应交给开发或具备写权限的 Agent。`;
 }
 
 function firstNonEmptyDefectField(structured: Record<string, unknown>, keys: string[]): string | undefined {

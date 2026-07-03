@@ -70,6 +70,22 @@ describe("MissionControl", () => {
     expect(events.some((event) => event.summary.includes("Agent 自治继续"))).toBe(true);
   });
 
+  it("routes a boss write attempt to the team instead of blocking human", async () => {
+    const fixture = await missionFixture(new BossAttemptsWriteThenTeamCompletesProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "创建一个坦克大战页面" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("completed");
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.some((event) => event.type === "tool.denied" && event.summary.includes("文件写入被拒绝"))).toBe(true);
+    expect(events.map((event) => event.type)).not.toContain("run.blocked");
+    expect(events.some((event) => event.summary.includes("开发开始开发执行"))).toBe(true);
+    expect(events.map((event) => event.type)).toContain("run.completed");
+  });
+
   it("does not stop at boss intake when the model returns a Chinese clarification decision", async () => {
     const provider = new ChineseClarificationProvider();
     const fixture = await missionFixture(provider);
@@ -423,6 +439,24 @@ class BossClarifiesThenTeamCompletesProvider implements ProviderRunner {
         clarification_required: true,
         reason: "目标缺少验收标准和交付边界",
         action: "awaiting_clarification"
+      });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class BossAttemptsWriteThenTeamCompletesProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    const toolResults = (input.context?.toolResults as Array<Record<string, unknown>> | undefined) ?? [];
+    if (input.role === "boss" && input.assignmentType === "boss_intake" && toolResults.length === 0) {
+      return result({
+        decision: "可执行",
+        reason: "目标可以进入团队执行",
+        toolIntents: [{ tool: "writeFile", path: "index.html", content: "<!doctype html><canvas></canvas>\n" }]
       });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
