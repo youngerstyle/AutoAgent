@@ -803,8 +803,10 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
     <details className={`event-item ${item.tone}`} title={item.debugType}>
       <summary>
         <span className="event-actor">{item.actor}</span>
-        <strong className="event-title">{item.title}</strong>
-        {item.detail ? <small className="event-detail">{item.detail}</small> : null}
+        <span className="event-summary-copy">
+          <strong className="event-title">{item.title}</strong>
+          {item.detail ? <small className="event-detail">{item.detail}</small> : null}
+        </span>
       </summary>
       <div className="event-debug-body">
         {loopEntries.map((entry) => (

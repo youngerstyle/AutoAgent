@@ -1012,23 +1012,47 @@ button:disabled {
 
 .event-item summary {
   display: grid;
-  gap: 4px;
+  grid-template-columns: minmax(46px, max-content) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-height: 54px;
   padding: 10px;
   cursor: pointer;
+  list-style-position: outside;
+}
+
+.event-item summary::marker {
+  color: #8ca0b3;
+}
+
+.event-summary-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
 .event-actor {
+  min-width: 0;
   font-size: 12px;
   color: #657384;
+  line-height: 1.35;
+  padding-top: 2px;
 }
 
 .event-title {
+  display: block;
+  min-width: 0;
   color: #111b26;
+  font-size: 14px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .event-detail {
+  display: block;
+  min-width: 0;
   color: #435160;
+  font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
