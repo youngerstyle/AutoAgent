@@ -986,7 +986,7 @@ button:disabled {
 }
 
 .event-item {
-  display: grid;
+  display: block;
   border: 1px solid #dde4ea;
   border-left: 4px solid #248a8a;
   border-radius: 6px;
@@ -1011,32 +1011,39 @@ button:disabled {
 }
 
 .event-item summary {
-  display: grid;
-  grid-template-columns: minmax(46px, max-content) minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-  min-height: 54px;
-  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 66px;
+  padding: 10px 12px;
+  box-sizing: border-box;
   cursor: pointer;
-  list-style-position: outside;
+  list-style: none;
 }
 
-.event-item summary::marker {
-  color: #8ca0b3;
+.event-item summary::-webkit-details-marker {
+  display: none;
 }
 
 .event-summary-copy {
+  flex: 1 1 auto;
   min-width: 0;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 3px;
 }
 
 .event-actor {
+  flex: 0 0 48px;
   min-width: 0;
+  max-width: 48px;
   font-size: 12px;
   color: #657384;
   line-height: 1.35;
   padding-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .event-title {
@@ -1049,12 +1056,21 @@ button:disabled {
 }
 
 .event-detail {
-  display: block;
+  display: -webkit-box;
   min-width: 0;
   color: #435160;
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.event-item[open] .event-detail {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
 }
 
 .event-debug-body {
