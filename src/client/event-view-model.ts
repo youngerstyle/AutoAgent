@@ -137,7 +137,18 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, blocker.actor, blocker.title, blocker.detail, "warning");
   }
 
-  if (event.type === "assignment.failed" || event.type === "run.failed" || event.type === "qa.failed") {
+  if (event.type === "run.failed") {
+    const reason = stringPayload(event, "reason");
+    const attempts = numberPayload(event, "attempts");
+    const detail = [
+      displayText(event.summary) ?? event.summary,
+      reason,
+      attempts ? `自治尝试 ${attempts} 次` : undefined
+    ].filter(Boolean).join("：").replace("：自治尝试", "；自治尝试");
+    return item(event, "任务", "任务失败", detail || undefined, "danger");
+  }
+
+  if (event.type === "assignment.failed" || event.type === "qa.failed") {
     return item(event, actorFromSummary(event.summary) || "任务", displayText(event.summary) ?? event.summary, undefined, "danger");
   }
 
@@ -168,6 +179,7 @@ function actorForTimelineGroup(event: AutoAgentEvent, item: EventTimelineItem, p
 
 function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): string | undefined {
   if (event.type === "handoff.created") return "自治返工";
+  if (event.type === "run.failed") return "任务失败";
   const phase = stringPayload(event, "phase") as MissionPhase | undefined;
   if (phase) return phaseLabel(phase);
   const assignmentType = nestedStringPayload(event, "assignment", "type") as AssignmentType | undefined;
@@ -343,6 +355,11 @@ function statusLabelText(status: string | undefined): string | undefined {
 function stringPayload(event: AutoAgentEvent, key: string): string | undefined {
   const value = event.payload[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function numberPayload(event: AutoAgentEvent, key: string): number | undefined {
+  const value = event.payload[key];
+  return typeof value === "number" ? value : undefined;
 }
 
 function nestedStringPayload(event: AutoAgentEvent, objectKey: string, key: string): string | undefined {

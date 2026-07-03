@@ -174,6 +174,28 @@ describe("event view model", () => {
       detail: "需求接收：需要人工修改地图数据并验证。"
     });
   });
+
+  it("shows run failures as task failures instead of the previous phase", () => {
+    const groups = buildEventTimelineGroups([
+      event("task.phase_changed", "进入阶段：计划拆解", { phase: "pm_plan" }, "ev_1"),
+      event("assignment.completed", "产品/项目已完成计划拆解", { assignment: { type: "pm_plan" } }, "ev_2"),
+      event("run.failed", "需求接收无法自治修复，任务失败", {
+        reason: "当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。",
+        attempts: 3
+      }, "ev_3")
+    ]);
+
+    expect(groups.map((group) => group.title)).toEqual([
+      "产品/项目 · 计划拆解",
+      "任务 · 任务失败"
+    ]);
+    expect(groups[1].summary).toContain("关注：任务失败");
+    expect(buildEventTimelineItem(groups[1].events[0])).toMatchObject({
+      actor: "任务",
+      title: "任务失败",
+      detail: "需求接收无法自治修复，任务失败：当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。；自治尝试 3 次"
+    });
+  });
 });
 
 function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>, id = `ev_${type}`): AutoAgentEvent {
