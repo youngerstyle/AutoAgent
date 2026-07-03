@@ -642,8 +642,8 @@ export function App() {
                 </button>
               </div>
               {rightPanelView === "events" ? (
-                eventGroups.map((group, index) => (
-                  <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} defaultExpanded={index === eventGroups.length - 1} />
+                eventGroups.map((group) => (
+                  <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} />
                 ))
               ) : (
                 <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
@@ -822,8 +822,8 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
   );
 }
 
-function EventTimelineGroupCard(props: { group: EventTimelineGroup; debugLog: LoopDebugLog; defaultExpanded?: boolean }) {
-  const [expanded, setExpanded] = useState(Boolean(props.defaultExpanded));
+function EventTimelineGroupCard(props: { group: EventTimelineGroup; debugLog: LoopDebugLog }) {
+  const [expanded, setExpanded] = useState(false);
   return (
     <section className={`event-group ${props.group.tone}`}>
       <button type="button" className="event-group-button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
