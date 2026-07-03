@@ -105,7 +105,7 @@ describe("projectWorkspaceState", () => {
     expect(snapshot.recentEvents.find((item) => item.type === "run.blocked")?.summary).toBe("任务受阻：需求不清");
   });
 
-  it("hides downstream stale events when the first assignment already blocked the flow", () => {
+  it("keeps downstream events visible even when an earlier assignment blocked the flow", () => {
     const workspace: Workspace = {
       id: "ws_1",
       name: "Demo",
@@ -142,7 +142,7 @@ describe("projectWorkspaceState", () => {
         assignment: { type: "implementation" },
         toolResults: []
       }, "开发已完成开发执行"),
-      event("run.blocked", { task: { ...task, status: "blocked" }, taskRun: { ...taskRun, status: "blocked" }, reason: "需求不清" })
+      event("run.blocked", { task: { ...task, status: "blocked" }, taskRun: { ...taskRun, status: "blocked" }, reason: "需求不清" }, "任务受阻：需求不清")
     ];
 
     const snapshot = projectWorkspaceState(workspace, events);
@@ -150,10 +150,11 @@ describe("projectWorkspaceState", () => {
     expect(snapshot.recentEvents.map((item) => item.summary)).toEqual([
       "task.created",
       "老板已完成需求接收",
-      "任务受阻：需求接收没有通过"
+      "开发已完成开发执行",
+      "任务受阻：需求不清"
     ]);
     expect(snapshot.recentEvents.find((item) => item.type === "run.blocked")?.payload).toMatchObject({
-      reason: "需求接收没有通过；后面的阶段运行是旧流程 bug 产生的无效后续，不代表团队已经交付。原因：目标缺少交付边界"
+      reason: "需求不清"
     });
   });
 });

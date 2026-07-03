@@ -131,7 +131,7 @@ textarea {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px minmax(360px, 1fr) 340px;
+  grid-template-columns: 280px minmax(0, 1fr) 340px;
   gap: 0;
   overflow: hidden;
 }
@@ -692,7 +692,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
-  padding: 10px 14px;
+  padding: 14px 14px 10px;
   border-bottom: 1px solid #e1e6ec;
   background: #ffffff;
 }
@@ -708,6 +708,10 @@ button:disabled {
   min-width: 0;
   padding: 7px 8px;
   font-size: 13px;
+}
+
+.right-panel-tabs button:focus-visible {
+  outline-offset: -2px;
 }
 
 .right-panel-tabs button.selected {

@@ -515,7 +515,7 @@ export function App() {
         />
         <section
           className={view === "run" ? "console-region" : "management-region"}
-          style={view === "run" ? { gridTemplateColumns: `${runLayoutWidths.task}px 8px minmax(360px, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
+          style={view === "run" ? { gridTemplateColumns: `${runLayoutWidths.task}px 8px minmax(0, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
         >
           {view === "run" ? <>
             <section className="task-panel">
