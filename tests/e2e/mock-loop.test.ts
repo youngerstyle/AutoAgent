@@ -44,7 +44,9 @@ async function pollSnapshot(app: ReturnType<typeof createApp>, workspaceId: stri
   for (let index = 0; index < 40; index += 1) {
     const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200);
     snapshot = response.body.snapshot;
-    if (snapshot.status === "completed" || snapshot.status === "failed") return snapshot;
+    const eventTypes = snapshot.recentEvents.map((event: { type: string }) => event.type);
+    if (snapshot.status === "completed" && eventTypes.includes("run.completed")) return snapshot;
+    if (snapshot.status === "failed" && eventTypes.includes("run.failed")) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Task did not finish. Last snapshot: ${JSON.stringify(snapshot)}`);

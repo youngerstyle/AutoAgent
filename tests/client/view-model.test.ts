@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, taskControlMode } from "../../src/client/view-model";
-import type { AgentProfile, WorkspaceSnapshot } from "../../src/shared/types";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTicketAgentMessage, taskControlMode } from "../../src/client/view-model";
+import type { AgentProfile, AutoAgentEvent, WorkspaceSnapshot } from "../../src/shared/types";
 
 describe("client view model", () => {
   it("marks the currently running agent as active and places core roles on canvas", () => {
@@ -14,15 +14,344 @@ describe("client view model", () => {
   it("derives task controls from snapshot status", () => {
     expect(taskControlMode(undefined)).toBe("empty");
     expect(taskControlMode(snapshot("paused"))).toBe("paused");
+    expect(taskControlMode(snapshot("blocked"))).toBe("blocked");
     expect(taskControlMode(snapshot("completed"))).toBe("terminal");
   });
 
-  it("projects agents as platform profiles with identity, soul, tools, model, and memory", () => {
+  it("does not turn stale implementation evidence failures into human prompts", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "boss_acceptance" as const },
+      phase: "boss_acceptance" as const,
+      recentEvents: [
+        event("assignment.completed", "开发已完成开发执行", {
+          assignment: { type: "implementation" },
+          toolResults: []
+        }),
+        event("run.blocked", "任务受阻：没有交付物可供验收。", { reason: "没有交付物可供验收。" })
+      ]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+    expect(buildAgentNodes(blocked).some((node) => node.needsAttention)).toBe(false);
+  });
+
+  it("does not turn clarification requests into human prompts", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "boss_intake" as const },
+      phase: "boss_intake" as const,
+      recentEvents: [
+        event("provider.completed", "老板的模型调用已完成", {
+          providerEvents: [{ type: "text", text: "{\n  \"decision\": \"暂不执行，需澄清\",\n  \"reason\": \"目标缺少交付边界\"\n}" }]
+        }, "wa_boss"),
+        event("assignment.completed", "老板已完成需求接收", {
+          assignment: { type: "boss_intake" },
+          result: { decision: "暂不执行，需澄清", action: "check_project_files", reason: "目标缺少交付边界" }
+        }, "wa_boss"),
+        event("assignment.completed", "开发已完成开发执行", {
+          assignment: { type: "implementation" },
+          toolResults: []
+        }),
+        event("run.blocked", "任务受阻：需求不清", { reason: "需求不清" })
+      ]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_boss")?.needsAttention).toBe(false);
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_dev")?.needsAttention).toBe(false);
+  });
+
+  it("does not turn stale tool failures into human prompts after a follow-up", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "pm_plan" as const },
+      phase: "pm_plan" as const,
+      assignments: [{
+        id: "as_pm",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        ownerWorkspaceAgentId: "wa_pm",
+        type: "pm_plan" as const,
+        brief: "计划",
+        expectedArtifact: "计划",
+        status: "blocked" as const
+      }],
+      agents: [
+        ...snapshot("blocked").agents,
+        { id: "wa_pm", workspaceId: "ws_1", profileId: "prof_pm", roleInWorkspace: "pm" as const, agentDir: "pm", status: "waiting" as const, name: "PM" }
+      ],
+      recentEvents: [
+        event("assignment.completed", "老板已完成需求接收", {
+          assignment: { type: "boss_intake" },
+          result: { decision: "暂不执行，需澄清", reason: "旧问题" }
+        }, "wa_boss"),
+        event("human.followup", "human 已补充说明", { message: "继续" }),
+        event("assignment.blocked", "计划拆解受阻：读取文件失败", {
+          assignmentId: "as_pm",
+          assignmentRun: { workspaceAgentId: "wa_pm" },
+          reason: "readFile (package.json) 执行失败：文件不存在"
+        }),
+        event("run.blocked", "任务受阻：读取文件失败", { reason: "读取文件失败" })
+      ]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_pm")?.needsAttention).toBe(false);
+  });
+
+  it("shows human prompts only for explicit authorization boundaries", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "boss_intake" as const },
+      phase: "boss_intake" as const,
+      recentEvents: [
+        event("assignment.blocked", "需求接收受阻：生产部署需要人工授权", {
+          assignmentRun: { workspaceAgentId: "wa_boss" },
+          reason: "生产部署需要人工授权"
+        }, "wa_boss"),
+        event("run.blocked", "任务受阻：生产部署需要人工授权", { reason: "生产部署需要人工授权" })
+      ]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)).toMatchObject({
+      agentId: "wa_boss",
+      waiter: "老板",
+      phase: "需求接收"
+    });
+    expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("生产部署需要人工授权");
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_boss")?.needsAttention).toBe(true);
+  });
+
+  it("labels browser capability gaps as manual testing instead of vague intervention", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
+      phase: "qa" as const,
+      recentEvents: [
+        event("assignment.blocked", "质量检查需要人工测试：缺少浏览器运行环境", {
+          assignmentRun: { workspaceAgentId: "wa_qa" },
+          reason: "缺少浏览器运行环境，无法实际执行手动测试（移动、射击、碰撞等交互验证）。请人工打开 index.html 测试。"
+        }, "wa_qa"),
+        event("run.blocked", "任务暂停：需要人工测试", { reason: "缺少浏览器运行环境" })
+      ]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)).toMatchObject({
+      title: "需要人工测试",
+      agentId: "wa_qa",
+      waiter: "测试",
+      phase: "质量检查"
+    });
+    expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("请人工打开 index.html");
+    expect(buildHumanFlowPrompt(blocked)?.transcript).not.toContain("需要人工介入");
+  });
+
+  it("does not describe QA defect blocks as authorization boundaries", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
+      phase: "qa" as const,
+      tickets: [{
+        id: "tk_qa",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "qa" as const,
+        status: "blocked" as const,
+        brief: "质量检查",
+        expectedArtifact: "测试报告",
+        targetRole: "qa" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: { type: "external_dependency" as const, reason: "QA 检查未通过：DEFECT-001" },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(buildBlockedPanelCopy(blocked)).toMatchObject({
+      title: "质量检查已阻塞",
+      hint: "当前工单没有被识别为人工授权或人工测试边界。"
+    });
+  });
+
+  it("turns manual QA blockers into explicit human test actions", () => {
+    const ticket = {
+      id: "tk_qa",
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "qa" as const,
+      status: "blocked" as const,
+      brief: "质量检查",
+      expectedArtifact: "测试报告",
+      targetRole: "qa" as const,
+      priority: 0,
+      attempt: 1,
+      blocker: {
+        type: "manual_test_required" as const,
+        reason: JSON.stringify({
+          status: "manual_test_required",
+          report: {
+            summary: "静态分析通过，但需要人工浏览器测试。",
+            test_file: "C:\\ws\\index.html",
+            test_steps: ["打开 index.html", "按 R 重启"],
+            expected_result: "全部步骤通过"
+          }
+        })
+      },
+      createdAt: "now",
+      updatedAt: "now"
+    };
+
+    expect(buildManualTestAction(ticket)).toMatchObject({
+      summary: "静态分析通过，但需要人工浏览器测试。",
+      testFile: "C:\\ws\\index.html",
+      steps: ["打开 index.html", "按 R 重启"],
+      passMessage: "我已按 QA 给出的人工测试步骤验证通过，可以进入老板验收。",
+      failMessage: "人工测试未通过，请开发根据 QA 测试步骤和失败现象继续返工。"
+    });
+  });
+
+  it("presents blocked QA manual tests as messages from the QA agent", () => {
+    const ticket = {
+      id: "tk_qa",
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "qa" as const,
+      status: "blocked" as const,
+      brief: "质量检查",
+      expectedArtifact: "测试报告",
+      targetRole: "qa" as const,
+      priority: 0,
+      attempt: 1,
+      blocker: { type: "manual_test_required" as const, reason: "{\"status\":\"manual_test_required\"}" },
+      createdAt: "now",
+      updatedAt: "now"
+    };
+    const message = {
+      id: "msg_qa",
+      workspaceId: "ws_1",
+      ticketId: "tk_qa",
+      toRole: "qa" as const,
+      status: "claimed" as const,
+      dedupeKey: "d",
+      correlationId: "c",
+      priority: 0,
+      claimedByAgentId: "wa_qa",
+      createdAt: "now",
+      updatedAt: "now"
+    };
+
+    expect(buildTicketAgentMessage(ticket, message)).toMatchObject({
+      speaker: "测试",
+      title: "测试：需要你人工测试",
+      statusLabel: "等你处理",
+      meta: "QA 已完成静态检查，等待你测试后回复。",
+      workOrderDetail: "工单：质量检查；消息：已领取"
+    });
+  });
+
+  it("marks the QA node and opens human loop for blocked manual test tickets", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      phase: "qa" as const,
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
+      tickets: [{
+        id: "tk_qa",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "qa" as const,
+        status: "blocked" as const,
+        brief: "质量检查",
+        expectedArtifact: "测试报告",
+        targetRole: "qa" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: {
+          type: "manual_test_required" as const,
+          reason: JSON.stringify({
+            status: "manual_test_required",
+            report: {
+              summary: "静态分析通过，需要人工浏览器测试。",
+              test_file: "C:\\ws\\index.html",
+              test_steps: ["打开 index.html", "确认可以移动"],
+              expected_result: "全部步骤通过"
+            }
+          })
+        },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_qa")?.needsAttention).toBe(true);
+    expect(buildHumanFlowPrompt(blocked)).toMatchObject({
+      title: "需要人工测试",
+      agentId: "wa_qa",
+      waiter: "测试",
+      phase: "质量检查",
+      inputLabel: "测试结果",
+      placeholder: "回复测试",
+      manualTest: {
+        summary: "静态分析通过，需要人工浏览器测试。",
+        testFile: "C:\\ws\\index.html",
+        steps: ["打开 index.html", "确认可以移动"]
+      }
+    });
+    expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("测试:");
+  });
+
+  it("does not keep manual test attention after the task is completed", () => {
+    const completed = {
+      ...snapshot("completed"),
+      phase: "completed" as const,
+      activeTaskRun: { ...snapshot("completed").activeTaskRun!, status: "completed" as const, phase: "completed" as const },
+      tickets: [{
+        id: "tk_qa",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "qa" as const,
+        status: "blocked" as const,
+        brief: "质量检查",
+        expectedArtifact: "测试报告",
+        targetAgentId: "wa_qa",
+        targetRole: "qa" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: {
+          type: "manual_test_required" as const,
+          reason: JSON.stringify({
+            status: "manual_test_required",
+            report: { summary: "曾经需要人工测试。" }
+          })
+        },
+        result: {
+          humanAction: {
+            action: "manual_test_passed",
+            message: "测试通过。"
+          }
+        },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(buildHumanFlowPrompt(completed)).toBeUndefined();
+    expect(buildAgentNodes(completed).find((node) => node.id === "wa_qa")?.needsAttention).toBe(false);
+  });
+
+  it("projects agents as platform profiles with identity, soul, agent.md, tools, model, and memory", () => {
     const profiles = buildAgentProfiles(snapshot("running"));
     const dev = profiles.find((profile) => profile.role === "dev");
 
     expect(dev?.identity.title).toBe("开发");
-    expect(dev?.soul).toContain("交付");
+    expect(dev?.soul).toContain("可运行变化");
+    expect(dev?.agentMd).toContain("# 使命");
     expect(dev && "loopSteps" in dev).toBe(false);
     expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["文件", "命令", "浏览器/MCP"]));
     expect(dev?.model.providerLabel).toBe("模拟服务");
@@ -36,6 +365,7 @@ describe("client view model", () => {
       role: "dev",
       identity: "负责把任务变成可运行变更",
       soul: "先读上下文，再用证据交付。",
+      agentMd: "# 开发能力手册\n- 读代码\n- 验证交付",
       capabilities: ["TypeScript", "验证"],
       defaultProvider: "mock",
       defaultModel: "mock-dev",
@@ -47,6 +377,7 @@ describe("client view model", () => {
 
     expect(catalog[0].identity.title).toBe("全栈工程师");
     expect(team.find((profile) => profile.role === "dev")?.soul).toBe("先读上下文，再用证据交付。");
+    expect(team.find((profile) => profile.role === "dev")?.agentMd).toContain("开发能力手册");
     expect(team.find((profile) => profile.role === "dev") && "loopSteps" in team.find((profile) => profile.role === "dev")!).toBe(false);
   });
 });
@@ -65,5 +396,19 @@ function snapshot(status: WorkspaceSnapshot["status"]): WorkspaceSnapshot {
     recentEvents: [],
     phase: status === "paused" ? "paused" : "implementation",
     status
+  };
+}
+
+function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>, actorId?: string): AutoAgentEvent {
+  return {
+    id: `evt_${type}`,
+    workspaceId: "ws_1",
+    taskId: "task_1",
+    taskRunId: "tr_1",
+    actorId,
+    type,
+    summary,
+    payload,
+    timestamp: "now"
   };
 }

@@ -19,5 +19,12 @@ export function createWorkspaceRouter(store = new WorkspaceStore(loadConfig().au
     res.status(201).json({ workspace });
   }));
 
+  router.delete("/:workspaceId", asyncHandler(async (req, res) => {
+    const workspace = await store.remove(String(req.params.workspaceId), {
+      deleteLocalFolder: req.body?.deleteLocalFolder === true
+    });
+    res.json({ workspace });
+  }));
+
   return router;
 }

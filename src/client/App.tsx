@@ -4,6 +4,7 @@ import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } fro
 import {
   createModelConfig,
   createWorkspace,
+  deleteWorkspace,
   getSnapshot,
   listAgentProfiles,
   listAgents,
@@ -11,6 +12,7 @@ import {
   listWorkspaces,
   pauseTask,
   resumeTask,
+  sendTaskFollowup,
   setDefaultModelConfig,
   startTask,
   stopTask,
@@ -19,13 +21,39 @@ import {
   updateModelConfig,
   type WorkspaceAgentConfig
 } from "./api";
-import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, taskControlMode, type AgentProfileView } from "./view-model";
+import { agentProfileCardSummary } from "./agent-profile-card";
+import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, taskControlMode, type AgentProfileView } from "./view-model";
+import { buildEventTimelineItem } from "./event-view-model";
+import { buildAgentMessageView } from "./agent-message";
+
+const AGENT_PANEL_MIN_HEIGHT = 180;
+const AGENT_PANEL_MAX_HEIGHT = 560;
+const AGENT_PANEL_DEFAULT_HEIGHT = 300;
+const WORKSPACE_PANEL_MIN_WIDTH = 220;
+const WORKSPACE_PANEL_MAX_WIDTH = 440;
+const TASK_PANEL_MIN_WIDTH = 220;
+const TASK_PANEL_MAX_WIDTH = 420;
+const EVENT_PANEL_MIN_WIDTH = 260;
+const EVENT_PANEL_MAX_WIDTH = 520;
+
+type RunLayoutWidths = {
+  workspace: number;
+  task: number;
+  events: number;
+};
 
 type RealProviderName = Exclude<ProviderName, "mock">;
 type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
   provider: RealProviderName;
   apiKey: string;
   baseUrl: string;
+};
+
+type DeleteWorkspaceDialogState = {
+  workspace: Workspace;
+  deleteLocalFolder: boolean;
+  busy: boolean;
 };
 
 export function App() {
@@ -49,10 +77,14 @@ export function App() {
     baseUrl: ""
   });
   const [error, setError] = useState("");
+  const [deleteDialog, setDeleteDialog] = useState<DeleteWorkspaceDialogState>();
+  const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
+  const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
   const profiles = useMemo(() => buildAgentProfiles(snapshot, agentProfiles), [snapshot, agentProfiles]);
   const catalogProfiles = useMemo(() => buildAgentCatalogProfiles(agentProfiles), [agentProfiles]);
   const mode = taskControlMode(snapshot);
+  const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -76,11 +108,32 @@ export function App() {
     return () => source.close();
   }, [selectedId]);
 
-  async function refreshWorkspaces() {
+  useEffect(() => {
+    if (humanFlowPrompt?.agentId) setSelectedAgentId(humanFlowPrompt.agentId);
+  }, [humanFlowPrompt?.agentId]);
+
+  useEffect(() => {
+    window.localStorage.setItem("autoagent.agentPanelHeight", String(agentPanelHeight));
+  }, [agentPanelHeight]);
+
+  useEffect(() => {
+    window.localStorage.setItem("autoagent.runLayoutWidths", JSON.stringify(runLayoutWidths));
+  }, [runLayoutWidths]);
+
+  async function refreshWorkspaces(preferredWorkspaceId = selectedId) {
     try {
       const result = await listWorkspaces();
+      const nextSelectedId = result.workspaces.some((workspace) => workspace.id === preferredWorkspaceId)
+        ? preferredWorkspaceId
+        : result.workspaces[0]?.id ?? "";
       setWorkspaces(result.workspaces);
-      if (!selectedId && result.workspaces[0]) setSelectedId(result.workspaces[0].id);
+      setSelectedId(nextSelectedId);
+      if (!nextSelectedId) {
+        setSnapshot(undefined);
+        setEvents([]);
+        setAgents([]);
+        setSelectedAgentId("");
+      }
     } catch (err) {
       setError((err as Error).message);
     }
@@ -133,7 +186,7 @@ export function App() {
     event.preventDefault();
     try {
       const result = await createWorkspace(workspaceForm);
-      await refreshWorkspaces();
+      await refreshWorkspaces(result.workspace.id);
       setSelectedId(result.workspace.id);
       await refreshAgents(result.workspace.id);
       setWorkspaceForm((current) => ({ ...current, rootPath: "" }));
@@ -146,7 +199,10 @@ export function App() {
     event.preventDefault();
     if (!selectedId || !goal.trim()) return;
     try {
-      const result = await startTask(selectedId, goal);
+      const taskId = snapshot?.activeTask?.id;
+      const result = (mode === "running" || mode === "paused" || mode === "blocked") && taskId
+        ? await sendTaskFollowup(selectedId, taskId, goal)
+        : await startTask(selectedId, goal);
       setSnapshot(result.snapshot);
       setGoal("");
     } catch (err) {
@@ -167,6 +223,59 @@ export function App() {
     }
   }
 
+  function startAgentPanelResize(event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = agentPanelHeight;
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextHeight = startHeight - (moveEvent.clientY - startY);
+      setAgentPanelHeight(clamp(nextHeight, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }
+
+  function resizeAgentPanelWithKeyboard(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? 24 : -24;
+    setAgentPanelHeight((current) => clamp(current + delta, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT));
+  }
+
+  function startColumnResize(column: keyof RunLayoutWidths, event: React.PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidths = runLayoutWidths;
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX;
+      setRunLayoutWidths({
+        ...startWidths,
+        [column]: clampColumnWidth(column, startWidths[column] + (column === "events" ? -delta : delta))
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+  }
+
+  function resizeColumnWithKeyboard(column: keyof RunLayoutWidths, event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 24 : -24;
+    const delta = column === "events" ? -direction : direction;
+    setRunLayoutWidths((current) => ({
+      ...current,
+      [column]: clampColumnWidth(column, current[column] + delta)
+    }));
+  }
+
   async function saveAgent(agent: WorkspaceAgentConfig) {
     if (!selectedId) return;
     try {
@@ -178,6 +287,39 @@ export function App() {
       await refreshAgents(selectedId);
       await refreshSnapshot(selectedId);
       setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function confirmDeleteWorkspace() {
+    if (!deleteDialog) return;
+    const target = deleteDialog.workspace;
+    try {
+      setDeleteDialog({ ...deleteDialog, busy: true });
+      await deleteWorkspace(target.id, { deleteLocalFolder: deleteDialog.deleteLocalFolder });
+      await refreshWorkspaces(selectedId === target.id ? "" : selectedId);
+      if (selectedId === target.id) {
+        setSnapshot(undefined);
+        setEvents([]);
+        setAgents([]);
+        setSelectedAgentId("");
+      }
+      setDeleteDialog(undefined);
+      setError("");
+    } catch (err) {
+      setDeleteDialog((current) => current ? { ...current, busy: false } : current);
+      setError((err as Error).message);
+    }
+  }
+
+  async function sendFollowupMessage(message: string) {
+    const taskId = snapshot?.activeTask?.id;
+    if (!selectedId || !taskId || !message.trim()) return;
+    try {
+      const result = await sendTaskFollowup(selectedId, taskId, message);
+      setSnapshot(result.snapshot);
+      setGoal("");
     } catch (err) {
       setError((err as Error).message);
     }
@@ -232,6 +374,7 @@ export function App() {
         name: profile.name,
         identity: profile.identity,
         soul: profile.soul,
+        agentMd: profile.agentMd,
         capabilities: profile.capabilities,
         defaultProvider: profile.defaultProvider,
         defaultModel: profile.defaultModel,
@@ -249,6 +392,21 @@ export function App() {
   const selectedDraft = selectedProfile ? agents.find((agent) => agent.id === selectedProfile.id) : undefined;
   const selectedCatalogProfile = catalogProfiles.find((profile) => profile.id === selectedProfileId) ?? catalogProfiles[0];
   const selectedCatalogDefinition = agentProfiles.find((profile) => profile.id === selectedCatalogProfile?.id) ?? agentProfiles[0];
+  const hasActiveFlow = mode === "running" || mode === "paused" || mode === "blocked";
+  const taskInputLabel = hasActiveFlow ? "补充说明" : "项目目标";
+  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续 Agent 上下文" : "描述这个项目要交给团队完成的目标";
+  const taskSubmitLabel = hasActiveFlow ? "发送给团队" : mode === "terminal" ? "重新开始" : "开始";
+  const taskSubmitDisabled = !selectedId || !goal.trim();
+  const suggestedFollowup = humanFlowPrompt?.suggestion ?? "";
+  const blockedPanelCopy = buildBlockedPanelCopy(snapshot);
+  const primaryPanelTitle = mode === "blocked"
+    ? "任务控制"
+    : mode === "terminal"
+      ? "任务已结束，重新描述目标"
+      : hasActiveFlow
+      ? "给团队补充上下文"
+      : "描述这个项目要交给团队完成的目标";
+  const selectedAgentNeedsReply = Boolean(humanFlowPrompt && selectedAgent?.id === humanFlowPrompt.agentId);
 
   return (
     <main className="app-shell">
@@ -265,7 +423,10 @@ export function App() {
         </nav>
         <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{statusLabel(snapshot?.status ?? "idle")}</strong>
       </header>
-      <section className="workspace-shell">
+      <section
+        className="workspace-shell"
+        style={{ gridTemplateColumns: `${runLayoutWidths.workspace}px 8px minmax(0, 1fr)` }}
+      >
         <aside className="workspace-list">
           <form className="workspace-form" onSubmit={submitWorkspace}>
             <label>
@@ -287,58 +448,147 @@ export function App() {
           </form>
           <div className="workspace-items">
             {workspaces.map((workspace) => (
-              <button key={workspace.id} className={workspace.id === selectedId ? "workspace-item selected" : "workspace-item"} onClick={() => setSelectedId(workspace.id)}>
-                <strong>{displayWorkspaceName(workspace.name)}</strong>
-                <span>{workspace.rootPath}</span>
-              </button>
+              <article key={workspace.id} className={workspace.id === selectedId ? "workspace-item selected" : "workspace-item"}>
+                <button type="button" className="workspace-select" onClick={() => setSelectedId(workspace.id)}>
+                  <strong>{displayWorkspaceName(workspace.name)}</strong>
+                  <span>{workspace.rootPath}</span>
+                </button>
+                <button
+                  type="button"
+                  className="workspace-delete"
+                  aria-label={`删除项目 ${displayWorkspaceName(workspace.name)}`}
+                  title="删除项目"
+                  onClick={() => setDeleteDialog({ workspace, deleteLocalFolder: false, busy: false })}
+                >
+                  删除
+                </button>
+              </article>
             ))}
           </div>
         </aside>
-        <section className={view === "run" ? "console-region" : "management-region"}>
+        <button
+          type="button"
+          role="separator"
+          className="column-resizer"
+          aria-label="调整项目列表宽度"
+          aria-orientation="vertical"
+          aria-valuemin={WORKSPACE_PANEL_MIN_WIDTH}
+          aria-valuemax={WORKSPACE_PANEL_MAX_WIDTH}
+          aria-valuenow={runLayoutWidths.workspace}
+          onPointerDown={(event) => startColumnResize("workspace", event)}
+          onKeyDown={(event) => resizeColumnWithKeyboard("workspace", event)}
+          title="拖动调整项目列表宽度"
+        />
+        <section
+          className={view === "run" ? "console-region" : "management-region"}
+          style={view === "run" ? { gridTemplateColumns: `${runLayoutWidths.task}px 8px minmax(360px, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
+        >
           {view === "run" ? <>
             <section className="task-panel">
+            <h2 className="task-panel-title">{primaryPanelTitle}</h2>
+            {mode === "blocked" ? (
+              <p className="task-panel-hint">{blockedPanelCopy.hint}</p>
+            ) : null}
             <form onSubmit={submitTask}>
-              <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="描述这个项目要交给团队完成的目标" />
-              <button type="submit" disabled={!selectedId || mode === "running"}>开始</button>
+              <label>
+                <span>{taskInputLabel}</span>
+                <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} />
+              </label>
+              <button type="submit" disabled={taskSubmitDisabled}>{taskSubmitLabel}</button>
             </form>
             <div className="control-row">
               <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
-              <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused"}>继续</button>
-              <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused"}>停止</button>
+              <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"}>继续</button>
+              <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"}>停止</button>
             </div>
             {error ? <p className="error-text">{error}</p> : null}
             </section>
 
-            <section className="canvas-panel">
+            <button
+              type="button"
+              role="separator"
+              className="column-resizer"
+              aria-label="调整任务控制区宽度"
+              aria-orientation="vertical"
+              aria-valuemin={TASK_PANEL_MIN_WIDTH}
+              aria-valuemax={TASK_PANEL_MAX_WIDTH}
+              aria-valuenow={runLayoutWidths.task}
+              onPointerDown={(event) => startColumnResize("task", event)}
+              onKeyDown={(event) => resizeColumnWithKeyboard("task", event)}
+              title="拖动调整任务控制区宽度"
+            />
+
+            <section className="canvas-panel" style={{ gridTemplateRows: `minmax(220px, 1fr) 8px ${agentPanelHeight}px` }}>
             <div className="team-canvas">
               <div className="canvas-phase">{phaseLabel(snapshot?.phase ?? "idle")}</div>
               {nodes.map((node) => (
                 <button
                   key={node.id}
-                  className={node.active ? "agent-node active" : `agent-node ${node.status}`}
+                  className={`${node.active ? "agent-node active" : `agent-node ${node.status}`} ${node.needsAttention ? "needs-attention" : ""}`}
                   style={{ left: `${node.x}%`, top: `${node.y}%` }}
                   onClick={() => setSelectedAgentId(node.id)}
                   title={node.currentStep ?? statusLabel(node.status)}
                 >
                   <span className="avatar">{initials(node.label)}</span>
+                  {node.needsAttention ? <span className="attention-badge">!</span> : null}
                   <strong>{node.label}</strong>
                   <small>{node.currentStep ?? statusLabel(node.status)}</small>
                 </button>
               ))}
             </div>
-            <div className="agent-detail">
-              <strong>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "未选择成员"}</strong>
-              <span>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "空闲"}</span>
-              <p>{(displayText(selectedAgent?.currentStep) ?? (selectedAgent ? capabilityLabels(selectedAgent.roleInWorkspace, selectedAgent.capabilities).join("、") : "")) || "创建项目后会生成固定团队。"}</p>
+            <button
+              type="button"
+              role="separator"
+              className="canvas-resizer"
+              aria-label="调整 Agent 对话区高度"
+              aria-orientation="horizontal"
+              aria-valuemin={AGENT_PANEL_MIN_HEIGHT}
+              aria-valuemax={AGENT_PANEL_MAX_HEIGHT}
+              aria-valuenow={agentPanelHeight}
+              onPointerDown={startAgentPanelResize}
+              onKeyDown={resizeAgentPanelWithKeyboard}
+              title="拖动调整 Agent 对话区高度"
+            />
+            <div className={selectedAgentNeedsReply ? "agent-detail chat-mode" : "agent-detail"}>
+              {selectedAgentNeedsReply && humanFlowPrompt ? (
+                <AgentHumanLoopBox
+                  agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
+                  prompt={humanFlowPrompt}
+                  value={goal}
+                  disabled={taskSubmitDisabled}
+                  actionDisabled={!selectedId || !snapshot?.activeTask}
+                  onChange={setGoal}
+                  onUseSuggestion={() => setGoal(suggestedFollowup)}
+                  onFollowup={(message) => void sendFollowupMessage(message)}
+                  onSubmit={submitTask}
+                />
+              ) : (
+                <>
+                  <strong>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "未选择成员"}</strong>
+                  <span>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "空闲"}</span>
+                  <p>{(displayText(selectedAgent?.currentStep) ?? (selectedAgent ? capabilityLabels(selectedAgent.roleInWorkspace, selectedAgent.capabilities).join("、") : "")) || "创建项目后会生成固定团队。"}</p>
+                </>
+              )}
             </div>
             </section>
 
+            <button
+              type="button"
+              role="separator"
+              className="column-resizer"
+              aria-label="调整运行记录宽度"
+              aria-orientation="vertical"
+              aria-valuemin={EVENT_PANEL_MIN_WIDTH}
+              aria-valuemax={EVENT_PANEL_MAX_WIDTH}
+              aria-valuenow={runLayoutWidths.events}
+              onPointerDown={(event) => startColumnResize("events", event)}
+              onKeyDown={(event) => resizeColumnWithKeyboard("events", event)}
+              title="拖动调整运行记录宽度"
+            />
+
             <aside className="event-panel">
             {events.map((event) => (
-              <article key={event.id} className="event-item">
-                <span>{event.type}</span>
-                <strong>{displayText(event.summary)}</strong>
-              </article>
+              <EventTimelineCard key={event.id} event={event} />
             ))}
             </aside>
           </> : null}
@@ -347,6 +597,7 @@ export function App() {
             <AgentHub
               profileViews={catalogProfiles}
               profiles={agentProfiles}
+              modelConfigs={modelConfigs}
               selectedId={selectedCatalogDefinition?.id}
               onSelect={setSelectedProfileId}
               onProfileChange={(next) => setAgentProfiles((current) => current.map((item) => item.id === next.id ? next : item))}
@@ -357,6 +608,7 @@ export function App() {
           {view === "team" ? (
             <ProjectTeam
               profiles={profiles}
+              modelConfigs={modelConfigs}
               selectedId={selectedProfile?.id}
               selectedProfile={selectedProfile}
               selectedDraft={selectedDraft}
@@ -381,13 +633,203 @@ export function App() {
           ) : null}
         </section>
       </section>
+      {deleteDialog ? (
+        <DeleteWorkspaceDialog
+          state={deleteDialog}
+          onChange={(deleteLocalFolder) => setDeleteDialog((current) => current ? { ...current, deleteLocalFolder } : current)}
+          onCancel={() => setDeleteDialog(undefined)}
+          onConfirm={() => void confirmDeleteWorkspace()}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function DeleteWorkspaceDialog(props: {
+  state: DeleteWorkspaceDialogState;
+  onChange: (deleteLocalFolder: boolean) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const workspaceName = displayWorkspaceName(props.state.workspace.name);
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-workspace-title">
+        <header>
+          <h2 id="delete-workspace-title">删除项目</h2>
+          <p>你正在删除 AutoAgent 里的项目：{workspaceName}</p>
+        </header>
+        <div className="delete-dialog-path">
+          <span>本地路径</span>
+          <code>{props.state.workspace.rootPath}</code>
+        </div>
+        <label className="danger-checkbox">
+          <input
+            type="checkbox"
+            checked={props.state.deleteLocalFolder}
+            disabled={props.state.busy}
+            onChange={(event) => props.onChange(event.target.checked)}
+          />
+          <span>同时删除本地文件夹</span>
+        </label>
+        <p className={props.state.deleteLocalFolder ? "delete-warning active" : "delete-warning"}>
+          {props.state.deleteLocalFolder
+            ? "会递归删除上面的本地目录，项目代码和 .autoagent 状态都会被删除。"
+            : "默认只从 AutoAgent 项目列表移除，不删除本地文件夹。"}
+        </p>
+        <footer>
+          <button type="button" onClick={props.onCancel} disabled={props.state.busy}>取消</button>
+          <button type="button" className="danger-button" onClick={props.onConfirm} disabled={props.state.busy}>
+            {props.state.busy ? "删除中" : "确认删除"}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function EventTimelineCard(props: { event: AutoAgentEvent }) {
+  const item = buildEventTimelineItem(props.event);
+  return (
+    <article className={`event-item ${item.tone}`} title={item.debugType}>
+      <span className="event-actor">{item.actor}</span>
+      <strong className="event-title">{item.title}</strong>
+      {item.detail ? <small className="event-detail">{item.detail}</small> : null}
+    </article>
+  );
+}
+
+function ManualTestActionCard(props: {
+  action: NonNullable<ReturnType<typeof buildManualTestAction>>;
+  disabled: boolean;
+  onFollowup: (message: string) => void;
+}) {
+  return (
+    <section className="manual-test-action">
+      <strong>现在需要你人工测试</strong>
+      <p>{props.action.summary}</p>
+      {props.action.testFile ? <small>打开：{props.action.testFile}</small> : null}
+      {props.action.steps.length ? (
+        <ol>
+          {props.action.steps.map((step) => <li key={step}>{step}</li>)}
+        </ol>
+      ) : null}
+      {props.action.expectedResult ? <em>通过标准：{props.action.expectedResult}</em> : null}
+      <div className="ticket-actions">
+        <button type="button" disabled={props.disabled} onClick={() => props.onFollowup(props.action.passMessage)}>测试通过</button>
+        <button type="button" disabled={props.disabled} onClick={() => props.onFollowup(props.action.failMessage)}>测试不通过，打回开发</button>
+      </div>
+    </section>
+  );
+}
+
+function initialAgentPanelHeight(): number {
+  if (typeof window === "undefined") return AGENT_PANEL_DEFAULT_HEIGHT;
+  const saved = Number(window.localStorage.getItem("autoagent.agentPanelHeight"));
+  return clamp(Number.isFinite(saved) ? saved : AGENT_PANEL_DEFAULT_HEIGHT, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT);
+}
+
+function initialRunLayoutWidths(): RunLayoutWidths {
+  const fallback: RunLayoutWidths = { workspace: 310, task: 280, events: 340 };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const saved = JSON.parse(window.localStorage.getItem("autoagent.runLayoutWidths") ?? "") as Partial<RunLayoutWidths>;
+    return {
+      workspace: clampColumnWidth("workspace", Number(saved.workspace) || fallback.workspace),
+      task: clampColumnWidth("task", Number(saved.task) || fallback.task),
+      events: clampColumnWidth("events", Number(saved.events) || fallback.events)
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function clampColumnWidth(column: keyof RunLayoutWidths, value: number): number {
+  const limits: Record<keyof RunLayoutWidths, { min: number; max: number }> = {
+    workspace: { min: WORKSPACE_PANEL_MIN_WIDTH, max: WORKSPACE_PANEL_MAX_WIDTH },
+    task: { min: TASK_PANEL_MIN_WIDTH, max: TASK_PANEL_MAX_WIDTH },
+    events: { min: EVENT_PANEL_MIN_WIDTH, max: EVENT_PANEL_MAX_WIDTH }
+  };
+  return clamp(value, limits[column].min, limits[column].max);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function AgentHumanLoopBox(props: {
+  agentName: string;
+  prompt: NonNullable<ReturnType<typeof buildHumanFlowPrompt>>;
+  value: string;
+  disabled: boolean;
+  actionDisabled: boolean;
+  onChange: (value: string) => void;
+  onUseSuggestion: () => void;
+  onFollowup: (message: string) => void;
+  onSubmit: (event: React.FormEvent) => void;
+}) {
+  const messageBody = props.prompt.transcript.replace(/^[^\n]+:\n/, "");
+  return (
+    <form className="agent-chat" onSubmit={props.onSubmit}>
+      <header className="agent-chat-header">
+        <span className="chat-avatar">{initials(props.agentName)}</span>
+        <div>
+          <strong>{props.agentName} 对话</strong>
+          <small>{props.prompt.title} · {props.prompt.phase}</small>
+        </div>
+      </header>
+      <div className="chat-thread">
+        <article className="chat-message agent">
+          {props.prompt.manualTest ? (
+            <ManualTestActionCard
+              action={props.prompt.manualTest}
+              disabled={props.actionDisabled}
+              onFollowup={props.onFollowup}
+            />
+          ) : (
+            <AgentMessageBody rawText={messageBody} />
+          )}
+        </article>
+      </div>
+      {!props.prompt.manualTest ? (
+        <button type="button" className="quick-reply" title={props.prompt.suggestion} onClick={props.onUseSuggestion}>使用建议方案</button>
+      ) : null}
+      <div className="chat-composer">
+        <textarea
+          aria-label={props.prompt.inputLabel}
+          value={props.value}
+          onChange={(event) => props.onChange(event.target.value)}
+          placeholder={props.prompt.placeholder}
+        />
+        <button type="submit" disabled={props.disabled}>{props.prompt.submitLabel}</button>
+      </div>
+    </form>
+  );
+}
+
+function AgentMessageBody(props: { rawText: string }) {
+  const view = buildAgentMessageView(props.rawText);
+  if (view.kind === "text") return <p className="agent-plain-message">{view.rawText}</p>;
+
+  return (
+    <div className="agent-structured-message">
+      {view.paragraphs.length > 0 ? (
+        <div className="agent-message-prose">
+          {view.paragraphs.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
+        </div>
+      ) : null}
+      <details>
+        <summary>查看原始文本</summary>
+        <pre className="agent-raw-message">{view.rawText}</pre>
+      </details>
+    </div>
   );
 }
 
 function AgentHub(props: {
   profileViews: AgentProfileView[];
   profiles: AgentProfile[];
+  modelConfigs: ModelConfig[];
   selectedId?: string;
   onSelect: (id: string) => void;
   onProfileChange: (profile: AgentProfile) => void;
@@ -400,33 +842,26 @@ function AgentHub(props: {
       <header className="management-header">
         <div>
           <h2>智能体档案库</h2>
-          <p>这里编辑全局身份、人格边界、能力和默认模型；项目团队只引用这些档案，不在这里产生项目状态。</p>
+          <p>这里编辑全局灵魂特质、岗位契约、能力手册和默认模型；项目团队只引用这些档案，不在这里产生项目状态。</p>
         </div>
       </header>
       <div className="studio-layout">
         <div className="agent-studio-grid">
           {props.profileViews.map((profile) => (
-            <button
+            <AgentProfileCard
               key={profile.id}
-              type="button"
-              className={profile.id === props.selectedId ? "agent-profile-card selected" : "agent-profile-card"}
-              onClick={() => props.onSelect(profile.id)}
-            >
-              <span className="profile-avatar">{profile.identity.avatar}</span>
-              <strong>{profile.identity.title}</strong>
-              <small>{profile.identity.subtitle}</small>
-              <p>{profile.soul}</p>
-              <div className="profile-meta">
-                <span>全局定义</span>
-                <span>{profile.model.providerLabel}</span>
-              </div>
-            </button>
+              profile={profile}
+              selected={profile.id === props.selectedId}
+              modelConfigs={props.modelConfigs}
+              onSelect={props.onSelect}
+            />
           ))}
         </div>
         {selected && selectedView ? (
           <AgentDefinitionEditor
             profile={selected}
             view={selectedView}
+            modelConfigs={props.modelConfigs}
             onChange={props.onProfileChange}
             onSave={props.onSave}
           />
@@ -438,13 +873,46 @@ function AgentHub(props: {
   );
 }
 
+function AgentProfileCard(props: {
+  profile: AgentProfileView;
+  selected: boolean;
+  modelConfigs: ModelConfig[];
+  onSelect: (id: string) => void;
+}) {
+  const modelTarget = { provider: props.profile.model.provider, model: props.profile.model.modelName };
+  const selectedModel = modelSelectionOptions(modelTarget, props.modelConfigs)
+    .find((option) => option.value === modelSelectionValue(modelTarget, props.modelConfigs));
+  return (
+    <button
+      type="button"
+      className={props.selected ? "agent-profile-card selected" : "agent-profile-card"}
+      onClick={() => props.onSelect(props.profile.id)}
+    >
+      <span className="profile-avatar">{props.profile.identity.avatar}</span>
+      <strong>{props.profile.identity.title}</strong>
+      <small>{agentProfileCardSummary(props.profile)}</small>
+      <div className="profile-meta">
+        <span title={selectedModel?.label ?? props.profile.model.providerLabel}>{compactModelLabel(selectedModel?.label ?? props.profile.model.providerLabel)}</span>
+      </div>
+    </button>
+  );
+}
+
+function compactModelLabel(label: string): string {
+  return label.replace(/（.*$/, "");
+}
+
 function AgentDefinitionEditor(props: {
   profile: AgentProfile;
   view: AgentProfileView;
+  modelConfigs: ModelConfig[];
   onChange: (profile: AgentProfile) => void;
   onSave: (profile: AgentProfile) => void;
 }) {
   const capabilitiesText = props.profile.capabilities.join("、");
+  const modelTarget = { provider: props.profile.defaultProvider, model: props.profile.defaultModel };
+  const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
+  const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
   return (
     <aside className="agent-detail-panel agent-definition-editor">
       <header className="agent-hero">
@@ -457,29 +925,42 @@ function AgentDefinitionEditor(props: {
       </header>
 
       <section className="agent-section">
-        <h4>身份定义</h4>
+        <h4>灵魂特质</h4>
+        <label>
+          <span>动机、注意力模式、判断风格和压力下的行为倾向</span>
+          <textarea aria-label="灵魂特质" value={props.profile.soul ?? ""} onChange={(event) => props.onChange({ ...props.profile, soul: event.target.value })} />
+        </label>
+      </section>
+
+      <section className="agent-section">
+        <h4>岗位契约</h4>
         <label>
           <span>名称</span>
           <input value={props.profile.name} onChange={(event) => props.onChange({ ...props.profile, name: event.target.value })} />
         </label>
         <label>
-          <span>身份说明</span>
-          <textarea aria-label="身份说明" value={props.profile.identity ?? ""} onChange={(event) => props.onChange({ ...props.profile, identity: event.target.value })} />
+          <span>岗位说明</span>
+          <textarea aria-label="岗位说明" value={props.profile.identity ?? ""} onChange={(event) => props.onChange({ ...props.profile, identity: event.target.value })} />
         </label>
       </section>
 
       <section className="agent-section">
-        <h4>人格边界</h4>
+        <h4>能力手册</h4>
         <label>
-          <span>行为原则和人格边界</span>
-          <textarea aria-label="人格边界" value={props.profile.soul ?? ""} onChange={(event) => props.onChange({ ...props.profile, soul: event.target.value })} />
+          <span>工作方法、交付标准和能力边界</span>
+          <textarea
+            className="agent-md-editor"
+            aria-label="能力手册"
+            value={props.profile.agentMd ?? ""}
+            onChange={(event) => props.onChange({ ...props.profile, agentMd: event.target.value })}
+          />
         </label>
       </section>
 
       <section className="agent-section">
-        <h4>能力标签</h4>
+        <h4>能力索引</h4>
         <label>
-          <span>用顿号分隔</span>
+          <span>用于调度和列表摘要，完整能力写在能力手册</span>
           <input value={capabilitiesText} onChange={(event) => props.onChange({ ...props.profile, capabilities: event.target.value.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) })} />
         </label>
       </section>
@@ -488,11 +969,17 @@ function AgentDefinitionEditor(props: {
         <h4>默认模型</h4>
         <div className="runtime-fields">
           <label>
-            <span>模型服务</span>
-            <select value={props.profile.defaultProvider} onChange={(event) => props.onChange({ ...props.profile, defaultProvider: event.target.value as ProviderName })}>
-              <option value="mock">模拟服务</option>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
+            <span>模型配置</span>
+            <select
+              value={selectedModelValue}
+              onChange={(event) => {
+                const next = applyModelSelection(event.target.value, props.modelConfigs, modelTarget);
+                props.onChange({ ...props.profile, defaultProvider: next.provider, defaultModel: next.model });
+              }}
+            >
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </label>
           <label>
@@ -508,6 +995,7 @@ function AgentDefinitionEditor(props: {
 
 function ProjectTeam(props: {
   profiles: AgentProfileView[];
+  modelConfigs: ModelConfig[];
   selectedId?: string;
   selectedProfile?: AgentProfileView;
   selectedDraft?: WorkspaceAgentConfig;
@@ -544,6 +1032,7 @@ function ProjectTeam(props: {
         <AgentDetailPanel
           profile={props.selectedProfile}
           draft={props.selectedDraft}
+          modelConfigs={props.modelConfigs}
           onDraftChange={props.onDraftChange}
           onSave={props.onSave}
         />
@@ -555,6 +1044,7 @@ function ProjectTeam(props: {
 function AgentDetailPanel(props: {
   profile?: AgentProfileView;
   draft?: WorkspaceAgentConfig;
+  modelConfigs: ModelConfig[];
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
 }) {
@@ -564,6 +1054,9 @@ function AgentDetailPanel(props: {
 
   const draft = props.draft;
   const policy = normalizePolicy(draft?.policyOverride ?? props.profile.policy);
+  const modelTarget = { provider: draft?.provider ?? props.profile.model.provider, model: draft?.model ?? props.profile.model.modelName };
+  const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
+  const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
   return (
     <aside className="agent-detail-panel">
       <header className="agent-hero">
@@ -576,13 +1069,18 @@ function AgentDetailPanel(props: {
       </header>
 
       <section className="agent-section">
-        <h4>身份定义</h4>
+        <h4>灵魂特质</h4>
+        <p>{props.profile.soul}</p>
+      </section>
+
+      <section className="agent-section">
+        <h4>岗位契约</h4>
         <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle}智能体。</p>
       </section>
 
       <section className="agent-section">
-        <h4>人格边界</h4>
-        <p>{props.profile.soul}</p>
+        <h4>能力手册</h4>
+        <pre className="agent-md-preview">{props.profile.agentMd}</pre>
       </section>
 
       <section className="agent-section">
@@ -608,11 +1106,17 @@ function AgentDetailPanel(props: {
           <>
             <div className="runtime-fields">
               <label>
-                <span>模型服务</span>
-                <select value={draft.provider ?? "mock"} onChange={(event) => props.onDraftChange({ ...draft, provider: event.target.value as ProviderName })}>
-                  <option value="mock">模拟服务</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
+                <span>模型配置</span>
+                <select
+                  value={selectedModelValue}
+                  onChange={(event) => {
+                    const next = applyModelSelection(event.target.value, props.modelConfigs, modelTarget);
+                    props.onDraftChange({ ...draft, provider: next.provider, model: next.model });
+                  }}
+                >
+                  {modelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </label>
               <label>

@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { createId } from "../../shared/ids.js";
 import type { PolicyProfile, Workspace } from "../../shared/types.js";
@@ -37,11 +38,38 @@ export class WorkspaceStore {
     return workspace;
   }
 
+  async remove(workspaceId: string, options: { deleteLocalFolder?: boolean } = {}): Promise<Workspace> {
+    const workspace = await this.get(workspaceId);
+    if (options.deleteLocalFolder) {
+      assertSafeWorkspaceRemovalPath(workspace.rootPath);
+      await rm(workspace.rootPath, { recursive: true, force: true });
+    }
+    const remaining = (await this.list()).filter((item) => item.id !== workspaceId);
+    await writeJson(globalWorkspacesFile(this.homeDir), remaining);
+    return workspace;
+  }
+
   async ensureWorkspaceFiles(workspace: Workspace): Promise<void> {
     await mkdir(workspaceAutoAgentDir(workspace.rootPath), { recursive: true });
     await writeJson(workspaceFile(workspace.rootPath), workspace);
     await ensureGitignore(workspace.rootPath);
   }
+}
+
+function assertSafeWorkspaceRemovalPath(rootPath: string): void {
+  const resolved = path.resolve(rootPath);
+  const parsed = path.parse(resolved);
+  const normalized = normalizePath(resolved);
+  if (normalized === normalizePath(parsed.root)) {
+    throw new HttpError(400, "Cannot delete a filesystem root as a workspace", "UNSAFE_WORKSPACE_DELETE");
+  }
+  if (normalized === normalizePath(os.homedir())) {
+    throw new HttpError(400, "Cannot delete the user home directory as a workspace", "UNSAFE_WORKSPACE_DELETE");
+  }
+}
+
+function normalizePath(value: string): string {
+  return path.resolve(value).toLowerCase();
 }
 
 async function ensureGitignore(rootPath: string): Promise<void> {

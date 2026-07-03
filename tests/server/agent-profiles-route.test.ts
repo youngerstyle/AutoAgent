@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -6,9 +6,102 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/server/app";
 
 describe("agent profiles route", () => {
+  let homeDir: string;
+
   beforeEach(async () => {
     process.env.NODE_ENV = "test";
-    process.env.AUTOAGENT_HOME = await mkdtemp(path.join(os.tmpdir(), "autoagent-profiles-home-"));
+    homeDir = await mkdtemp(path.join(os.tmpdir(), "autoagent-profiles-home-"));
+    process.env.AUTOAGENT_HOME = homeDir;
+  });
+
+  it("seeds real-world agent contracts and migrates old short profiles without losing model defaults", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_pm",
+      name: "产品/项目",
+      role: "pm",
+      identity: "负责把模糊目标拆成可执行计划",
+      soul: "把模糊需求压成可执行计划，控制范围，减少来回返工。",
+      capabilities: ["计划拆解"],
+      defaultProvider: "openai",
+      defaultModel: "deepseek-v4-flash",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false }
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const pm = listed.body.profiles.find((profile: { role: string }) => profile.role === "pm");
+    const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
+    const qa = listed.body.profiles.find((profile: { role: string }) => profile.role === "qa");
+
+    expect(pm.defaultProvider).toBe("openai");
+    expect(pm.defaultModel).toBe("deepseek-v4-flash");
+    expect(pm.identity.length).toBeGreaterThan(80);
+    expect(pm.identity).toContain("真实团队");
+    expect(pm.soul).toContain("对混乱和返工高度敏感");
+    expect(pm.soul).not.toContain("不替开发写实现");
+    expect(pm.agentMd).toContain("# 使命");
+    expect(pm.agentMd).toContain("交付");
+    expect(pm.capabilities).toEqual(expect.arrayContaining(["需求澄清", "任务拆解", "变更管理"]));
+    expect(pm.capabilities.length).toBeGreaterThanOrEqual(6);
+    expect(dev.soul).toContain("可运行变化获得安全感");
+    expect(qa.soul).toContain("对模糊通过很敏感");
+
+    const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
+    const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
+    expect(persistedPm.identity).toBe(pm.identity);
+    expect(persistedPm.contentVersion).toBe(4);
+  });
+
+  it("migrates v3 rule-like soul into v4 soul traits while preserving model and agent.md", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_dev",
+      name: "开发",
+      role: "dev",
+      contentVersion: 3,
+      identity: "工程开发者。负责基于 PM 的工作包和架构师的技术边界，完成最小可验证的代码、配置或脚本变更，并运行本地验证。",
+      soul: "先理解现有代码、任务边界和权限策略，再小步实现。优先做可回滚、可验证、可解释的变更；不改无关文件，不绕过权限，不伪造验证，不把推测当事实。遇到需求冲突、测试失败、工具失败或权限不足时，要带着证据反馈给 PM/架构师/老板，而不是沉默推进。",
+      agentMd: "# 开发能力手册\n- 已经存在的手册要保留",
+      capabilities: ["代码阅读", "实现修改"],
+      defaultProvider: "openai",
+      defaultModel: "deepseek-v4-flash",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
+
+    expect(dev.contentVersion).toBe(4);
+    expect(dev.defaultModel).toBe("deepseek-v4-flash");
+    expect(dev.agentMd).toContain("已经存在的手册要保留");
+    expect(dev.soul).toContain("可运行变化获得安全感");
+    expect(dev.soul).not.toContain("不改无关文件");
+  });
+
+  it("adds agent.md to v2 profiles without overwriting edited identity and soul", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_dev",
+      name: "全栈工程师",
+      role: "dev",
+      contentVersion: 2,
+      identity: "用户改过的开发岗位定义",
+      soul: "用户改过的开发灵魂特质",
+      capabilities: ["TypeScript", "验证"],
+      defaultProvider: "openai",
+      defaultModel: "deepseek-v4-flash",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
+
+    expect(dev.identity).toBe("用户改过的开发岗位定义");
+    expect(dev.soul).toBe("用户改过的开发灵魂特质");
+    expect(dev.capabilities).toEqual(["TypeScript", "验证"]);
+    expect(dev.agentMd).toContain("# 使命");
+    expect(dev.agentMd).toContain("实现");
+    expect(dev.contentVersion).toBe(4);
   });
 
   it("persists editable global identity and soul separately from workspace overrides", async () => {
@@ -22,6 +115,7 @@ describe("agent profiles route", () => {
         name: "全栈工程师",
         identity: "负责把任务变成可运行变更",
         soul: "先理解上下文，再小步交付，所有结论都要有验证证据。",
+        agentMd: "# 开发能力手册\n- 先读代码\n- 再做可验证变更",
         loopDefinition: ["读需求", "读项目", "修改代码", "运行验证", "交付说明"]
       })
       .expect(200);
@@ -29,7 +123,8 @@ describe("agent profiles route", () => {
     expect(updated.body.profile).toMatchObject({
       name: "全栈工程师",
       identity: "负责把任务变成可运行变更",
-      soul: "先理解上下文，再小步交付，所有结论都要有验证证据。"
+      soul: "先理解上下文，再小步交付，所有结论都要有验证证据。",
+      agentMd: "# 开发能力手册\n- 先读代码\n- 再做可验证变更"
     });
     expect(updated.body.profile.loopDefinition).toBeUndefined();
 

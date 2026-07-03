@@ -34,8 +34,10 @@ export interface AgentProfile {
   id: string;
   name: string;
   role: AgentRole;
+  contentVersion?: number;
   identity?: string;
   soul?: string;
+  agentMd?: string;
   capabilities: string[];
   defaultProvider: ProviderName;
   defaultModel: string;
@@ -94,6 +96,73 @@ export interface Assignment {
   status: EntityStatus;
 }
 
+export type TicketStatus =
+  | "pending"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "returned"
+  | "failed"
+  | "dead_letter"
+  | "cancelled";
+
+export type TicketType = AssignmentType | "rework" | "human_action";
+
+export type TicketMessageStatus = "pending" | "claimed" | "acked" | "expired" | "dead_letter" | "cancelled";
+
+export type TicketBlockerType =
+  | "manual_test_required"
+  | "human_authorization_required"
+  | "waiting_for_agent_capacity"
+  | "tool_policy_blocked"
+  | "external_dependency";
+
+export interface TicketBlocker {
+  type: TicketBlockerType;
+  reason: string;
+}
+
+export interface Ticket {
+  id: string;
+  workspaceId: string;
+  taskId: string;
+  taskRunId: string;
+  type: TicketType;
+  status: TicketStatus;
+  brief: string;
+  expectedArtifact: string;
+  targetAgentId?: string;
+  targetRole?: AgentRole;
+  capabilityTags?: string[];
+  priority: number;
+  attempt: number;
+  leaseUntil?: string;
+  parentTicketId?: string;
+  createdByTicketId?: string;
+  artifactRefs?: string[];
+  blocker?: TicketBlocker;
+  returnReason?: string;
+  result?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentInboxMessage {
+  id: string;
+  workspaceId: string;
+  ticketId: string;
+  toAgentId?: string;
+  toRole?: AgentRole;
+  status: TicketMessageStatus;
+  dedupeKey: string;
+  correlationId: string;
+  priority: number;
+  claimedByAgentId?: string;
+  leaseUntil?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AssignmentRun {
   id: string;
   taskId: string;
@@ -143,6 +212,8 @@ export interface WorkspaceSnapshot {
     currentStep?: string;
   }>;
   assignments: Assignment[];
+  tickets?: Ticket[];
+  inboxMessages?: AgentInboxMessage[];
   recentEvents: AutoAgentEvent[];
   phase: MissionPhase;
   status: EntityStatus;

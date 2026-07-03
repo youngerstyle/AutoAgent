@@ -28,6 +28,15 @@ export function createTaskRouter(mission: MissionControl) {
     res.json({ snapshot });
   }));
 
+  router.post("/tasks/:taskId/followups", asyncHandler(async (req, res) => {
+    const snapshot = await mission.followUpTask(
+      String(req.params.workspaceId),
+      String(req.params.taskId),
+      String(req.body.message ?? "")
+    );
+    res.status(201).json({ snapshot });
+  }));
+
   router.post("/tasks/:taskId/stop", asyncHandler(async (req, res) => {
     const state = await mission.stopTask(String(req.params.workspaceId), String(req.params.taskId));
     res.json({ state });

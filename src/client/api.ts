@@ -23,6 +23,10 @@ export function createWorkspace(input: { name: string; rootPath: string; policyP
   return api("/api/workspaces", { method: "POST", body: JSON.stringify(input) });
 }
 
+export function deleteWorkspace(workspaceId: string, input: { deleteLocalFolder: boolean }): Promise<{ workspace: Workspace }> {
+  return api(`/api/workspaces/${workspaceId}`, { method: "DELETE", body: JSON.stringify(input) });
+}
+
 export function getSnapshot(workspaceId: string): Promise<{ snapshot: WorkspaceSnapshot }> {
   return api(`/api/workspaces/${workspaceId}/snapshot`);
 }
@@ -37,6 +41,10 @@ export function pauseTask(workspaceId: string, taskId: string): Promise<unknown>
 
 export function resumeTask(workspaceId: string, taskId: string): Promise<{ snapshot: WorkspaceSnapshot }> {
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/resume`, { method: "POST" });
+}
+
+export function sendTaskFollowup(workspaceId: string, taskId: string, message: string): Promise<{ snapshot: WorkspaceSnapshot }> {
+  return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/followups`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
 export function stopTask(workspaceId: string, taskId: string): Promise<unknown> {
@@ -64,7 +72,7 @@ export function listAgentProfiles(): Promise<{ profiles: AgentProfile[] }> {
   return api("/api/agent-profiles");
 }
 
-export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
+export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
   return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
