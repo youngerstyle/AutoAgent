@@ -68,7 +68,7 @@ export function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
-  const [rightPanelView, setRightPanelView] = useState<"events" | "tickets" | "debug">("events");
+  const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
   const [rawTicketDialog, setRawTicketDialog] = useState<TicketInspectorItem>();
   const [loopDebugLog, setLoopDebugLog] = useState<LoopDebugLog>({ entries: [] });
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
@@ -95,9 +95,8 @@ export function App() {
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
   const rightPanelScrollKey = useMemo(() => {
     if (rightPanelView === "events") return visibleEvents.map((event) => event.id).join("|");
-    if (rightPanelView === "debug") return loopDebugLog.entries.map((entry) => entry.id).join("|");
     return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
-  }, [loopDebugLog.entries, rightPanelView, ticketItems, visibleEvents]);
+  }, [rightPanelView, ticketItems, visibleEvents]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -151,10 +150,10 @@ export function App() {
       setWorkspaces(result.workspaces);
       setSelectedId(nextSelectedId);
       if (!nextSelectedId) {
-      setSnapshot(undefined);
-      setEvents([]);
-      setLoopDebugLog({ entries: [] });
-      setAgents([]);
+        setSnapshot(undefined);
+        setEvents([]);
+        setLoopDebugLog({ entries: [] });
+        setAgents([]);
         setSelectedAgentId("");
       }
     } catch (err) {
@@ -640,27 +639,13 @@ export function App() {
                 >
                   原始工单
                 </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPanelView === "debug"}
-                  className={rightPanelView === "debug" ? "selected" : ""}
-                  onClick={() => {
-                    setRightPanelView("debug");
-                    void refreshLoopDebugLog();
-                  }}
-                >
-                  Loop 日志
-                </button>
               </div>
               {rightPanelView === "events" ? (
                 visibleEvents.map((event) => (
-                  <EventTimelineCard key={event.id} event={event} />
+                  <EventTimelineCard key={event.id} event={event} debugLog={loopDebugLog} />
                 ))
-              ) : rightPanelView === "tickets" ? (
-                <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
               ) : (
-                <LoopDebugPanel log={loopDebugLog} />
+                <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
               )}
             </aside>
           </> : null}
@@ -810,63 +795,116 @@ function TicketInspector(props: { items: TicketInspectorItem[]; onShowRaw: (item
   );
 }
 
-function LoopDebugPanel(props: { log: LoopDebugLog }) {
-  if (props.log.entries.length === 0) {
-    return (
-      <section className="loop-debug-empty">
-        <strong>还没有 Loop 日志</strong>
-        <p>开始任务后，这里会按时间展示 prompt、LLM 返回、工具结果和 flow 决策。</p>
-      </section>
-    );
-  }
-
+function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLog }) {
+  const item = buildEventTimelineItem(props.event);
+  const loopEntries = relatedLoopEntries(props.event, item.actor, props.debugLog);
+  const payload = JSON.stringify(props.event.payload ?? {}, null, 2);
   return (
-    <section className="loop-debug-panel">
-      <header>
-        <strong>{props.log.task?.title ?? "当前任务"}</strong>
-        <span>{props.log.entries.length} 条调试记录</span>
-      </header>
-      {props.log.entries.map((entry) => (
-        <LoopDebugCard key={entry.id} entry={entry} />
-      ))}
-    </section>
-  );
-}
-
-function LoopDebugCard(props: { entry: LoopDebugEntry }) {
-  const entry = props.entry;
-  return (
-    <details className={`loop-debug-card ${entry.kind}`}>
+    <details className={`event-item ${item.tone}`} title={item.debugType}>
       <summary>
-        <span>{entry.actor}</span>
-        <strong>{entry.title}</strong>
-        <small>{debugKindLabel(entry.kind)} · {new Date(entry.timestamp).toLocaleTimeString()}</small>
+        <span className="event-actor">{item.actor}</span>
+        <strong className="event-title">{item.title}</strong>
+        {item.detail ? <small className="event-detail">{item.detail}</small> : null}
       </summary>
-      {entry.detail ? <p>{entry.detail}</p> : null}
-      <pre>{entry.content}</pre>
+      <div className="event-debug-body">
+        {loopEntries.map((entry) => (
+          <DebugBlock key={entry.id} title={debugKindLabel(entry.kind)} subtitle={entry.detail} content={entry.content} kind={entry.kind} />
+        ))}
+        <DebugBlock title="事件原始数据" subtitle={props.event.type} content={payload} kind="flow" />
+      </div>
     </details>
   );
 }
 
-function debugKindLabel(kind: LoopDebugEntry["kind"]): string {
-  const labels: Record<LoopDebugEntry["kind"], string> = {
-    flow: "Flow",
-    prompt: "Prompt",
-    llm: "LLM",
-    tool: "Tool"
-  };
-  return labels[kind];
+function DebugBlock(props: { title: string; subtitle?: string; content: string; kind: LoopDebugEntry["kind"] }) {
+  return (
+    <section className={`event-debug-block ${props.kind}`}>
+      <header>
+        <strong>{props.title}</strong>
+        {props.subtitle ? <span>{props.subtitle}</span> : null}
+      </header>
+      <pre>{props.content || "{}"}</pre>
+    </section>
+  );
 }
 
-function EventTimelineCard(props: { event: AutoAgentEvent }) {
-  const item = buildEventTimelineItem(props.event);
-  return (
-    <article className={`event-item ${item.tone}`} title={item.debugType}>
-      <span className="event-actor">{item.actor}</span>
-      <strong className="event-title">{item.title}</strong>
-      {item.detail ? <small className="event-detail">{item.detail}</small> : null}
-    </article>
-  );
+function relatedLoopEntries(event: AutoAgentEvent, actor: string, log: LoopDebugLog): LoopDebugEntry[] {
+  const direct = directLoopEntries(event, actor, log);
+  if (direct.length > 0) return direct;
+  if (event.type.startsWith("provider.") || event.type === "assignment.completed" || event.type === "assignment.blocked") {
+    return nearestTurnEntries(event, actor, log);
+  }
+  return [];
+}
+
+function directLoopEntries(event: AutoAgentEvent, actor: string, log: LoopDebugLog): LoopDebugEntry[] {
+  const providerText = providerTextFromEvent(event);
+  const rawText = stringFromPayload(event, "rawText");
+  const targetText = providerText ?? rawText;
+  if (targetText) {
+    const llm = log.entries.find((entry) => entry.kind === "llm" && entry.actor === actor && entry.content.trim() === targetText.trim());
+    if (llm) return turnEntriesFor(log, llm);
+  }
+  const toolResults = payloadArray(event, "toolResults");
+  if (toolResults.length > 0) {
+    const matches = log.entries.filter((entry) => entry.kind === "tool" && toolResults.some((toolResult) => entry.content === JSON.stringify(toolResult)));
+    if (matches.length > 0) return uniqueLoopEntries(matches.flatMap((entry) => turnEntriesFor(log, entry)));
+  }
+  return [];
+}
+
+function nearestTurnEntries(event: AutoAgentEvent, actor: string, log: LoopDebugLog): LoopDebugEntry[] {
+  const eventTime = Date.parse(event.timestamp);
+  if (!Number.isFinite(eventTime)) return [];
+  const candidates = log.entries
+    .filter((entry) => entry.actor === actor && (entry.kind === "prompt" || entry.kind === "llm" || entry.kind === "tool"))
+    .map((entry) => ({ entry, distance: Math.abs(Date.parse(entry.timestamp) - eventTime) }))
+    .filter((item) => Number.isFinite(item.distance) && item.distance <= 30_000)
+    .sort((a, b) => a.distance - b.distance);
+  return candidates[0] ? turnEntriesFor(log, candidates[0].entry) : [];
+}
+
+function turnEntriesFor(log: LoopDebugLog, anchor: LoopDebugEntry): LoopDebugEntry[] {
+  return log.entries.filter((entry) => entry.actor === anchor.actor && entry.timestamp === anchor.timestamp && entry.kind !== "flow");
+}
+
+function uniqueLoopEntries(entries: LoopDebugEntry[]): LoopDebugEntry[] {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    if (seen.has(entry.id)) return false;
+    seen.add(entry.id);
+    return true;
+  });
+}
+
+function providerTextFromEvent(event: AutoAgentEvent): string | undefined {
+  const providerEvents = event.payload.providerEvents;
+  if (!Array.isArray(providerEvents)) return undefined;
+  const text = providerEvents.find((item) => {
+    return Boolean(item) && typeof item === "object" && (item as Record<string, unknown>).type === "text";
+  });
+  const value = text && typeof text === "object" ? (text as Record<string, unknown>).text : undefined;
+  return typeof value === "string" ? value : undefined;
+}
+
+function stringFromPayload(event: AutoAgentEvent, key: string): string | undefined {
+  const value = event.payload[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function payloadArray(event: AutoAgentEvent, key: string): unknown[] {
+  const value = event.payload[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function debugKindLabel(kind: LoopDebugEntry["kind"]): string {
+  const labels: Record<LoopDebugEntry["kind"], string> = {
+    flow: "Flow 事件",
+    prompt: "Prompt",
+    llm: "LLM 返回",
+    tool: "工具结果"
+  };
+  return labels[kind];
 }
 
 function ManualTestActionCard(props: {
