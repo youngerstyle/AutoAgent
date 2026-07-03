@@ -796,25 +796,28 @@ function TicketInspector(props: { items: TicketInspectorItem[]; onShowRaw: (item
 }
 
 function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLog }) {
+  const [expanded, setExpanded] = useState(false);
   const item = buildEventTimelineItem(props.event);
   const loopEntries = relatedLoopEntries(props.event, item.actor, props.debugLog);
   const payload = JSON.stringify(props.event.payload ?? {}, null, 2);
   return (
-    <details className={`event-item ${item.tone}`} title={item.debugType}>
-      <summary>
+    <article className={`event-item ${item.tone}`} title={item.debugType}>
+      <button type="button" className="event-summary-button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
         <span className="event-actor">{item.actor}</span>
         <span className="event-summary-copy">
           <strong className="event-title">{item.title}</strong>
           {item.detail ? <small className="event-detail">{item.detail}</small> : null}
         </span>
-      </summary>
-      <div className="event-debug-body">
-        {loopEntries.map((entry) => (
-          <DebugBlock key={entry.id} title={debugKindLabel(entry.kind)} subtitle={entry.detail} content={entry.content} kind={entry.kind} />
-        ))}
-        <DebugBlock title="事件原始数据" subtitle={props.event.type} content={payload} kind="flow" />
-      </div>
-    </details>
+      </button>
+      {expanded ? (
+        <div className="event-debug-body">
+          {loopEntries.map((entry) => (
+            <DebugBlock key={entry.id} title={debugKindLabel(entry.kind)} subtitle={entry.detail} content={entry.content} kind={entry.kind} />
+          ))}
+          <DebugBlock title="事件原始数据" subtitle={props.event.type} content={payload} kind="flow" />
+        </div>
+      ) : null}
+    </article>
   );
 }
 

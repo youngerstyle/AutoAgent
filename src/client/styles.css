@@ -1010,19 +1010,31 @@ button:disabled {
   border-left-color: #c94b4b;
 }
 
-.event-item summary {
+.event-summary-button {
+  width: 100%;
   display: flex;
   align-items: flex-start;
   gap: 10px;
   min-height: 66px;
   padding: 10px 12px;
   box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
-  list-style: none;
 }
 
-.event-item summary::-webkit-details-marker {
-  display: none;
+.event-summary-button:hover:not(:disabled) {
+  border-color: transparent;
+  color: inherit;
+  background: #f8fbfc;
+}
+
+.event-summary-button:focus-visible {
+  outline: 2px solid #2f80c0;
+  outline-offset: -2px;
 }
 
 .event-summary-copy {
@@ -1067,7 +1079,7 @@ button:disabled {
   -webkit-line-clamp: 2;
 }
 
-.event-item[open] .event-detail {
+.event-summary-button[aria-expanded="true"] .event-detail {
   display: block;
   overflow: visible;
   -webkit-line-clamp: unset;
