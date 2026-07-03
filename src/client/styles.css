@@ -685,6 +685,153 @@ button:disabled {
   gap: 8px;
 }
 
+.right-panel-tabs {
+  position: sticky;
+  top: -14px;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: -14px -14px 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e1e6ec;
+  background: #ffffff;
+}
+
+.right-panel-tabs button {
+  min-width: 0;
+  padding: 7px 8px;
+  font-size: 13px;
+}
+
+.right-panel-tabs button.selected {
+  border-color: #248a8a;
+  background: #edfafa;
+  color: #0b6666;
+}
+
+.ticket-inspector,
+.ticket-inspector-empty {
+  display: grid;
+  gap: 8px;
+}
+
+.ticket-inspector-empty {
+  border: 1px solid #dde4ea;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.ticket-inspector-empty p {
+  margin: 0;
+  color: #607084;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.raw-ticket-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #d8e0e8;
+  border-left: 4px solid #8ca0b3;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.raw-ticket-card.running {
+  border-left-color: #0f8a8a;
+}
+
+.raw-ticket-card.blocked {
+  border-left-color: #d58a18;
+  background: #fffaf0;
+}
+
+.raw-ticket-card.completed {
+  border-left-color: #35a36b;
+}
+
+.raw-ticket-card.returned,
+.raw-ticket-card.failed,
+.raw-ticket-card.dead_letter,
+.raw-ticket-card.cancelled {
+  border-left-color: #c2413b;
+}
+
+.raw-ticket-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.raw-ticket-card strong,
+.raw-ticket-card span,
+.raw-ticket-card p,
+.raw-ticket-card small,
+.raw-ticket-card em,
+.raw-ticket-card li {
+  overflow-wrap: anywhere;
+}
+
+.raw-ticket-card span,
+.raw-ticket-card small {
+  color: #607084;
+  font-size: 12px;
+}
+
+.raw-ticket-card p {
+  margin: 0;
+  color: #26384d;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.raw-ticket-card em {
+  color: #214c3a;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.raw-ticket-card ol {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  color: #26384d;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.raw-ticket-card details {
+  border-top: 1px solid #edf1f5;
+  padding-top: 6px;
+}
+
+.raw-ticket-card summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #0f7777;
+  font-size: 12px;
+}
+
+.raw-ticket-card pre {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #d8e0e8;
+  border-radius: 6px;
+  background: #f8fafb;
+  padding: 9px;
+  color: #263544;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
 .ticket-queue {
   display: grid;
   gap: 8px;

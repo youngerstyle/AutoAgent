@@ -26,6 +26,7 @@ import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from 
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, taskControlMode, type AgentProfileView } from "./view-model";
 import { buildEventTimelineItem } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
+import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
 const AGENT_PANEL_MIN_HEIGHT = 180;
 const AGENT_PANEL_MAX_HEIGHT = 560;
@@ -66,6 +67,7 @@ export function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
+  const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
@@ -85,6 +87,7 @@ export function App() {
   const catalogProfiles = useMemo(() => buildAgentCatalogProfiles(agentProfiles), [agentProfiles]);
   const mode = taskControlMode(snapshot);
   const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
+  const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -587,9 +590,33 @@ export function App() {
             />
 
             <aside className="event-panel">
-            {events.map((event) => (
-              <EventTimelineCard key={event.id} event={event} />
-            ))}
+              <div className="right-panel-tabs" role="tablist" aria-label="运行台右侧视图">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightPanelView === "events"}
+                  className={rightPanelView === "events" ? "selected" : ""}
+                  onClick={() => setRightPanelView("events")}
+                >
+                  运行记录
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightPanelView === "tickets"}
+                  className={rightPanelView === "tickets" ? "selected" : ""}
+                  onClick={() => setRightPanelView("tickets")}
+                >
+                  原始工单
+                </button>
+              </div>
+              {rightPanelView === "events" ? (
+                events.map((event) => (
+                  <EventTimelineCard key={event.id} event={event} />
+                ))
+              ) : (
+                <TicketInspector items={ticketItems} />
+              )}
             </aside>
           </> : null}
 
@@ -685,6 +712,42 @@ function DeleteWorkspaceDialog(props: {
         </footer>
       </section>
     </div>
+  );
+}
+
+function TicketInspector(props: { items: TicketInspectorItem[] }) {
+  if (props.items.length === 0) {
+    return (
+      <section className="ticket-inspector-empty">
+        <strong>还没有工单</strong>
+        <p>开始任务后，这里会显示当前项目当前任务拆出来的原始工单。</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="ticket-inspector">
+      {props.items.map((item) => (
+        <article key={item.id} className={`raw-ticket-card ${item.status}`}>
+          <header>
+            <strong>{item.title}</strong>
+            <span>{item.statusLabel}</span>
+          </header>
+          <p>{item.brief}</p>
+          <small>交付物：{item.expectedArtifact}</small>
+          {item.resultSummary ? <em>{item.resultSummary}</em> : null}
+          {item.resultLines.length > 0 ? (
+            <ol>
+              {item.resultLines.map((line) => <li key={line}>{line}</li>)}
+            </ol>
+          ) : null}
+          <details>
+            <summary>查看原始 JSON</summary>
+            <pre>{item.rawJson}</pre>
+          </details>
+        </article>
+      ))}
+    </section>
   );
 }
 
