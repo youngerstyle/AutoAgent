@@ -68,6 +68,7 @@ export function App() {
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
   const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
+  const [rawTicketDialog, setRawTicketDialog] = useState<TicketInspectorItem>();
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
@@ -615,7 +616,7 @@ export function App() {
                   <EventTimelineCard key={event.id} event={event} />
                 ))
               ) : (
-                <TicketInspector items={ticketItems} />
+                <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
               )}
             </aside>
           </> : null}
@@ -668,6 +669,9 @@ export function App() {
           onConfirm={() => void confirmDeleteWorkspace()}
         />
       ) : null}
+      {rawTicketDialog ? (
+        <RawTicketDialog item={rawTicketDialog} onClose={() => setRawTicketDialog(undefined)} />
+      ) : null}
     </main>
   );
 }
@@ -715,7 +719,21 @@ function DeleteWorkspaceDialog(props: {
   );
 }
 
-function TicketInspector(props: { items: TicketInspectorItem[] }) {
+function RawTicketDialog(props: { item: TicketInspectorItem; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="raw-ticket-dialog" role="dialog" aria-modal="true" aria-labelledby="raw-ticket-title">
+        <header>
+          <h2 id="raw-ticket-title">{props.item.title}</h2>
+          <button type="button" onClick={props.onClose}>关闭</button>
+        </header>
+        <pre>{props.item.rawJson}</pre>
+      </section>
+    </div>
+  );
+}
+
+function TicketInspector(props: { items: TicketInspectorItem[]; onShowRaw: (item: TicketInspectorItem) => void }) {
   if (props.items.length === 0) {
     return (
       <section className="ticket-inspector-empty">
@@ -741,10 +759,7 @@ function TicketInspector(props: { items: TicketInspectorItem[] }) {
               {item.resultLines.map((line) => <li key={line}>{line}</li>)}
             </ol>
           ) : null}
-          <details>
-            <summary>查看原始 JSON</summary>
-            <pre>{item.rawJson}</pre>
-          </details>
+          <button type="button" className="raw-ticket-json-button" onClick={() => props.onShowRaw(item)}>查看原始 JSON</button>
         </article>
       ))}
     </section>

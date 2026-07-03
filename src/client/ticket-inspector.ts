@@ -15,7 +15,7 @@ export interface TicketInspectorItem {
 
 export function buildTicketInspectorItems(tickets: Ticket[] | undefined): TicketInspectorItem[] {
   return (tickets ?? []).map((ticket) => {
-    const resultView = summarizeTicketResult(ticket.result);
+    const resultView = summarizeTicketSummary(ticket);
     return {
       id: ticket.id,
       title: `${ticket.targetRole ? roleLabel(ticket.targetRole) : "团队"}：${assignmentLabel(ticket.type)}`,
@@ -28,6 +28,15 @@ export function buildTicketInspectorItems(tickets: Ticket[] | undefined): Ticket
       rawJson: JSON.stringify(ticket, null, 2)
     };
   });
+}
+
+function summarizeTicketSummary(ticket: Ticket): { summary?: string; lines: string[] } {
+  if (ticket.blocker?.reason) {
+    const blockerView = summarizeBlockerReason(ticket.blocker.reason);
+    if (blockerView.summary || blockerView.lines.length > 0) return blockerView;
+    return { summary: ticket.blocker.reason, lines: [] };
+  }
+  return summarizeTicketResult(ticket.result);
 }
 
 function summarizeTicketResult(result: unknown): { summary?: string; lines: string[] } {
@@ -47,6 +56,23 @@ function summarizeTicketResult(result: unknown): { summary?: string; lines: stri
     summary: summary || undefined,
     lines: []
   };
+}
+
+function summarizeBlockerReason(reason: string): { summary?: string; lines: string[] } {
+  try {
+    const parsed = JSON.parse(reason) as unknown;
+    if (!isRecord(parsed)) return { lines: [] };
+    const report = isRecord(parsed.report) ? parsed.report : undefined;
+    const summary = String(report?.summary ?? parsed.reason ?? parsed.status ?? "").trim();
+    const manualTests = report?.required_manual_tests;
+    const lines = typeof manualTests === "string" && manualTests.trim() ? [manualTests.trim()] : [];
+    return {
+      summary: summary || undefined,
+      lines
+    };
+  } catch {
+    return { lines: [] };
+  }
 }
 
 function ticketStatusLabel(status: TicketStatus): string {

@@ -47,6 +47,33 @@ describe("ticket inspector", () => {
       resultSummary: undefined
     });
   });
+
+  it("keeps blocker details as a readable summary without duplicating raw JSON in the card body", () => {
+    const items = buildTicketInspectorItems([
+      ticket({
+        id: "tk_qa",
+        type: "qa",
+        status: "blocked",
+        targetRole: "qa",
+        brief: "验证实现并给出通过或失败结论",
+        expectedArtifact: "测试报告",
+        blocker: {
+          type: "manual_test_required",
+          reason: JSON.stringify({
+            status: "manual_test_required",
+            report: { summary: "需要人工浏览器测试", required_manual_tests: "打开 index.html" },
+            tools_used: ["readFile"]
+          })
+        }
+      })
+    ]);
+
+    expect(items[0]).toMatchObject({
+      resultSummary: "需要人工浏览器测试",
+      resultLines: ["打开 index.html"]
+    });
+    expect(items[0].rawJson).toContain("manual_test_required");
+  });
 });
 
 function ticket(input: Partial<Ticket> & Pick<Ticket, "id" | "type" | "status" | "brief" | "expectedArtifact">): Ticket {
