@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import {
@@ -83,6 +83,7 @@ export function App() {
   const [deleteDialog, setDeleteDialog] = useState<DeleteWorkspaceDialogState>();
   const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
   const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
+  const rightPanelRef = useRef<HTMLElement | null>(null);
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
   const profiles = useMemo(() => buildAgentProfiles(snapshot, agentProfiles), [snapshot, agentProfiles]);
   const catalogProfiles = useMemo(() => buildAgentCatalogProfiles(agentProfiles), [agentProfiles]);
@@ -90,6 +91,10 @@ export function App() {
   const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
   const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
+  const rightPanelScrollKey = useMemo(() => {
+    if (rightPanelView === "events") return visibleEvents.map((event) => event.id).join("|");
+    return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
+  }, [rightPanelView, ticketItems, visibleEvents]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -106,7 +111,7 @@ export function App() {
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
-      setEvents((current) => [event, ...current].slice(0, 80));
+      setEvents((current) => [...current, event].slice(-80));
       void refreshSnapshot(selectedId);
     });
     source.onerror = () => setError("Live event stream disconnected");
@@ -116,6 +121,15 @@ export function App() {
   useEffect(() => {
     if (humanFlowPrompt?.agentId) setSelectedAgentId(humanFlowPrompt.agentId);
   }, [humanFlowPrompt?.agentId]);
+
+  useEffect(() => {
+    const panel = rightPanelRef.current;
+    if (!panel) return;
+    const frame = window.requestAnimationFrame(() => {
+      panel.scrollTop = panel.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [rightPanelScrollKey]);
 
   useEffect(() => {
     window.localStorage.setItem("autoagent.agentPanelHeight", String(agentPanelHeight));
@@ -149,7 +163,7 @@ export function App() {
     try {
       const result = await getSnapshot(workspaceId);
       setSnapshot(result.snapshot);
-      setEvents(result.snapshot.recentEvents.slice().reverse());
+      setEvents(result.snapshot.recentEvents);
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -591,7 +605,7 @@ export function App() {
               title="拖动调整运行记录宽度"
             />
 
-            <aside className="event-panel">
+            <aside className="event-panel" ref={rightPanelRef}>
               <div className="right-panel-tabs" role="tablist" aria-label="运行台右侧视图">
                 <button
                   type="button"

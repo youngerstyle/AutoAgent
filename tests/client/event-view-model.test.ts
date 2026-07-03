@@ -96,6 +96,34 @@ describe("event view model", () => {
 
     expect(buildVisibleTimelineEvents([runBlocked])).toEqual([runBlocked]);
   });
+
+  it("turns structured manual-test blockers into compact timeline cards", () => {
+    const item = buildEventTimelineItem(event("assignment.blocked", `质量检查受阻：需要人工测试：${JSON.stringify({
+      status: "manual_test_required",
+      report: {
+        summary: "多关卡功能已实现，代码层面满足要求。需人工在浏览器中验证实际游戏流程。",
+        required_manual_tests: "打开 index.html 执行测试计划。"
+      },
+      tools_used: ["readFile", "listFiles"]
+    })}`, {
+      reason: `需要人工测试：${JSON.stringify({
+        status: "manual_test_required",
+        report: {
+          summary: "多关卡功能已实现，代码层面满足要求。需人工在浏览器中验证实际游戏流程。",
+          required_manual_tests: "打开 index.html 执行测试计划。"
+        },
+        tools_used: ["readFile", "listFiles"]
+      })}`
+    }));
+
+    expect(item).toMatchObject({
+      actor: "测试",
+      title: "质量检查受阻：需要人工测试",
+      detail: "多关卡功能已实现，代码层面满足要求。需人工在浏览器中验证实际游戏流程。"
+    });
+    expect(item.title).not.toContain("{");
+    expect(item.detail).not.toContain("tools_used");
+  });
 });
 
 function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>): AutoAgentEvent {

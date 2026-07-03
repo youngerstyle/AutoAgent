@@ -86,7 +86,8 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
   }
 
   if (event.type === "assignment.blocked" || event.type === "run.blocked") {
-    return item(event, actorFromSummary(event.summary) || "任务", displayText(event.summary) ?? event.summary, undefined, "warning");
+    const blocker = blockedEventView(event);
+    return item(event, blocker.actor, blocker.title, blocker.detail, "warning");
   }
 
   if (event.type === "assignment.failed" || event.type === "run.failed" || event.type === "qa.failed") {
@@ -130,6 +131,110 @@ function normalizeBlocker(value: string): string | undefined {
     .replace(/^(需求接收|计划拆解|架构设计|开发执行|质量检查|老板验收|专家交付|任务)受阻[:：]\s*/, "")
     .trim();
   return normalized || undefined;
+}
+
+function blockedEventView(event: AutoAgentEvent): { actor: string; title: string; detail?: string } {
+  const label = blockedLabelFromEvent(event);
+  const reason = stringPayload(event, "reason") ?? reasonFromBlockedSummary(event.summary);
+  const structured = reason ? structuredBlockerView(reason) : undefined;
+  if (structured) {
+    return {
+      actor: actorFromBlockedLabel(label),
+      title: `${label}：${structured.title}`,
+      detail: structured.detail
+    };
+  }
+  return {
+    actor: actorFromBlockedLabel(label) || actorFromSummary(event.summary) || "任务",
+    title: displayText(event.summary) ?? event.summary
+  };
+}
+
+function blockedLabelFromEvent(event: AutoAgentEvent): string {
+  const phase = stringPayload(event, "phase") as MissionPhase | undefined;
+  if (phase) return phaseLabel(phase);
+  const summary = displayText(event.summary) ?? event.summary;
+  const runMatch = summary.match(/^任务受阻[:：]\s*(.+?受阻)[:：]/);
+  if (runMatch?.[1]) return runMatch[1];
+  const match = summary.match(/^(.+?受阻)[:：]/);
+  return match?.[1] ?? "任务受阻";
+}
+
+function actorFromBlockedLabel(label: string): string {
+  const phase = label.replace(/受阻$/, "");
+  const labels: Record<string, string> = {
+    需求接收: "老板",
+    计划拆解: "产品/项目",
+    架构设计: "架构师",
+    开发执行: "开发",
+    质量检查: "测试",
+    老板验收: "老板",
+    专家交付: "专家",
+    任务: "任务"
+  };
+  return labels[phase] ?? phase;
+}
+
+function reasonFromBlockedSummary(summary: string): string | undefined {
+  const readable = displayText(summary) ?? summary;
+  const match = readable.match(/受阻[:：]\s*(.+)$/s);
+  if (!match?.[1]) return undefined;
+  return match[1].replace(/^.+?受阻[:：]\s*/s, "").trim();
+}
+
+function structuredBlockerView(reason: string): { title: string; detail?: string } | undefined {
+  const manualPrefix = "需要人工测试";
+  const normalized = reason.trim();
+  if (normalized.startsWith(`${manualPrefix}：`) || normalized.startsWith(`${manualPrefix}:`)) {
+    const jsonText = normalized.slice(manualPrefix.length + 1).trim();
+    const parsed = parseJsonRecord(jsonText);
+    const summary = reportSummary(parsed);
+    return {
+      title: manualPrefix,
+      detail: summary
+    };
+  }
+  const parsed = parseJsonRecord(normalized);
+  if (!parsed) return undefined;
+  const status = typeof parsed.status === "string" ? parsed.status : undefined;
+  return {
+    title: status === "manual_test_required" ? manualPrefix : statusLabelText(status) ?? "需要处理",
+    detail: reportSummary(parsed)
+  };
+}
+
+function parseJsonRecord(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function reportSummary(parsed: Record<string, unknown> | undefined): string | undefined {
+  if (!parsed) return undefined;
+  const report = parsed.report;
+  if (report && typeof report === "object" && !Array.isArray(report)) {
+    const summary = (report as Record<string, unknown>).summary;
+    if (typeof summary === "string" && summary.trim()) return summary.trim();
+  }
+  const reason = parsed.reason;
+  if (typeof reason === "string" && reason.trim()) return reason.trim();
+  return undefined;
+}
+
+function statusLabelText(status: string | undefined): string | undefined {
+  if (!status) return undefined;
+  const labels: Record<string, string> = {
+    manual_test_required: "需要人工测试",
+    blocked: "需要处理",
+    fail: "未通过",
+    failed: "失败"
+  };
+  return labels[status] ?? status;
 }
 
 function stringPayload(event: AutoAgentEvent, key: string): string | undefined {
