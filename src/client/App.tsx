@@ -25,7 +25,7 @@ import {
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, taskControlMode, type AgentProfileView } from "./view-model";
-import { buildEventTimelineItem, buildVisibleTimelineEvents } from "./event-view-model";
+import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
@@ -93,10 +93,11 @@ export function App() {
   const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
   const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
+  const eventGroups = useMemo(() => buildEventTimelineGroups(visibleEvents), [visibleEvents]);
   const rightPanelScrollKey = useMemo(() => {
-    if (rightPanelView === "events") return visibleEvents.map((event) => event.id).join("|");
+    if (rightPanelView === "events") return eventGroups.map((group) => group.id).join("|");
     return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
-  }, [rightPanelView, ticketItems, visibleEvents]);
+  }, [eventGroups, rightPanelView, ticketItems]);
 
   useEffect(() => {
     void refreshWorkspaces();
@@ -641,8 +642,8 @@ export function App() {
                 </button>
               </div>
               {rightPanelView === "events" ? (
-                visibleEvents.map((event) => (
-                  <EventTimelineCard key={event.id} event={event} debugLog={loopDebugLog} />
+                eventGroups.map((group, index) => (
+                  <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} defaultExpanded={index === eventGroups.length - 1} />
                 ))
               ) : (
                 <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
@@ -818,6 +819,29 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
         </div>
       ) : null}
     </article>
+  );
+}
+
+function EventTimelineGroupCard(props: { group: EventTimelineGroup; debugLog: LoopDebugLog; defaultExpanded?: boolean }) {
+  const [expanded, setExpanded] = useState(Boolean(props.defaultExpanded));
+  return (
+    <section className={`event-group ${props.group.tone}`}>
+      <button type="button" className="event-group-button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
+        <span className="event-group-avatar">{props.group.actor.slice(0, 1)}</span>
+        <span className="event-group-copy">
+          <strong>{props.group.title}</strong>
+          <small>{props.group.summary}</small>
+        </span>
+        <span className="event-group-count">{props.group.events.length}</span>
+      </button>
+      {expanded ? (
+        <div className="event-group-body">
+          {props.group.events.map((event) => (
+            <EventTimelineCard key={event.id} event={event} debugLog={props.debugLog} />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

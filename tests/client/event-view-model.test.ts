@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEventTimelineItem, buildVisibleTimelineEvents } from "../../src/client/event-view-model";
+import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents } from "../../src/client/event-view-model";
 import type { AutoAgentEvent } from "../../src/shared/types";
 
 describe("event view model", () => {
@@ -124,11 +124,35 @@ describe("event view model", () => {
     expect(item.title).not.toContain("{");
     expect(item.detail).not.toContain("tools_used");
   });
+
+  it("groups consecutive timeline events by actor and phase without reordering", () => {
+    const events = [
+      event("task.phase_changed", "进入阶段：需求接收", { phase: "boss_intake" }, "ev_1"),
+      event("assignment.created", "已创建需求接收任务", { assignment: { type: "boss_intake" } }, "ev_2"),
+      event("agent.step_started", "老板: 判断需求是否可执行", { step: "判断需求是否可执行" }, "ev_3"),
+      event("provider.started", "老板正在调用模型服务：openai", { provider: "openai", model: "deepseek-v4-flash" }, "ev_4"),
+      event("tool.started", "读取文件：index.html", { tool: "readFile", path: "index.html" }, "ev_5"),
+      event("tool.completed", "文件读取完成：index.html", { tool: "readFile", path: "index.html" }, "ev_6"),
+      event("assignment.completed", "老板已完成需求接收", { assignment: { type: "boss_intake" } }, "ev_7"),
+      event("task.phase_changed", "进入阶段：计划拆解", { phase: "pm_plan" }, "ev_8"),
+      event("assignment.created", "已创建计划拆解任务", { assignment: { type: "pm_plan" } }, "ev_9")
+    ];
+
+    const groups = buildEventTimelineGroups(events);
+
+    expect(groups.map((group) => group.title)).toEqual([
+      "老板 · 需求接收",
+      "产品/项目 · 计划拆解"
+    ]);
+    expect(groups[0].events.map((item) => item.id)).toEqual(["ev_1", "ev_2", "ev_3", "ev_4", "ev_5", "ev_6", "ev_7"]);
+    expect(groups[0].summary).toContain("模型 1 次");
+    expect(groups[0].summary).toContain("工具 2 次");
+  });
 });
 
-function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>): AutoAgentEvent {
+function event(type: AutoAgentEvent["type"], summary: string, payload: Record<string, unknown>, id = `ev_${type}`): AutoAgentEvent {
   return {
-    id: `ev_${type}`,
+    id,
     workspaceId: "ws_1",
     type,
     summary,

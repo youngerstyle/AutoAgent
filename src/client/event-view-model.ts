@@ -9,6 +9,16 @@ export interface EventTimelineItem {
   debugType: AutoAgentEvent["type"];
 }
 
+export interface EventTimelineGroup {
+  id: string;
+  actor: string;
+  phase: string;
+  title: string;
+  summary: string;
+  tone: EventTimelineItem["tone"];
+  events: AutoAgentEvent[];
+}
+
 export function buildVisibleTimelineEvents(events: AutoAgentEvent[]): AutoAgentEvent[] {
   const assignmentBlockers = new Set(
     events
@@ -23,6 +33,37 @@ export function buildVisibleTimelineEvents(events: AutoAgentEvent[]): AutoAgentE
     const reason = blockerReason(event);
     return !reason || !assignmentBlockers.has(reason);
   });
+}
+
+export function buildEventTimelineGroups(events: AutoAgentEvent[]): EventTimelineGroup[] {
+  const groups: EventTimelineGroup[] = [];
+  let currentPhase = "任务流";
+
+  for (const event of events) {
+    const item = buildEventTimelineItem(event);
+    const phase = phaseForTimelineEvent(event, item) ?? currentPhase;
+    if (event.type === "task.phase_changed") currentPhase = phase;
+    const actor = actorForTimelineGroup(event, item, groups.at(-1));
+    const key = `${actor}::${phase}`;
+    const previous = groups.at(-1);
+    if (previous && `${previous.actor}::${previous.phase}` === key && !startsNewTimelineGroup(event)) {
+      previous.events.push(event);
+      previous.tone = strongerTone(previous.tone, item.tone);
+      previous.summary = timelineGroupSummary(previous.events);
+    } else {
+      groups.push({
+        id: `${event.id}_group`,
+        actor,
+        phase,
+        title: `${actor} · ${phase}`,
+        summary: timelineGroupSummary([event]),
+        tone: item.tone,
+        events: [event]
+      });
+    }
+  }
+
+  return groups;
 }
 
 export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem {
@@ -109,6 +150,61 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
   return item(event, actorFromSummary(event.summary) || "系统", displayText(event.summary) ?? event.summary, undefined, "neutral");
 }
 
+function actorForTimelineGroup(event: AutoAgentEvent, item: EventTimelineItem, previous?: EventTimelineGroup): string {
+  const phase = stringPayload(event, "phase") as MissionPhase | undefined;
+  if (event.type === "task.phase_changed" && phase) return actorForPhase(phase);
+  if (item.actor === "工具" && previous) return previous.actor;
+  if ((event.type === "provider.completed" || event.type === "tool.started" || event.type === "tool.completed" || event.type === "tool.denied" || event.type === "tool.failed") && previous) {
+    return item.actor === "工具" || !item.actor ? previous.actor : item.actor;
+  }
+  return item.actor || previous?.actor || "系统";
+}
+
+function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): string | undefined {
+  const phase = stringPayload(event, "phase") as MissionPhase | undefined;
+  if (phase) return phaseLabel(phase);
+  const assignmentType = nestedStringPayload(event, "assignment", "type") as AssignmentType | undefined;
+  if (assignmentType) return assignmentLabel(assignmentType);
+  if (item.actor === "任务阶段") return item.title.replace(/^进入/, "") || "任务流";
+  if (event.type === "run.completed") return "任务完成";
+  if (event.type === "human.followup") return "人工补充";
+  if (event.type.startsWith("recruitment.")) return "专家招聘";
+  return undefined;
+}
+
+function startsNewTimelineGroup(event: AutoAgentEvent): boolean {
+  return event.type === "task.phase_changed"
+    || event.type === "human.followup"
+    || event.type === "run.completed"
+    || event.type.startsWith("recruitment.");
+}
+
+function timelineGroupSummary(events: AutoAgentEvent[]): string {
+  const items = events.map(buildEventTimelineItem);
+  const modelTurns = events.filter((event) => event.type === "provider.started").length;
+  const toolTurns = events.filter((event) => event.type.startsWith("tool.")).length;
+  const blocker = items.find((item) => item.tone === "warning" || item.tone === "danger");
+  const latest = items.at(-1);
+  const parts = [
+    `${events.length} 条记录`,
+    modelTurns > 0 ? `模型 ${modelTurns} 次` : undefined,
+    toolTurns > 0 ? `工具 ${toolTurns} 次` : undefined,
+    blocker ? `关注：${blocker.title}` : latest ? `最新：${latest.title}` : undefined
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
+function strongerTone(left: EventTimelineItem["tone"], right: EventTimelineItem["tone"]): EventTimelineItem["tone"] {
+  const rank: Record<EventTimelineItem["tone"], number> = {
+    neutral: 0,
+    success: 1,
+    running: 2,
+    warning: 3,
+    danger: 4
+  };
+  return rank[right] > rank[left] ? right : left;
+}
+
 function item(event: AutoAgentEvent, actor: string, title: string, detail: string | undefined, tone: EventTimelineItem["tone"]): EventTimelineItem {
   return {
     actor,
@@ -157,7 +253,14 @@ function blockedLabelFromEvent(event: AutoAgentEvent): string {
   const runMatch = summary.match(/^任务受阻[:：]\s*(.+?受阻)[:：]/);
   if (runMatch?.[1]) return runMatch[1];
   const match = summary.match(/^(.+?受阻)[:：]/);
-  return match?.[1] ?? "任务受阻";
+  if (match?.[1]) return match[1];
+  if (summary.includes("需求接收")) return "需求接收";
+  if (summary.includes("计划拆解")) return "计划拆解";
+  if (summary.includes("架构设计")) return "架构设计";
+  if (summary.includes("开发执行")) return "开发执行";
+  if (summary.includes("质量检查")) return "质量检查";
+  if (summary.includes("老板验收")) return "老板验收";
+  return "任务受阻";
 }
 
 function actorFromBlockedLabel(label: string): string {
@@ -294,6 +397,23 @@ function actorForAssignment(type: AssignmentType | undefined, summary: string): 
     specialist: "专家"
   };
   return type ? labels[type] ?? "任务" : actorFromSummary(summary) || "任务";
+}
+
+function actorForPhase(phase: MissionPhase): string {
+  const labels: Partial<Record<MissionPhase, string>> = {
+    boss_intake: "老板",
+    pm_plan: "产品/项目",
+    architect_plan: "架构师",
+    implementation: "开发",
+    qa: "测试",
+    boss_acceptance: "老板",
+    completed: "任务",
+    failed: "任务",
+    idle: "任务",
+    interrupted: "任务",
+    paused: "任务"
+  };
+  return labels[phase] ?? "任务";
 }
 
 function assignmentLabelFromSummary(summary: string): string {
