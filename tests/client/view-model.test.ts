@@ -11,6 +11,20 @@ describe("client view model", () => {
     expect(nodes.find((node) => node.role === "qa")?.x).toBeGreaterThan(nodes.find((node) => node.role === "dev")!.x);
   });
 
+  it("keeps long agent steps as short canvas bubbles while preserving the full title", () => {
+    const longStep = "判断需求是否可执行：不对，刚刚的哪里有问题，我发现这个第二关的关卡家左上角的砖块没有生成，缺了一个角";
+    const nodes = buildAgentNodes({
+      ...snapshot("running"),
+      agents: snapshot("running").agents.map((agent) => agent.id === "wa_dev" ? { ...agent, currentStep: longStep } : agent)
+    });
+    const dev = nodes.find((node) => node.id === "wa_dev");
+
+    expect(dev).toBeDefined();
+    expect(dev?.currentStep).toBe("判断需求是否可执行：不对...");
+    expect(dev?.currentStepTitle).toBe(longStep);
+    expect(dev!.currentStep!.length).toBeLessThanOrEqual(18);
+  });
+
   it("derives task controls from snapshot status", () => {
     expect(taskControlMode(undefined)).toBe("empty");
     expect(taskControlMode(snapshot("paused"))).toBe("paused");

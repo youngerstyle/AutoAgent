@@ -414,11 +414,14 @@ button:disabled {
 .agent-node {
   position: absolute;
   width: clamp(116px, 26%, 148px);
-  min-height: 104px;
+  height: 106px;
   transform: translate(-50%, -50%);
   display: grid;
   justify-items: center;
+  align-content: center;
+  grid-template-rows: 40px auto auto;
   gap: 5px;
+  padding: 10px;
   border: 1px solid #c8d1da;
   background: #ffffff;
   text-align: center;
@@ -466,6 +469,30 @@ button:disabled {
 .event-item strong {
   max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+.agent-node strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.agent-node small {
+  display: block;
+  max-width: calc(100% - 10px);
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.45;
+}
+
+.agent-node .agent-step-bubble {
+  background: #eef6f6;
+  color: #41515d;
 }
 
 .agent-detail {

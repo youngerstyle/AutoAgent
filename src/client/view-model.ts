@@ -7,6 +7,7 @@ export interface AgentNodeView {
   role: string;
   status: string;
   currentStep?: string;
+  currentStepTitle?: string;
   x: number;
   y: number;
   active: boolean;
@@ -97,18 +98,28 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
     .map((agent, index) => {
       const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
       const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
+      const currentStep = displayText(agent.currentStep);
       return {
         id: agent.id,
         label: roleLabel(agent.roleInWorkspace),
         role: agent.roleInWorkspace,
         status: agent.status,
-        currentStep: displayText(agent.currentStep),
+        currentStep: canvasStepLabel(currentStep),
+        currentStepTitle: currentStep,
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
-        active: agent.status === "running" || Boolean(agent.currentStep),
+        active: agent.status === "running" || Boolean(currentStep),
         needsAttention: Boolean(problemAgentId && problemAgentId === agent.id)
       };
     });
+}
+
+function canvasStepLabel(step?: string): string | undefined {
+  if (!step) return undefined;
+  const normalized = step.replace(/\s+/g, " ").trim();
+  const maxLength = 13;
+  const clipped = normalized.slice(0, maxLength).replace(/[，。；、,.;:：\s]+$/u, "");
+  return normalized.length > maxLength ? `${clipped}...` : normalized;
 }
 
 export function buildAgentProfiles(snapshot?: WorkspaceSnapshot, profileDefs: AgentProfile[] = []): AgentProfileView[] {

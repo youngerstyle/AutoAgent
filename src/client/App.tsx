@@ -561,12 +561,12 @@ export function App() {
                   className={`${node.active ? "agent-node active" : `agent-node ${node.status}`} ${node.needsAttention ? "needs-attention" : ""}`}
                   style={{ left: `${node.x}%`, top: `${node.y}%` }}
                   onClick={() => setSelectedAgentId(node.id)}
-                  title={node.currentStep ?? statusLabel(node.status)}
+                  title={node.currentStepTitle ?? node.currentStep ?? statusLabel(node.status)}
                 >
                   <span className="avatar">{initials(node.label)}</span>
                   {node.needsAttention ? <span className="attention-badge">!</span> : null}
                   <strong>{node.label}</strong>
-                  <small>{node.currentStep ?? statusLabel(node.status)}</small>
+                  <small className={node.currentStep ? "agent-step-bubble" : undefined}>{node.currentStep ?? statusLabel(node.status)}</small>
                 </button>
               ))}
             </div>
