@@ -79,6 +79,32 @@ P0 先落地确定性的默认工单图：
 | `qa` | `boss_acceptance` |
 | `boss_acceptance` | 任务完成 |
 
+PM 可以覆盖默认工单图。计划工单结果中如果包含 `ticketGraph`、`tickets`、`workItems` 或 `work_items` 数组，Mission Control 会按这个数组创建执行工单，而不是继续插入默认链。
+
+P0 支持的计划项格式：
+
+```json
+{
+  "key": "implementation",
+  "type": "implementation",
+  "brief": "实现单文件 Web Canvas MVP",
+  "expectedArtifact": "可运行的 index.html",
+  "targetRole": "dev",
+  "dependsOn": ["architecture"]
+}
+```
+
+字段语义：
+
+- `key`: 当前计划内的临时工单标识，供后续 `dependsOn` 引用。
+- `type`: 工单类型，支持 `architect_plan`、`implementation`、`qa`、`boss_acceptance`、`specialist`、`rework`。
+- `brief`: 交给目标 Agent 的任务说明。
+- `expectedArtifact`: 该工单预期产物。
+- `targetRole`: 目标角色。
+- `dependsOn`: 依赖的计划项 `key`。依赖未完成时，工单可以显示在原始工单里，但不能被 Agent 领取。
+
+如果 PM 不返回计划工单图，系统才回退到默认链，保证空项目和 mock 演示仍然能跑通。
+
 动态工单规则：
 
 - QA 发现真实缺陷：当前 QA 工单完成并创建开发返工工单，父工单指向 QA。
@@ -138,4 +164,3 @@ Run Console 的右侧“运行记录/原始工单”应该展示同一套事实�
 - 本地浏览器打开运行台不出现布局破坏或控制台错误。
 - 新建坦克大战任务时，原始工单能看出从老板到 PM 再到执行工单的父子链。
 - QA 人工测试通过后流向老板验收；QA 失败流向开发返工；不能再绕回 PM，除非工单结果明确是需求/计划问题。
-

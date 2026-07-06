@@ -42,6 +42,16 @@
 - [ ] Ensure boss acceptance completion marks the run completed only when no pending/running/blocked tickets remain.
 - [ ] Verify targeted tests pass.
 
+## Task 3.5: Let PM Create A Ticket Graph
+
+- [ ] Write a failing test where PM returns `ticketGraph` without `architect_plan`.
+- [ ] Add `dependsOnTicketIds` to tickets.
+- [ ] Ensure pending tickets with unmet dependencies are visible but cannot be claimed.
+- [ ] Parse PM `ticketGraph` / `tickets` / `workItems` into real tickets.
+- [ ] Skip default next-ticket creation when a planned successor already exists.
+- [ ] Update the PM prompt and mock provider to emit `ticketGraph`.
+- [ ] Verify targeted mission and ticket runtime tests pass.
+
 ## Task 4: Convert reroutes into ticket creation
 
 - [ ] Write failing tests for QA defect creating a dev rework ticket with parent QA.
@@ -65,4 +75,3 @@
 - [ ] Restart local server if needed.
 - [ ] Browser-check `http://127.0.0.1:13748/` for Run Console rendering.
 - [ ] Commit the docs, tests, and implementation.
-

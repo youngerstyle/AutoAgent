@@ -139,6 +139,7 @@ export interface Ticket {
   leaseUntil?: string;
   parentTicketId?: string;
   createdByTicketId?: string;
+  dependsOnTicketIds?: string[];
   artifactRefs?: string[];
   blocker?: TicketBlocker;
   returnReason?: string;

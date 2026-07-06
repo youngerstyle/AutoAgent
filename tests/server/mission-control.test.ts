@@ -104,6 +104,33 @@ describe("MissionControl", () => {
     expect(acceptance).toMatchObject({ parentTicketId: qa?.id, createdByTicketId: qa?.id });
   });
 
+  it("uses the PM returned ticket graph instead of inserting the default fixed chain", async () => {
+    const fixture = await missionFixture(new PmReturnsExecutionTicketGraphProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a direct implementation task" },
+      { runSynchronously: true }
+    );
+
+    const tickets = snapshot.tickets ?? [];
+    const pm = tickets.find((ticket) => ticket.type === "pm_plan");
+    const architect = tickets.find((ticket) => ticket.type === "architect_plan");
+    const dev = tickets.find((ticket) => ticket.type === "implementation");
+    const qa = tickets.find((ticket) => ticket.type === "qa");
+    const acceptance = tickets.find((ticket) => ticket.type === "boss_acceptance");
+
+    expect(snapshot.status).toBe("completed");
+    expect(architect).toBeUndefined();
+    expect(dev).toMatchObject({
+      brief: "直接实现单文件 Web Canvas MVP",
+      parentTicketId: pm?.id,
+      createdByTicketId: pm?.id
+    });
+    expect((dev as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([pm?.id]);
+    expect((qa as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([dev?.id]);
+    expect((acceptance as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([qa?.id]);
+  });
+
   it("keeps the agent loop autonomous when a role asks for clarification", async () => {
     const fixture = await missionFixture(new BossClarifiesThenTeamCompletesProvider());
 
@@ -524,6 +551,45 @@ class BossAttemptsWriteThenTeamCompletesProvider implements ProviderRunner {
       });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmReturnsExecutionTicketGraphProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        plan: "任务足够小，不需要单独架构评审，直接进入开发、质量检查和老板验收。",
+        ticketGraph: [
+          {
+            key: "dev_mvp",
+            type: "implementation",
+            brief: "直接实现单文件 Web Canvas MVP",
+            expectedArtifact: "可运行的 index.html",
+            targetRole: "dev"
+          },
+          {
+            key: "qa_mvp",
+            type: "qa",
+            brief: "检查单文件交付物是否满足验收条件",
+            expectedArtifact: "质量检查结论",
+            targetRole: "qa",
+            dependsOn: ["dev_mvp"]
+          },
+          {
+            key: "accept_mvp",
+            type: "boss_acceptance",
+            brief: "验收已经通过 QA 的 MVP",
+            expectedArtifact: "验收结论",
+            targetRole: "boss",
+            dependsOn: ["qa_mvp"]
+          }
+        ]
+      });
+    }
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
     if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });

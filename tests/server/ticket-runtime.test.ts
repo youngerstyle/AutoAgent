@@ -65,6 +65,39 @@ describe("ticket runtime", () => {
     });
   });
 
+  it("does not claim a ticket until its dependencies are completed", () => {
+    const runtime = createTicketRuntime();
+    const dev = agent("wa_dev", "dev");
+    const qa = agent("wa_qa", "qa");
+    const devTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "implementation",
+      brief: "开发实现",
+      expectedArtifact: "交付物",
+      targetAgentId: dev.id
+    });
+    const qaTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "qa",
+      brief: "质量检查",
+      expectedArtifact: "测试报告",
+      targetAgentId: qa.id,
+      dependsOnTicketIds: [devTicket.id]
+    });
+
+    expect(runtime.claimNext(qa, now("2026-07-01T01:00:00.000Z"))).toBeUndefined();
+
+    runtime.claimNext(dev, now("2026-07-01T01:00:01.000Z"));
+    runtime.ack(devTicket.id, { artifact: "index.html" }, new Date("2026-07-01T01:00:02.000Z"));
+    const claimedQa = runtime.claimNext(qa, now("2026-07-01T01:00:03.000Z"));
+
+    expect(claimedQa?.ticket.id).toBe(qaTicket.id);
+  });
+
   it("returns failed manual QA as a development rework ticket", () => {
     const runtime = createTicketRuntime();
     const qaTicket = runtime.createTicket({

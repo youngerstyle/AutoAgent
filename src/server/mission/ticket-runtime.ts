@@ -14,6 +14,7 @@ export interface CreateTicketInput {
   priority?: number;
   parentTicketId?: string;
   createdByTicketId?: string;
+  dependsOnTicketIds?: string[];
   returnReason?: string;
 }
 
@@ -51,6 +52,7 @@ export class TicketRuntime {
       attempt: 0,
       parentTicketId: input.parentTicketId,
       createdByTicketId: input.createdByTicketId,
+      dependsOnTicketIds: input.dependsOnTicketIds,
       returnReason: input.returnReason,
       createdAt,
       updatedAt: createdAt
@@ -89,6 +91,10 @@ export class TicketRuntime {
     const candidates = this.allMessages()
       .filter((message) => message.status === "pending")
       .filter((message) => message.toAgentId === agent.id || (!message.toAgentId && message.toRole === agent.roleInWorkspace))
+      .filter((message) => {
+        const ticket = this.tickets.get(message.ticketId);
+        return ticket ? this.dependenciesSatisfied(ticket) : false;
+      })
       .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt));
     const message = candidates[0];
     if (!message) return undefined;
@@ -206,6 +212,14 @@ export class TicketRuntime {
     };
     this.messages.set(message.id, message);
     return message;
+  }
+
+  private dependenciesSatisfied(ticket: Ticket): boolean {
+    const dependencies = ticket.dependsOnTicketIds ?? [];
+    return dependencies.every((id) => {
+      const dependency = this.tickets.get(id);
+      return dependency?.status === "completed" || dependency?.status === "returned";
+    });
   }
 
   private expireLeases(now: Date): void {

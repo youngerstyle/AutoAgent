@@ -25,7 +25,42 @@ function mockStructuredOutput(input: AgentTurnInput): Record<string, unknown> {
     return { ok: true, summary: "目标可执行", next: "pm_plan" };
   }
   if (input.role === "pm") {
-    return { plan: ["明确范围", "开发实现", "验证交付"], next: "architect_plan" };
+    return {
+      plan: "默认按架构、开发、质量检查、老板验收推进。",
+      ticketGraph: [
+        {
+          key: "architecture",
+          type: "architect_plan",
+          brief: "判断架构方案、技术路径和能力缺口",
+          expectedArtifact: "技术方案",
+          targetRole: "architect"
+        },
+        {
+          key: "implementation",
+          type: "implementation",
+          brief: "按计划开发并产出交付物",
+          expectedArtifact: "真实项目文件或可运行交付物",
+          targetRole: "dev",
+          dependsOn: ["architecture"]
+        },
+        {
+          key: "qa",
+          type: "qa",
+          brief: "验证实现并给出通过或失败结论",
+          expectedArtifact: "质量检查结论",
+          targetRole: "qa",
+          dependsOn: ["implementation"]
+        },
+        {
+          key: "acceptance",
+          type: "boss_acceptance",
+          brief: "验收已通过质量检查的交付物",
+          expectedArtifact: "验收结论",
+          targetRole: "boss",
+          dependsOn: ["qa"]
+        }
+      ]
+    };
   }
   if (input.role === "architect") {
     const goal = String(input.context?.goal ?? "");

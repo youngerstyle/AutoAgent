@@ -34,6 +34,7 @@ export function buildAgentPrompt(input: {
     "只能请求当前工具权限允许的工具；如果任务需要写文件但你没有写项目权限，不要返回 writeFile，而要返回 blocked/need_clarification，并说明应交给开发或具备写权限的 Agent。",
     "禁止把未执行的工具结果写进普通 JSON；禁止编造文件列表、命令输出、测试结果或交付物。",
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，返回 status: manual_test_required，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
+    input.assignment.type === "pm_plan" ? "产品/项目拆解任务必须优先返回 ticketGraph 数组：[{\"key\":\"implementation\",\"type\":\"implementation\",\"brief\":\"...\",\"expectedArtifact\":\"...\",\"targetRole\":\"dev\"},{\"key\":\"qa\",\"type\":\"qa\",\"brief\":\"...\",\"expectedArtifact\":\"...\",\"targetRole\":\"qa\",\"dependsOn\":[\"implementation\"]},{\"key\":\"acceptance\",\"type\":\"boss_acceptance\",\"brief\":\"...\",\"expectedArtifact\":\"...\",\"targetRole\":\"boss\",\"dependsOn\":[\"qa\"]}]。只有确实需要架构判断时才加入 type=architect_plan；不要为了流程好看强行加入角色。" : undefined,
     "完成时返回简洁的结构化结果；无法继续时返回 blocked/need_clarification 并说明缺少的事实。"
   ].filter(Boolean).join("\n");
 }

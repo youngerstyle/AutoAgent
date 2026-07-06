@@ -1,6 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentInboxMessage, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentInboxMessage, AgentRole, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel, roleLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
@@ -485,7 +485,16 @@ export class MissionControl {
   private nextRunnableTicket(state: MissionState): Ticket | undefined {
     return (state.tickets ?? [])
       .filter((ticket) => ticket.status === "pending")
+      .filter((ticket) => this.ticketDependenciesSatisfied(state, ticket))
       .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+  }
+
+  private ticketDependenciesSatisfied(state: MissionState, ticket: Ticket): boolean {
+    const dependencies = ticket.dependsOnTicketIds ?? [];
+    return dependencies.every((id) => {
+      const dependency = state.tickets.find((item) => item.id === id);
+      return dependency?.status === "completed" || dependency?.status === "returned";
+    });
   }
 
   private isTicketGraphComplete(state: MissionState): boolean {
@@ -494,6 +503,11 @@ export class MissionControl {
   }
 
   private createNextTicketsForCompletedTicket(state: MissionState, sourceTicket: Ticket): void {
+    const planned = sourceTicket.type === "pm_plan"
+      ? this.createTicketsFromPmPlan(state, sourceTicket)
+      : false;
+    if (planned || this.hasPlannedSuccessor(state, sourceTicket)) return;
+
     const next = nextPhase(phaseForTicket(sourceTicket));
     if (next === "completed") {
       state.nextPhase = "completed";
@@ -501,6 +515,54 @@ export class MissionControl {
       return;
     }
     this.createTicketForPhase(state, next, sourceTicket);
+  }
+
+  private createTicketsFromPmPlan(state: MissionState, sourceTicket: Ticket): boolean {
+    const planItems = plannedTicketItems(sourceTicket.result);
+    if (planItems.length === 0) return false;
+
+    const runtime = this.ticketRuntime(state);
+    const ticketsByKey = new Map<string, Ticket>([[sourceTicket.id, sourceTicket]]);
+    ticketsByKey.set("pm", sourceTicket);
+    ticketsByKey.set("pm_plan", sourceTicket);
+
+    for (const [index, item] of planItems.entries()) {
+      const type = ticketTypeFromValue(item.type);
+      const role = agentRoleFromValue(item.targetRole) ?? roleForPhase(phaseForTicketType(type));
+      const dependencyIds = dependencyIdsForPlanItem(item, ticketsByKey, index === 0 ? [sourceTicket.id] : []);
+      const parentTicketId = dependencyIds[0] ?? sourceTicket.id;
+      const ticket = runtime.createTicket({
+        workspaceId: state.task.workspaceId,
+        taskId: state.task.id,
+        taskRunId: state.taskRun.id,
+        type,
+        brief: stringValue(item.brief) ?? stringValue(item.title) ?? briefForPhase(phaseForTicketType(type), state),
+        expectedArtifact: stringValue(item.expectedArtifact) ?? stringValue(item.artifact) ?? expectedArtifactForPhase(phaseForTicketType(type)),
+        targetRole: role,
+        priority: numberValue(item.priority) ?? 0,
+        parentTicketId,
+        createdByTicketId: parentTicketId,
+        dependsOnTicketIds: dependencyIds
+      });
+      const key = stringValue(item.key) ?? stringValue(item.id) ?? `${type}_${index}`;
+      ticketsByKey.set(key, ticket);
+      ticketsByKey.set(ticket.id, ticket);
+    }
+
+    this.syncTickets(state, runtime);
+    const next = this.nextRunnableTicket(state);
+    if (next) {
+      state.nextPhase = phaseForTicket(next);
+      state.taskRun.phase = state.nextPhase;
+    }
+    return true;
+  }
+
+  private hasPlannedSuccessor(state: MissionState, sourceTicket: Ticket): boolean {
+    return state.tickets.some((ticket) => {
+      if (ticket.id === sourceTicket.id) return false;
+      return ticket.dependsOnTicketIds?.includes(sourceTicket.id) || ticket.parentTicketId === sourceTicket.id;
+    });
   }
 
   private createTicketForPhase(state: MissionState, phase: MissionPhase, sourceTicket: Ticket, returnReason?: string): Ticket | undefined {
@@ -517,6 +579,7 @@ export class MissionControl {
       targetRole: role,
       parentTicketId: sourceTicket.id,
       createdByTicketId: sourceTicket.id,
+      dependsOnTicketIds: [sourceTicket.id],
       returnReason
     });
     this.syncTickets(state, runtime);
@@ -838,10 +901,14 @@ function isQaReworkSignal(text: string): boolean {
 }
 
 function phaseForTicket(ticket: Ticket): MissionPhase {
-  if (ticket.type === "rework") return "implementation";
-  if (ticket.type === "human_action") return "boss_acceptance";
-  if (ticket.type === "specialist") return "implementation";
-  return ticket.type;
+  return phaseForTicketType(ticket.type);
+}
+
+function phaseForTicketType(type: TicketType): MissionPhase {
+  if (type === "rework") return "implementation";
+  if (type === "human_action") return "boss_acceptance";
+  if (type === "specialist") return "implementation";
+  return type;
 }
 
 function assignmentTypeForTicket(ticket: Ticket): AssignmentType {
@@ -850,12 +917,67 @@ function assignmentTypeForTicket(ticket: Ticket): AssignmentType {
   return ticket.type;
 }
 
-function roleForPhase(phase: MissionPhase) {
+function roleForPhase(phase: MissionPhase): AgentRole {
   if (phase === "boss_intake" || phase === "boss_acceptance") return "boss";
   if (phase === "pm_plan") return "pm";
   if (phase === "architect_plan") return "architect";
   if (phase === "qa") return "qa";
   return "dev";
+}
+
+function plannedTicketItems(result: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(result)) return [];
+  const direct = firstRecordArray(result.ticketGraph, result.tickets, result.workItems, result.work_items);
+  if (direct.length > 0) return direct;
+  if (isRecord(result.ticketGraph) && Array.isArray(result.ticketGraph.tickets)) {
+    return result.ticketGraph.tickets.filter(isRecord);
+  }
+  if (isRecord(result.flow) && Array.isArray(result.flow.tickets)) {
+    return result.flow.tickets.filter(isRecord);
+  }
+  return [];
+}
+
+function firstRecordArray(...values: unknown[]): Array<Record<string, unknown>> {
+  for (const value of values) {
+    if (Array.isArray(value)) return value.filter(isRecord);
+  }
+  return [];
+}
+
+function ticketTypeFromValue(value: unknown): TicketType {
+  const text = typeof value === "string" ? value : "";
+  const allowed = new Set<TicketType>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance", "specialist", "rework", "human_action"]);
+  if (allowed.has(text as TicketType)) return text as TicketType;
+  if (text === "dev" || text === "development") return "implementation";
+  if (text === "architect" || text === "architecture") return "architect_plan";
+  if (text === "acceptance") return "boss_acceptance";
+  return "implementation";
+}
+
+function agentRoleFromValue(value: unknown): AgentRole | undefined {
+  const text = typeof value === "string" ? value : "";
+  const allowed = new Set<AgentRole>(["boss", "pm", "architect", "dev", "qa", "specialist"]);
+  return allowed.has(text as AgentRole) ? text as AgentRole : undefined;
+}
+
+function dependencyIdsForPlanItem(item: Record<string, unknown>, ticketsByKey: Map<string, Ticket>, fallback: string[]): string[] {
+  const raw = Array.isArray(item.dependsOn)
+    ? item.dependsOn
+    : Array.isArray(item.depends_on)
+      ? item.depends_on
+      : Array.isArray(item.dependsOnTicketIds)
+        ? item.dependsOnTicketIds
+        : undefined;
+  if (!raw) return fallback;
+  const ids = raw
+    .map((value) => typeof value === "string" ? ticketsByKey.get(value)?.id : undefined)
+    .filter((value): value is string => Boolean(value));
+  return ids.length > 0 ? ids : fallback;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function ticketTransferPhaseForObstacle(currentPhase: MissionPhase, reason: string): MissionPhase {
