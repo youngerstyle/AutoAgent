@@ -55,6 +55,55 @@ describe("MissionControl", () => {
     });
   });
 
+  it("seeds the boss intake ticket before the runtime loop starts", async () => {
+    const fixture = await missionFixture();
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build from a raw idea" },
+      { autoRun: false }
+    );
+
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.tickets).toHaveLength(1);
+    expect(snapshot.tickets?.[0]).toMatchObject({
+      type: "boss_intake",
+      status: "pending",
+      targetRole: "boss"
+    });
+    expect(snapshot.tickets?.[0]).not.toHaveProperty("parentTicketId");
+    expect(snapshot.tickets?.[0]).not.toHaveProperty("createdByTicketId");
+    expect(snapshot.inboxMessages).toHaveLength(1);
+    expect(snapshot.inboxMessages?.[0]).toMatchObject({
+      ticketId: snapshot.tickets?.[0].id,
+      status: "pending",
+      toRole: "boss"
+    });
+  });
+
+  it("creates follow-up tickets from completed tickets instead of hidden phase jumps", async () => {
+    const fixture = await missionFixture();
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a ticket linked demo" },
+      { runSynchronously: true }
+    );
+
+    const tickets = snapshot.tickets ?? [];
+    const boss = tickets.find((ticket) => ticket.type === "boss_intake");
+    const pm = tickets.find((ticket) => ticket.type === "pm_plan");
+    const architect = tickets.find((ticket) => ticket.type === "architect_plan");
+    const dev = tickets.find((ticket) => ticket.type === "implementation");
+    const qa = tickets.find((ticket) => ticket.type === "qa");
+    const acceptance = tickets.find((ticket) => ticket.type === "boss_acceptance");
+
+    expect(snapshot.status).toBe("completed");
+    expect(pm).toMatchObject({ parentTicketId: boss?.id, createdByTicketId: boss?.id });
+    expect(architect).toMatchObject({ parentTicketId: pm?.id, createdByTicketId: pm?.id });
+    expect(dev).toMatchObject({ parentTicketId: architect?.id, createdByTicketId: architect?.id });
+    expect(qa).toMatchObject({ parentTicketId: dev?.id, createdByTicketId: dev?.id });
+    expect(acceptance).toMatchObject({ parentTicketId: qa?.id, createdByTicketId: qa?.id });
+  });
+
   it("keeps the agent loop autonomous when a role asks for clarification", async () => {
     const fixture = await missionFixture(new BossClarifiesThenTeamCompletesProvider());
 
@@ -85,6 +134,12 @@ describe("MissionControl", () => {
     expect(events.some((event) => event.summary.includes("开发开始开发执行"))).toBe(true);
     expect(events.find((event) => event.type === "handoff.created")?.payload).toMatchObject({
       phase: "implementation"
+    });
+    const bossTicket = snapshot.tickets?.find((ticket) => ticket.type === "boss_intake");
+    const implementationTicket = snapshot.tickets?.find((ticket) => ticket.type === "implementation");
+    expect(implementationTicket).toMatchObject({
+      parentTicketId: bossTicket?.id,
+      createdByTicketId: bossTicket?.id
     });
     expect(events.map((event) => event.type)).toContain("run.completed");
   });
@@ -268,6 +323,12 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
     expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("敌人生成点"))).toBe(true);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
+    const qaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa");
+    const reworkTicket = snapshot.tickets?.find((ticket) => ticket.type === "implementation" && ticket.returnReason?.includes("敌人生成点"));
+    expect(reworkTicket).toMatchObject({
+      parentTicketId: qaTicket?.id,
+      createdByTicketId: qaTicket?.id
+    });
   });
 
   it("routes nested QA failure reports back to development instead of treating them as manual testing", async () => {

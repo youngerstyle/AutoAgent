@@ -1,6 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentInboxMessage, Assignment, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentInboxMessage, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel, roleLabel } from "../../shared/labels.js";
 import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
@@ -85,6 +85,7 @@ export class MissionControl {
       inboxMessages: [],
       updatedAt: new Date().toISOString()
     };
+    this.seedInitialTickets(workspace, state);
     await this.writeState(workspace, state);
     await this.append(workspace, state, "task.created", "Task run created", { task, taskRun });
 
@@ -251,19 +252,22 @@ export class MissionControl {
     this.running.add(runKey);
     try {
       let state = await this.readState(workspace, taskId, taskRunId);
-      while (state.status === "running" && state.nextPhase !== "completed") {
+      while (state.status === "running") {
         if (state.stopRequested) break;
         if (state.pauseRequested) {
           await this.pauseTask(workspace.id, taskId);
           break;
         }
-        state = await this.runPhase(workspace, state);
+        const nextTicket = this.nextRunnableTicket(state);
+        if (!nextTicket) break;
+        state = await this.runTicket(workspace, state, nextTicket.id);
       }
       state = await this.readState(workspace, taskId, taskRunId);
-      if (state.status === "running" && state.nextPhase === "completed") {
+      if (state.status === "running" && this.isTicketGraphComplete(state)) {
         state.status = "completed";
         state.task.status = "completed";
         state.taskRun.status = "completed";
+        state.nextPhase = "completed";
         state.taskRun.phase = "completed";
         state.taskRun.endedAt = new Date().toISOString();
         await this.writeState(workspace, state);
@@ -284,23 +288,17 @@ export class MissionControl {
     }
   }
 
-  private async runPhase(workspace: Workspace, state: MissionState): Promise<MissionState> {
-    const phase = state.nextPhase;
+  private async runTicket(workspace: Workspace, state: MissionState, ticketId: string): Promise<MissionState> {
+    const ticketRuntime = this.ticketRuntime(state);
+    const ticket = ticketRuntime.ticket(ticketId);
+    if (!ticket || ticket.status !== "pending") return state;
+    const phase = phaseForTicket(ticket);
+    state.nextPhase = phase;
+    state.taskRun.phase = phase;
     await this.append(workspace, state, "task.phase_changed", `进入阶段：${phaseLabel(phase)}`, { phase, status: "running" });
-    const agent = await this.agentForPhase(workspace, phase);
+    const agent = await this.agentForTicket(workspace, ticket);
     const profiles = await this.agentProfiles();
     const profile = profileForRole(agent.roleInWorkspace, profiles);
-    const ticketRuntime = this.ticketRuntime(state);
-    const ticket = ticketRuntime.createTicket({
-      workspaceId: workspace.id,
-      taskId: state.task.id,
-      taskRunId: state.taskRun.id,
-      type: assignmentTypeForPhase(phase),
-      brief: briefForPhase(phase, state),
-      expectedArtifact: expectedArtifactForPhase(phase),
-      targetAgentId: agent.id,
-      targetRole: agent.roleInWorkspace
-    });
     const claimed = ticketRuntime.claimNext(agent);
     this.syncTickets(state, ticketRuntime);
     if (!claimed) {
@@ -323,9 +321,9 @@ export class MissionControl {
       taskId: state.task.id,
       taskRunId: state.taskRun.id,
       goal: state.task.goal,
-      type: assignmentTypeForPhase(phase),
-      brief: briefForPhase(phase, state),
-      expectedArtifact: expectedArtifactForPhase(phase),
+      type: assignmentTypeForTicket(ticket),
+      brief: ticket.brief,
+      expectedArtifact: ticket.expectedArtifact,
       context: state.context,
       sessionId: state.taskRun.id
     });
@@ -350,7 +348,7 @@ export class MissionControl {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
       const targetPhase = ticketTransferPhaseForObstacle(phase, roleToolBoundaryReason);
-      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, roleToolBoundaryReason, `${targetPhase}RoleBoundaryRetries`);
+      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, roleToolBoundaryReason, `${targetPhase}RoleBoundaryRetries`, ticket);
     }
 
     if (humanAuthorizationReason || manualOnlyReason) {
@@ -380,14 +378,14 @@ export class MissionControl {
     if (qaDefectReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.routeBackToPhaseOrFail(workspace, state, "implementation", qaDefectReason, "qaDefectRetries");
+      return this.routeBackToPhaseOrFail(workspace, state, "implementation", qaDefectReason, "qaDefectRetries", ticket);
     }
 
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
       const targetPhase = ticketTransferPhaseForObstacle(phase, agentObstacle ?? missingImplementation ?? "");
-      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", `${targetPhase}AutonomyRetries`);
+      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", `${targetPhase}AutonomyRetries`, ticket);
     }
 
     if (phase === "qa") {
@@ -398,9 +396,9 @@ export class MissionControl {
           feedback: agentObstacle ?? result.providerResult.structured?.report ?? result.providerResult.text,
           attempt: state.qaAttempts
         });
-        state.nextPhase = "implementation";
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
+        this.createTicketForPhase(state, "implementation", ticket, agentObstacle ?? "测试要求开发返工");
         await this.writeState(workspace, state);
         return state;
       }
@@ -419,7 +417,7 @@ export class MissionControl {
     if (phase === "boss_acceptance" && agentObstacle) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.routeBackToPhaseOrFail(workspace, state, "implementation", agentObstacle, "bossAcceptanceReworkRetries");
+      return this.routeBackToPhaseOrFail(workspace, state, "implementation", agentObstacle, "bossAcceptanceReworkRetries", ticket);
     }
 
     if (agentObstacle) {
@@ -427,7 +425,7 @@ export class MissionControl {
       if (targetPhase !== nextPhase(phase)) {
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
-        return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle, `${targetPhase}AutonomyRetries`);
+        return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle, `${targetPhase}AutonomyRetries`, ticket);
       }
       await this.append(workspace, state, "task.phase_changed", `Agent 自治继续：${agentObstacle}`, {
         phase,
@@ -463,24 +461,72 @@ export class MissionControl {
       state.context.specialist = { capabilityGap: gap, agentId: specialist.id };
     }
 
-    state.nextPhase = nextPhase(phase);
-    state.taskRun.phase = state.nextPhase;
     ticketRuntime.ack(ticket.id, phaseResult);
     this.syncTickets(state, ticketRuntime);
+    this.createNextTicketsForCompletedTicket(state, ticket);
     await this.writeState(workspace, state);
     return state;
   }
 
+  private seedInitialTickets(workspace: Workspace, state: MissionState): void {
+    const runtime = this.ticketRuntime(state);
+    runtime.createTicket({
+      workspaceId: workspace.id,
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      type: "boss_intake",
+      brief: briefForPhase("boss_intake", state),
+      expectedArtifact: expectedArtifactForPhase("boss_intake"),
+      targetRole: "boss"
+    });
+    this.syncTickets(state, runtime);
+  }
+
+  private nextRunnableTicket(state: MissionState): Ticket | undefined {
+    return (state.tickets ?? [])
+      .filter((ticket) => ticket.status === "pending")
+      .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+  }
+
+  private isTicketGraphComplete(state: MissionState): boolean {
+    const tickets = state.tickets ?? [];
+    return tickets.length > 0 && tickets.every((ticket) => ticket.status === "completed" || ticket.status === "returned" || ticket.status === "cancelled");
+  }
+
+  private createNextTicketsForCompletedTicket(state: MissionState, sourceTicket: Ticket): void {
+    const next = nextPhase(phaseForTicket(sourceTicket));
+    if (next === "completed") {
+      state.nextPhase = "completed";
+      state.taskRun.phase = "completed";
+      return;
+    }
+    this.createTicketForPhase(state, next, sourceTicket);
+  }
+
+  private createTicketForPhase(state: MissionState, phase: MissionPhase, sourceTicket: Ticket, returnReason?: string): Ticket | undefined {
+    if (phase === "completed" || phase === "failed" || phase === "interrupted" || phase === "idle" || phase === "paused") return undefined;
+    const runtime = this.ticketRuntime(state);
+    const role = roleForPhase(phase);
+    const ticket = runtime.createTicket({
+      workspaceId: state.task.workspaceId,
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      type: assignmentTypeForPhase(phase),
+      brief: returnReason ? `${briefForPhase(phase, state)}：${returnReason}` : briefForPhase(phase, state),
+      expectedArtifact: expectedArtifactForPhase(phase),
+      targetRole: role,
+      parentTicketId: sourceTicket.id,
+      createdByTicketId: sourceTicket.id,
+      returnReason
+    });
+    this.syncTickets(state, runtime);
+    state.nextPhase = phase;
+    state.taskRun.phase = phase;
+    return ticket;
+  }
+
   private async agentForPhase(workspace: Workspace, phase: MissionPhase): Promise<WorkspaceAgent> {
-    const role = phase === "boss_intake" || phase === "boss_acceptance"
-      ? "boss"
-      : phase === "pm_plan"
-        ? "pm"
-        : phase === "architect_plan"
-          ? "architect"
-          : phase === "qa"
-            ? "qa"
-            : "dev";
+    const role = roleForPhase(phase);
     const profiles = await this.agentProfiles();
     const agents = await ensureCoreTeam(workspace, profiles);
     const agent = agents.find((item) => item.roleInWorkspace === role);
@@ -488,12 +534,21 @@ export class MissionControl {
     return agent;
   }
 
-  private async routeBackToPhaseOrFail(workspace: Workspace, state: MissionState, targetPhase: MissionPhase, reason: string, retryKey: string): Promise<MissionState> {
+  private async agentForTicket(workspace: Workspace, ticket: Ticket): Promise<WorkspaceAgent> {
+    const profiles = await this.agentProfiles();
+    const agents = await ensureCoreTeam(workspace, profiles);
+    const agent = ticket.targetAgentId
+      ? agents.find((item) => item.id === ticket.targetAgentId)
+      : agents.find((item) => item.roleInWorkspace === (ticket.targetRole ?? roleForPhase(phaseForTicket(ticket))));
+    if (!agent) throw new HttpError(500, `Missing ${ticket.targetRole ?? phaseForTicket(ticket)} agent`, "MISSING_AGENT");
+    return agent;
+  }
+
+  private async routeBackToPhaseOrFail(workspace: Workspace, state: MissionState, targetPhase: MissionPhase, reason: string, retryKey: string, sourceTicket: Ticket): Promise<MissionState> {
     const retries = Number(state.context[retryKey] ?? 0) + 1;
     state.context[retryKey] = retries;
     if (retries < 3) {
-      state.nextPhase = targetPhase;
-      state.taskRun.phase = targetPhase;
+      this.createTicketForPhase(state, targetPhase, sourceTicket, reason);
       await this.writeState(workspace, state);
       await this.append(workspace, state, "handoff.created", `Agent 自治返工：${reason}`, {
         phase: targetPhase,
@@ -780,6 +835,27 @@ function isQaReworkSignal(text: string): boolean {
     || text.includes("未通过")
     || text.includes("失败")
     || text.includes("返工");
+}
+
+function phaseForTicket(ticket: Ticket): MissionPhase {
+  if (ticket.type === "rework") return "implementation";
+  if (ticket.type === "human_action") return "boss_acceptance";
+  if (ticket.type === "specialist") return "implementation";
+  return ticket.type;
+}
+
+function assignmentTypeForTicket(ticket: Ticket): AssignmentType {
+  if (ticket.type === "rework") return "implementation";
+  if (ticket.type === "human_action") return "boss_acceptance";
+  return ticket.type;
+}
+
+function roleForPhase(phase: MissionPhase) {
+  if (phase === "boss_intake" || phase === "boss_acceptance") return "boss";
+  if (phase === "pm_plan") return "pm";
+  if (phase === "architect_plan") return "architect";
+  if (phase === "qa") return "qa";
+  return "dev";
 }
 
 function ticketTransferPhaseForObstacle(currentPhase: MissionPhase, reason: string): MissionPhase {
