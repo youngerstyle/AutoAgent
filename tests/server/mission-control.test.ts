@@ -388,6 +388,20 @@ describe("MissionControl", () => {
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(2);
   });
 
+  it("does not infer rework target phase from free-form agent reason text", async () => {
+    const fixture = await missionFixture(new DevReturnsUnroutedRequirementTextProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build with an unrouted developer concern" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("completed");
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(1);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
+  });
+
   it("continues to boss acceptance after human confirms manual QA passed", async () => {
     const provider = new ManualBrowserQaProvider();
     const fixture = await missionFixture(provider);
@@ -812,9 +826,9 @@ class ManualQaWithDefectRiskProvider implements ProviderRunner {
       this.qaCalls += 1;
       if (this.qaCalls === 1) {
         return result({
-          status: "manual_test_required",
-          report: "缺少浏览器能力，需要人工测试。",
-          static_analysis_risks: [
+          passed: false,
+          reason: "静态检查发现阻塞验收的缺陷，需要开发先返工。",
+          defects: [
             "敌人生成点若全被占据，可能永远达不到8个敌人，影响胜利条件。",
             "玩家重生位置无无敌帧，可能落地瞬死。"
           ]
@@ -869,7 +883,29 @@ class DevReturnsRequirementConflictProvider implements ProviderRunner {
       if (this.devCalls === 1) {
         return result({
           status: "blocked",
+          target_phase: "pm_plan",
           reason: "需求和验收标准冲突：目标说只做单文件，但验收要求包含后端接口。需要 PM 重新拆解范围。"
+        });
+      }
+      return implementationResult();
+    }
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class DevReturnsUnroutedRequirementTextProvider implements ProviderRunner {
+  private devCalls = 0;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev") {
+      this.devCalls += 1;
+      if (this.devCalls === 1) {
+        return result({
+          status: "blocked",
+          reason: "需求和验收标准冲突：这句话里出现 PM 和范围，但没有结构化 target_phase。"
         });
       }
       return implementationResult();

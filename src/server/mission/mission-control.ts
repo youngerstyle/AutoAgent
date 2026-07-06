@@ -345,8 +345,9 @@ export class MissionControl {
 
     const manualTestingReason = phase === "qa" ? manualTestingReasonForPhase(result.providerResult.structured, result.providerResult.text) : undefined;
     const roleToolBoundaryReason = roleToolBoundaryReasonForPhase(phase, agent, result.toolResults);
-    const humanAuthorizationReason = humanAuthorizationReasonForPhase(result.providerResult.structured)
-      ?? toolFailureReason(result.toolResults);
+    const explicitAuthorizationReason = humanAuthorizationReasonForPhase(result.providerResult.structured);
+    const blockingToolFailureReason = toolFailureReason(result.toolResults);
+    const humanAuthorizationReason = explicitAuthorizationReason ?? blockingToolFailureReason;
     const agentObstacle = agentObstacleReasonForPhase(phase, result.providerResult.structured);
     const missingImplementation = phase === "implementation" && !await hasImplementationEvidence(workspace, result.toolResults, result.providerResult.structured)
       ? "开发阶段没有产生真实文件写入或命令执行证据"
@@ -356,14 +357,18 @@ export class MissionControl {
     if (roleToolBoundaryReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = ticketTransferPhaseForObstacle(phase, roleToolBoundaryReason);
-      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, roleToolBoundaryReason, `${targetPhase}RoleBoundaryRetries`, ticket);
+      return this.routeBackToPhaseOrFail(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
     if (humanAuthorizationReason || manualOnlyReason) {
       const reason = humanAuthorizationReason ?? manualOnlyReason ?? "需要 human 处理";
       const blockerManualReason = manualOnlyReason ? manualTestingReason : undefined;
-      ticketRuntime.blockTicket(ticket.id, ticketBlockerFor(reason, blockerManualReason));
+      ticketRuntime.blockTicket(ticket.id, ticketBlockerFor({
+        reason,
+        manualTestingReason: blockerManualReason,
+        explicitAuthorization: Boolean(explicitAuthorizationReason),
+        toolPolicyBlocked: Boolean(blockingToolFailureReason)
+      }));
       this.syncTickets(state, ticketRuntime);
       result.assignment.status = "blocked";
       state.status = "blocked";
@@ -393,7 +398,9 @@ export class MissionControl {
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = ticketTransferPhaseForObstacle(phase, agentObstacle ?? missingImplementation ?? "");
+      const targetPhase = agentObstacle
+        ? targetPhaseFromStructured(result.providerResult.structured, "implementation")
+        : "implementation";
       return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", `${targetPhase}AutonomyRetries`, ticket);
     }
 
@@ -426,11 +433,12 @@ export class MissionControl {
     if (phase === "boss_acceptance" && agentObstacle) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.routeBackToPhaseOrFail(workspace, state, "implementation", agentObstacle, "bossAcceptanceReworkRetries", ticket);
+      const targetPhase = targetPhaseFromStructured(result.providerResult.structured, "implementation");
+      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle, "bossAcceptanceReworkRetries", ticket);
     }
 
     if (agentObstacle) {
-      const targetPhase = ticketTransferPhaseForObstacle(phase, agentObstacle);
+      const targetPhase = targetPhaseFromStructured(result.providerResult.structured, defaultTransferPhaseForObstacle(phase));
       if (targetPhase !== nextPhase(phase)) {
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
@@ -636,7 +644,7 @@ export class MissionControl {
     state.taskRun.phase = "failed";
     state.taskRun.endedAt = new Date().toISOString();
     await this.writeState(workspace, state);
-    const summary = targetPhase === "implementation" && reason.includes("真实文件")
+    const summary = retryKey === "implementationAutonomyRetries"
       ? "开发无法产出真实交付证据，任务失败"
       : `${phaseLabel(targetPhase)}无法自治修复，任务失败`;
     await this.append(workspace, state, "run.failed", summary, {
@@ -860,11 +868,16 @@ function expectedArtifactForPhase(phase: MissionPhase): string {
   return "专家建议";
 }
 
-function ticketBlockerFor(reason: string, manualTestingReason?: string): TicketBlocker {
-  if (manualTestingReason) return { type: "manual_test_required", reason: manualTestingReason };
-  if (reason.includes("授权")) return { type: "human_authorization_required", reason };
-  if (reason.includes("工具") || reason.includes("权限") || reason.toLowerCase().includes("policy")) return { type: "tool_policy_blocked", reason };
-  return { type: "external_dependency", reason };
+function ticketBlockerFor(input: {
+  reason: string;
+  manualTestingReason?: string;
+  explicitAuthorization?: boolean;
+  toolPolicyBlocked?: boolean;
+}): TicketBlocker {
+  if (input.manualTestingReason) return { type: "manual_test_required", reason: input.manualTestingReason };
+  if (input.explicitAuthorization) return { type: "human_authorization_required", reason: input.reason };
+  if (input.toolPolicyBlocked) return { type: "tool_policy_blocked", reason: input.reason };
+  return { type: "external_dependency", reason: input.reason };
 }
 
 function agentObstacleReasonForPhase(phase: MissionPhase, structured?: Record<string, unknown>): string | undefined {
@@ -883,15 +896,19 @@ function agentObstacleReasonForPhase(phase: MissionPhase, structured?: Record<st
 
 function qaDefectReasonForPhase(structured?: Record<string, unknown>): string | undefined {
   if (!structured) return undefined;
+  const status = lower(structured.status);
+  const action = lower(structured.action);
+  if (status.includes("manual_test") || action.includes("manual_test")) return undefined;
   const explicit = firstNonEmptyDefectField(structured, ["defects", "issues", "bugs", "failures", "blockers", "missing_fixes", "missingFixes"]);
   if (explicit) return explicit;
-  const risk = collectNamedStrings(structured, ["static_analysis_risks", "risks", "known_risks"])
-    .find(isAcceptanceBlockingRisk);
-  if (risk) return `QA 发现需要开发处理的风险：${risk}`;
-  const status = lower(structured.status);
   const failedQa = status === "fail" || status === "failed" || status === "not_passed";
-  const reworkSignal = collectStructuredStrings(structured.report ?? structured).find(isQaReworkSignal);
-  return failedQa && reworkSignal ? `QA 检查未通过：${reworkSignal}` : undefined;
+  if (failedQa) {
+    return stringValue(structured.reason)
+      ?? stringValue(structured.summary)
+      ?? stringValue(structured.report)
+      ?? "QA 返回未通过";
+  }
+  return undefined;
 }
 
 function roleToolBoundaryReasonForPhase(phase: MissionPhase, agent: WorkspaceAgent, toolResults: Array<Record<string, unknown>>): string | undefined {
@@ -915,10 +932,6 @@ function firstNonEmptyDefectField(structured: Record<string, unknown>, keys: str
   return undefined;
 }
 
-function collectNamedStrings(structured: Record<string, unknown>, keys: string[]): string[] {
-  return keys.flatMap((key) => collectStructuredStrings(collectValuesByKey(structured, key)));
-}
-
 function collectValuesByKey(value: unknown, key: string): unknown[] {
   if (!value || typeof value !== "object") return [];
   if (Array.isArray(value)) return value.flatMap((item) => collectValuesByKey(item, key));
@@ -926,30 +939,6 @@ function collectValuesByKey(value: unknown, key: string): unknown[] {
     const own = entryKey === key ? [entryValue] : [];
     return own.concat(collectValuesByKey(entryValue, key));
   });
-}
-
-function isAcceptanceBlockingRisk(text: string): boolean {
-  const lowerText = text.toLowerCase();
-  return lowerText.includes("blocker")
-    || lowerText.includes("critical")
-    || text.includes("永远达不到")
-    || text.includes("无法")
-    || text.includes("失败")
-    || text.includes("阻塞")
-    || text.includes("影响胜利")
-    || text.includes("影响验收")
-    || text.includes("瞬死")
-    || text.includes("卡死")
-    || text.includes("停止");
-}
-
-function isQaReworkSignal(text: string): boolean {
-  return text.includes("打回开发")
-    || text.includes("修复")
-    || text.includes("缺陷")
-    || text.includes("未通过")
-    || text.includes("失败")
-    || text.includes("返工");
 }
 
 function phaseForTicket(ticket: Ticket): MissionPhase {
@@ -1032,32 +1021,34 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function ticketTransferPhaseForObstacle(currentPhase: MissionPhase, reason: string): MissionPhase {
-  if (requiresWorkspaceWriteOwner(reason)) return "implementation";
+function defaultTransferPhaseForObstacle(currentPhase: MissionPhase): MissionPhase {
   if (currentPhase === "boss_intake") return "pm_plan";
   if (currentPhase === "pm_plan") return "pm_plan";
   if (currentPhase === "architect_plan") return "pm_plan";
   if (currentPhase === "qa" || currentPhase === "boss_acceptance") return "implementation";
-  if (currentPhase === "implementation") return implementationTransferPhase(reason);
+  if (currentPhase === "implementation") return "implementation";
   return currentPhase;
 }
 
-function implementationTransferPhase(reason: string): MissionPhase {
-  const text = reason.toLowerCase();
-  if (reason.includes("需求") || reason.includes("范围") || reason.includes("验收") || reason.includes("计划") || text.includes("requirement")) return "pm_plan";
-  if (reason.includes("架构") || reason.includes("接口") || reason.includes("技术方案") || text.includes("architecture")) return "architect_plan";
-  return "implementation";
+function targetPhaseFromStructured(structured: Record<string, unknown> | undefined, fallback: MissionPhase): MissionPhase {
+  const raw = stringValue(structured?.target_phase)
+    ?? stringValue(structured?.targetPhase)
+    ?? stringValue(structured?.return_to)
+    ?? stringValue(structured?.returnTo)
+    ?? stringValue(structured?.route_to)
+    ?? stringValue(structured?.routeTo);
+  return raw ? missionPhaseFromValue(raw, fallback) : fallback;
 }
 
-function requiresWorkspaceWriteOwner(reason: string): boolean {
-  return reason.includes("写文件")
-    || reason.includes("写项目文件")
-    || reason.includes("写入")
-    || reason.includes("修改文件")
-    || reason.includes("修改地图")
-    || reason.includes("具备写权限")
-    || reason.includes("无写文件权限")
-    || reason.includes("没有写项目文件权限");
+function missionPhaseFromValue(value: string, fallback: MissionPhase): MissionPhase {
+  const normalized = value.trim();
+  const allowed = new Set<MissionPhase>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance"]);
+  if (allowed.has(normalized as MissionPhase)) return normalized as MissionPhase;
+  if (normalized === "pm" || normalized === "product") return "pm_plan";
+  if (normalized === "architect" || normalized === "architecture") return "architect_plan";
+  if (normalized === "dev" || normalized === "development" || normalized === "rework") return "implementation";
+  if (normalized === "acceptance") return "boss_acceptance";
+  return fallback;
 }
 
 function humanAuthorizationReasonForPhase(structured?: Record<string, unknown>): string | undefined {
@@ -1067,34 +1058,25 @@ function humanAuthorizationReasonForPhase(structured?: Record<string, unknown>):
   const action = lower(structured.action);
   const reason = stringValue(structured.reason) ?? stringValue(structured.report) ?? stringValue(structured.summary);
   const needsHumanAuthorization = [status, decision, action].some((value) => {
-    return value.includes("human_authorization")
-      || value.includes("human_approval")
-      || value.includes("requires_human")
-      || value.includes("await_human_authorization")
-      || value.includes("await_human_approval")
-      || value.includes("需要人工授权")
-      || value.includes("等待人工授权")
-      || value.includes("需要人工审批")
-      || value.includes("等待人工审批");
+    return value === "human_authorization_required"
+      || value === "human_approval_required"
+      || value === "requires_human"
+      || value === "await_human_authorization"
+      || value === "await_human_approval";
   });
   return needsHumanAuthorization ? reason ?? "需要 human 授权后才能继续" : undefined;
 }
 
 function manualTestingReasonForPhase(structured: Record<string, unknown> | undefined, rawText: string): string | undefined {
+  if (!structured) return undefined;
   const reason = structured
     ? stringValue(structured.reason) ?? stringValue(structured.report) ?? stringValue(structured.summary) ?? rawText
     : rawText;
-  const status = structured ? lower(structured.status) : "";
-  const action = structured ? lower(structured.action) : "";
-  const text = `${status} ${action} ${reason}`.toLowerCase();
-  const explicitManualTesting = status.includes("manual_test")
-    || action.includes("manual_test")
-    || text.includes("manual testing");
-  const missingBrowserAbility = reason.includes("缺少浏览器")
-    || reason.includes("浏览器运行环境")
-    || reason.includes("无法实际执行手动测试");
-  const needsManualTesting = explicitManualTesting || missingBrowserAbility;
-  return needsManualTesting ? reason : undefined;
+  const status = lower(structured.status);
+  const action = lower(structured.action);
+  const explicitManualTesting = status === "manual_test_required"
+    || action === "manual_test_required";
+  return explicitManualTesting ? reason : undefined;
 }
 
 async function hasImplementationEvidence(workspace: Workspace, toolResults: Array<Record<string, unknown>>, structured?: Record<string, unknown>): Promise<boolean> {
@@ -1198,29 +1180,15 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
   const status = lower(result.status);
   const decision = lower(result.decision);
   const action = lower(result.action);
-  const clarificationSignal = [status, decision, action].some((value) => hasClarificationSignal(value));
   return result.clarification_required === true
-    || status.includes("need_clarification")
-    || status.includes("awaiting_clarification")
+    || status === "need_clarification"
+    || status === "awaiting_clarification"
     || status === "blocked"
-    || action.includes("awaiting_clarification")
-    || action.includes("return_to_clarification")
+    || action === "awaiting_clarification"
+    || action === "return_to_clarification"
     || action === "block"
     || result.blocked === true
-    || clarificationSignal
     || decision === "reject";
-}
-
-function hasClarificationSignal(value: string): boolean {
-  if (!value || value.includes("不需要澄清")) return false;
-  return value.includes("need clarification")
-    || value.includes("needs clarification")
-    || value.includes("clarification required")
-    || value.includes("awaiting clarification")
-    || value.includes("暂不执行")
-    || value.includes("需澄清")
-    || value.includes("需要澄清")
-    || value.includes("等待澄清");
 }
 
 function terminalCompletionBlockReason(events: AutoAgentEvent[]): { phase: MissionPhase; reason: string; assignmentId?: string } | undefined {
