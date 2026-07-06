@@ -25,6 +25,9 @@ AutoAgent 的运行核心必须像现实团队里的工单系统：用户提出�
 5. Human in flow 是默认，human in loop 是异常或边界态。
    用户平时观察团队流动；当某个 Agent 需要人工测试、授权、澄清或验收时，问题挂在该 Agent/工单上，用户点进该 Agent 后进入单 Agent 对话。
 
+6. Human 回复不是普通聊天消息，而是工单恢复事件。
+   当 blocked 工单收到 human 消息时，平台不能直接把消息当批准、失败或继续。必须先让当前工单 owner Agent 做一次 `ticket_resume_review` 分类 turn，输出结构化 decision；平台只消费 decision 来推进状态机。
+
 ## 分层模型
 
 ```text
@@ -67,6 +70,58 @@ flowchart LR
   H --> T["returned"]
   T --> N
 ```
+
+## Ticket Resume Review
+
+`ticket_resume_review` 是 human-in-loop 的统一入口。它解决“看起来像一问一答，但实际要带状态”的问题。
+
+普通聊天 loop 是：
+
+```text
+message -> Agent answer
+```
+
+工单恢复 loop 是：
+
+```text
+message + blocked ticket state -> owner Agent review decision -> state transition
+```
+
+输入必须包含：
+
+- 当前 blocked 工单。
+- 阻塞类型和原因。
+- 上一次 Agent 输出和工具结果。
+- human 最新回复。
+- 当前工单允许的动作集合。
+
+输出必须是结构化 JSON，例如：
+
+```json
+{
+  "decision": "need_more_info",
+  "reason": "human 在询问为什么需要授权，不是授权继续",
+  "reply_to_human": "生产部署会影响线上环境，需要你确认是否允许继续。"
+}
+```
+
+或人工测试边界：
+
+```json
+{
+  "human_action": "manual_test_failed",
+  "reason": "human 报告子弹穿墙，交付物未通过人工测试"
+}
+```
+
+平台状态机只允许按结构化 decision/action 流转：
+
+- `continue` / `approve`: 当前 blocked 工单解除阻塞，继续后续工单。
+- `need_more_info`: 当前工单保持 `blocked`，UI 继续显示该 Agent 的对话。
+- `manual_test_passed`: QA 工单完成，创建老板验收工单。
+- `manual_test_failed`: QA 工单 returned，创建开发返工工单。
+
+平台禁止从 human 文本、Agent 的 `reason` 或 `report` 中用关键词猜测“通过、失败、授权、返工目标”。如果 Agent 想让工单回到特定角色，必须返回结构化字段，例如 `target_phase: "pm_plan"`。
 
 ## 工单创建规则
 
@@ -166,3 +221,4 @@ Run Console 的右侧“运行记录/原始工单”应该展示同一套事实�
 - 本地浏览器打开运行台不出现布局破坏或控制台错误。
 - 新建坦克大战任务时，原始工单能看出从老板到 PM 再到执行工单的父子链。
 - QA 人工测试通过后流向老板验收；QA 失败流向开发返工；不能再绕回 PM，除非工单结果明确是需求/计划问题。
+- blocked 工单收到 human 回复时必须先经过 owner Agent 的 `ticket_resume_review` turn；提问或信息不足不能被平台直接当成批准继续。

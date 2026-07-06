@@ -157,7 +157,7 @@ export class MissionControl {
 
     const currentPhase = state.taskRun.phase;
     const blockedFollowupAction = state.status === "blocked"
-      ? await this.resolveBlockedFollowupAction(workspace, state, followup)
+      ? await this.runTicketResumeReview(workspace, state, followup)
       : "continue";
     const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state, blockedFollowupAction) : state.nextPhase;
     const followups = Array.isArray(state.context.humanFollowups) ? state.context.humanFollowups as Array<Record<string, unknown>> : [];
@@ -675,7 +675,7 @@ export class MissionControl {
     const runtime = this.ticketRuntime(state);
     const blockedQa = runtime.allTickets().find((ticket) => ticket.type === "qa" && ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required");
     if (blockedQa) {
-      const action = manualTestActionFromReview(state.context.manualTestFollowupReview);
+      const action = blockedFollowupActionFromReview(state.context.ticketResumeReview);
       if (action === "hold") {
         this.syncTickets(state, runtime);
         return;
@@ -692,42 +692,40 @@ export class MissionControl {
     this.syncTickets(state, runtime);
   }
 
-  private async resolveBlockedFollowupAction(workspace: Workspace, state: MissionState, message: string): Promise<BlockedFollowupAction> {
-    if (state.taskRun.phase !== "qa" || !isManualTestingBoundary(state)) return "continue";
-    const ticket = state.tickets.find((item) => item.type === "qa" && item.status === "blocked" && item.blocker?.type === "manual_test_required");
+  private async runTicketResumeReview(workspace: Workspace, state: MissionState, message: string): Promise<BlockedFollowupAction> {
+    const ticket = state.tickets.find((item) => item.status === "blocked" && phaseForTicket(item) === state.taskRun.phase)
+      ?? state.tickets.find((item) => item.status === "blocked");
     if (!ticket) return "hold";
-    const qaAgent = await this.agentForTicket(workspace, ticket);
+    const ownerAgent = await this.agentForTicket(workspace, ticket);
     const profiles = await this.agentProfiles();
     const review = await this.runtime.runAssignment({
       workspace,
-      agent: qaAgent,
-      profile: profileForRole(qaAgent.roleInWorkspace, profiles),
+      agent: ownerAgent,
+      profile: profileForRole(ownerAgent.roleInWorkspace, profiles),
       taskId: state.task.id,
       taskRunId: state.taskRun.id,
       goal: state.task.goal,
-      type: "qa",
-      brief: [
-        "解释 human 对人工测试边界的回复，并只返回结构化判断。",
-        "如果 human 明确表示测试通过，返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}。",
-        "如果 human 明确表示测试失败或发现问题，返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}。",
-        "如果 human 只是在提问、补充现象、请求帮助或信息不足，返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply\":\"...\"}。",
-        "不要把提问当成通过；不要自行猜测 human 已验收。"
-      ].join("\n"),
-      expectedArtifact: "human_action 结构化判断",
+      type: assignmentTypeForTicket(ticket),
+      brief: ticketResumeReviewBrief(ticket),
+      expectedArtifact: "ticket_resume_review 结构化判断",
       context: {
         ...state.context,
         humanFollowup: message,
         blockedTicket: ticket,
-        manualTestBoundary: ticket.blocker
+        ticketResumeReview: {
+          ticketId: ticket.id,
+          blocker: ticket.blocker,
+          allowedActions: ticketResumeAllowedActions(ticket)
+        }
       },
       sessionId: state.taskRun.id
     });
-    state.context.manualTestFollowupReview = {
+    state.context.ticketResumeReview = {
       result: review.providerResult.structured ?? review.providerResult.text,
       rawText: review.providerResult.text,
       toolResults: review.toolResults
     };
-    return manualTestActionFromReview(state.context.manualTestFollowupReview);
+    return blockedFollowupActionFromReview(state.context.ticketResumeReview);
   }
 
   private async agentProfiles() {
@@ -1288,14 +1286,35 @@ function isManualTestingBoundary(state: MissionState): boolean {
 
 type BlockedFollowupAction = "continue" | "hold" | "pass_manual_test" | "fail_manual_test";
 
-function manualTestActionFromReview(review: unknown): Exclude<BlockedFollowupAction, "continue"> {
+function ticketResumeReviewBrief(ticket: Ticket): string {
+  return [
+    "你正在处理一个被 human 回复唤醒的 blocked 工单。先做 ticket_resume_review 分类 turn，不要直接执行原任务。",
+    "只根据当前工单状态、阻塞原因、上次输出和 humanFollowup 判断下一步动作，并返回结构化 JSON。",
+    `允许动作：${ticketResumeAllowedActions(ticket).join("、")}。`,
+    "如果 human 只是在提问、补充现象、请求帮助或信息不足，返回 {\"decision\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。",
+    "如果 human 的回复足以让当前工单继续，返回 {\"decision\":\"continue\",\"reason\":\"...\"}。",
+    ticket.blocker?.type === "manual_test_required"
+      ? "人工测试边界：测试通过返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}；测试失败返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}；不明确则返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。"
+      : undefined,
+    "不要把提问当成批准；不要自行猜测 human 已同意或已验收。"
+  ].filter(Boolean).join("\n");
+}
+
+function ticketResumeAllowedActions(ticket: Ticket): string[] {
+  if (ticket.blocker?.type === "manual_test_required") return ["manual_test_passed", "manual_test_failed", "need_more_info"];
+  return ["continue", "need_more_info"];
+}
+
+function blockedFollowupActionFromReview(review: unknown): Exclude<BlockedFollowupAction, "continue"> | "continue" {
   const result = isRecord(review) && "result" in review ? review.result : review;
   if (!isRecord(result)) return "hold";
   const rawAction = stringValue(result.human_action)
+    ?? stringValue(result.decision)
     ?? stringValue(result.action)
-    ?? stringValue(result.status)
-    ?? stringValue(result.decision);
+    ?? stringValue(result.status);
   if (rawAction === "manual_test_passed" || rawAction === "passed" || rawAction === "pass") return "pass_manual_test";
   if (rawAction === "manual_test_failed" || rawAction === "failed" || rawAction === "fail") return "fail_manual_test";
+  if (rawAction === "continue" || rawAction === "approve" || rawAction === "approved" || rawAction === "authorized") return "continue";
+  if (rawAction === "need_more_info" || rawAction === "needs_more_info" || rawAction === "need_clarification" || rawAction === "ask_human") return "hold";
   return "hold";
 }

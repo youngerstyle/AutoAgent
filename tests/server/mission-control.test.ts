@@ -319,6 +319,56 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).toContain("run.completed");
   });
 
+  it("keeps a non-QA blocked ticket blocked when the owner agent classifies the human reply as a question", async () => {
+    const fixture = await missionFixture(new AuthorizationReviewProvider());
+
+    const blocked = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Deploy to production" },
+      { runSynchronously: true }
+    );
+
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.phase).toBe("boss_intake");
+
+    const afterQuestion = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      blocked.activeTask!.id,
+      "为什么需要授权？",
+      true
+    );
+
+    expect(afterQuestion.status).toBe("blocked");
+    expect(afterQuestion.phase).toBe("boss_intake");
+    expect(afterQuestion.tickets?.find((ticket) => ticket.type === "boss_intake")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "human_authorization_required" }
+    });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, afterQuestion.activeTask!.id, afterQuestion.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(2);
+    expect(events.map((event) => event.type)).not.toContain("run.completed");
+  });
+
+  it("continues a non-QA blocked ticket only after the owner agent classifies the human reply as continue", async () => {
+    const fixture = await missionFixture(new AuthorizationReviewProvider());
+
+    const blocked = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Deploy to production" },
+      { runSynchronously: true }
+    );
+
+    const resumed = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      blocked.activeTask!.id,
+      "我确认授权继续。",
+      true
+    );
+
+    expect(resumed.status).toBe("completed");
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, resumed.activeTask!.id, resumed.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(2);
+    expect(events.map((event) => event.type)).toContain("run.completed");
+  });
+
   it("blocks as manual testing required when QA cannot browser-test an interactive deliverable", async () => {
     const fixture = await missionFixture(new ManualBrowserQaProvider());
 
@@ -784,6 +834,38 @@ class RequiresAuthorizationProvider implements ProviderRunner {
       return result({
         status: "await_human_authorization",
         reason: "生产部署需要人工授权"
+      });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class AuthorizationReviewProvider implements ProviderRunner {
+  private blockedOnce = false;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (!this.blockedOnce && input.role === "boss") {
+      this.blockedOnce = true;
+      return result({
+        status: "await_human_authorization",
+        reason: "生产部署需要人工授权"
+      });
+    }
+    if (input.role === "boss" && input.context?.humanFollowup === "为什么需要授权？") {
+      return result({
+        decision: "need_more_info",
+        reason: "human 在询问授权原因，不是授权继续",
+        reply_to_human: "生产部署会影响线上环境，需要你确认是否允许继续。"
+      });
+    }
+    if (input.role === "boss" && input.context?.humanFollowup === "我确认授权继续。") {
+      return result({
+        decision: "continue",
+        reason: "human 已明确授权继续"
       });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
