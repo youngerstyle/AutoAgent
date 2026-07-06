@@ -1021,7 +1021,7 @@ function numberValue(value: unknown): number | undefined {
 
 function defaultTransferPhaseForObstacle(currentPhase: MissionPhase): MissionPhase {
   if (currentPhase === "boss_intake") return "pm_plan";
-  if (currentPhase === "pm_plan") return "pm_plan";
+  if (currentPhase === "pm_plan") return "implementation";
   if (currentPhase === "architect_plan") return "pm_plan";
   if (currentPhase === "qa" || currentPhase === "boss_acceptance") return "implementation";
   if (currentPhase === "implementation") return "implementation";

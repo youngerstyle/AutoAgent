@@ -452,6 +452,24 @@ describe("MissionControl", () => {
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
   });
 
+  it("routes PM implementation artifact blockers to development instead of retrying PM planning", async () => {
+    const fixture = await missionFixture(new PmFindsMissingImplementationArtifactProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Fix a missing source file" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("completed");
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(1);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(1);
+    expect(events.find((event) => event.type === "handoff.created")?.payload).toMatchObject({
+      phase: "implementation"
+    });
+    expect(events.map((event) => event.type)).not.toContain("run.failed");
+  });
+
   it("continues to boss acceptance after human confirms manual QA passed", async () => {
     const provider = new ManualBrowserQaProvider();
     const fixture = await missionFixture(provider);
@@ -992,6 +1010,28 @@ class DevReturnsUnroutedRequirementTextProvider implements ProviderRunner {
       }
       return implementationResult();
     }
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmFindsMissingImplementationArtifactProvider implements ProviderRunner {
+  private pmCalls = 0;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      this.pmCalls += 1;
+      if (this.pmCalls === 1) {
+        return result({
+          status: "blocked",
+          reason: "项目目录缺少 index.html、地图配置和源码文件，无法定位需要修改的实现文件。"
+        });
+      }
+      return result({ plan: "PM should not be retried for missing implementation artifacts" });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
     if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
     return result({ ok: true });
