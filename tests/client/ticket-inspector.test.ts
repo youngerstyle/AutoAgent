@@ -74,6 +74,44 @@ describe("ticket inspector", () => {
     });
     expect(items[0].rawJson).toContain("manual_test_required");
   });
+
+  it("shows parent and dependency relationships in readable ticket cards", () => {
+    const items = buildTicketInspectorItems([
+      ticket({
+        id: "tk_pm",
+        type: "pm_plan",
+        status: "completed",
+        targetRole: "pm",
+        brief: "拆解计划",
+        expectedArtifact: "执行工单图"
+      }),
+      ticket({
+        id: "tk_dev",
+        type: "implementation",
+        status: "pending",
+        targetRole: "dev",
+        brief: "实现 MVP",
+        expectedArtifact: "index.html",
+        parentTicketId: "tk_pm",
+        createdByTicketId: "tk_pm",
+        dependsOnTicketIds: ["tk_pm"]
+      }),
+      ticket({
+        id: "tk_qa",
+        type: "qa",
+        status: "pending",
+        targetRole: "qa",
+        brief: "质量检查",
+        expectedArtifact: "测试结论",
+        parentTicketId: "tk_dev",
+        createdByTicketId: "tk_dev",
+        dependsOnTicketIds: ["tk_dev"]
+      })
+    ]);
+
+    expect(items[1].relationLines).toEqual(["上游：产品/项目：计划拆解", "依赖：产品/项目：计划拆解"]);
+    expect(items[2].relationLines).toEqual(["上游：开发：开发执行", "依赖：开发：开发执行"]);
+  });
 });
 
 function ticket(input: Partial<Ticket> & Pick<Ticket, "id" | "type" | "status" | "brief" | "expectedArtifact">): Ticket {

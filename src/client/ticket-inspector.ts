@@ -10,24 +10,42 @@ export interface TicketInspectorItem {
   expectedArtifact: string;
   resultSummary?: string;
   resultLines: string[];
+  relationLines: string[];
   rawJson: string;
 }
 
 export function buildTicketInspectorItems(tickets: Ticket[] | undefined): TicketInspectorItem[] {
-  return (tickets ?? []).map((ticket) => {
+  const ticketList = tickets ?? [];
+  const labelsById = new Map(ticketList.map((ticket) => [ticket.id, ticketReadableName(ticket)]));
+  return ticketList.map((ticket) => {
     const resultView = summarizeTicketSummary(ticket);
     return {
       id: ticket.id,
-      title: `${ticket.targetRole ? roleLabel(ticket.targetRole) : "团队"}：${assignmentLabel(ticket.type)}`,
+      title: ticketReadableName(ticket),
       status: ticket.status,
       statusLabel: ticketStatusLabel(ticket.status),
       brief: ticket.brief,
       expectedArtifact: ticket.expectedArtifact,
       resultSummary: resultView.summary,
       resultLines: resultView.lines,
+      relationLines: ticketRelationLines(ticket, labelsById),
       rawJson: JSON.stringify(ticket, null, 2)
     };
   });
+}
+
+function ticketReadableName(ticket: Ticket): string {
+  return `${ticket.targetRole ? roleLabel(ticket.targetRole) : "团队"}：${assignmentLabel(ticket.type)}`;
+}
+
+function ticketRelationLines(ticket: Ticket, labelsById: Map<string, string>): string[] {
+  const lines: string[] = [];
+  if (ticket.parentTicketId) lines.push(`上游：${labelsById.get(ticket.parentTicketId) ?? ticket.parentTicketId}`);
+  if (ticket.dependsOnTicketIds?.length) {
+    const dependencyLabels = ticket.dependsOnTicketIds.map((id) => labelsById.get(id) ?? id);
+    lines.push(`依赖：${dependencyLabels.join("、")}`);
+  }
+  return lines;
 }
 
 function summarizeTicketSummary(ticket: Ticket): { summary?: string; lines: string[] } {

@@ -787,6 +787,7 @@ function TicketInspector(props: { items: TicketInspectorItem[]; onShowRaw: (item
           </header>
           <p>{item.brief}</p>
           <small>交付物：{item.expectedArtifact}</small>
+          {item.relationLines.map((line) => <small key={line}>关系：{line}</small>)}
           {item.resultSummary ? <em>{item.resultSummary}</em> : null}
           {item.resultLines.length > 0 ? (
             <ol>
