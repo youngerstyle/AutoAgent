@@ -414,7 +414,41 @@ describe("MissionControl", () => {
     expect(resumed.tickets?.find((ticket) => ticket.type === "qa")).toMatchObject({ status: "completed" });
     expect(resumed.tickets?.find((ticket) => ticket.type === "boss_acceptance")).toMatchObject({ parentTicketId: resumed.tickets?.find((ticket) => ticket.type === "qa")?.id });
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(1);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("质量检查"))).toHaveLength(2);
     expect(events.map((event) => event.type)).toContain("run.completed");
+  });
+
+  it("keeps manual QA blocked when the human asks a question instead of approving or rejecting", async () => {
+    const provider = new ManualBrowserQaProvider();
+    const fixture = await missionFixture(provider);
+
+    const blocked = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a canvas game" },
+      { runSynchronously: true }
+    );
+
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.phase).toBe("qa");
+
+    const afterQuestion = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      blocked.activeTask!.id,
+      "页面打不开，这是路径不对吗？",
+      true
+    );
+
+    expect(afterQuestion.status).toBe("blocked");
+    expect(afterQuestion.phase).toBe("qa");
+    expect(afterQuestion.tickets?.find((ticket) => ticket.type === "qa")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "manual_test_required" }
+    });
+    expect(afterQuestion.tickets?.some((ticket) => ticket.type === "boss_acceptance")).toBe(false);
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, afterQuestion.activeTask!.id, afterQuestion.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("质量检查"))).toHaveLength(2);
+    expect(afterQuestion.activeTaskRun?.status).toBe("blocked");
+    expect(events.map((event) => event.type)).toContain("human.followup");
+    expect(events.map((event) => event.type)).not.toContain("run.completed");
   });
 
   it("supports pause, resume, and stop controls", async () => {
@@ -751,6 +785,12 @@ class ManualBrowserQaProvider implements ProviderRunner {
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") {
+      if (input.context?.humanFollowup === "我已经人工测试了，没有问题，可以验收。") {
+        return result({ human_action: "manual_test_passed", reason: "human 明确报告人工测试通过" });
+      }
+      if (input.context?.humanFollowup === "页面打不开，这是路径不对吗？") {
+        return result({ human_action: "need_more_info", reason: "human 在询问页面无法打开的问题，不是验收结论" });
+      }
       return result({
         passed: false,
         status: "manual_test_required",

@@ -124,7 +124,10 @@ export class MissionControl {
     const workspace = await this.workspaceStore.get(workspaceId);
     const state = await this.readStateForTask(workspace, taskId);
     if (state.status !== "paused" && state.status !== "blocked" && state.status !== "waiting") return this.snapshot(workspace, state.task.id, state.taskRun.id);
-    if (state.status === "blocked") this.applyHumanActionToTickets(state, "继续");
+    if (state.status === "blocked") {
+      if (state.taskRun.phase === "qa" && isManualTestingBoundary(state)) return this.snapshot(workspace, state.task.id, state.taskRun.id);
+      this.applyHumanActionToTickets(state, "继续");
+    }
     const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state) : state.nextPhase;
     state.pauseRequested = false;
     state.status = "running";
@@ -153,7 +156,10 @@ export class MissionControl {
     }
 
     const currentPhase = state.taskRun.phase;
-    const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state, followup) : state.nextPhase;
+    const blockedFollowupAction = state.status === "blocked"
+      ? await this.resolveBlockedFollowupAction(workspace, state, followup)
+      : "continue";
+    const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state, blockedFollowupAction) : state.nextPhase;
     const followups = Array.isArray(state.context.humanFollowups) ? state.context.humanFollowups as Array<Record<string, unknown>> : [];
     const entry = {
       message: followup,
@@ -164,10 +170,10 @@ export class MissionControl {
     };
     state.context.humanFollowups = [...followups, entry];
     state.context.latestHumanFollowup = entry;
-    if (state.status === "blocked") {
+    if (state.status === "blocked" && blockedFollowupAction !== "hold") {
       this.applyHumanActionToTickets(state, followup);
     }
-    if (state.status === "blocked" || state.status === "paused") {
+    if ((state.status === "blocked" && blockedFollowupAction !== "hold") || state.status === "paused") {
       state.nextPhase = resumePhase;
       state.pauseRequested = false;
       state.stopRequested = false;
@@ -181,17 +187,20 @@ export class MissionControl {
     await this.append(workspace, state, "human.followup", "human 已补充说明", {
       message: followup,
       fromPhase: currentPhase,
-      resumePhase
+      resumePhase,
+      action: blockedFollowupAction
     });
-    await this.append(workspace, state, "task.phase_changed", `收到补充，返回阶段：${phaseLabel(resumePhase)}`, {
-      phase: resumePhase,
-      status: "running",
-      fromPhase: currentPhase
-    });
+    if (blockedFollowupAction !== "hold") {
+      await this.append(workspace, state, "task.phase_changed", `收到补充，返回阶段：${phaseLabel(resumePhase)}`, {
+        phase: resumePhase,
+        status: "running",
+        fromPhase: currentPhase
+      });
+    }
 
-    if (runSynchronously) {
+    if (runSynchronously && blockedFollowupAction !== "hold") {
       await this.runUntilIdle(workspace, state.task.id, state.taskRun.id);
-    } else {
+    } else if (blockedFollowupAction !== "hold") {
       this.runInBackground(workspace, state.task.id, state.taskRun.id);
     }
     return this.snapshot(workspace, state.task.id, state.taskRun.id);
@@ -658,8 +667,13 @@ export class MissionControl {
     const runtime = this.ticketRuntime(state);
     const blockedQa = runtime.allTickets().find((ticket) => ticket.type === "qa" && ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required");
     if (blockedQa) {
+      const action = manualTestActionFromReview(state.context.manualTestFollowupReview);
+      if (action === "hold") {
+        this.syncTickets(state, runtime);
+        return;
+      }
       runtime.completeHumanAction(blockedQa.id, {
-        action: manualTestReportedFailure(message) ? "manual_test_failed" : "manual_test_passed",
+        action: action === "fail_manual_test" ? "manual_test_failed" : "manual_test_passed",
         message
       });
       this.syncTickets(state, runtime);
@@ -668,6 +682,44 @@ export class MissionControl {
     const blocked = runtime.allTickets().find((ticket) => ticket.status === "blocked");
     if (blocked) runtime.ack(blocked.id, { humanAction: "approved", message });
     this.syncTickets(state, runtime);
+  }
+
+  private async resolveBlockedFollowupAction(workspace: Workspace, state: MissionState, message: string): Promise<BlockedFollowupAction> {
+    if (state.taskRun.phase !== "qa" || !isManualTestingBoundary(state)) return "continue";
+    const ticket = state.tickets.find((item) => item.type === "qa" && item.status === "blocked" && item.blocker?.type === "manual_test_required");
+    if (!ticket) return "hold";
+    const qaAgent = await this.agentForTicket(workspace, ticket);
+    const profiles = await this.agentProfiles();
+    const review = await this.runtime.runAssignment({
+      workspace,
+      agent: qaAgent,
+      profile: profileForRole(qaAgent.roleInWorkspace, profiles),
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      goal: state.task.goal,
+      type: "qa",
+      brief: [
+        "解释 human 对人工测试边界的回复，并只返回结构化判断。",
+        "如果 human 明确表示测试通过，返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}。",
+        "如果 human 明确表示测试失败或发现问题，返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}。",
+        "如果 human 只是在提问、补充现象、请求帮助或信息不足，返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply\":\"...\"}。",
+        "不要把提问当成通过；不要自行猜测 human 已验收。"
+      ].join("\n"),
+      expectedArtifact: "human_action 结构化判断",
+      context: {
+        ...state.context,
+        humanFollowup: message,
+        blockedTicket: ticket,
+        manualTestBoundary: ticket.blocker
+      },
+      sessionId: state.taskRun.id
+    });
+    state.context.manualTestFollowupReview = {
+      result: review.providerResult.structured ?? review.providerResult.text,
+      rawText: review.providerResult.text,
+      toolResults: review.toolResults
+    };
+    return manualTestActionFromReview(state.context.manualTestFollowupReview);
   }
 
   private async agentProfiles() {
@@ -1242,10 +1294,14 @@ function phaseFromAssignmentSummary(summary: string): MissionPhase {
   return "boss_acceptance";
 }
 
-function phaseAfterHumanFollowup(state: MissionState, followup = ""): MissionPhase {
+function phaseAfterHumanFollowup(state: MissionState, action: BlockedFollowupAction = "continue"): MissionPhase {
   const blockedPhase = state.taskRun.phase;
   if (blockedPhase === "qa") {
-    if (isManualTestingBoundary(state) && !manualTestReportedFailure(followup)) return "boss_acceptance";
+    if (isManualTestingBoundary(state)) {
+      if (action === "pass_manual_test") return "boss_acceptance";
+      if (action === "fail_manual_test") return "implementation";
+      return "qa";
+    }
     return "implementation";
   }
   if (blockedPhase === "implementation") return "implementation";
@@ -1262,9 +1318,16 @@ function isManualTestingBoundary(state: MissionState): boolean {
   return typeof result === "string" && result.includes("manual_test_required");
 }
 
-function manualTestReportedFailure(followup: string): boolean {
-  const text = followup.trim();
-  if (!text) return false;
-  if (/没有问题|没问题|无问题|没有 bug|没有bug|通过|pass|passed|ok/i.test(text)) return false;
-  return /失败|未通过|不通过|有问题|有 bug|有bug|failed|fail|not pass/i.test(text);
+type BlockedFollowupAction = "continue" | "hold" | "pass_manual_test" | "fail_manual_test";
+
+function manualTestActionFromReview(review: unknown): Exclude<BlockedFollowupAction, "continue"> {
+  const result = isRecord(review) && "result" in review ? review.result : review;
+  if (!isRecord(result)) return "hold";
+  const rawAction = stringValue(result.human_action)
+    ?? stringValue(result.action)
+    ?? stringValue(result.status)
+    ?? stringValue(result.decision);
+  if (rawAction === "manual_test_passed" || rawAction === "passed" || rawAction === "pass") return "pass_manual_test";
+  if (rawAction === "manual_test_failed" || rawAction === "failed" || rawAction === "fail") return "fail_manual_test";
+  return "hold";
 }
