@@ -349,7 +349,7 @@ export class MissionControl {
     if (roleToolBoundaryReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = phaseForAgentObstacle(phase, roleToolBoundaryReason);
+      const targetPhase = ticketTransferPhaseForObstacle(phase, roleToolBoundaryReason);
       return this.routeBackToPhaseOrFail(workspace, state, targetPhase, roleToolBoundaryReason, `${targetPhase}RoleBoundaryRetries`);
     }
 
@@ -386,7 +386,7 @@ export class MissionControl {
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = phaseForAgentObstacle(phase, agentObstacle ?? missingImplementation ?? "");
+      const targetPhase = ticketTransferPhaseForObstacle(phase, agentObstacle ?? missingImplementation ?? "");
       return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", `${targetPhase}AutonomyRetries`);
     }
 
@@ -423,7 +423,7 @@ export class MissionControl {
     }
 
     if (agentObstacle) {
-      const targetPhase = phaseForAgentObstacle(phase, agentObstacle);
+      const targetPhase = ticketTransferPhaseForObstacle(phase, agentObstacle);
       if (targetPhase !== nextPhase(phase)) {
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
@@ -782,18 +782,32 @@ function isQaReworkSignal(text: string): boolean {
     || text.includes("返工");
 }
 
-function phaseForAgentObstacle(currentPhase: MissionPhase, reason: string): MissionPhase {
-  const text = reason.toLowerCase();
+function ticketTransferPhaseForObstacle(currentPhase: MissionPhase, reason: string): MissionPhase {
+  if (requiresWorkspaceWriteOwner(reason)) return "implementation";
   if (currentPhase === "boss_intake") return "pm_plan";
-  if (currentPhase === "pm_plan") return "boss_intake";
+  if (currentPhase === "pm_plan") return "pm_plan";
   if (currentPhase === "architect_plan") return "pm_plan";
   if (currentPhase === "qa" || currentPhase === "boss_acceptance") return "implementation";
-  if (currentPhase === "implementation") {
-    if (reason.includes("需求") || reason.includes("范围") || reason.includes("验收") || reason.includes("计划") || text.includes("requirement")) return "pm_plan";
-    if (reason.includes("架构") || reason.includes("接口") || reason.includes("技术方案") || text.includes("architecture")) return "architect_plan";
-    return "implementation";
-  }
+  if (currentPhase === "implementation") return implementationTransferPhase(reason);
   return currentPhase;
+}
+
+function implementationTransferPhase(reason: string): MissionPhase {
+  const text = reason.toLowerCase();
+  if (reason.includes("需求") || reason.includes("范围") || reason.includes("验收") || reason.includes("计划") || text.includes("requirement")) return "pm_plan";
+  if (reason.includes("架构") || reason.includes("接口") || reason.includes("技术方案") || text.includes("architecture")) return "architect_plan";
+  return "implementation";
+}
+
+function requiresWorkspaceWriteOwner(reason: string): boolean {
+  return reason.includes("写文件")
+    || reason.includes("写项目文件")
+    || reason.includes("写入")
+    || reason.includes("修改文件")
+    || reason.includes("修改地图")
+    || reason.includes("具备写权限")
+    || reason.includes("无写文件权限")
+    || reason.includes("没有写项目文件权限");
 }
 
 function humanAuthorizationReasonForPhase(structured?: Record<string, unknown>): string | undefined {

@@ -83,6 +83,9 @@ describe("MissionControl", () => {
     expect(events.some((event) => event.type === "tool.denied" && event.summary.includes("文件写入被拒绝"))).toBe(true);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
     expect(events.some((event) => event.summary.includes("开发开始开发执行"))).toBe(true);
+    expect(events.find((event) => event.type === "handoff.created")?.payload).toMatchObject({
+      phase: "implementation"
+    });
     expect(events.map((event) => event.type)).toContain("run.completed");
   });
 
