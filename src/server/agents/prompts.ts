@@ -28,6 +28,7 @@ export function buildAgentPrompt(input: {
     `预期产物：${input.assignment.expectedArtifact}`,
     `能力：${profile.capabilities.join("、")}`,
     `当前工具权限：读项目=${yesNo(policy.canReadWorkspace)}，写项目=${yesNo(policy.canWriteWorkspace)}，执行命令=${yesNo(policy.canExecuteCommands)}，访问本机=${yesNo(Boolean(policy.allowHostAccess))}。`,
+    policy.canWriteWorkspace ? undefined : "文档交付边界：即使写项目=否，老板/产品/架构/测试仍可在 docs/、reports/、plans/ 下写 .md/.txt 文档；不能写源码、HTML、配置或可运行交付物。",
     recent ? `近期会话：\n${recent}` : "近期会话：无",
     input.context ? `上下文：${JSON.stringify(input.context)}` : "上下文：{}",
     "工具协议：需要访问真实项目文件或执行命令时，只能返回 JSON：{\"toolIntents\":[{\"tool\":\"listFiles\",\"path\":\".\"}]}、{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"package.json\"}]}、{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]} 或 {\"toolIntents\":[{\"tool\":\"shell\",\"command\":\"npm test\"}]}。",

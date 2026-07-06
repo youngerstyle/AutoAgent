@@ -34,6 +34,22 @@ describe("tool policy", () => {
 
     await expect(runWorkspaceCommand(context, "node --version")).rejects.toMatchObject({ status: 403 });
   });
+
+  it("allows non-developer roles to write project documents inside their artifact boundary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-policy-"));
+    const context = toolContext(workspace(root, "production"), agent("pm"));
+
+    await writeWorkspaceFile(context, "docs/plan.md", "计划");
+
+    await expect(readFile(path.join(root, "docs", "plan.md"), "utf8")).resolves.toBe("计划");
+  });
+
+  it("still denies non-developer roles from writing source or runnable deliverables", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-policy-"));
+    const context = toolContext(workspace(root, "production"), agent("pm"));
+
+    await expect(writeWorkspaceFile(context, "index.html", "<canvas></canvas>")).rejects.toMatchObject({ status: 403 });
+  });
 });
 
 function workspace(rootPath: string, policyProfile: Workspace["policyProfile"]): Workspace {
