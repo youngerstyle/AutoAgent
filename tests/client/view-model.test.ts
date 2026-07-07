@@ -84,6 +84,22 @@ describe("client view model", () => {
       phase: "计划拆解",
       inputLabel: "回复说明"
     });
+
+    const waitingPmWithReply: WorkspaceSnapshot = {
+      ...waitingPm,
+      humanLoop: {
+        latestReply: {
+          phase: "pm_plan",
+          action: "hold",
+          text: "请确认是否放弃原 MVP，改成 FC 坦克98 1:1 复刻。"
+        }
+      }
+    };
+    expect(buildHumanFlowPrompt(waitingPmWithReply)).toMatchObject({
+      title: "需要补充信息"
+    });
+    expect(buildHumanFlowPrompt(waitingPmWithReply)?.transcript).toContain("请确认是否放弃原 MVP");
+    expect(buildHumanFlowPrompt(waitingPmWithReply)?.transcript).not.toContain("等待 human 补充");
   });
 
   it("does not turn stale implementation evidence failures into human prompts", () => {

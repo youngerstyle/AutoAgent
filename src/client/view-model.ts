@@ -291,12 +291,14 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
   const phase = snapshot.activeTaskRun?.phase ?? snapshot.phase;
   const owner = flowProblem.owner ?? waiterForPhase(phase);
   const manualTest = flowProblem.manualTest;
+  const latestReply = snapshot.humanLoop?.latestReply;
+  const rawOutput = latestReply?.text ?? flowProblem.rawOutput;
   return {
-    title: manualTest ? "需要人工测试" : titleForHumanFlow(flowProblem.rawOutput),
+    title: manualTest ? "需要人工测试" : latestReply ? "需要补充信息" : titleForHumanFlow(flowProblem.rawOutput),
     agentId: flowProblem.agentId,
     waiter: owner,
     phase: flowProblem.phase ?? phaseLabelForHuman(phase),
-    transcript: `${owner}:\n${flowProblem.rawOutput}`,
+    transcript: `${owner}:\n${rawOutput}`,
     inputLabel: manualTest ? "测试结果" : "回复说明",
     placeholder: `回复${owner}`,
     submitLabel: "发送",

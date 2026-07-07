@@ -841,6 +841,7 @@ export class MissionControl {
     projected.inboxMessages = state.inboxMessages ?? [];
     projected.phase = state.taskRun.phase;
     projected.status = state.status;
+    projected.humanLoop = humanLoopSnapshot(state);
     return projected;
   }
 
@@ -1358,3 +1359,55 @@ function blockedFollowupActionFromReview(review: unknown): Exclude<BlockedFollow
   if (rawAction === "need_more_info" || rawAction === "needs_more_info" || rawAction === "need_clarification" || rawAction === "ask_human") return "hold";
   return "hold";
 }
+
+function humanLoopSnapshot(state: MissionState): WorkspaceSnapshot["humanLoop"] | undefined {
+  if (state.status !== "blocked") return undefined;
+  const review = isRecord(state.context.ticketResumeReview) ? state.context.ticketResumeReview : undefined;
+  const result = review && isRecord(review.result) ? review.result : undefined;
+  if (!result) return undefined;
+  const text = stringValue(result.reply_to_human)
+    ?? stringValue(result.replyToHuman)
+    ?? stringValue(result.message)
+    ?? stringValue(result.reason)
+    ?? (review ? stringValue(review.rawText) : undefined);
+  if (!text) return undefined;
+  const action = blockedFollowupActionFromReview(review);
+  const latestHumanFollowup = isRecord(state.context.latestHumanFollowup) ? state.context.latestHumanFollowup : undefined;
+  const phase = missionPhaseValue(action === "hold" ? latestHumanFollowup?.blockedPhase : latestHumanFollowup?.resumePhase)
+    ?? missionPhaseValue(latestHumanFollowup?.fromPhase)
+    ?? missionPhaseValue(latestHumanFollowup?.resumePhase)
+    ?? state.taskRun.phase;
+  const ticket = state.tickets.find((item) => item.status === "blocked" && phaseForTicket(item) === phase)
+    ?? state.tickets.find((item) => item.status === "blocked");
+  if (!ticket || phaseForTicket(ticket) !== phase) return undefined;
+  return {
+    latestReply: {
+      agentId: ticket?.targetAgentId,
+      phase,
+      action,
+      reason: stringValue(result.reason),
+      text
+    }
+  };
+}
+
+function missionPhaseValue(value: unknown): MissionPhase | undefined {
+  const phase = stringValue(value);
+  if (!phase) return undefined;
+  if (MISSION_PHASE_SET.has(phase as MissionPhase)) return phase as MissionPhase;
+  return undefined;
+}
+
+const MISSION_PHASE_SET = new Set<MissionPhase>([
+  "idle",
+  "boss_intake",
+  "pm_plan",
+  "architect_plan",
+  "implementation",
+  "qa",
+  "boss_acceptance",
+  "paused",
+  "completed",
+  "failed",
+  "interrupted"
+]);

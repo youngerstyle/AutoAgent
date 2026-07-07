@@ -219,6 +219,15 @@ export interface WorkspaceSnapshot {
   phase: MissionPhase;
   status: EntityStatus;
   currentStep?: string;
+  humanLoop?: {
+    latestReply?: {
+      agentId?: string;
+      phase?: MissionPhase;
+      action?: string;
+      reason?: string;
+      text: string;
+    };
+  };
 }
 
 export type LoopDebugEntryKind = "flow" | "prompt" | "llm" | "tool";

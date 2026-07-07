@@ -370,6 +370,11 @@ describe("MissionControl", () => {
       status: "blocked",
       blocker: { type: "human_authorization_required" }
     });
+    expect(afterQuestion.humanLoop?.latestReply).toMatchObject({
+      phase: "boss_intake",
+      action: "hold",
+      text: "生产部署会影响线上环境，需要你确认是否允许继续。"
+    });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, afterQuestion.activeTask!.id, afterQuestion.activeTaskRun!.id);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(2);
     expect(events.map((event) => event.type)).not.toContain("run.completed");
