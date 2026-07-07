@@ -1,6 +1,6 @@
 import type { AgentProfile, Assignment, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { assignmentLabel, roleLabel } from "../../shared/labels.js";
-import type { AgentSession } from "../storage/session-store.js";
+import type { AgentSession, AgentSessionMessage } from "../storage/session-store.js";
 import { profileForRole } from "./roster.js";
 import { resolvePolicy } from "../policy/policy.js";
 
@@ -15,7 +15,7 @@ export function buildAgentPrompt(input: {
 }): string {
   const profile = input.profile ?? profileForRole(input.agent.roleInWorkspace);
   const policy = resolvePolicy(input.workspace, input.agent);
-  const recent = input.session?.messages.slice(-6).map((message) => `${message.role}: ${message.content}`).join("\n") ?? "";
+  const recent = input.session?.messages.slice(-6).map(recentSessionLine).join("\n") ?? "";
   return [
     `你是${profile.name}，角色是${roleLabel(profile.role)}。`,
     profile.soul ? `灵魂特质：${profile.soul}` : undefined,
@@ -44,4 +44,13 @@ export function buildAgentPrompt(input: {
 
 function yesNo(value: boolean): string {
   return value ? "是" : "否";
+}
+
+const RECENT_SESSION_MESSAGE_CHARS = 1_200;
+
+function recentSessionLine(message: AgentSessionMessage): string {
+  const content = message.content.length <= RECENT_SESSION_MESSAGE_CHARS
+    ? message.content
+    : `${message.content.slice(0, RECENT_SESSION_MESSAGE_CHARS)}\n...[近期会话截断，原始长度 ${message.content.length} 字符]`;
+  return `${message.role}: ${content}`;
 }

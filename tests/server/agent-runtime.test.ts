@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -142,6 +142,65 @@ describe("AgentRuntime", () => {
     expect(devSession.messages[0].content).toContain("Build work");
   });
 
+  it("does not recursively inject full previous prompts from the agent session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    const workspace = testWorkspace(root);
+    const [_boss, pm] = await ensureCoreTeam(workspace);
+    const provider = new CapturingProvider();
+    const runtime = new AgentRuntime(new EventLedger(), provider);
+    const longPreviousPrompt = `PREVIOUS_PROMPT_START\n${"历史 prompt 内容 ".repeat(5000)}\nPREVIOUS_PROMPT_END`;
+    await new SessionStore().appendTurn(root, pm.id, "tr_1", {
+      user: longPreviousPrompt,
+      assistant: "{\"action\":\"create_change_set\",\"tickets\":[]}",
+      providerEvents: [],
+      toolResults: []
+    });
+
+    await runtime.runAssignment({
+      workspace,
+      agent: pm,
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      goal: "Plan without prompt recursion",
+      type: "pm_plan",
+      brief: "Plan work",
+      expectedArtifact: "Plan"
+    });
+
+    const prompt = provider.lastInput?.prompt ?? "";
+    expect(prompt.length).toBeLessThan(20_000);
+    expect(prompt).toContain("近期会话截断");
+    expect(prompt).toContain("PREVIOUS_PROMPT_START");
+    expect(prompt).not.toContain("PREVIOUS_PROMPT_END");
+  });
+
+  it("does not send unbounded file observations in tool follow-up prompts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    await writeFile(path.join(root, "huge.txt"), `FILE_START\n${"大文件内容 ".repeat(10_000)}\nFILE_END`, "utf8");
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    const provider = new HugeFileObservationProvider();
+    const runtime = new AgentRuntime(new EventLedger(), provider);
+
+    await runtime.runAssignment({
+      workspace,
+      agent: dev,
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      goal: "Inspect a large file",
+      type: "implementation",
+      brief: "Read huge.txt and decide",
+      expectedArtifact: "Decision"
+    });
+
+    expect(provider.prompts).toHaveLength(2);
+    const followUpPrompt = provider.prompts[1] ?? "";
+    expect(followUpPrompt.length).toBeLessThan(30_000);
+    expect(followUpPrompt).toContain("工具结果截断");
+    expect(followUpPrompt).toContain("FILE_START");
+    expect(followUpPrompt).not.toContain("FILE_END");
+  });
+
   it("uses workspace agent provider and model overrides during assignment execution", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
     const workspace = testWorkspace(root);
@@ -255,6 +314,28 @@ class LegacyActionProvider implements ProviderRunner {
       text: JSON.stringify({ toolIntents: [{ tool: "writeFile", path: "index.html", content: "real game" }] }),
       structured: { toolIntents: [{ tool: "writeFile", path: "index.html", content: "real game" }] },
       events: [{ type: "text", text: "write file" }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+    };
+  }
+}
+
+class HugeFileObservationProvider implements ProviderRunner {
+  prompts: string[] = [];
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    this.prompts.push(input.prompt);
+    if (this.prompts.length === 1) {
+      return {
+        text: JSON.stringify({ toolIntents: [{ tool: "readFile", path: "huge.txt" }] }),
+        structured: { toolIntents: [{ tool: "readFile", path: "huge.txt" }] },
+        events: [{ type: "text", text: "read huge file" }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+      };
+    }
+    return {
+      text: JSON.stringify({ action: "complete", summary: "done" }),
+      structured: { action: "complete", summary: "done" },
+      events: [{ type: "text", text: "done" }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     };
   }

@@ -238,9 +238,27 @@ function buildToolFollowUpPrompt(originalPrompt: string, toolResults: Array<Reco
     originalPrompt,
     "",
     "上一轮真实工具结果：",
-    JSON.stringify(toolResults),
+    JSON.stringify(compactToolResultsForPrompt(toolResults)),
     "只能基于这些真实工具结果继续判断。不要编造文件、命令输出或验收证据。",
     "如果还需要读文件、列目录或执行命令，返回 {\"toolIntents\":[...]}。",
     "如果已经完成，返回最终结构化结果；如果无法继续，返回 blocked/need_clarification 并说明缺什么。"
   ].join("\n");
+}
+
+const TOOL_RESULT_PROMPT_STRING_CHARS = 12_000;
+
+function compactToolResultsForPrompt(toolResults: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return toolResults.map((result) => compactToolResultValue(result) as Record<string, unknown>);
+}
+
+function compactToolResultValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= TOOL_RESULT_PROMPT_STRING_CHARS) return value;
+    return `${value.slice(0, TOOL_RESULT_PROMPT_STRING_CHARS)}\n...[工具结果截断，原始长度 ${value.length} 字符]`;
+  }
+  if (Array.isArray(value)) return value.map(compactToolResultValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactToolResultValue(item)]));
+  }
+  return value;
 }
