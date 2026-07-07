@@ -40,6 +40,18 @@ export function workspaceAgentSessionsDir(workspaceRoot: string, workspaceAgentI
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "sessions");
 }
 
+export function workspaceAgentContextDir(workspaceRoot: string, workspaceAgentId: string): string {
+  return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "context");
+}
+
+export function workspaceAgentContextFile(workspaceRoot: string, workspaceAgentId: string, taskRunId: string): string {
+  return path.join(workspaceAgentContextDir(workspaceRoot, workspaceAgentId), `${taskRunId}.json`);
+}
+
+export function workspaceAgentMemoryFile(workspaceRoot: string, workspaceAgentId: string): string {
+  return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "memory.json");
+}
+
 export function taskRunDir(workspaceRoot: string, taskId: string, taskRunId: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "tasks", taskId, "runs", taskRunId);
 }

@@ -98,9 +98,37 @@ function titleForSessionMessage(message: AgentSessionMessage): string {
 }
 
 function detailForSessionMessage(message: AgentSessionMessage): string | undefined {
+  const contextReport = contextReportFromMetadata(message.metadata);
+  if (message.role === "user" && contextReport) {
+    const compacted = contextReport.compaction?.compacted ? "，已压缩" : "";
+    return `上下文 ${contextReport.injectedChars} 字，原始 session ${contextReport.originalSessionChars} 字，约 ${contextReport.estimatedTokens} tokens${compacted}`;
+  }
   if (message.role !== "tool") return undefined;
   const tool = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
   return tool ? `tool: ${tool}` : undefined;
+}
+
+function contextReportFromMetadata(metadata: Record<string, unknown> | undefined): {
+  injectedChars: number;
+  originalSessionChars: number;
+  estimatedTokens: number;
+  compaction?: { compacted?: boolean };
+} | undefined {
+  const report = metadata?.contextReport;
+  if (!report || typeof report !== "object") return undefined;
+  const record = report as Record<string, unknown>;
+  if (typeof record.injectedChars !== "number" || typeof record.originalSessionChars !== "number" || typeof record.estimatedTokens !== "number") {
+    return undefined;
+  }
+  const compaction = record.compaction && typeof record.compaction === "object"
+    ? record.compaction as { compacted?: boolean }
+    : undefined;
+  return {
+    injectedChars: record.injectedChars,
+    originalSessionChars: record.originalSessionChars,
+    estimatedTokens: record.estimatedTokens,
+    compaction
+  };
 }
 
 function actorForEvent(event: AutoAgentEvent): string {

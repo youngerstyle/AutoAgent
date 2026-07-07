@@ -42,11 +42,12 @@ export class SessionStore {
       providerEvents: AgentProviderEvent[];
       usage?: ProviderUsage;
       toolResults?: Array<Record<string, unknown>>;
+      userMetadata?: Record<string, unknown>;
     }
   ): Promise<AgentSession> {
     const session = await this.read(workspaceRoot, workspaceAgentId, sessionId);
     const timestamp = new Date().toISOString();
-    session.messages.push({ role: "user", content: turn.user, timestamp });
+    session.messages.push({ role: "user", content: turn.user, timestamp, metadata: turn.userMetadata });
     session.messages.push({ role: "assistant", content: turn.assistant, timestamp, metadata: { usage: turn.usage } });
     for (const toolResult of turn.toolResults ?? []) {
       session.messages.push({

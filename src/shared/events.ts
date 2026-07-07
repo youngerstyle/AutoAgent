@@ -23,6 +23,7 @@ export const EVENT_TYPES = [
   "agent.joined_workspace",
   "provider.started",
   "provider.completed",
+  "context.assembled",
   "run.blocked",
   "run.completed",
   "run.failed",

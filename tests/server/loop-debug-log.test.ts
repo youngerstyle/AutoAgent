@@ -33,7 +33,23 @@ describe("loop debug log", () => {
       updatedAt: "2026-07-03T00:00:05.000Z",
       providerEvents: [{ type: "text", text: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"index.html\"}]}" }],
       messages: [
-        { role: "user", content: "完整 prompt", timestamp: "2026-07-03T00:00:01.000Z" },
+        {
+          role: "user",
+          content: "完整 prompt",
+          timestamp: "2026-07-03T00:00:01.000Z",
+          metadata: {
+            contextReport: {
+              originalSessionChars: 50000,
+              injectedChars: 8000,
+              estimatedTokens: 2000,
+              sections: [
+                { name: "stable_prompt", originalChars: 1000, injectedChars: 1000, estimatedTokens: 250, truncated: false },
+                { name: "recent_turns", originalChars: 48000, injectedChars: 1200, estimatedTokens: 300, truncated: true }
+              ],
+              compaction: { compacted: true, checkpointId: "ctx_1" }
+            }
+          }
+        },
         { role: "assistant", content: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"index.html\"}]}", timestamp: "2026-07-03T00:00:02.000Z" },
         { role: "tool", content: "{\"tool\":\"readFile\",\"path\":\"index.html\",\"ok\":true}", timestamp: "2026-07-03T00:00:03.000Z" }
       ]
@@ -52,6 +68,13 @@ describe("loop debug log", () => {
     expect(log.entries.map((entry) => entry.kind)).toEqual(["flow", "prompt", "llm", "tool"]);
     expect(log.entries.map((entry) => entry.actor)).toEqual(["任务阶段", "测试", "测试", "测试"]);
     expect(log.entries[1]).toMatchObject({ title: "Prompt", content: "完整 prompt" });
+    expect(log.entries[1].detail).toContain("上下文 8000 字");
+    expect(log.entries[1].metadata?.contextReport).toMatchObject({
+      injectedChars: 8000,
+      sections: expect.arrayContaining([
+        expect.objectContaining({ name: "recent_turns", truncated: true })
+      ])
+    });
     expect(log.entries[2]).toMatchObject({ title: "LLM 返回" });
     expect(log.entries[3]).toMatchObject({ title: "工具结果" });
   });

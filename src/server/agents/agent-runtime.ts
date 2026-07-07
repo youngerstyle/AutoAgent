@@ -7,7 +7,7 @@ import { SessionStore } from "../storage/session-store.js";
 import { readWorkspaceFile, listWorkspaceFiles, writeWorkspaceFile } from "../tools/file-tools.js";
 import { runWorkspaceCommand } from "../tools/shell-tool.js";
 import type { ToolContext } from "../tools/tool-runtime.js";
-import { buildAgentPrompt } from "./prompts.js";
+import { ContextAssembler } from "../context/context-assembler.js";
 import { profileForRole } from "./roster.js";
 
 export interface ProviderRunner {
@@ -42,7 +42,8 @@ export class AgentRuntime {
   constructor(
     private readonly ledger: EventLedger,
     private readonly providerRunner: ProviderRunner,
-    private readonly sessionStore = new SessionStore()
+    private readonly sessionStore = new SessionStore(),
+    private readonly contextAssembler = new ContextAssembler()
   ) {}
 
   async runAssignment(input: RunAssignmentInput): Promise<AssignmentResult> {
@@ -69,8 +70,6 @@ export class AgentRuntime {
     const profile = input.profile ?? profileForRole(input.agent.roleInWorkspace);
     const provider = input.agent.provider ?? profile.defaultProvider;
     const model = input.agent.model ?? profile.defaultModel;
-    const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
-    const prompt = buildAgentPrompt({ ...input, assignment, profile, session });
 
     const assignmentName = assignmentLabel(input.type);
     const roleName = roleLabel(input.agent.roleInWorkspace);
@@ -83,16 +82,31 @@ export class AgentRuntime {
     try {
       let providerResult: AgentTurnResult | undefined;
       const allToolResults: Array<Record<string, unknown>> = [];
-      let turnPrompt = prompt;
 
       for (let turn = 1; turn <= MAX_TOOL_FOLLOW_UPS; turn += 1) {
+        const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
+        const assembled = await this.contextAssembler.assemble({
+          ...input,
+          assignment,
+          profile,
+          sessionId,
+          taskRunId: input.taskRunId,
+          session,
+          toolResults: allToolResults
+        });
+        await this.emit(input, "context.assembled", `${roleName}完成上下文组装`, {
+          agentId: input.agent.id,
+          assignmentId: assignment.id,
+          turn,
+          report: assembled.report
+        });
         providerResult = await this.providerRunner.runWithRetry({
           role: input.agent.roleInWorkspace,
           assignmentType: input.type,
-          prompt: turnPrompt,
+          prompt: assembled.prompt,
           provider,
           model,
-          context: { ...input.context, goal: input.goal, toolResults: allToolResults }
+          context: { ...input.context, goal: input.goal, toolResults: allToolResults, contextReport: assembled.report }
         });
         await this.emit(input, "provider.completed", `${roleName}的模型调用已完成`, {
           provider,
@@ -104,11 +118,12 @@ export class AgentRuntime {
         const toolResults = await this.executeToolIntents(input, assignmentRun.id, providerResult);
         allToolResults.push(...toolResults);
         await this.sessionStore.appendTurn(input.workspace.rootPath, input.agent.id, sessionId, {
-          user: turnPrompt,
+          user: assembled.prompt,
           assistant: providerResult.text,
           providerEvents: providerResult.events,
           usage: providerResult.usage,
-          toolResults
+          toolResults,
+          userMetadata: { contextReport: assembled.report }
         });
 
         if (!needsToolFollowUp(toolResults)) break;
@@ -123,7 +138,6 @@ export class AgentRuntime {
           };
           break;
         }
-        turnPrompt = buildToolFollowUpPrompt(prompt, allToolResults);
       }
 
       if (!providerResult) throw new Error("模型未返回结果");
@@ -231,34 +245,4 @@ function normalizeToolIntents(structured?: Record<string, unknown>): Array<Recor
 
 function needsToolFollowUp(toolResults: Array<Record<string, unknown>>): boolean {
   return toolResults.some((result) => OBSERVATION_TOOLS.has(String(result.tool)) || result.ok === false || typeof result.error === "string");
-}
-
-function buildToolFollowUpPrompt(originalPrompt: string, toolResults: Array<Record<string, unknown>>): string {
-  return [
-    originalPrompt,
-    "",
-    "上一轮真实工具结果：",
-    JSON.stringify(compactToolResultsForPrompt(toolResults)),
-    "只能基于这些真实工具结果继续判断。不要编造文件、命令输出或验收证据。",
-    "如果还需要读文件、列目录或执行命令，返回 {\"toolIntents\":[...]}。",
-    "如果已经完成，返回最终结构化结果；如果无法继续，返回 blocked/need_clarification 并说明缺什么。"
-  ].join("\n");
-}
-
-const TOOL_RESULT_PROMPT_STRING_CHARS = 12_000;
-
-function compactToolResultsForPrompt(toolResults: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  return toolResults.map((result) => compactToolResultValue(result) as Record<string, unknown>);
-}
-
-function compactToolResultValue(value: unknown): unknown {
-  if (typeof value === "string") {
-    if (value.length <= TOOL_RESULT_PROMPT_STRING_CHARS) return value;
-    return `${value.slice(0, TOOL_RESULT_PROMPT_STRING_CHARS)}\n...[工具结果截断，原始长度 ${value.length} 字符]`;
-  }
-  if (Array.isArray(value)) return value.map(compactToolResultValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactToolResultValue(item)]));
-  }
-  return value;
 }

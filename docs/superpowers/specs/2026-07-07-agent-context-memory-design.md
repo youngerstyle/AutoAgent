@@ -32,6 +32,7 @@ The target design follows the common pattern across mature agent systems:
 - OpenClaw documents that context is the current model window while memory is durable disk state. `MEMORY.md` is compact curated state; daily memory files are working notes and are not injected wholesale every turn.
 - AutoGen exposes memory as a protocol that can add relevant facts into context, instead of replaying full history.
 - Hermes advertises `/compress`, `/usage`, session search, and LLM summarization for cross-session recall.
+- Codex-style compaction records an explicit compacted item plus replacement history: the raw transcript remains auditable, while future context reconstruction uses the replacement history plus later suffix instead of replaying the old raw messages.
 
 ## Core Principles
 
@@ -43,9 +44,9 @@ Raw session files keep full prompts, full LLM responses, full tool results, prov
 
 Only `ContextAssembler` may create model input. `AgentRuntime` may not manually concatenate session, tool results, or assignment text into prompts.
 
-3. Compaction has thresholds and checkpoints.
+3. Compaction has thresholds, checkpoints, and replacement history.
 
-When active session context exceeds a configured threshold, old message groups are summarized into a checkpoint. Recent turns remain verbatim. The raw session remains unchanged.
+When active session context exceeds a configured threshold, old message groups are summarized into a checkpoint. Recent turns remain verbatim. The raw session remains unchanged. The checkpoint must also persist `replacementHistory`: a synthetic compaction summary message followed by retained recent messages. This gives restart/replay code a concrete "use this instead of old history" boundary, similar to Codex's compacted replacement history.
 
 4. Memory is layered.
 
@@ -112,6 +113,16 @@ interface AgentContextState {
   checkpoints: ContextCheckpoint[];
   lastAssembled?: ContextReport;
   updatedAt: string;
+}
+
+interface ContextCheckpoint {
+  id: string;
+  reason: string;
+  summary: string;
+  replacementHistory: AgentSessionMessage[];
+  originalChars: number;
+  summaryChars: number;
+  createdAt: string;
 }
 ```
 
@@ -278,4 +289,3 @@ The user should be able to tell whether a bad model response came from:
 - Cross-workspace semantic memory is deferred.
 - Automatic memory editing by hidden background agents is deferred.
 - Provider-specific prompt cache APIs are deferred beyond prompt ordering and report metadata.
-

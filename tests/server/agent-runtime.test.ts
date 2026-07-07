@@ -147,7 +147,8 @@ describe("AgentRuntime", () => {
     const workspace = testWorkspace(root);
     const [_boss, pm] = await ensureCoreTeam(workspace);
     const provider = new CapturingProvider();
-    const runtime = new AgentRuntime(new EventLedger(), provider);
+    const ledger = new EventLedger();
+    const runtime = new AgentRuntime(ledger, provider);
     const longPreviousPrompt = `PREVIOUS_PROMPT_START\n${"历史 prompt 内容 ".repeat(5000)}\nPREVIOUS_PROMPT_END`;
     await new SessionStore().appendTurn(root, pm.id, "tr_1", {
       user: longPreviousPrompt,
@@ -172,6 +173,21 @@ describe("AgentRuntime", () => {
     expect(prompt).toContain("近期会话截断");
     expect(prompt).toContain("PREVIOUS_PROMPT_START");
     expect(prompt).not.toContain("PREVIOUS_PROMPT_END");
+    expect(provider.lastInput?.context?.contextReport).toMatchObject({
+      sections: expect.arrayContaining([
+        expect.objectContaining({ name: "recent_turns", truncated: true })
+      ])
+    });
+    const session = await new SessionStore().read(root, pm.id, "tr_1");
+    expect(session.messages.at(-2)?.metadata?.contextReport).toMatchObject({
+      originalSessionChars: expect.any(Number),
+      sections: expect.arrayContaining([
+        expect.objectContaining({ name: "stable_prompt" }),
+        expect.objectContaining({ name: "recent_turns", truncated: true })
+      ])
+    });
+    const events = await ledger.read(root, "task_1", "tr_1");
+    expect(events.map((event) => event.type)).toContain("context.assembled");
   });
 
   it("does not send unbounded file observations in tool follow-up prompts", async () => {
