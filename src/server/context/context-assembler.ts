@@ -113,6 +113,7 @@ function upsertCheckpoint(
 
 function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile): string {
   const policy = resolvePolicy(input.workspace, input.agent);
+  const isTicketResumeReview = isTicketResumeReviewContext(input.context);
   return [
     `你是${profile.name}，角色是${roleLabel(profile.role)}。`,
     profile.soul ? `灵魂特质：${profile.soul}` : undefined,
@@ -126,8 +127,12 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
     "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要回到特定阶段，必须显式返回 target_phase，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
-    input.type === "pm_plan" ? "产品/项目拆解任务必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined
+    input.type === "pm_plan" && !isTicketResumeReview ? "产品/项目拆解任务必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined
   ].filter(Boolean).join("\n");
+}
+
+function isTicketResumeReviewContext(context?: Record<string, unknown>): boolean {
+  return Boolean(context?.ticketResumeReview && typeof context.humanFollowup === "string");
 }
 
 function currentAssignmentSection(input: ContextAssemblerInput): string {

@@ -688,7 +688,7 @@ export class MissionControl {
       return;
     }
     const blocked = runtime.allTickets().find((ticket) => ticket.status === "blocked");
-    if (blocked) runtime.ack(blocked.id, { humanAction: "approved", message });
+    if (blocked) runtime.reopenBlockedTicket(blocked.id);
     this.syncTickets(state, runtime);
   }
 
@@ -698,6 +698,7 @@ export class MissionControl {
     if (!ticket) return "hold";
     const ownerAgent = await this.agentForTicket(workspace, ticket);
     const profiles = await this.agentProfiles();
+    const reviewContext = ticketResumeReviewContext(state, ticket, message);
     const review = await this.runtime.runAssignment({
       workspace,
       agent: ownerAgent,
@@ -706,18 +707,9 @@ export class MissionControl {
       taskRunId: state.taskRun.id,
       goal: state.task.goal,
       type: assignmentTypeForTicket(ticket),
-      brief: ticketResumeReviewBrief(ticket),
+      brief: ticketResumeReviewBrief(ticket, message),
       expectedArtifact: "ticket_resume_review 结构化判断",
-      context: {
-        ...state.context,
-        humanFollowup: message,
-        blockedTicket: ticket,
-        ticketResumeReview: {
-          ticketId: ticket.id,
-          blocker: ticket.blocker,
-          allowedActions: ticketResumeAllowedActions(ticket)
-        }
-      },
+      context: reviewContext,
       sessionId: state.taskRun.id
     });
     state.context.ticketResumeReview = {
@@ -1311,8 +1303,7 @@ function phaseAfterHumanFollowup(state: MissionState, action: BlockedFollowupAct
     }
     return "implementation";
   }
-  if (blockedPhase === "implementation") return "implementation";
-  return "pm_plan";
+  return blockedPhase;
 }
 
 function isManualTestingBoundary(state: MissionState): boolean {
@@ -1327,17 +1318,42 @@ function isManualTestingBoundary(state: MissionState): boolean {
 
 type BlockedFollowupAction = "continue" | "hold" | "pass_manual_test" | "fail_manual_test";
 
-function ticketResumeReviewBrief(ticket: Ticket): string {
+function ticketResumeReviewContext(state: MissionState, ticket: Ticket, message: string): Record<string, unknown> {
+  const {
+    latestHumanFollowup,
+    ticketResumeReview,
+    humanFollowups,
+    ...taskContext
+  } = state.context;
+  return {
+    humanFollowup: message,
+    blockedTicket: ticket,
+    ticketResumeReview: {
+      ticketId: ticket.id,
+      blocker: ticket.blocker,
+      allowedActions: ticketResumeAllowedActions(ticket)
+    },
+    humanFollowupHistory: humanFollowups,
+    previousHumanFollowup: latestHumanFollowup,
+    previousTicketResumeReview: ticketResumeReview,
+    taskContext
+  };
+}
+
+function ticketResumeReviewBrief(ticket: Ticket, humanFollowup: string): string {
   return [
     "你正在处理一个被 human 回复唤醒的 blocked 工单。先做 ticket_resume_review 分类 turn，不要直接执行原任务。",
-    "只根据当前工单状态、阻塞原因、上次输出和 humanFollowup 判断下一步动作，并返回结构化 JSON。",
+    "只根据当前工单状态、阻塞原因、上次输出和本轮 humanFollowup 判断下一步动作，并返回结构化 JSON。",
+    "本轮 humanFollowup 原文：",
+    humanFollowup,
     `允许动作：${ticketResumeAllowedActions(ticket).join("、")}。`,
     "如果 human 只是在提问、补充现象、请求帮助或信息不足，返回 {\"decision\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。",
-    "如果 human 的回复足以让当前工单继续，返回 {\"decision\":\"continue\",\"reason\":\"...\"}。",
+    "如果 human 明确回答了当前阻塞问题，或把专业取舍委托给当前 Agent 自行判断，且不涉及人工测试通过、生产/安全/隐私/付费/删除等不可逆边界，返回 {\"decision\":\"continue\",\"reason\":\"...\"}；后续执行时把关键假设写进工单或产物。",
+    "只有当前 Agent 无法专业判断、且缺失信息会改变不可逆边界时，才继续 need_more_info，并只问最少必要问题。",
     ticket.blocker?.type === "manual_test_required"
       ? "人工测试边界：测试通过返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}；测试失败返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}；不明确则返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。"
       : undefined,
-    "不要把提问当成批准；不要自行猜测 human 已同意或已验收。"
+    "不要把提问当成批准；不要自行猜测 human 已同意或已验收；也不要把明确授权当前 Agent 专业判断的回复当作未回答。"
   ].filter(Boolean).join("\n");
 }
 

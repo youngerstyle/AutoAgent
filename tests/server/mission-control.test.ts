@@ -397,7 +397,42 @@ describe("MissionControl", () => {
 
     expect(resumed.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, resumed.activeTask!.id, resumed.activeTaskRun!.id);
-    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(2);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(3);
+    expect(events.map((event) => event.type)).toContain("run.completed");
+  });
+
+  it("reruns the blocked PM ticket with the latest human reply instead of completing it directly", async () => {
+    const provider = new PmResumeReviewProvider();
+    const fixture = await missionFixture(provider);
+
+    const blocked = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "1:1 复刻 FC 坦克98" },
+      { runSynchronously: true }
+    );
+
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.phase).toBe("pm_plan");
+
+    const resumed = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      blocked.activeTask!.id,
+      "1.是；2.和原版一样；3.都可以",
+      true
+    );
+
+    expect(provider.reviewSawHumanFollowupInPrompt).toBe(true);
+    expect(provider.reviewSawDelegationRule).toBe(true);
+    expect(provider.reviewSawPmPlanGraphRule).toBe(false);
+    expect(provider.pmExecutedAfterHumanReply).toBe(true);
+    expect(provider.pmSawLatestHumanReplyDuringExecution).toBe(true);
+    expect(resumed.status).toBe("completed");
+    expect(resumed.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
+      status: "completed",
+      result: expect.objectContaining({ plan: "按 human 回复重新拆解" })
+    });
+    expect(resumed.tickets?.some((ticket) => ticket.type === "implementation")).toBe(true);
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, resumed.activeTask!.id, resumed.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(3);
     expect(events.map((event) => event.type)).toContain("run.completed");
   });
 
@@ -916,6 +951,65 @@ class AuthorizationReviewProvider implements ProviderRunner {
       return result({
         decision: "continue",
         reason: "human 已明确授权继续"
+      });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmResumeReviewProvider implements ProviderRunner {
+  private pmBlockedOnce = false;
+  reviewSawHumanFollowupInPrompt = false;
+  reviewSawDelegationRule = false;
+  reviewSawPmPlanGraphRule = false;
+  pmExecutedAfterHumanReply = false;
+  pmSawLatestHumanReplyDuringExecution = false;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm" && input.context?.humanFollowup === "1.是；2.和原版一样；3.都可以") {
+      this.reviewSawHumanFollowupInPrompt = input.prompt.includes("本轮 humanFollowup 原文：\n1.是；2.和原版一样；3.都可以");
+      this.reviewSawDelegationRule = input.prompt.includes("专业取舍委托给当前 Agent 自行判断");
+      this.reviewSawPmPlanGraphRule = input.prompt.includes("产品/项目拆解任务必须优先返回 ticketGraph 数组");
+      return result(
+        this.reviewSawHumanFollowupInPrompt && this.reviewSawDelegationRule && !this.reviewSawPmPlanGraphRule
+          ? { decision: "continue", reason: "human 已回答阻塞问题，可以让 PM 继续拆解" }
+          : { decision: "need_more_info", reason: "resume-review prompt 缺少本轮 human 回复或分类规则" }
+      );
+    }
+    if (input.role === "pm" && !this.pmBlockedOnce) {
+      this.pmBlockedOnce = true;
+      return result({
+        status: "await_human_authorization",
+        reason: "需要 human 确认是否按 FC 坦克98 1:1 复刻重新规划"
+      });
+    }
+    if (input.role === "pm") {
+      const latest = input.context?.latestHumanFollowup as { message?: string } | undefined;
+      this.pmExecutedAfterHumanReply = true;
+      this.pmSawLatestHumanReplyDuringExecution = latest?.message === "1.是；2.和原版一样；3.都可以";
+      return result({
+        plan: "按 human 回复重新拆解",
+        ticketGraph: [
+          {
+            key: "dev_rebuild",
+            type: "implementation",
+            brief: "按 FC 坦克98 1:1 复刻实现核心玩法",
+            expectedArtifact: "可运行的游戏文件",
+            targetRole: "dev"
+          },
+          {
+            key: "qa_rebuild",
+            type: "qa",
+            brief: "验证 FC 坦克98 复刻玩法",
+            expectedArtifact: "质量检查结论",
+            targetRole: "qa",
+            dependsOn: ["dev_rebuild"]
+          }
+        ]
       });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });

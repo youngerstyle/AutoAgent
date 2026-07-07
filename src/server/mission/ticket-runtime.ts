@@ -139,6 +139,27 @@ export class TicketRuntime {
     return ticket;
   }
 
+  reopenBlockedTicket(ticketId: string, now = new Date()): Ticket | undefined {
+    const ticket = this.tickets.get(ticketId);
+    if (!ticket || ticket.status !== "blocked") return undefined;
+    ticket.status = "pending";
+    ticket.blocker = undefined;
+    ticket.leaseUntil = undefined;
+    ticket.updatedAt = now.toISOString();
+
+    const related = this.allMessages().filter((message) => message.ticketId === ticketId);
+    const reusable = related.find((message) => message.status === "claimed" || message.status === "expired" || message.status === "pending");
+    if (reusable) {
+      reusable.status = "pending";
+      reusable.claimedByAgentId = undefined;
+      reusable.leaseUntil = undefined;
+      reusable.updatedAt = now.toISOString();
+    } else {
+      this.deliver(ticket, now);
+    }
+    return ticket;
+  }
+
   completeHumanAction(ticketId: string, action: HumanTicketAction, now = new Date()): Ticket | undefined {
     const ticket = this.tickets.get(ticketId);
     if (!ticket) return undefined;
