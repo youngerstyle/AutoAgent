@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTicketAgentMessage, taskControlMode } from "../../src/client/view-model";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, buildTicketAgentMessage, taskControlMode } from "../../src/client/view-model";
 import type { AgentProfile, AutoAgentEvent, WorkspaceSnapshot } from "../../src/shared/types";
 
 describe("client view model", () => {
@@ -30,6 +30,25 @@ describe("client view model", () => {
     expect(taskControlMode(snapshot("paused"))).toBe("paused");
     expect(taskControlMode(snapshot("blocked"))).toBe("blocked");
     expect(taskControlMode(snapshot("completed"))).toBe("terminal");
+  });
+
+  it("shows an immediate pending state while submitting task text", () => {
+    expect(buildTaskSubmitView({ mode: "blocked", hasWorkspace: true, hasText: true, submitting: false })).toEqual({
+      label: "发送",
+      disabled: false
+    });
+    expect(buildTaskSubmitView({ mode: "blocked", hasWorkspace: true, hasText: true, submitting: true })).toEqual({
+      label: "发送中",
+      disabled: true
+    });
+    expect(buildTaskSubmitView({ mode: "empty", hasWorkspace: true, hasText: true, submitting: true })).toEqual({
+      label: "启动中",
+      disabled: true
+    });
+    expect(buildTaskSubmitView({ mode: "terminal", hasWorkspace: true, hasText: true, submitting: true })).toEqual({
+      label: "重启中",
+      disabled: true
+    });
   });
 
   it("treats blocked tickets as the active task state even if the run status is stale", () => {

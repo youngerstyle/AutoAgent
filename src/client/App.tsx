@@ -24,7 +24,7 @@ import {
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
-import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, taskControlMode, type AgentProfileView } from "./view-model";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentProfileView } from "./view-model";
 import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
@@ -82,6 +82,7 @@ export function App() {
     baseUrl: ""
   });
   const [error, setError] = useState("");
+  const [taskSubmitting, setTaskSubmitting] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<DeleteWorkspaceDialogState>();
   const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
   const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
@@ -231,7 +232,8 @@ export function App() {
 
   async function submitTask(event: React.FormEvent) {
     event.preventDefault();
-    if (!selectedId || !goal.trim()) return;
+    if (!selectedId || !goal.trim() || taskSubmitting) return;
+    setTaskSubmitting(true);
     try {
       const taskId = snapshot?.activeTask?.id;
       const result = (mode === "running" || mode === "paused" || mode === "blocked") && taskId
@@ -241,6 +243,8 @@ export function App() {
       setGoal("");
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setTaskSubmitting(false);
     }
   }
 
@@ -429,8 +433,12 @@ export function App() {
   const hasActiveFlow = mode === "running" || mode === "paused" || mode === "blocked";
   const taskInputLabel = hasActiveFlow ? "全局补充" : "项目目标";
   const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续 Agent 上下文；和单个 Agent 沟通请点击对应头像" : "描述这个项目要交给团队完成的目标";
-  const taskSubmitLabel = hasActiveFlow ? "发送" : mode === "terminal" ? "重新开始" : "开始";
-  const taskSubmitDisabled = !selectedId || !goal.trim();
+  const taskSubmitView = buildTaskSubmitView({
+    mode,
+    hasWorkspace: Boolean(selectedId),
+    hasText: Boolean(goal.trim()),
+    submitting: taskSubmitting
+  });
   const suggestedFollowup = humanFlowPrompt?.suggestion ?? "";
   const blockedPanelCopy = buildBlockedPanelCopy(snapshot);
   const displayedStatus = mode === "blocked" ? "blocked" : snapshot?.status ?? "idle";
@@ -527,9 +535,9 @@ export function App() {
             <form onSubmit={submitTask}>
               <label>
                 <span>{taskInputLabel}</span>
-                <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} />
+                <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} />
               </label>
-              <button type="submit" disabled={taskSubmitDisabled}>{taskSubmitLabel}</button>
+              <button type="submit" disabled={taskSubmitView.disabled}>{taskSubmitView.label}</button>
             </form>
             <div className="control-row">
               <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
@@ -590,8 +598,8 @@ export function App() {
                   agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
                   prompt={humanFlowPrompt}
                   value={goal}
-                  disabled={taskSubmitDisabled}
-                  actionDisabled={!selectedId || !snapshot?.activeTask}
+                  disabled={taskSubmitView.disabled}
+                  actionDisabled={taskSubmitting || !selectedId || !snapshot?.activeTask}
                   onChange={setGoal}
                   onUseSuggestion={() => setGoal(suggestedFollowup)}
                   onFollowup={(message) => void sendFollowupMessage(message)}

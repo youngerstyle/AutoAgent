@@ -79,6 +79,11 @@ export interface TicketAgentMessageView {
   workOrderDetail: string;
 }
 
+export interface TaskSubmitView {
+  label: string;
+  disabled: boolean;
+}
+
 const ROLE_ORDER = ["boss", "pm", "architect", "dev", "specialist", "qa"];
 const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
   boss: { x: 50, y: 12 },
@@ -157,6 +162,30 @@ export function taskControlMode(snapshot?: WorkspaceSnapshot): "empty" | "runnin
   if (snapshot.status === "blocked") return "blocked";
   if (snapshot.status === "completed" || snapshot.status === "failed" || snapshot.status === "interrupted") return "terminal";
   return "running";
+}
+
+export function buildTaskSubmitView(input: {
+  mode: ReturnType<typeof taskControlMode>;
+  hasWorkspace: boolean;
+  hasText: boolean;
+  submitting: boolean;
+}): TaskSubmitView {
+  const activeFlow = input.mode === "running" || input.mode === "paused" || input.mode === "blocked";
+  const label = input.submitting
+    ? activeFlow
+      ? "发送中"
+      : input.mode === "terminal"
+        ? "重启中"
+        : "启动中"
+    : activeFlow
+      ? "发送"
+      : input.mode === "terminal"
+        ? "重新开始"
+        : "开始";
+  return {
+    label,
+    disabled: input.submitting || !input.hasWorkspace || !input.hasText
+  };
 }
 
 export function buildBlockedPanelCopy(snapshot?: WorkspaceSnapshot): { title: string; hint: string } {
