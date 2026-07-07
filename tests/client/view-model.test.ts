@@ -32,6 +32,41 @@ describe("client view model", () => {
     expect(taskControlMode(snapshot("completed"))).toBe("terminal");
   });
 
+  it("treats blocked tickets as the active task state even if the run status is stale", () => {
+    const waitingPm = {
+      ...snapshot("completed"),
+      agents: [
+        ...snapshot("completed").agents,
+        { id: "wa_pm", workspaceId: "ws_1", profileId: "prof_pm", roleInWorkspace: "pm" as const, agentDir: "pm", status: "waiting" as const, name: "PM" }
+      ],
+      tickets: [{
+        id: "tk_pm",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "pm_plan" as const,
+        status: "blocked" as const,
+        brief: "计划拆解需要 human 补充",
+        expectedArtifact: "执行计划",
+        targetRole: "pm" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: { type: "external_dependency" as const, reason: "等待 human 补充" },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(taskControlMode(waitingPm)).toBe("blocked");
+    expect(buildAgentNodes(waitingPm).find((node) => node.role === "pm")?.needsAttention).toBe(true);
+    expect(buildHumanFlowPrompt(waitingPm)).toMatchObject({
+      agentId: "wa_pm",
+      waiter: "产品/项目",
+      phase: "计划拆解",
+      inputLabel: "回复说明"
+    });
+  });
+
   it("does not turn stale implementation evidence failures into human prompts", () => {
     const blocked = {
       ...snapshot("blocked"),
@@ -330,7 +365,7 @@ describe("client view model", () => {
         taskId: "task_1",
         taskRunId: "tr_1",
         type: "qa" as const,
-        status: "blocked" as const,
+        status: "completed" as const,
         brief: "质量检查",
         expectedArtifact: "测试报告",
         targetAgentId: "wa_qa",

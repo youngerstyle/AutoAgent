@@ -427,18 +427,19 @@ export function App() {
   const selectedCatalogProfile = catalogProfiles.find((profile) => profile.id === selectedProfileId) ?? catalogProfiles[0];
   const selectedCatalogDefinition = agentProfiles.find((profile) => profile.id === selectedCatalogProfile?.id) ?? agentProfiles[0];
   const hasActiveFlow = mode === "running" || mode === "paused" || mode === "blocked";
-  const taskInputLabel = hasActiveFlow ? "补充说明" : "项目目标";
-  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续 Agent 上下文" : "描述这个项目要交给团队完成的目标";
-  const taskSubmitLabel = hasActiveFlow ? "发送给团队" : mode === "terminal" ? "重新开始" : "开始";
+  const taskInputLabel = hasActiveFlow ? "全局补充" : "项目目标";
+  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续 Agent 上下文；和单个 Agent 沟通请点击对应头像" : "描述这个项目要交给团队完成的目标";
+  const taskSubmitLabel = hasActiveFlow ? "发送" : mode === "terminal" ? "重新开始" : "开始";
   const taskSubmitDisabled = !selectedId || !goal.trim();
   const suggestedFollowup = humanFlowPrompt?.suggestion ?? "";
   const blockedPanelCopy = buildBlockedPanelCopy(snapshot);
+  const displayedStatus = mode === "blocked" ? "blocked" : snapshot?.status ?? "idle";
   const primaryPanelTitle = mode === "blocked"
     ? "任务控制"
     : mode === "terminal"
       ? "任务已结束，重新描述目标"
       : hasActiveFlow
-      ? "给团队补充上下文"
+      ? "任务控制"
       : "描述这个项目要交给团队完成的目标";
   const selectedAgentNeedsReply = Boolean(humanFlowPrompt && selectedAgent?.id === humanFlowPrompt.agentId);
 
@@ -455,7 +456,7 @@ export function App() {
           <button className={view === "team" ? "selected" : ""} onClick={() => setView("team")}>项目团队实例</button>
           <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
         </nav>
-        <strong className={`status-pill ${snapshot?.status ?? "idle"}`}>{statusLabel(snapshot?.status ?? "idle")}</strong>
+        <strong className={`status-pill ${displayedStatus}`}>{statusLabel(displayedStatus)}</strong>
       </header>
       <section
         className="workspace-shell"

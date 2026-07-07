@@ -733,7 +733,7 @@ export class MissionControl {
   }
 
   private async findActiveState(workspace: Workspace): Promise<MissionState | undefined> {
-    return (await this.readAllStates(workspace)).find((state) => state.status === "running" || state.status === "waiting" || state.status === "paused" || state.status === "blocked");
+    return (await this.readAllStates(workspace)).find((state) => state.status === "running" || state.status === "waiting" || state.status === "paused" || state.status === "blocked" || Boolean(this.blockedTicket(state)));
   }
 
   private async findLatestState(workspace: Workspace): Promise<MissionState | undefined> {
@@ -762,7 +762,10 @@ export class MissionControl {
 
   private async readStateForTask(workspace: Workspace, taskId: string): Promise<MissionState> {
     const active = await this.findActiveState(workspace);
-    if (active?.task.id === taskId) return active;
+    if (active?.task.id === taskId) {
+      await this.reconcileBlockedTicketState(workspace, active);
+      return active;
+    }
     throw new HttpError(404, `Active task not found: ${taskId}`, "TASK_NOT_FOUND");
   }
 
@@ -780,6 +783,19 @@ export class MissionControl {
   private async snapshot(workspace: Workspace, taskId: string, taskRunId: string): Promise<WorkspaceSnapshot> {
     const state = await this.readState(workspace, taskId, taskRunId);
     let events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
+    const reconciledBlockedTicket = await this.reconcileBlockedTicketState(workspace, state);
+    if (reconciledBlockedTicket) {
+      const phase = phaseForTicket(reconciledBlockedTicket);
+      const reason = reconciledBlockedTicket.blocker?.reason ?? reconciledBlockedTicket.returnReason ?? `${phaseLabel(phase)}工单受阻`;
+      await this.append(workspace, state, "run.blocked", `任务受阻：${phaseLabel(phase)}受阻：${reason}`, {
+        task: state.task,
+        taskRun: state.taskRun,
+        ticketId: reconciledBlockedTicket.id,
+        reason,
+        phase
+      });
+      events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
+    }
     const historicalBlockReason = terminalCompletionBlockReason(events);
     const historicalFailureBlockReason = terminalFailureBlockReason(events);
     if (state.status === "blocked" && historicalBlockReason && state.taskRun.phase !== historicalBlockReason.phase) {
@@ -826,6 +842,30 @@ export class MissionControl {
     projected.phase = state.taskRun.phase;
     projected.status = state.status;
     return projected;
+  }
+
+  private blockedTicket(state: MissionState): Ticket | undefined {
+    return (state.tickets ?? []).find((ticket) => ticket.status === "blocked");
+  }
+
+  private async reconcileBlockedTicketState(workspace: Workspace, state: MissionState): Promise<Ticket | undefined> {
+    const ticket = this.blockedTicket(state);
+    if (!ticket) return undefined;
+    const phase = phaseForTicket(ticket);
+    const alreadyBlocked = state.status === "blocked"
+      && state.task.status === "blocked"
+      && state.taskRun.status === "blocked"
+      && state.taskRun.phase === phase;
+    if (alreadyBlocked) return undefined;
+
+    state.status = "blocked";
+    state.task.status = "blocked";
+    state.taskRun.status = "blocked";
+    state.taskRun.phase = phase;
+    state.nextPhase = phase;
+    state.taskRun.endedAt = new Date().toISOString();
+    await this.writeState(workspace, state);
+    return ticket;
   }
 
   private async append(

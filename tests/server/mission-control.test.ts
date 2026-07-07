@@ -2,13 +2,15 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { MissionControl } from "../../src/server/mission/mission-control";
+import { MissionControl, type MissionState } from "../../src/server/mission/mission-control";
 import { EventLedger } from "../../src/server/storage/event-ledger";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry";
 import { AgentProfileStore } from "../../src/server/agents/profile-store";
 import type { ProviderRunner } from "../../src/server/agents/agent-runtime";
 import type { AgentTurnInput, AgentTurnResult } from "../../src/server/providers/types";
+import { readJson, writeJson } from "../../src/server/storage/json";
+import { stateFile } from "../../src/server/storage/paths";
 
 describe("MissionControl", () => {
   it("runs the fixed team happy path to completion", async () => {
@@ -42,6 +44,31 @@ describe("MissionControl", () => {
     expect(snapshot.status).toBe("completed");
     expect(snapshot.activeTask?.id).toBe(completed.activeTask?.id);
     expect(snapshot.recentEvents.map((event) => event.type)).toContain("run.completed");
+  });
+
+  it("does not present a completed run when a ticket is still blocked", async () => {
+    const fixture = await missionFixture();
+
+    const completed = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a stale completed snapshot" },
+      { runSynchronously: true }
+    );
+    const taskId = completed.activeTask!.id;
+    const taskRunId = completed.activeTaskRun!.id;
+    const file = stateFile(fixture.workspace.rootPath, taskId, taskRunId);
+    const state = await readJson<MissionState | undefined>(file, undefined);
+    if (!state) throw new Error("state file missing");
+    const pmTicket = state.tickets.find((ticket) => ticket.type === "pm_plan");
+    if (!pmTicket) throw new Error("pm ticket missing");
+    pmTicket.status = "blocked";
+    pmTicket.blocker = { type: "external_dependency", reason: "PM 等待 human 补充" };
+    await writeJson(file, state);
+
+    const snapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.tickets?.find((ticket) => ticket.id === pmTicket.id)?.status).toBe("blocked");
   });
 
   it("enforces one active TaskRun per workspace", async () => {

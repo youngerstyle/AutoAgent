@@ -91,7 +91,7 @@ const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
   if (!snapshot) return [];
-  const problemAgentId = snapshot.status === "blocked" ? blockedAgentProblem(snapshot)?.agentId : undefined;
+  const problemAgentId = hasBlockingWork(snapshot) ? blockedAgentProblem(snapshot)?.agentId : undefined;
   return snapshot.agents
     .slice()
     .sort((a, b) => ROLE_ORDER.indexOf(a.roleInWorkspace) - ROLE_ORDER.indexOf(b.roleInWorkspace))
@@ -152,6 +152,7 @@ export function buildAgentCatalogProfiles(profileDefs: AgentProfile[]): AgentPro
 
 export function taskControlMode(snapshot?: WorkspaceSnapshot): "empty" | "running" | "paused" | "blocked" | "terminal" {
   if (!snapshot?.activeTask) return "empty";
+  if (hasBlockedTicket(snapshot)) return "blocked";
   if (snapshot.status === "paused") return "paused";
   if (snapshot.status === "blocked") return "blocked";
   if (snapshot.status === "completed" || snapshot.status === "failed" || snapshot.status === "interrupted") return "terminal";
@@ -255,7 +256,7 @@ export function buildTicketAgentMessage(ticket: Ticket, message?: AgentInboxMess
 }
 
 export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPromptView | undefined {
-  if (snapshot?.status !== "blocked") return undefined;
+  if (!snapshot || !hasBlockingWork(snapshot)) return undefined;
   const flowProblem = blockedAgentProblem(snapshot);
   if (!flowProblem) return undefined;
   const phase = snapshot.activeTaskRun?.phase ?? snapshot.phase;
@@ -267,12 +268,20 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
     waiter: owner,
     phase: flowProblem.phase ?? phaseLabelForHuman(phase),
     transcript: `${owner}:\n${flowProblem.rawOutput}`,
-    inputLabel: manualTest ? "测试结果" : "授权说明",
+    inputLabel: manualTest ? "测试结果" : "回复说明",
     placeholder: `回复${owner}`,
     submitLabel: "发送",
-    suggestion: manualTest?.passMessage ?? "按默认 Web Canvas 单人 MVP 返工开发：做一关可玩版本，必须真实写入文件，并包含移动、射击、敌人、墙、基地和胜负条件。",
+    suggestion: manualTest?.passMessage ?? "补充必要信息，让当前 Agent 继续判断。",
     manualTest
   };
+}
+
+function hasBlockedTicket(snapshot?: WorkspaceSnapshot): boolean {
+  return Boolean(snapshot?.tickets?.some((ticket) => ticket.status === "blocked"));
+}
+
+function hasBlockingWork(snapshot?: WorkspaceSnapshot): boolean {
+  return hasBlockedTicket(snapshot) || snapshot?.status === "blocked";
 }
 
 function latestBlockedTicket(snapshot?: WorkspaceSnapshot): Ticket | undefined {
@@ -343,7 +352,7 @@ type BlockedAgentProblem = {
 };
 
 function blockedAgentProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
-  return latestManualTestTicketProblem(snapshot) ?? latestAssignmentBlockedProblem(snapshot) ?? earliestBlockingPhaseProblem(snapshot) ?? implementationEvidenceProblem(snapshot);
+  return latestManualTestTicketProblem(snapshot) ?? latestBlockedTicketProblem(snapshot) ?? latestAssignmentBlockedProblem(snapshot) ?? earliestBlockingPhaseProblem(snapshot) ?? implementationEvidenceProblem(snapshot);
 }
 
 function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: AgentProfile): AgentProfileView {
@@ -416,6 +425,20 @@ function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgen
     phase: phaseLabelForHuman(phase),
     rawOutput: testLines.length ? testLines.join("\n") : ticket.blocker?.reason ?? "QA 请求人工测试。",
     manualTest
+  };
+}
+
+function latestBlockedTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
+  const ticket = latestBlockedTicket(snapshot);
+  if (!ticket) return undefined;
+  const phase = ticket.type;
+  const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : waiterForPhase(phase);
+  const rawOutput = ticket.blocker?.reason ?? ticket.returnReason ?? ticket.brief;
+  return {
+    agentId: ticket.targetAgentId ?? agentIdForRole(snapshot, ticket.targetRole) ?? agentIdForPhase(snapshot, phase),
+    owner,
+    phase: phaseLabelForHuman(phase),
+    rawOutput
   };
 }
 
