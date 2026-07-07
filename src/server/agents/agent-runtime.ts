@@ -118,7 +118,7 @@ export class AgentRuntime {
         const toolResults = await this.executeToolIntents(input, assignmentRun.id, providerResult);
         allToolResults.push(...toolResults);
         await this.sessionStore.appendTurn(input.workspace.rootPath, input.agent.id, sessionId, {
-          user: assembled.prompt,
+          user: sessionTurnUserMessage(input, assignmentName, roleName, turn),
           assistant: providerResult.text,
           providerEvents: providerResult.events,
           usage: providerResult.usage,
@@ -226,6 +226,68 @@ export class AgentRuntime {
       payload
     });
   }
+}
+
+function sessionTurnUserMessage(input: RunAssignmentInput, assignmentName: string, roleName: string, turn: number): string {
+  return [
+    `Agent：${roleName}`,
+    `轮次：${turn}`,
+    `任务类型：${assignmentName}`,
+    `项目：${input.workspace.name}`,
+    `目标：${input.goal}`,
+    `任务说明：${input.brief}`,
+    `预期产物：${input.expectedArtifact}`,
+    compactSessionContext(input.context)
+  ].filter(Boolean).join("\n");
+}
+
+function compactSessionContext(context?: Record<string, unknown>): string | undefined {
+  if (!context) return undefined;
+  const lines: string[] = [];
+  const humanFollowup = stringValue(context.humanFollowup);
+  const latestHumanFollowup = recordValue(context.latestHumanFollowup);
+  const blockedTicket = recordValue(context.blockedTicket);
+  const previousHumanFollowup = recordValue(context.previousHumanFollowup);
+  const taskContext = recordValue(context.taskContext);
+
+  if (humanFollowup) lines.push(`本轮 humanFollowup：${limitInline(humanFollowup)}`);
+  const latestMessage = stringValue(latestHumanFollowup?.message);
+  if (latestMessage) lines.push(`最新 humanFollowup：${limitInline(latestMessage)}`);
+  const previousMessage = stringValue(previousHumanFollowup?.message);
+  if (previousMessage) lines.push(`上一轮 humanFollowup：${limitInline(previousMessage)}`);
+  if (blockedTicket) {
+    const ticketSummary = [
+      stringValue(blockedTicket.type),
+      stringValue(blockedTicket.status),
+      stringValue(blockedTicket.brief)
+    ].filter(Boolean).join(" / ");
+    if (ticketSummary) lines.push(`阻塞工单：${limitInline(ticketSummary)}`);
+    const blocker = recordValue(blockedTicket.blocker);
+    const blockerReason = stringValue(blocker?.reason);
+    if (blockerReason) lines.push(`阻塞原因：${limitInline(blockerReason)}`);
+  }
+  const contextKeys = Object.keys(context)
+    .filter((key) => !["toolResults", "contextReport"].includes(key))
+    .slice(0, 20);
+  if (contextKeys.length > 0) lines.push(`上下文字段：${contextKeys.join("、")}`);
+  const taskKeys = taskContext ? Object.keys(taskContext).slice(0, 20) : [];
+  if (taskKeys.length > 0) lines.push(`任务上下文字段：${taskKeys.join("、")}`);
+
+  return lines.length > 0 ? `上下文摘要：\n${lines.join("\n")}` : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function limitInline(value: string, max = 500): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, max)}...[截断，原始长度 ${compact.length} 字符]`;
 }
 
 function normalizeToolIntents(structured?: Record<string, unknown>): Array<Record<string, unknown>> {

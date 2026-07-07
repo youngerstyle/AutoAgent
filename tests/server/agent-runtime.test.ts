@@ -45,6 +45,9 @@ describe("AgentRuntime", () => {
     expect(events.find((event) => event.type === "assignment.completed")?.summary).toBe("开发已完成开发执行");
     const session = await new SessionStore().read(root, dev.id, "tr_1");
     expect(session.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool"]);
+    expect(session.messages[0].content).toContain("任务说明：Create a result file");
+    expect(session.messages[0].content).not.toContain("## 稳定提示词");
+    expect(session.messages[0].content.length).toBeLessThan(2_000);
   });
 
   it("treats legacy action JSON as a real tool request and follows up with true tool results", async () => {
@@ -179,6 +182,11 @@ describe("AgentRuntime", () => {
       ])
     });
     const session = await new SessionStore().read(root, pm.id, "tr_1");
+    const latestUserMessage = session.messages.at(-2)?.content ?? "";
+    expect(latestUserMessage).toContain("任务说明：Plan work");
+    expect(latestUserMessage).not.toContain("PREVIOUS_PROMPT_START");
+    expect(latestUserMessage).not.toContain("## 稳定提示词");
+    expect(latestUserMessage.length).toBeLessThan(2_000);
     expect(session.messages.at(-2)?.metadata?.contextReport).toMatchObject({
       originalSessionChars: expect.any(Number),
       sections: expect.arrayContaining([
