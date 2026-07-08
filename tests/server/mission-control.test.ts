@@ -297,6 +297,39 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.failed");
   });
 
+  it("requeues a yielded agent slice on the same ticket and only unlocks downstream after final completion", async () => {
+    const provider = new DevYieldsThenCompletesProvider();
+    const fixture = await missionFixture(provider, { maxToolFollowUps: 2 });
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build after a yielded dev slice" },
+      { runSynchronously: true }
+    );
+
+    const devTickets = snapshot.tickets?.filter((ticket) => ticket.type === "implementation") ?? [];
+    const devTicket = devTickets[0];
+    const qaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa");
+    expect(snapshot.status).toBe("completed");
+    expect(devTickets).toHaveLength(1);
+    expect(devTicket).toMatchObject({
+      status: "completed",
+      execution: {
+        sliceStatus: "idle",
+        yieldReason: "执行片工具观察预算已用完，已保存进度并等待继续",
+        continuationCount: 1
+      }
+    });
+    expect(qaTicket?.dependsOnTicketIds).toEqual([devTicket?.id]);
+    expect(provider.devCalls).toBe(3);
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).toContain("assignment.yielded");
+    expect(events.map((event) => event.type)).not.toContain("run.blocked");
+    expect(events.map((event) => event.type)).not.toContain("run.failed");
+    expect(events.findIndex((event) => event.type === "assignment.yielded")).toBeLessThan(
+      events.findIndex((event) => event.type === "assignment.completed" && event.summary.includes("测试"))
+    );
+  });
+
   it("accepts an existing declared workspace artifact as implementation evidence", async () => {
     const fixture = await missionFixture(new ExistingArtifactProvider());
     await writeFile(path.join(fixture.workspace.rootPath, "index.html"), "<!doctype html><canvas></canvas>\n", "utf8");
@@ -767,7 +800,7 @@ describe("MissionControl", () => {
   });
 });
 
-async function missionFixture(providerOverride?: ProviderRunner) {
+async function missionFixture(providerOverride?: ProviderRunner, runtimeLimits?: { maxToolFollowUps: number }) {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-home-"));
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-ws-"));
   const store = new WorkspaceStore(home);
@@ -775,7 +808,7 @@ async function missionFixture(providerOverride?: ProviderRunner) {
   const ledger = new EventLedger();
   const profileStore = new AgentProfileStore(home);
   const provider = new ProviderRegistry({ homeDir: home, env: { NODE_ENV: "test" }, retryCount: 0 });
-  const mission = new MissionControl(store, ledger, providerOverride ?? provider, profileStore);
+  const mission = new MissionControl(store, ledger, providerOverride ?? provider, profileStore, runtimeLimits);
   return { home, root, store, workspace, ledger, mission, profileStore };
 }
 
@@ -997,6 +1030,25 @@ class DelayedImplementationEvidenceProvider implements ProviderRunner {
     if (input.role === "dev") {
       this.devCalls += 1;
       if (this.devCalls <= 3) return result({ ok: true, summary: "已完成但没有交付文件证据" });
+      return implementationResult();
+    }
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class DevYieldsThenCompletesProvider implements ProviderRunner {
+  devCalls = 0;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev") {
+      this.devCalls += 1;
+      if (this.devCalls <= 2) {
+        return result({ toolIntents: [{ tool: "readFile", path: "index.html" }] });
+      }
       return implementationResult();
     }
     if (input.role === "qa") return result({ passed: true, report: "Pass" });

@@ -144,8 +144,18 @@ export interface Ticket {
   blocker?: TicketBlocker;
   returnReason?: string;
   result?: unknown;
+  execution?: TicketExecutionState;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TicketExecutionState {
+  sliceStatus?: "idle" | "running" | "yielded";
+  yieldedAt?: string;
+  yieldReason?: string;
+  continuationCount?: number;
+  lastAssignmentRunId?: string;
+  nextRunAfter?: string;
 }
 
 export interface AgentInboxMessage {

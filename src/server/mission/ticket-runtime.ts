@@ -29,6 +29,12 @@ export interface HumanTicketAction {
   message: string;
 }
 
+export interface YieldTicketInput {
+  reason: string;
+  assignmentRunId?: string;
+  nextRunAfter?: string;
+}
+
 export class TicketRuntime {
   constructor(
     private readonly tickets = new Map<string, Ticket>(),
@@ -111,6 +117,10 @@ export class TicketRuntime {
     ticket.status = "running";
     ticket.leaseUntil = leaseUntil;
     ticket.attempt += 1;
+    ticket.execution = {
+      ...(ticket.execution ?? {}),
+      sliceStatus: "running"
+    };
     ticket.updatedAt = now.toISOString();
     return { ticket, message };
   }
@@ -121,6 +131,10 @@ export class TicketRuntime {
     ticket.status = "completed";
     ticket.result = result;
     ticket.leaseUntil = undefined;
+    ticket.execution = {
+      ...(ticket.execution ?? {}),
+      sliceStatus: "idle"
+    };
     ticket.updatedAt = now.toISOString();
     for (const message of this.allMessages().filter((item) => item.ticketId === ticketId && item.status === "claimed")) {
       message.status = "acked";
@@ -136,7 +150,41 @@ export class TicketRuntime {
     ticket.status = "blocked";
     ticket.blocker = blocker;
     ticket.leaseUntil = undefined;
+    ticket.execution = {
+      ...(ticket.execution ?? {}),
+      sliceStatus: "idle"
+    };
     ticket.updatedAt = now.toISOString();
+    return ticket;
+  }
+
+  yieldTicket(ticketId: string, input: YieldTicketInput, now = new Date()): Ticket | undefined {
+    const ticket = this.tickets.get(ticketId);
+    if (!ticket) return undefined;
+    const continuationCount = (ticket.execution?.continuationCount ?? 0) + 1;
+    ticket.status = "pending";
+    ticket.leaseUntil = undefined;
+    ticket.execution = {
+      ...(ticket.execution ?? {}),
+      sliceStatus: "yielded",
+      yieldedAt: now.toISOString(),
+      yieldReason: input.reason,
+      continuationCount,
+      lastAssignmentRunId: input.assignmentRunId,
+      nextRunAfter: input.nextRunAfter
+    };
+    ticket.updatedAt = now.toISOString();
+
+    const related = this.allMessages().filter((message) => message.ticketId === ticketId);
+    const reusable = related.find((message) => message.status === "claimed" || message.status === "expired" || message.status === "pending");
+    if (reusable) {
+      reusable.status = "pending";
+      reusable.claimedByAgentId = undefined;
+      reusable.leaseUntil = undefined;
+      reusable.updatedAt = now.toISOString();
+    } else {
+      this.deliver(ticket, now);
+    }
     return ticket;
   }
 
@@ -146,6 +194,10 @@ export class TicketRuntime {
     ticket.status = "pending";
     ticket.blocker = undefined;
     ticket.leaseUntil = undefined;
+    ticket.execution = {
+      ...(ticket.execution ?? {}),
+      sliceStatus: "idle"
+    };
     ticket.updatedAt = now.toISOString();
 
     const related = this.allMessages().filter((message) => message.ticketId === ticketId);

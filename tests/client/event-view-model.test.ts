@@ -75,6 +75,16 @@ describe("event view model", () => {
       detail: "这只是阶段记录，不代表项目已交付"
     });
 
+    expect(buildEventTimelineItem(event("assignment.yielded", "开发已保存进度，等待继续", {
+      assignment: { type: "implementation" },
+      observedToolCount: 2
+    }))).toMatchObject({
+      actor: "开发",
+      title: "已保存进度",
+      detail: "执行片已保存，稍后继续同一张工单；工具观察 2 次",
+      tone: "running"
+    });
+
     expect(buildEventTimelineItem(event("agent.step_started", "Boss: Accept or reject the completed task", {}))).toMatchObject({
       actor: "老板",
       title: "开始执行",

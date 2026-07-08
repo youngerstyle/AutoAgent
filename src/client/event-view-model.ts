@@ -136,6 +136,16 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, actorForAssignment(assignmentType, event.summary), `${assignment}阶段结束`, "这只是阶段记录，不代表项目已交付", "neutral");
   }
 
+  if (event.type === "assignment.yielded") {
+    const assignmentType = nestedStringPayload(event, "assignment", "type") as AssignmentType | undefined;
+    const observedToolCount = numberPayload(event, "observedToolCount");
+    const detail = [
+      "执行片已保存，稍后继续同一张工单",
+      observedToolCount !== undefined ? `工具观察 ${observedToolCount} 次` : undefined
+    ].filter(Boolean).join("；");
+    return item(event, actorForAssignment(assignmentType, event.summary), "已保存进度", detail, "running");
+  }
+
   if (event.type === "assignment.blocked" || event.type === "run.blocked") {
     const blocker = blockedEventView(event);
     return item(event, blocker.actor, blocker.title, blocker.detail, "warning");

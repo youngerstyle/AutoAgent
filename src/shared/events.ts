@@ -4,6 +4,7 @@ export const EVENT_TYPES = [
   "assignment.created",
   "assignment.started",
   "assignment.completed",
+  "assignment.yielded",
   "assignment.failed",
   "agent.status_changed",
   "agent.step_started",

@@ -3,7 +3,7 @@ import path from "node:path";
 import type { AgentInboxMessage, AgentRole, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel, roleLabel } from "../../shared/labels.js";
-import { AgentRuntime, type ProviderRunner } from "../agents/agent-runtime.js";
+import { AgentRuntime, type AgentRuntimeLimits, type AssignmentResult, type ProviderRunner } from "../agents/agent-runtime.js";
 import { AgentProfileStore } from "../agents/profile-store.js";
 import { recruitSpecialist } from "../agents/recruitment.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileForRole, profileMetadata } from "../agents/roster.js";
@@ -43,9 +43,10 @@ export class MissionControl {
     private readonly workspaceStore: WorkspaceStore,
     private readonly ledger: EventLedger,
     providerRunner: ProviderRunner,
-    private readonly profileStore?: AgentProfileStore
+    private readonly profileStore?: AgentProfileStore,
+    runtimeLimits?: AgentRuntimeLimits
   ) {
-    this.runtime = new AgentRuntime(ledger, providerRunner);
+    this.runtime = new AgentRuntime(ledger, providerRunner, undefined, undefined, undefined, runtimeLimits);
   }
 
   async startTask(input: { workspaceId: string; goal: string; title?: string }, options: StartTaskOptions = {}): Promise<WorkspaceSnapshot> {
@@ -340,6 +341,29 @@ export class MissionControl {
     });
     const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
     if (latestState.stopRequested || latestState.status === "interrupted") return latestState;
+    if (result.kind === "yielded") {
+      ticketRuntime.yieldTicket(ticket.id, {
+        reason: result.reason,
+        assignmentRunId: result.assignmentRun.id
+      });
+      this.syncTickets(state, ticketRuntime);
+      state.status = "running";
+      state.task.status = "running";
+      state.taskRun.status = "running";
+      state.nextPhase = phase;
+      state.taskRun.phase = phase;
+      state.updatedAt = new Date().toISOString();
+      await this.writeState(workspace, state);
+      await this.append(workspace, state, "task.phase_changed", `${phaseLabel(phase)}已保存进度，等待继续`, {
+        phase,
+        status: "running",
+        ticketId: ticket.id,
+        yielded: true,
+        reason: result.reason,
+        assignmentRunId: result.assignmentRun.id
+      });
+      return state;
+    }
 
     const phaseResult = result.providerResult.structured ?? result.providerResult.text;
     state.context[phase] = { result: phaseResult, toolResults: result.toolResults };
@@ -628,7 +652,7 @@ export class MissionControl {
     state: MissionState,
     ticketRuntime: TicketRuntime,
     ticket: Ticket,
-    result: Awaited<ReturnType<AgentRuntime["runAssignment"]>>,
+    result: AssignmentResult,
     phaseResult: unknown,
     reason: string,
     blockerInput: { manualTestingReason?: string; explicitAuthorization?: boolean; toolPolicyBlocked?: boolean } = {}
@@ -713,6 +737,14 @@ export class MissionControl {
       context: reviewContext,
       sessionId: state.taskRun.id
     });
+    if (review.kind === "yielded") {
+      state.context.ticketResumeReview = {
+        result: { action: "hold", reason: review.reason },
+        rawText: review.reason,
+        toolResults: review.toolResults
+      };
+      return "hold";
+    }
     state.context.ticketResumeReview = {
       result: review.providerResult.structured ?? review.providerResult.text,
       rawText: review.providerResult.text,

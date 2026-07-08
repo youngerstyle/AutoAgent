@@ -31,10 +31,31 @@ export interface RunAssignmentInput {
 }
 
 export interface AssignmentResult {
+  kind: "final";
   assignment: Assignment;
   assignmentRun: AssignmentRun;
   providerResult: AgentTurnResult;
   toolResults: Array<Record<string, unknown>>;
+}
+
+export interface YieldedAssignmentResult {
+  kind: "yielded";
+  assignment: Assignment;
+  assignmentRun: AssignmentRun;
+  reason: string;
+  providerResult?: AgentTurnResult;
+  toolResults: Array<Record<string, unknown>>;
+  continuation: {
+    sessionId: string;
+    nextTurn: number;
+    observedToolCount: number;
+  };
+}
+
+export type RunAssignmentResult = AssignmentResult | YieldedAssignmentResult;
+
+export interface AgentRuntimeLimits {
+  maxToolFollowUps: number;
 }
 
 const OBSERVATION_TOOLS = new Set(["readFile", "listFiles", "shell"]);
@@ -45,10 +66,11 @@ export class AgentRuntime {
     private readonly providerRunner: ProviderRunner,
     private readonly sessionStore = new SessionStore(),
     private readonly contextAssembler = new ContextAssembler(),
-    private readonly loopTraceStore = new LoopTraceStore()
+    private readonly loopTraceStore = new LoopTraceStore(),
+    private readonly limits: AgentRuntimeLimits = RUNTIME_LIMITS
   ) {}
 
-  async runAssignment(input: RunAssignmentInput): Promise<AssignmentResult> {
+  async runAssignment(input: RunAssignmentInput): Promise<RunAssignmentResult> {
     const assignment: Assignment = {
       id: createId("as"),
       taskId: input.taskId,
@@ -85,7 +107,7 @@ export class AgentRuntime {
       let providerResult: AgentTurnResult | undefined;
       const allToolResults: Array<Record<string, unknown>> = [];
 
-      for (let turn = 1; turn <= RUNTIME_LIMITS.maxToolFollowUps; turn += 1) {
+      for (let turn = 1; turn <= this.limits.maxToolFollowUps; turn += 1) {
         const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
         const assembled = await this.contextAssembler.assemble({
           ...input,
@@ -187,16 +209,50 @@ export class AgentRuntime {
         });
 
         if (!needsToolFollowUp(toolResults)) break;
-        if (turn === RUNTIME_LIMITS.maxToolFollowUps) {
-          providerResult = {
-            ...providerResult,
-            structured: {
-              ...(providerResult.structured ?? {}),
-              status: "blocked",
-              reason: "工具观察循环达到上限，任务未形成最终结论"
+        if (turn === this.limits.maxToolFollowUps) {
+          const reason = "执行片工具观察预算已用完，已保存进度并等待继续";
+          assignment.status = "waiting";
+          assignmentRun.status = "waiting";
+          assignmentRun.endedAt = new Date().toISOString();
+          await this.loopTraceStore.append(input.workspace.rootPath, input.taskId, input.taskRunId, {
+            assignmentRunId: assignmentRun.id,
+            agentId: input.agent.id,
+            actor: roleName,
+            kind: "llm",
+            turn,
+            title: "执行片已让出",
+            content: reason,
+            detail: `工具观察 ${allToolResults.length} 次`,
+            metadata: {
+              agentId: input.agent.id,
+              role: input.agent.roleInWorkspace,
+              assignmentId: assignment.id,
+              assignmentType: input.type,
+              maxToolFollowUps: this.limits.maxToolFollowUps,
+              observedToolCount: allToolResults.length
+            }
+          });
+          await this.emit(input, "assignment.yielded", `${roleName}已保存进度，等待继续`, {
+            assignmentId: assignment.id,
+            assignmentRun,
+            reason,
+            observedToolCount: allToolResults.length,
+            maxToolFollowUps: this.limits.maxToolFollowUps
+          });
+          await this.emit(input, "agent.status_changed", `${roleName}正在等待`, { agentId: input.agent.id, status: "waiting" });
+          return {
+            kind: "yielded",
+            assignment,
+            assignmentRun,
+            reason,
+            providerResult,
+            toolResults: allToolResults,
+            continuation: {
+              sessionId,
+              nextTurn: turn + 1,
+              observedToolCount: allToolResults.length
             }
           };
-          break;
         }
       }
 
@@ -214,7 +270,7 @@ export class AgentRuntime {
         toolResults: allToolResults
       });
       await this.emit(input, "agent.status_changed", `${roleName}正在等待`, { agentId: input.agent.id, status: "waiting" });
-      return { assignment, assignmentRun, providerResult, toolResults: allToolResults };
+      return { kind: "final", assignment, assignmentRun, providerResult, toolResults: allToolResults };
     } catch (error) {
       assignment.status = "failed";
       assignmentRun.status = "failed";

@@ -70,6 +70,8 @@ describe("AgentRuntime", () => {
     });
 
     expect(result.assignmentRun.status).toBe("completed");
+    expect(result.kind).toBe("final");
+    if (result.kind !== "final") throw new Error("expected final result");
     expect(provider.calls).toBe(2);
     expect(result.toolResults[0]).toMatchObject({ tool: "listFiles", path: "." });
     expect(result.toolResults[0]).not.toMatchObject({ files: ["fake.js"] });
@@ -96,6 +98,8 @@ describe("AgentRuntime", () => {
     });
 
     expect(result.assignmentRun.status).toBe("completed");
+    expect(result.kind).toBe("final");
+    if (result.kind !== "final") throw new Error("expected final result");
     expect(provider.calls).toBe(2);
     expect(provider.sawMissingFile).toBe(true);
     expect(result.providerResult.structured).toMatchObject({ plan: "从空项目创建 Web Canvas MVP" });
@@ -254,8 +258,42 @@ describe("AgentRuntime", () => {
     });
 
     expect(provider.calls).toBe(6);
+    expect(result.kind).toBe("final");
+    if (result.kind !== "final") throw new Error("expected final result");
     expect(result.providerResult.structured).toMatchObject({ action: "complete", summary: "done after enough observations" });
     expect(result.providerResult.structured?.reason).toBeUndefined();
+  });
+
+  it("yields the execution slice when observation budget is reached instead of fabricating a blocker", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    await writeFile(path.join(root, "index.html"), "<main></main>", "utf8");
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    const provider = new AlwaysObserveProvider();
+    const ledger = new EventLedger();
+    const runtime = new AgentRuntime(ledger, provider, undefined, undefined, undefined, { maxToolFollowUps: 2 });
+
+    const result = await runtime.runAssignment({
+      workspace,
+      agent: dev,
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      goal: "Keep observing until the slice yields",
+      type: "implementation",
+      brief: "Read project files until budget is reached",
+      expectedArtifact: "Implementation conclusion"
+    });
+
+    expect(result.kind).toBe("yielded");
+    expect(result.assignmentRun.status).toBe("waiting");
+    expect(provider.calls).toBe(2);
+    expect(result.toolResults).toHaveLength(2);
+    if (result.kind !== "yielded") throw new Error("expected yielded result");
+    expect(result.reason).toContain("执行片工具观察预算已用完");
+    expect(result.providerResult?.structured).not.toMatchObject({ status: "blocked" });
+    const events = await ledger.read(root, "task_1", "tr_1");
+    expect(events.map((event) => event.type)).toContain("assignment.yielded");
+    expect(events.map((event) => event.type)).not.toContain("assignment.failed");
   });
 
   it("uses workspace agent provider and model overrides during assignment execution", async () => {
@@ -415,6 +453,20 @@ class MultiObservationThenCompleteProvider implements ProviderRunner {
       text: JSON.stringify({ action: "complete", summary: "done after enough observations" }),
       structured: { action: "complete", summary: "done after enough observations" },
       events: [{ type: "text", text: "done" }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+    };
+  }
+}
+
+class AlwaysObserveProvider implements ProviderRunner {
+  calls = 0;
+
+  async runWithRetry(): Promise<AgentTurnResult> {
+    this.calls += 1;
+    return {
+      text: JSON.stringify({ toolIntents: [{ tool: "readFile", path: "index.html" }] }),
+      structured: { toolIntents: [{ tool: "readFile", path: "index.html" }] },
+      events: [{ type: "text", text: "read file" }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     };
   }

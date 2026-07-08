@@ -104,7 +104,7 @@ function applyEvent(state: ProjectionState, event: AutoAgentEvent): void {
     state.assignments.set(assignment.id, assignment);
   }
 
-  if (event.type === "assignment.started" || event.type === "assignment.completed" || event.type === "assignment.failed" || event.type === "assignment.blocked") {
+  if (event.type === "assignment.started" || event.type === "assignment.completed" || event.type === "assignment.failed" || event.type === "assignment.blocked" || event.type === "assignment.yielded") {
     const assignmentId = String(payload.assignmentId);
     const existing = state.assignments.get(assignmentId);
     if (existing) {
@@ -146,6 +146,7 @@ function assignmentStatus(type: AutoAgentEvent["type"]): EntityStatus {
   if (type === "assignment.started") return "running";
   if (type === "assignment.completed") return "completed";
   if (type === "assignment.failed") return "failed";
+  if (type === "assignment.yielded") return "waiting";
   return "blocked";
 }
 

@@ -98,6 +98,42 @@ describe("ticket runtime", () => {
     expect(claimedQa?.ticket.id).toBe(qaTicket.id);
   });
 
+  it("requeues the same ticket when an execution slice yields", () => {
+    const runtime = createTicketRuntime();
+    const dev = agent("wa_dev", "dev");
+    const ticket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "implementation",
+      brief: "开发实现",
+      expectedArtifact: "交付物",
+      targetAgentId: dev.id
+    });
+
+    const firstClaim = runtime.claimNext(dev, now("2026-07-01T01:00:00.000Z"));
+    runtime.yieldTicket(ticket.id, {
+      reason: "执行片工具观察预算已用完",
+      assignmentRunId: "ar_1",
+      nextRunAfter: "2026-07-01T01:00:02.000Z"
+    }, new Date("2026-07-01T01:00:01.000Z"));
+    const secondClaim = runtime.claimNext(dev, now("2026-07-01T01:00:03.000Z"));
+
+    expect(firstClaim?.ticket.id).toBe(ticket.id);
+    expect(secondClaim?.ticket.id).toBe(ticket.id);
+    expect(runtime.ticket(ticket.id)).toMatchObject({
+      status: "running",
+      execution: {
+        sliceStatus: "running",
+        yieldReason: "执行片工具观察预算已用完",
+        continuationCount: 1,
+        lastAssignmentRunId: "ar_1",
+        nextRunAfter: "2026-07-01T01:00:02.000Z"
+      }
+    });
+    expect(runtime.inboxForAgent(dev.id).map((message) => message.status)).toEqual(["claimed"]);
+  });
+
   it("returns failed manual QA as a development rework ticket", () => {
     const runtime = createTicketRuntime();
     const qaTicket = runtime.createTicket({
