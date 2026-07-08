@@ -1,4 +1,4 @@
-import type { AgentProfile, Assignment, AssignmentRun, AutoAgentEvent, Workspace, WorkspaceAgent } from "../../shared/types.js";
+import type { AgentProfile, Assignment, AssignmentRun, AutoAgentEvent, Ticket, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { assignmentLabel, roleLabel } from "../../shared/labels.js";
 import type { AgentTurnInput, AgentTurnResult } from "../providers/types.js";
@@ -26,6 +26,7 @@ export interface RunAssignmentInput {
   type: Assignment["type"];
   brief: string;
   expectedArtifact: string;
+  currentTicket?: Ticket;
   context?: Record<string, unknown>;
   sessionId?: string;
 }
@@ -112,6 +113,7 @@ export class AgentRuntime {
         const assembled = await this.contextAssembler.assemble({
           ...input,
           assignment,
+          currentTicket: input.currentTicket,
           profile,
           sessionId,
           taskRunId: input.taskRunId,
@@ -149,7 +151,7 @@ export class AgentRuntime {
           prompt: assembled.prompt,
           provider,
           model,
-          context: { ...input.context, goal: input.goal, toolResults: allToolResults, contextReport: assembled.report }
+          context: { ...input.context, goal: input.goal, currentTicket: input.currentTicket, toolResults: allToolResults, contextReport: assembled.report }
         });
         await this.emit(input, "provider.completed", `${roleName}的模型调用已完成`, {
           provider,

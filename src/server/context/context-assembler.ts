@@ -1,4 +1,4 @@
-import type { AgentProfile, Assignment, Workspace, WorkspaceAgent } from "../../shared/types.js";
+import type { AgentProfile, Assignment, Ticket, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { assignmentLabel, roleLabel } from "../../shared/labels.js";
 import { profileForRole } from "../agents/roster.js";
 import { resolvePolicy } from "../policy/policy.js";
@@ -19,6 +19,7 @@ export interface ContextAssemblerInput {
   type: Assignment["type"];
   brief: string;
   expectedArtifact: string;
+  currentTicket?: Ticket;
   context?: Record<string, unknown>;
   session: AgentSession;
   toolResults?: Array<Record<string, unknown>>;
@@ -114,6 +115,8 @@ function upsertCheckpoint(
 function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile): string {
   const policy = resolvePolicy(input.workspace, input.agent);
   const isTicketResumeReview = isTicketResumeReviewContext(input.context);
+  const isRootPmPlanningTicket = input.type === "pm_plan" && !input.currentTicket?.plannedByTicketId;
+  const isPlannedPmWorkTicket = input.type === "pm_plan" && Boolean(input.currentTicket?.plannedByTicketId);
   return [
     `你是${profile.name}，角色是${roleLabel(profile.role)}。`,
     profile.soul ? `灵魂特质：${profile.soul}` : undefined,
@@ -127,7 +130,8 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
     "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework、human_action。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
-    input.type === "pm_plan" && !isTicketResumeReview ? "产品/项目拆解任务必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined
+    isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
+    isPlannedPmWorkTicket && !isTicketResumeReview ? "这是 PM 已拆出的普通 PM 工作工单，不是根规划工单。按当前工单说明产出文档、调研结论、范围判断或交付物即可；只有确实需要改动后续计划时，才返回新的 ticketGraph。" : undefined
   ].filter(Boolean).join("\n");
 }
 
@@ -140,9 +144,16 @@ function currentAssignmentSection(input: ContextAssemblerInput): string {
     `项目：${input.workspace.name}，路径：${input.workspace.rootPath}。`,
     `目标：${input.goal}`,
     `任务类型：${assignmentLabel(input.type)}`,
+    input.currentTicket ? `工单：${input.currentTicket.brief}（${ticketPlanningKind(input.currentTicket)}）` : undefined,
     `任务说明：${input.brief}`,
     `预期产物：${input.expectedArtifact}`
-  ].join("\n");
+  ].filter(Boolean).join("\n");
+}
+
+function ticketPlanningKind(ticket: Ticket): string {
+  if (ticket.type === "pm_plan" && ticket.plannedByTicketId) return "PM 工作票";
+  if (ticket.type === "pm_plan") return "PM 根规划票";
+  return "普通工单";
 }
 
 function workspaceMemorySection(memory: Awaited<ReturnType<ContextStore["readMemory"]>>): string {

@@ -7,7 +7,7 @@ import { ContextAssembler } from "../../src/server/context/context-assembler";
 import { ContextStore } from "../../src/server/context/context-store";
 import { estimateTokens, truncateToTokenBudget } from "../../src/server/context/token-budget";
 import { SessionStore } from "../../src/server/storage/session-store";
-import type { Workspace } from "../../src/shared/types";
+import type { Ticket, Workspace } from "../../src/shared/types";
 
 describe("context budget and store", () => {
   it("estimates token budget from characters and marks truncated content", () => {
@@ -185,6 +185,47 @@ describe("ContextAssembler", () => {
       contextCompaction: true
     });
   });
+
+  it("only requires ticketGraph for root PM planning tickets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
+    const workspace = testWorkspace(root);
+    const [_boss, pm] = await ensureCoreTeam(workspace);
+    const sessionStore = new SessionStore();
+    const assembler = new ContextAssembler(new ContextStore());
+    const session = await sessionStore.read(root, pm.id, "tr_pm_rules");
+
+    const rootPm = await assembler.assemble({
+      workspace,
+      agent: pm,
+      sessionId: "tr_pm_rules",
+      taskRunId: "tr_pm_rules",
+      goal: "做一个坦克大战",
+      type: "pm_plan",
+      brief: "拆解项目执行 DAG",
+      expectedArtifact: "执行计划",
+      currentTicket: ticket({ id: "tk_root", brief: "计划拆解" }),
+      session
+    });
+
+    const pmWork = await assembler.assemble({
+      workspace,
+      agent: pm,
+      sessionId: "tr_pm_rules",
+      taskRunId: "tr_pm_rules",
+      goal: "做一个坦克大战",
+      type: "pm_plan",
+      brief: "竞品参考与机制确认",
+      expectedArtifact: "核心机制确认文档",
+      currentTicket: ticket({ id: "tk_pm_ref", brief: "竞品参考与机制确认", plannedByTicketId: "tk_root" }),
+      session
+    });
+
+    expect(rootPm.prompt).toContain("产品/项目根规划工单必须优先返回 ticketGraph 数组");
+    expect(rootPm.prompt).toContain("工单：计划拆解（PM 根规划票）");
+    expect(pmWork.prompt).not.toContain("根规划工单必须优先返回 ticketGraph");
+    expect(pmWork.prompt).toContain("这是 PM 已拆出的普通 PM 工作工单");
+    expect(pmWork.prompt).toContain("工单：竞品参考与机制确认（PM 工作票）");
+  });
 });
 
 function testWorkspace(root: string): Workspace {
@@ -194,5 +235,24 @@ function testWorkspace(root: string): Workspace {
     rootPath: root,
     policyProfile: "production",
     createdAt: "2026-07-07T00:00:00.000Z"
+  };
+}
+
+function ticket(input: { id: string; brief: string; plannedByTicketId?: string }): Ticket {
+  return {
+    id: input.id,
+    workspaceId: "ws_1",
+    taskId: "task_1",
+    taskRunId: "tr_pm_rules",
+    type: "pm_plan",
+    status: "pending",
+    brief: input.brief,
+    expectedArtifact: "执行计划",
+    targetRole: "pm",
+    priority: 0,
+    attempt: 0,
+    plannedByTicketId: input.plannedByTicketId,
+    createdAt: "2026-07-08T00:00:00.000Z",
+    updatedAt: "2026-07-08T00:00:00.000Z"
   };
 }

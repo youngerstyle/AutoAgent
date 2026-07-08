@@ -336,6 +336,7 @@ export class MissionControl {
       type: assignmentTypeForTicket(ticket),
       brief: ticket.brief,
       expectedArtifact: ticket.expectedArtifact,
+      currentTicket: ticket,
       context: state.context,
       sessionId: state.taskRun.id
     });
@@ -739,6 +740,7 @@ export class MissionControl {
       type: assignmentTypeForTicket(ticket),
       brief: ticketResumeReviewBrief(ticket, message),
       expectedArtifact: "ticket_resume_review 结构化判断",
+      currentTicket: ticket,
       context: reviewContext,
       sessionId: state.taskRun.id
     });
