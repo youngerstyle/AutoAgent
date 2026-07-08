@@ -601,12 +601,27 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
     expect(events.some((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("敌人生成点"))).toBe(true);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("质量检查"))).toHaveLength(2);
     const qaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa");
     const reworkTicket = snapshot.tickets?.find((ticket) => ticket.type === "rework" && ticket.returnReason?.includes("敌人生成点"));
+    const reworkQaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa" && ticket.parentTicketId === reworkTicket?.id);
+    const plannedAcceptance = snapshot.tickets?.find((ticket) => ticket.type === "boss_acceptance" && ticket.parentTicketId === qaTicket?.id);
+    const finalAcceptance = snapshot.tickets?.find((ticket) => ticket.type === "boss_acceptance" && ticket.parentTicketId === reworkQaTicket?.id);
     expect(reworkTicket).toMatchObject({
       parentTicketId: qaTicket?.id,
       createdByTicketId: qaTicket?.id
     });
+    expect(plannedAcceptance).toMatchObject({ status: "cancelled" });
+    expect(reworkQaTicket).toMatchObject({ status: "completed" });
+    expect(finalAcceptance).toMatchObject({ status: "completed" });
+    const qaFailureIndex = events.findIndex((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("敌人生成点"));
+    const firstBossAcceptanceIndex = events.findIndex((event) => event.type === "assignment.started" && event.summary.includes("老板验收"));
+    const secondQaCompletedIndex = events.reduce((latest, event, index) => {
+      return event.type === "assignment.completed" && event.summary.includes("质量检查") ? index : latest;
+    }, -1);
+    expect(qaFailureIndex).toBeGreaterThanOrEqual(0);
+    expect(secondQaCompletedIndex).toBeGreaterThan(qaFailureIndex);
+    expect(firstBossAcceptanceIndex).toBeGreaterThan(secondQaCompletedIndex);
   });
 
   it("routes nested QA failure reports back to development instead of treating them as manual testing", async () => {

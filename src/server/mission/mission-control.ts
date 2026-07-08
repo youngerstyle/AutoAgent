@@ -538,6 +538,14 @@ export class MissionControl {
       ? this.createTicketsFromPmPlan(state, sourceTicket)
       : false;
     if (planned || this.hasPlannedSuccessor(state, sourceTicket)) return;
+    if (sourceTicket.type === "rework") {
+      this.createFollowupTicket(state, "qa", sourceTicket, "返工完成后需要重新质量检查");
+      return;
+    }
+    if (sourceTicket.type === "qa") {
+      this.createFollowupTicket(state, "boss_acceptance", sourceTicket, "质量检查通过，进入老板验收");
+      return;
+    }
   }
 
   private createTicketsFromPmPlan(state: MissionState, sourceTicket: Ticket): boolean {
@@ -595,6 +603,9 @@ export class MissionControl {
 
   private createFollowupTicket(state: MissionState, type: TicketType, sourceTicket: Ticket, returnReason?: string): Ticket | undefined {
     const runtime = this.ticketRuntime(state);
+    if (type === "rework") {
+      runtime.cancelOpenDescendants(sourceTicket.id, "上游工单需要返工，暂停原下游");
+    }
     const phase = phaseForTicketType(type);
     const role = canonicalRoleForTicketType(type);
     const ticket = runtime.createTicket({
