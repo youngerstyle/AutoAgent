@@ -15,6 +15,7 @@ export interface CreateTicketInput {
   priority?: number;
   parentTicketId?: string;
   createdByTicketId?: string;
+  plannedByTicketId?: string;
   dependsOnTicketIds?: string[];
   returnReason?: string;
 }
@@ -59,6 +60,7 @@ export class TicketRuntime {
       attempt: 0,
       parentTicketId: input.parentTicketId,
       createdByTicketId: input.createdByTicketId,
+      plannedByTicketId: input.plannedByTicketId,
       dependsOnTicketIds: input.dependsOnTicketIds,
       returnReason: input.returnReason,
       createdAt,

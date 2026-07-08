@@ -387,7 +387,7 @@ export class MissionControl {
       return this.createFollowupTicketAndContinue(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
-    const invalidPmPlanReason = phase === "pm_plan"
+    const invalidPmPlanReason = this.requiresTicketGraph(ticket)
       && !planningClarificationReason
       && plannedTicketItems(phaseResult).length === 0
       ? "PM 没有返回 ticketGraph，无法形成可执行工单 DAG"
@@ -567,6 +567,7 @@ export class MissionControl {
         priority: numberValue(item.priority) ?? 0,
         parentTicketId,
         createdByTicketId: parentTicketId,
+        plannedByTicketId: sourceTicket.id,
         dependsOnTicketIds: dependencyIds
       });
       const key = stringValue(item.key) ?? stringValue(item.id) ?? `${type}_${index}`;
@@ -612,6 +613,10 @@ export class MissionControl {
     state.nextPhase = phase;
     state.taskRun.phase = phase;
     return ticket;
+  }
+
+  private requiresTicketGraph(ticket: Ticket): boolean {
+    return ticket.type === "pm_plan" && !ticket.plannedByTicketId;
   }
 
   private async agentForPhase(workspace: Workspace, phase: MissionPhase): Promise<WorkspaceAgent> {

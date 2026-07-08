@@ -226,6 +226,38 @@ describe("MissionControl", () => {
     });
   });
 
+  it("allows PM work tickets from an existing DAG to complete without returning a new ticket graph", async () => {
+    const fixture = await missionFixture(new PmPlansPmWorkTicketProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build with PM reference work first" },
+      { runSynchronously: true }
+    );
+
+    const tickets = snapshot.tickets ?? [];
+    const pmTickets = tickets.filter((ticket) => ticket.type === "pm_plan");
+    const rootPm = pmTickets.find((ticket) => !ticket.plannedByTicketId);
+    const pmWork = pmTickets.find((ticket) => ticket.plannedByTicketId);
+    const architect = tickets.find((ticket) => ticket.type === "architect_plan");
+
+    expect(snapshot.status).toBe("completed");
+    expect(pmTickets).toHaveLength(2);
+    expect(rootPm).toMatchObject({ status: "completed" });
+    expect(pmWork).toMatchObject({
+      status: "completed",
+      brief: "竞品参考与机制确认",
+      plannedByTicketId: rootPm?.id
+    });
+    expect(architect).toMatchObject({
+      status: "completed",
+      dependsOnTicketIds: [pmWork?.id]
+    });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).toContain("run.completed");
+    expect(events.map((event) => event.type)).not.toContain("run.blocked");
+    expect(events.some((event) => event.summary.includes("PM 没有返回 ticketGraph"))).toBe(false);
+  });
+
   it("keeps the agent loop autonomous when a role asks for clarification", async () => {
     const fixture = await missionFixture(new BossClarifiesThenTeamCompletesProvider());
 
@@ -1150,6 +1182,72 @@ class MissingFileThenEmptyProjectProvider implements ProviderRunner {
       return result({
         toolIntents: [{ tool: "readFile", path: "missing-package.json" }],
         reason: "需要读取项目文件后再计划"
+      });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmPlansPmWorkTicketProvider implements ProviderRunner {
+  private pmCalls = 0;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      this.pmCalls += 1;
+      if (this.pmCalls === 1) {
+        return result({
+          plan: "先由 PM 完成参考确认，再交给架构、开发、测试、验收。",
+          ticketGraph: [
+            {
+              key: "pm_ref",
+              type: "pm_plan",
+              brief: "竞品参考与机制确认",
+              expectedArtifact: "核心机制确认文档",
+              targetRole: "pm"
+            },
+            {
+              key: "architecture",
+              type: "architect_plan",
+              brief: "基于 PM 参考文档设计架构",
+              expectedArtifact: "技术方案",
+              targetRole: "architect",
+              dependsOn: ["pm_ref"]
+            },
+            {
+              key: "implementation",
+              type: "implementation",
+              brief: "按方案开发 MVP",
+              expectedArtifact: "真实项目文件或可运行交付物",
+              targetRole: "dev",
+              dependsOn: ["architecture"]
+            },
+            {
+              key: "qa",
+              type: "qa",
+              brief: "验证 MVP",
+              expectedArtifact: "质量检查结论",
+              targetRole: "qa",
+              dependsOn: ["implementation"]
+            },
+            {
+              key: "acceptance",
+              type: "boss_acceptance",
+              brief: "验收 MVP",
+              expectedArtifact: "验收结论",
+              targetRole: "boss",
+              dependsOn: ["qa"]
+            }
+          ]
+        });
+      }
+      return result({
+        status: "completed",
+        artifact: "docs/core_mechanisms.md",
+        toolIntents: [{ tool: "writeFile", path: "docs/core_mechanisms.md", content: "# 核心机制\n" }]
       });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });

@@ -3,6 +3,7 @@ node_modules/
 dist/
 .autoagent/
 .tmp-*/
+.tmp/
 .tmp-*.log
 .env
 .env.*
