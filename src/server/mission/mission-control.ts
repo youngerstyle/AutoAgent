@@ -348,6 +348,7 @@ export class MissionControl {
     const explicitAuthorizationReason = humanAuthorizationReasonForPhase(result.providerResult.structured);
     const blockingToolFailureReason = toolFailureReason(result.toolResults);
     const humanAuthorizationReason = explicitAuthorizationReason ?? blockingToolFailureReason;
+    const planningClarificationReason = phase === "pm_plan" ? planningClarificationReasonForPhase(result.providerResult.structured) : undefined;
     const agentObstacle = agentObstacleReasonForPhase(phase, result.providerResult.structured);
     const missingImplementation = phase === "implementation" && !await hasImplementationEvidence(workspace, result.toolResults, result.providerResult.structured)
       ? "开发阶段没有产生真实文件写入或命令执行证据"
@@ -360,8 +361,8 @@ export class MissionControl {
       return this.routeBackToPhaseOrFail(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
-    if (humanAuthorizationReason || manualOnlyReason) {
-      const reason = humanAuthorizationReason ?? manualOnlyReason ?? "需要 human 处理";
+    if (humanAuthorizationReason || manualOnlyReason || planningClarificationReason) {
+      const reason = humanAuthorizationReason ?? manualOnlyReason ?? planningClarificationReason ?? "需要 human 处理";
       const blockerManualReason = manualOnlyReason ? manualTestingReason : undefined;
       ticketRuntime.blockTicket(ticket.id, ticketBlockerFor({
         reason,
@@ -1103,6 +1104,24 @@ function humanAuthorizationReasonForPhase(structured?: Record<string, unknown>):
       || value === "await_human_approval";
   });
   return needsHumanAuthorization ? reason ?? "需要 human 授权后才能继续" : undefined;
+}
+
+function planningClarificationReasonForPhase(structured?: Record<string, unknown>): string | undefined {
+  if (!structured) return undefined;
+  const status = lower(structured.status);
+  const decision = lower(structured.decision);
+  const action = lower(structured.action);
+  const needsClarification = structured.clarification_required === true
+    || status === "need_clarification"
+    || status === "awaiting_clarification"
+    || decision === "need_clarification"
+    || action === "awaiting_clarification"
+    || action === "return_to_clarification";
+  if (!needsClarification) return undefined;
+  return stringValue(structured.reason)
+    ?? stringValue(structured.report)
+    ?? stringValue(structured.summary)
+    ?? "PM 需要 human 补充范围、功能或验收标准后才能继续拆解";
 }
 
 function manualTestingReasonForPhase(structured: Record<string, unknown> | undefined, rawText: string): string | undefined {

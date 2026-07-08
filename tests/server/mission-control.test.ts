@@ -573,6 +573,26 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.failed");
   });
 
+  it("blocks the PM ticket for human input when planning needs clarification", async () => {
+    const fixture = await missionFixture(new PmNeedsClarificationProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "1:1复刻CF坦克98" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "external_dependency" }
+    });
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "implementation")).toBe(false);
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).toContain("run.blocked");
+    expect(events.map((event) => event.type)).not.toContain("run.failed");
+  });
+
   it("continues to boss acceptance after human confirms manual QA passed", async () => {
     const provider = new ManualBrowserQaProvider();
     const fixture = await missionFixture(provider);
@@ -1266,6 +1286,23 @@ class PmFindsMissingImplementationArtifactProvider implements ProviderRunner {
         });
       }
       return result({ plan: "PM should not be retried for missing implementation artifacts" });
+    }
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmNeedsClarificationProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        status: "need_clarification",
+        clarification_required: true,
+        reason: "当前需求过于模糊，无法拆解出可执行的工单DAG。需要先明确范围、功能和验收标准。"
+      });
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") return implementationResult();
