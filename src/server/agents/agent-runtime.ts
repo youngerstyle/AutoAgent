@@ -3,6 +3,7 @@ import { createId } from "../../shared/ids.js";
 import { assignmentLabel, roleLabel } from "../../shared/labels.js";
 import type { AgentTurnInput, AgentTurnResult } from "../providers/types.js";
 import type { EventLedger } from "../storage/event-ledger.js";
+import { LoopTraceStore } from "../storage/loop-trace-store.js";
 import { SessionStore } from "../storage/session-store.js";
 import { readWorkspaceFile, listWorkspaceFiles, writeWorkspaceFile } from "../tools/file-tools.js";
 import { runWorkspaceCommand } from "../tools/shell-tool.js";
@@ -43,7 +44,8 @@ export class AgentRuntime {
     private readonly ledger: EventLedger,
     private readonly providerRunner: ProviderRunner,
     private readonly sessionStore = new SessionStore(),
-    private readonly contextAssembler = new ContextAssembler()
+    private readonly contextAssembler = new ContextAssembler(),
+    private readonly loopTraceStore = new LoopTraceStore()
   ) {}
 
   async runAssignment(input: RunAssignmentInput): Promise<AssignmentResult> {
@@ -100,6 +102,25 @@ export class AgentRuntime {
           turn,
           report: assembled.report
         });
+        await this.loopTraceStore.append(input.workspace.rootPath, input.taskId, input.taskRunId, {
+          assignmentRunId: assignmentRun.id,
+          agentId: input.agent.id,
+          actor: roleName,
+          kind: "prompt",
+          turn,
+          title: "Prompt",
+          content: assembled.prompt,
+          detail: contextReportDetail(assembled.report),
+          metadata: {
+            agentId: input.agent.id,
+            role: input.agent.roleInWorkspace,
+            assignmentId: assignment.id,
+            assignmentType: input.type,
+            provider,
+            model,
+            contextReport: assembled.report
+          }
+        });
         providerResult = await this.providerRunner.runWithRetry({
           role: input.agent.roleInWorkspace,
           assignmentType: input.type,
@@ -114,13 +135,52 @@ export class AgentRuntime {
           usage: providerResult.usage,
           providerEvents: providerResult.events
         });
+        await this.loopTraceStore.append(input.workspace.rootPath, input.taskId, input.taskRunId, {
+          assignmentRunId: assignmentRun.id,
+          agentId: input.agent.id,
+          actor: roleName,
+          kind: "llm",
+          turn,
+          title: "LLM 返回",
+          content: providerResult.text,
+          detail: providerResult.usage ? `tokens: ${providerResult.usage.totalTokens}` : undefined,
+          metadata: {
+            agentId: input.agent.id,
+            role: input.agent.roleInWorkspace,
+            assignmentId: assignment.id,
+            assignmentType: input.type,
+            provider,
+            model,
+            usage: providerResult.usage,
+            structured: providerResult.structured,
+            providerEvents: providerResult.events
+          }
+        });
 
         const toolResults = await this.executeToolIntents(input, assignmentRun.id, providerResult);
         allToolResults.push(...toolResults);
+        for (const toolResult of toolResults) {
+          await this.loopTraceStore.append(input.workspace.rootPath, input.taskId, input.taskRunId, {
+            assignmentRunId: assignmentRun.id,
+            agentId: input.agent.id,
+            actor: roleName,
+            kind: "tool",
+            turn,
+            title: "工具结果",
+            content: JSON.stringify(toolResult),
+            detail: toolTraceDetail(toolResult),
+            metadata: {
+              agentId: input.agent.id,
+              role: input.agent.roleInWorkspace,
+              assignmentId: assignment.id,
+              assignmentType: input.type,
+              tool: toolResult.tool
+            }
+          });
+        }
         await this.sessionStore.appendTurn(input.workspace.rootPath, input.agent.id, sessionId, {
           user: sessionTurnUserMessage(input, assignmentName, roleName, turn),
           assistant: providerResult.text,
-          providerEvents: providerResult.events,
           usage: providerResult.usage,
           toolResults,
           userMetadata: { contextReport: assembled.report }
@@ -226,6 +286,16 @@ export class AgentRuntime {
       payload
     });
   }
+}
+
+function contextReportDetail(report: { injectedChars: number; originalSessionChars: number; estimatedTokens: number; compaction?: { compacted?: boolean } }): string {
+  const compacted = report.compaction?.compacted ? "，已压缩" : "";
+  return `上下文 ${report.injectedChars} 字，原始 session ${report.originalSessionChars} 字，约 ${report.estimatedTokens} tokens${compacted}`;
+}
+
+function toolTraceDetail(toolResult: Record<string, unknown>): string | undefined {
+  const tool = typeof toolResult.tool === "string" ? toolResult.tool : undefined;
+  return tool ? `tool: ${tool}` : undefined;
 }
 
 function sessionTurnUserMessage(input: RunAssignmentInput, assignmentName: string, roleName: string, turn: number): string {

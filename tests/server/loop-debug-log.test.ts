@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildLoopDebugLog } from "../../src/server/mission/loop-debug-log";
-import { workspaceAgentDir, workspaceAgentSessionsDir } from "../../src/server/storage/paths";
-import type { AgentSession } from "../../src/server/storage/session-store";
+import { LoopTraceStore } from "../../src/server/storage/loop-trace-store";
+import { workspaceAgentDir } from "../../src/server/storage/paths";
 import type { AutoAgentEvent, MissionPhase, Workspace, WorkspaceAgent } from "../../src/shared/types";
 
 describe("loop debug log", () => {
-  it("merges flow events and agent session turns into a chronological full-loop log", async () => {
+  it("merges flow events and loop trace records into a chronological full-loop log", async () => {
     const root = await mkdtempWorkspace();
     const workspace: Workspace = {
       id: "ws_1",
@@ -25,36 +25,50 @@ describe("loop debug log", () => {
       agentDir: workspaceAgentDir(root, "wa_qa"),
       status: "waiting"
     };
-    await mkdir(workspaceAgentSessionsDir(root, agent.id), { recursive: true });
+    await mkdir(workspaceAgentDir(root, agent.id), { recursive: true });
     await writeFile(path.join(workspaceAgentDir(root, agent.id), "agent.json"), JSON.stringify(agent), "utf8");
-    const session: AgentSession = {
-      id: "tr_1",
-      workspaceAgentId: agent.id,
-      updatedAt: "2026-07-03T00:00:05.000Z",
-      providerEvents: [{ type: "text", text: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"index.html\"}]}" }],
-      messages: [
-        {
-          role: "user",
-          content: "完整 prompt",
-          timestamp: "2026-07-03T00:00:01.000Z",
-          metadata: {
-            contextReport: {
-              originalSessionChars: 50000,
-              injectedChars: 8000,
-              estimatedTokens: 2000,
-              sections: [
-                { name: "stable_prompt", originalChars: 1000, injectedChars: 1000, estimatedTokens: 250, truncated: false },
-                { name: "recent_turns", originalChars: 48000, injectedChars: 1200, estimatedTokens: 300, truncated: true }
-              ],
-              compaction: { compacted: true, checkpointId: "ctx_1" }
-            }
-          }
-        },
-        { role: "assistant", content: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"index.html\"}]}", timestamp: "2026-07-03T00:00:02.000Z" },
-        { role: "tool", content: "{\"tool\":\"readFile\",\"path\":\"index.html\",\"ok\":true}", timestamp: "2026-07-03T00:00:03.000Z" }
-      ]
-    };
-    await writeFile(path.join(workspaceAgentSessionsDir(root, agent.id), "tr_1.json"), JSON.stringify(session), "utf8");
+    const traceStore = new LoopTraceStore();
+    await traceStore.append(root, "task_1", "tr_1", {
+      kind: "prompt",
+      timestamp: "2026-07-03T00:00:01.000Z",
+      agentId: agent.id,
+      actor: "测试",
+      title: "Prompt",
+      content: "完整 prompt",
+      turn: 1,
+      metadata: {
+        contextReport: {
+          originalSessionChars: 50000,
+          injectedChars: 8000,
+          estimatedTokens: 2000,
+          sections: [
+            { name: "stable_prompt", originalChars: 1000, injectedChars: 1000, estimatedTokens: 250, truncated: false },
+            { name: "recent_turns", originalChars: 48000, injectedChars: 1200, estimatedTokens: 300, truncated: true }
+          ],
+          compaction: { compacted: true, checkpointId: "ctx_1" }
+        }
+      }
+    });
+    await traceStore.append(root, "task_1", "tr_1", {
+      kind: "llm",
+      timestamp: "2026-07-03T00:00:02.000Z",
+      agentId: agent.id,
+      actor: "测试",
+      title: "LLM 返回",
+      content: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"index.html\"}]}",
+      turn: 1
+    });
+    await traceStore.append(root, "task_1", "tr_1", {
+      kind: "tool",
+      timestamp: "2026-07-03T00:00:03.000Z",
+      agentId: agent.id,
+      actor: "测试",
+      title: "工具结果",
+      content: "{\"tool\":\"readFile\",\"path\":\"index.html\",\"ok\":true}",
+      detail: "tool: readFile",
+      turn: 1,
+      metadata: { tool: "readFile" }
+    });
 
     const log = await buildLoopDebugLog({
       workspace,

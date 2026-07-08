@@ -20,7 +20,7 @@ describe("context budget and store", () => {
     expect(estimateTokens(result.text)).toBeLessThanOrEqual(40);
   });
 
-  it("stores derived context state and workspace-agent memory separately from raw sessions", async () => {
+  it("stores derived context state and workspace-agent memory separately from agent sessions", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
     const store = new ContextStore();
 
@@ -44,14 +44,13 @@ describe("context budget and store", () => {
       durableFacts: ["项目使用 Vite"],
       projectConventions: ["测试用 npm.cmd run test:run"],
       knownCommands: ["npm.cmd run build"],
-      recentLessons: ["不要把 raw session 直接塞进 prompt"],
+      recentLessons: ["不要把 session 原文直接塞进 prompt"],
       updatedAt: "2026-07-07T00:00:00.000Z"
     });
 
     await new SessionStore().appendTurn(root, "wa_dev", "tr_1", {
       user: "完整原始 prompt",
       assistant: "完整模型返回",
-      providerEvents: [],
       toolResults: []
     });
 
@@ -80,7 +79,6 @@ describe("ContextAssembler", () => {
     await sessionStore.appendTurn(root, pm.id, "tr_1", {
       user: longPreviousPrompt,
       assistant: "{\"action\":\"create_change_set\",\"tickets\":[]}",
-      providerEvents: [],
       toolResults: []
     });
     await contextStore.writeMemory(root, pm.id, {
@@ -88,7 +86,7 @@ describe("ContextAssembler", () => {
       durableFacts: ["用户希望工单系统像真实 PM 系统一样流转"],
       projectConventions: [],
       knownCommands: [],
-      recentLessons: ["raw session 只能审计，不能当 memory"],
+      recentLessons: ["session 历史只能通过 context assembler 有界进入 prompt"],
       updatedAt: "2026-07-07T00:00:00.000Z"
     });
 
@@ -111,7 +109,8 @@ describe("ContextAssembler", () => {
     expect(assembled.prompt.indexOf("当前任务")).toBeLessThan(assembled.prompt.indexOf("工作区记忆"));
     expect(assembled.prompt.indexOf("工作区记忆")).toBeLessThan(assembled.prompt.indexOf("近期会话"));
     expect(assembled.prompt).toContain("用户希望工单系统像真实 PM 系统一样流转");
-    expect(assembled.prompt).toContain("PREVIOUS_PROMPT_START");
+    expect(assembled.prompt).toContain("历史 assembled prompt 已过滤");
+    expect(assembled.prompt).not.toContain("PREVIOUS_PROMPT_START");
     expect(assembled.prompt).not.toContain("PREVIOUS_PROMPT_END");
     expect(assembled.prompt).toContain("工具结果截断");
     expect(assembled.prompt).toContain("FILE_START");
@@ -142,7 +141,6 @@ describe("ContextAssembler", () => {
       await sessionStore.appendTurn(root, pm.id, "tr_legacy", {
         user: `历史用户 ${index}\n${"旧上下文 ".repeat(10000)}`,
         assistant: `历史助手 ${index}\n${"旧结论 ".repeat(10000)}`,
-        providerEvents: [],
         toolResults: []
       });
     }

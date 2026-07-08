@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgentRuntime, type ProviderRunner } from "../../src/server/agents/agent-runtime";
 import { ensureCoreTeam } from "../../src/server/agents/roster";
 import { EventLedger } from "../../src/server/storage/event-ledger";
+import { LoopTraceStore } from "../../src/server/storage/loop-trace-store";
 import { workspaceAgentSessionsDir } from "../../src/server/storage/paths";
 import { SessionStore } from "../../src/server/storage/session-store";
 import type { AgentTurnInput, AgentTurnResult } from "../../src/server/providers/types";
@@ -145,7 +146,7 @@ describe("AgentRuntime", () => {
     expect(devSession.messages[0].content).toContain("Build work");
   });
 
-  it("does not recursively inject full previous prompts from the agent session", async () => {
+  it("keeps full assembled prompts in loop trace but out of model-visible session history", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
     const workspace = testWorkspace(root);
     const [_boss, pm] = await ensureCoreTeam(workspace);
@@ -156,7 +157,6 @@ describe("AgentRuntime", () => {
     await new SessionStore().appendTurn(root, pm.id, "tr_1", {
       user: longPreviousPrompt,
       assistant: "{\"action\":\"create_change_set\",\"tickets\":[]}",
-      providerEvents: [],
       toolResults: []
     });
 
@@ -173,8 +173,8 @@ describe("AgentRuntime", () => {
 
     const prompt = provider.lastInput?.prompt ?? "";
     expect(prompt.length).toBeLessThan(20_000);
-    expect(prompt).toContain("近期会话截断");
-    expect(prompt).toContain("PREVIOUS_PROMPT_START");
+    expect(prompt).toContain("历史 assembled prompt 已过滤");
+    expect(prompt).not.toContain("PREVIOUS_PROMPT_START");
     expect(prompt).not.toContain("PREVIOUS_PROMPT_END");
     expect(provider.lastInput?.context?.contextReport).toMatchObject({
       sections: expect.arrayContaining([
@@ -191,6 +191,15 @@ describe("AgentRuntime", () => {
       originalSessionChars: expect.any(Number),
       sections: expect.arrayContaining([
         expect.objectContaining({ name: "stable_prompt" }),
+        expect.objectContaining({ name: "recent_turns", truncated: true })
+      ])
+    });
+    const trace = await new LoopTraceStore().read(root, "task_1", "tr_1");
+    const promptTrace = trace.find((record) => record.kind === "prompt");
+    expect(promptTrace?.content).toContain("## 稳定提示词");
+    expect(promptTrace?.content).toContain("任务说明：Plan work");
+    expect(promptTrace?.metadata?.contextReport).toMatchObject({
+      sections: expect.arrayContaining([
         expect.objectContaining({ name: "recent_turns", truncated: true })
       ])
     });

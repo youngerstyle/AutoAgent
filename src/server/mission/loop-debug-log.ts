@@ -1,10 +1,6 @@
-import { readdir } from "node:fs/promises";
-import path from "node:path";
 import { assignmentLabel, displayText, roleLabel } from "../../shared/labels.js";
-import type { AutoAgentEvent, LoopDebugEntry, LoopDebugLog, Task, TaskRun, Workspace, WorkspaceAgent } from "../../shared/types.js";
-import { readJson } from "../storage/json.js";
-import { workspaceAgentDir, workspaceAgentFile, workspaceAgentSessionsDir, workspaceAutoAgentDir } from "../storage/paths.js";
-import type { AgentSession, AgentSessionMessage } from "../storage/session-store.js";
+import type { AutoAgentEvent, LoopDebugEntry, LoopDebugLog, Task, TaskRun, Workspace } from "../../shared/types.js";
+import { LoopTraceStore, type LoopTraceRecord } from "../storage/loop-trace-store.js";
 
 export async function buildLoopDebugLog(input: {
   workspace: Workspace;
@@ -14,7 +10,7 @@ export async function buildLoopDebugLog(input: {
 }): Promise<LoopDebugLog> {
   const entries = [
     ...input.events.map(flowEventEntry),
-    ...await agentSessionEntries(input.workspace, input.taskRun?.id)
+    ...await loopTraceEntries(input.workspace, input.task?.id, input.taskRun?.id)
   ].sort((a, b) => {
     const byTime = a.timestamp.localeCompare(b.timestamp);
     if (byTime !== 0) return byTime;
@@ -45,66 +41,37 @@ function flowEventEntry(event: AutoAgentEvent): LoopDebugEntry {
   };
 }
 
-async function agentSessionEntries(workspace: Workspace, taskRunId: string | undefined): Promise<LoopDebugEntry[]> {
-  if (!taskRunId) return [];
-  const agentsRoot = path.join(workspaceAutoAgentDir(workspace.rootPath), "agents");
-  try {
-    const entries = await readdir(agentsRoot, { withFileTypes: true });
-    const nested = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
-      const agent = await readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, entry.name), undefined);
-      if (!agent) return [];
-      const session = await readJson<AgentSession | undefined>(
-        path.join(workspaceAgentSessionsDir(workspace.rootPath, agent.id), `${taskRunId}.json`),
-        undefined
-      );
-      if (!session) return [];
-      return session.messages.map((message, index) => sessionMessageEntry(agent, message, index));
-    }));
-    return nested.flat();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
+async function loopTraceEntries(workspace: Workspace, taskId: string | undefined, taskRunId: string | undefined): Promise<LoopDebugEntry[]> {
+  if (!taskId || !taskRunId) return [];
+  const records = await new LoopTraceStore().read(workspace.rootPath, taskId, taskRunId);
+  return records.map(traceRecordEntry);
 }
 
-function sessionMessageEntry(agent: WorkspaceAgent, message: AgentSessionMessage, index: number): LoopDebugEntry {
-  const actor = roleLabel(agent.roleInWorkspace);
+function traceRecordEntry(record: LoopTraceRecord): LoopDebugEntry {
   return {
-    id: `${agent.id}-${message.timestamp}-${index}`,
-    kind: kindForSessionRole(message.role),
-    timestamp: message.timestamp,
-    actor,
-    title: titleForSessionMessage(message),
-    content: message.content,
-    detail: detailForSessionMessage(message),
+    id: record.id,
+    kind: record.kind,
+    timestamp: record.timestamp,
+    sequence: record.sequence,
+    actor: record.actor,
+    title: record.title,
+    content: record.content,
+    detail: record.detail ?? detailForTraceRecord(record),
     metadata: {
-      agentId: agent.id,
-      role: agent.roleInWorkspace,
-      ...message.metadata
+      agentId: record.agentId,
+      ...record.metadata
     }
   };
 }
 
-function kindForSessionRole(role: AgentSessionMessage["role"]): LoopDebugEntry["kind"] {
-  if (role === "user") return "prompt";
-  if (role === "assistant") return "llm";
-  return "tool";
-}
-
-function titleForSessionMessage(message: AgentSessionMessage): string {
-  if (message.role === "user") return "Prompt";
-  if (message.role === "assistant") return "LLM 返回";
-  return "工具结果";
-}
-
-function detailForSessionMessage(message: AgentSessionMessage): string | undefined {
-  const contextReport = contextReportFromMetadata(message.metadata);
-  if (message.role === "user" && contextReport) {
+function detailForTraceRecord(record: LoopTraceRecord): string | undefined {
+  const contextReport = contextReportFromMetadata(record.metadata);
+  if (record.kind === "prompt" && contextReport) {
     const compacted = contextReport.compaction?.compacted ? "，已压缩" : "";
     return `上下文 ${contextReport.injectedChars} 字，原始 session ${contextReport.originalSessionChars} 字，约 ${contextReport.estimatedTokens} tokens${compacted}`;
   }
-  if (message.role !== "tool") return undefined;
-  const tool = typeof message.metadata?.tool === "string" ? message.metadata.tool : undefined;
+  if (record.kind !== "tool") return undefined;
+  const tool = typeof record.metadata?.tool === "string" ? record.metadata.tool : undefined;
   return tool ? `tool: ${tool}` : undefined;
 }
 

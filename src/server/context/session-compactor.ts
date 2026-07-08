@@ -81,11 +81,20 @@ function formatGroupForSummary(group: AgentSessionMessage[], index: number): str
 }
 
 function formatMessageForSummary(message: AgentSessionMessage): string {
+  if (looksLikeAssembledPrompt(message.content)) {
+    return `${message.role}: 历史 assembled prompt 已过滤，原始长度 ${message.content.length} 字符。`;
+  }
   const firstLine = message.content.split(/\r?\n/)[0] ?? "";
   const compactContent = message.content.length > firstLine.length
     ? `${firstLine}...[单条消息摘要，原始长度 ${message.content.length} 字符]`
     : firstLine;
   return `${message.role}: ${compactContent}`;
+}
+
+function looksLikeAssembledPrompt(value: string): boolean {
+  return value.includes("## 稳定提示词")
+    || value.includes("PREVIOUS_PROMPT_START")
+    || value.includes("PREVIOUS_PROMPT_END");
 }
 
 function hashText(value: string): string {

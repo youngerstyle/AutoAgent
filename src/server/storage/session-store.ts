@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentProviderEvent, ProviderUsage } from "../providers/types.js";
+import type { ProviderUsage } from "../providers/types.js";
 import { workspaceAgentSessionsDir } from "./paths.js";
 import { readJson, writeJson } from "./json.js";
 
@@ -15,7 +15,6 @@ export interface AgentSession {
   id: string;
   workspaceAgentId: string;
   messages: AgentSessionMessage[];
-  providerEvents: AgentProviderEvent[];
   usage?: ProviderUsage;
   updatedAt: string;
 }
@@ -27,7 +26,6 @@ export class SessionStore {
       id: sessionId,
       workspaceAgentId,
       messages: [],
-      providerEvents: [],
       updatedAt: new Date().toISOString()
     });
   }
@@ -39,7 +37,6 @@ export class SessionStore {
     turn: {
       user: string;
       assistant: string;
-      providerEvents: AgentProviderEvent[];
       usage?: ProviderUsage;
       toolResults?: Array<Record<string, unknown>>;
       userMetadata?: Record<string, unknown>;
@@ -50,14 +47,14 @@ export class SessionStore {
     session.messages.push({ role: "user", content: turn.user, timestamp, metadata: turn.userMetadata });
     session.messages.push({ role: "assistant", content: turn.assistant, timestamp, metadata: { usage: turn.usage } });
     for (const toolResult of turn.toolResults ?? []) {
+      const compactToolResult = compactToolResultForSession(toolResult);
       session.messages.push({
         role: "tool",
-        content: JSON.stringify(toolResult),
+        content: JSON.stringify(compactToolResult),
         timestamp,
-        metadata: { tool: toolResult.tool }
+        metadata: { tool: toolResult.tool, compacted: JSON.stringify(compactToolResult).length !== JSON.stringify(toolResult).length }
       });
     }
-    session.providerEvents.push(...turn.providerEvents);
     session.usage = mergeUsage(session.usage, turn.usage);
     session.updatedAt = timestamp;
     await writeJson(this.sessionFile(workspaceRoot, workspaceAgentId, sessionId), session);
@@ -73,6 +70,20 @@ export class SessionStore {
   private sessionFile(workspaceRoot: string, workspaceAgentId: string, sessionId: string): string {
     return path.join(workspaceAgentSessionsDir(workspaceRoot, workspaceAgentId), `${sessionId}.json`);
   }
+}
+
+const SESSION_TOOL_STRING_CHARS = 1_500;
+
+function compactToolResultForSession(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= SESSION_TOOL_STRING_CHARS) return value;
+    return `${value.slice(0, SESSION_TOOL_STRING_CHARS)}\n...[session 工具结果摘要，原始长度 ${value.length} 字符；完整结果见 loop trace]`;
+  }
+  if (Array.isArray(value)) return value.map(compactToolResultForSession);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactToolResultForSession(item)]));
+  }
+  return value;
 }
 
 function mergeUsage(current: ProviderUsage | undefined, next: ProviderUsage | undefined): ProviderUsage | undefined {

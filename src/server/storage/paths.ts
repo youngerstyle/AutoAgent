@@ -60,6 +60,10 @@ export function eventsFile(workspaceRoot: string, taskId: string, taskRunId: str
   return path.join(taskRunDir(workspaceRoot, taskId, taskRunId), "events.jsonl");
 }
 
+export function loopTraceFile(workspaceRoot: string, taskId: string, taskRunId: string): string {
+  return path.join(taskRunDir(workspaceRoot, taskId, taskRunId), "loop-trace.jsonl");
+}
+
 export function stateFile(workspaceRoot: string, taskId: string, taskRunId: string): string {
   return path.join(taskRunDir(workspaceRoot, taskId, taskRunId), "state.json");
 }

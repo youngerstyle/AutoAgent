@@ -4,18 +4,19 @@ Date: 2026-07-07
 
 ## Goal
 
-AutoAgent must stop treating raw session history as model memory. The runtime needs a production-grade context system that separates audit history, active model context, compressed session state, project memory, and UI observability.
+AutoAgent must stop treating unbounded session history as model memory. The runtime needs a production-grade context system that separates audit history, active model context, compressed session state, project memory, and UI observability.
 
 This design upgrades the earlier Hermes/OpenClaw-inspired session skeleton into a real context and memory layer.
 
 ## Problem
 
-The current implementation persists per-agent session files, but `buildAgentPrompt` reads recent raw messages directly from the session and injects them into the next prompt. Tool observations are also folded into follow-up prompts. This caused recursive prompt growth: prior assembled prompts were stored as `user` messages, then reinserted into later prompts.
+The current implementation persists per-agent session files, but earlier versions treated those session files as both model memory and debug transcript. That caused recursive prompt growth: prior assembled prompts were stored as `user` messages, then reinserted into later prompts.
 
 The important distinction is:
 
-- Raw session is the audit trail.
-- Active context is the bounded input sent to the LLM.
+- Agent session is the bounded, model-visible history for the next turn.
+- Loop trace is the raw audit trail: full prompts, full LLM responses, tool IO, errors, usage, and timing.
+- Active context is the bounded input sent to the LLM, assembled from session, memory, ticket state, and current observations.
 - Memory is curated, compressed, or retrieved state derived from raw facts.
 - Loop debug is for human inspection, not automatic prompt input.
 
@@ -38,7 +39,9 @@ The target design follows the common pattern across mature agent systems:
 
 1. Raw logs are never the prompt.
 
-Raw session files keep full prompts, full LLM responses, full tool results, provider events, usage, and timestamps. They are append-only audit material. They can be shown in loop debug and used for offline replay, but must not be copied directly into new model input.
+Loop trace files keep full prompts, full LLM responses, full tool results, provider events, usage, and timestamps. They are append-only audit material. They can be shown in loop debug and used for offline replay, but must not be copied directly into new model input.
+
+Agent session files are not raw audit logs. They keep only the model-visible conversation state that may be used by a future `ContextAssembler` call: compact task input, assistant output, bounded tool summaries, timestamps, usage, and references to trace records.
 
 2. Context is assembled through one boundary.
 
@@ -46,7 +49,7 @@ Only `ContextAssembler` may create model input. `AgentRuntime` may not manually 
 
 3. Compaction has thresholds, checkpoints, and replacement history.
 
-When active session context exceeds a configured threshold, old message groups are summarized into a checkpoint. Recent turns remain verbatim. The raw session remains unchanged. The checkpoint must also persist `replacementHistory`: a synthetic compaction summary message followed by retained recent messages. This gives restart/replay code a concrete "use this instead of old history" boundary, similar to Codex's compacted replacement history.
+When active session context exceeds a configured threshold, old message groups are summarized into a checkpoint. Recent turns remain verbatim. The model-visible session file is not rewritten by compaction. The checkpoint must also persist `replacementHistory`: a synthetic compaction summary message followed by retained recent messages. This gives restart/replay code a concrete "use this instead of old history" boundary, similar to Codex's compacted replacement history.
 
 4. Memory is layered.
 
@@ -56,9 +59,9 @@ AutoAgent uses three practical layers for V1:
 - Workspace memory: durable project facts, conventions, paths, known commands, and recurring decisions.
 - Ticket context: current work item, dependencies, blockers, human follow-ups, and handoff facts.
 
-5. Tool observations are stored fully but injected compactly.
+5. Tool observations are traced fully but injected compactly.
 
-Full tool output remains in session and event logs. The prompt receives a bounded observation summary with paths, status, key snippets, and references to raw records when needed.
+Full tool output remains in loop trace and event logs. Session receives only a bounded tool observation summary. The prompt receives a bounded observation summary with paths, status, key snippets, and references to raw trace records when needed.
 
 6. Prompt cache stability is a design constraint.
 
@@ -81,22 +84,44 @@ Workspace-local storage becomes:
     context/<taskRunId>.json
   tasks/<taskId>/runs/<taskRunId>/
     events.jsonl
+    loop-trace.jsonl
     state.json
     artifacts/
 ```
 
 ### `sessions/<taskRunId>.json`
 
-Raw audit transcript. It remains full-fidelity.
+Model-visible agent history. It is intentionally not full-fidelity and must never store an assembled prompt.
 
 ```ts
 interface AgentSession {
   id: string;
   workspaceAgentId: string;
   messages: AgentSessionMessage[];
-  providerEvents: AgentProviderEvent[];
   usage?: ProviderUsage;
   updatedAt: string;
+}
+```
+
+### `loop-trace.jsonl`
+
+Append-only full loop evidence for UI debugging and offline review. This file is the place where complete assembled prompts belong.
+
+```ts
+interface LoopTraceRecord {
+  id: string;
+  taskId: string;
+  taskRunId: string;
+  assignmentRunId?: string;
+  agentId: string;
+  actor: string;
+  kind: "prompt" | "llm" | "tool";
+  turn: number;
+  timestamp: string;
+  title: string;
+  content: string;
+  detail?: string;
+  metadata?: Record<string, unknown>;
 }
 ```
 
@@ -207,7 +232,7 @@ The assembled prompt has ordered sections:
 7. Dynamic context
    - human follow-ups, ticket state, upstream results
 
-`ContextAssembler` returns both `prompt` and `ContextReport`.
+`ContextAssembler` returns both `prompt` and `ContextReport`. The complete `prompt` is written to loop trace before the provider call. It is never written back into agent session.
 
 ```ts
 interface AssembledContext {
@@ -243,17 +268,17 @@ Compaction output must include:
 
 ## Provider Interaction
 
-Provider adapters should receive an assembled prompt and context metadata, not raw session data. Later provider-specific cache support can be added without changing agent logic:
+Provider adapters should receive an assembled prompt and context metadata, not unbounded session data. Later provider-specific cache support can be added without changing agent logic:
 
 - OpenAI: keep stable prefix identical and record cached token usage when available.
 - Anthropic: support automatic caching first; explicit breakpoints can be added around stable header and workspace memory.
 
 ## UI and Debugging
 
-Loop debug should include context reports as first-class entries:
+Loop debug is built from flow events plus `loop-trace.jsonl`, not from agent session messages. It should include context reports as first-class entries:
 
 - Prompt final injected length.
-- Original raw session length.
+- Original model-visible session length.
 - Session summary length.
 - Recent turn count.
 - Tool observation original/injected sizes.
@@ -262,7 +287,7 @@ Loop debug should include context reports as first-class entries:
 
 The user should be able to tell whether a bad model response came from:
 
-- wrong raw session fact,
+- wrong model-visible session fact,
 - bad summary,
 - missing retrieval,
 - tool observation truncation,
@@ -272,16 +297,17 @@ The user should be able to tell whether a bad model response came from:
 
 ## Acceptance Criteria
 
-1. Raw session remains complete and readable after multiple turns.
-2. Model prompt never directly re-injects a prior assembled prompt.
-3. Large tool results do not enter prompt unbounded.
-4. Context has explicit budget and report metadata.
-5. Session compaction creates checkpoints without destroying raw history.
-6. Recent turns stay readable while older turns become summary.
-7. Workspace-agent memory is stored separately from session.
-8. Loop debug exposes context reports.
-9. Tests cover prompt recursion, tool observation compaction, checkpoint creation, and raw log preservation.
-10. `npm.cmd run test:run`, `npm.cmd run typecheck`, and `npm.cmd run build` pass.
+1. Loop trace remains complete and readable after multiple turns.
+2. Agent session never stores an assembled prompt.
+3. Model prompt never directly re-injects a prior assembled prompt.
+4. Large tool results do not enter session or prompt unbounded.
+5. Context has explicit budget and report metadata.
+6. Session compaction creates checkpoints without relying on raw trace replay.
+7. Recent model-visible turns stay readable while older turns become summary.
+8. Workspace-agent memory is stored separately from session.
+9. Loop debug exposes context reports and raw prompt/LLM/tool evidence from trace.
+10. Tests cover prompt recursion, tool observation compaction, checkpoint creation, trace preservation, and session hygiene.
+11. `npm.cmd run test:run`, `npm.cmd run typecheck`, and `npm.cmd run build` pass.
 
 ## Non-Goals
 

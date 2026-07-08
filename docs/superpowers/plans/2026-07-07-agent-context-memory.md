@@ -4,7 +4,7 @@
 
 **Goal:** Replace direct raw-session prompt injection with a production context and memory layer that has budgets, session compaction, tool observation compaction, separate workspace-agent memory, and loop-debug visibility.
 
-**Architecture:** Add a `ContextAssembler` as the single prompt construction boundary. Raw `SessionStore` remains full fidelity, while a new `ContextStore` persists derived summaries/checkpoints and workspace-agent memory. `AgentRuntime` asks the assembler for each model prompt and records the returned `ContextReport` in the session and event stream.
+**Architecture:** Add a `ContextAssembler` as the single prompt construction boundary. `SessionStore` stores only model-visible agent history, while `LoopTraceStore` stores full prompt/LLM/tool audit evidence. `ContextStore` persists derived summaries/checkpoints and workspace-agent memory. `AgentRuntime` asks the assembler for each model prompt, writes the complete prompt to loop trace, and records compact context metadata in session and events.
 
 **Tech Stack:** TypeScript, Vitest, existing JSON file storage, existing provider runner abstraction, existing loop debug projection.
 
@@ -23,13 +23,15 @@
 - Modify: `src/server/storage/paths.ts`
   - Add paths for workspace-agent context directory/file and memory file.
 - Modify: `src/server/storage/session-store.ts`
-  - Store raw session as before, but allow metadata for context report on user prompt messages.
+  - Store model-visible session turns only; keep assembled prompts and full tool output out of session.
+- Create: `src/server/storage/loop-trace-store.ts`
+  - Store full prompt, raw LLM response, full tool output, usage, context report, and timing in `loop-trace.jsonl`.
 - Modify: `src/server/agents/prompts.ts`
-  - Keep only stable prompt/header helpers. Remove direct raw session reading.
+  - Keep only stable prompt/header helpers. Remove direct unbounded session reading.
 - Modify: `src/server/agents/agent-runtime.ts`
   - Use `ContextAssembler`; remove local `buildToolFollowUpPrompt` compaction logic or route it through assembler.
 - Modify: `src/server/mission/loop-debug-log.ts`
-  - Surface context reports in loop debug metadata/content.
+  - Build prompt/LLM/tool debug entries from loop trace, not from session messages.
 - Modify: `src/shared/types.ts`
   - Add optional context debug entry kind if needed.
 - Test: `tests/server/context-assembler.test.ts`
@@ -182,7 +184,7 @@ Expected: pass.
 Update `tests/server/agent-runtime.test.ts`:
 
 - no provider prompt contains `PREVIOUS_PROMPT_END` from a prior assembled prompt.
-- session still stores the raw assembled prompt for audit.
+- session does not store the raw assembled prompt; loop trace stores it for audit.
 - session message metadata includes context report.
 - follow-up tool prompts are assembled through context report and remain bounded.
 
@@ -201,9 +203,9 @@ Expected: fails until runtime uses assembler.
 Modify `src/server/agents/agent-runtime.ts`:
 
 - instantiate `ContextAssembler`
-- read raw session and derived context state
+- read model-visible session and derived context state
 - assemble prompt before each provider call
-- persist context report in the session turn metadata
+- persist context report metadata in the session turn and full prompt in loop trace
 - emit a `context.assembled` event or provider/status event with report metadata
 
 - [ ] **Step 4: Verify runtime tests pass**
@@ -238,6 +240,7 @@ Modify `src/server/mission/loop-debug-log.ts`:
 
 - show context report summary for prompt entries
 - include raw metadata so the UI can show section sizes and compaction status
+- read prompt/LLM/tool entries from `loop-trace.jsonl`
 
 - [ ] **Step 4: Verify tests pass**
 
@@ -298,4 +301,3 @@ Run:
 git add docs/superpowers/specs/2026-07-07-agent-context-memory-design.md docs/superpowers/plans/2026-07-07-agent-context-memory.md src/server/context src/server/agents src/server/storage src/server/mission tests/server
 git commit -m "feat: add bounded agent context memory"
 ```
-

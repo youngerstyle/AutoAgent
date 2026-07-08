@@ -3,7 +3,7 @@ import { compactSessionIfNeeded } from "../../src/server/context/session-compact
 import type { AgentSession } from "../../src/server/storage/session-store";
 
 describe("SessionCompactor", () => {
-  it("creates a checkpoint from old message groups without mutating raw session messages", () => {
+  it("creates a checkpoint from old message groups without mutating session messages", () => {
     const session = sessionWithLargeHistory();
     const originalMessages = session.messages.map((message) => message.content);
 
@@ -54,7 +54,6 @@ describe("SessionCompactor", () => {
         { role: "user", content: "短任务", timestamp: "2026-07-07T00:00:00.000Z" },
         { role: "assistant", content: "短回答", timestamp: "2026-07-07T00:00:01.000Z" }
       ],
-      providerEvents: [],
       updatedAt: "2026-07-07T00:00:01.000Z"
     };
 
@@ -83,7 +82,6 @@ function sessionWithLargeHistory(): AgentSession {
       { role: "user", content: "最新用户任务", timestamp: "2026-07-07T00:00:05.000Z" },
       { role: "assistant", content: "最新助手结论", timestamp: "2026-07-07T00:00:06.000Z" }
     ],
-    providerEvents: [],
     updatedAt: "2026-07-07T00:00:06.000Z"
   };
 }

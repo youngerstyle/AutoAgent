@@ -158,8 +158,10 @@ function recentTurnsSection(messages: AgentSessionMessage[]): { text: string; or
   if (messages.length === 0) return { text: "近期会话：无", originalChars: 0, truncated: false };
   let truncated = false;
   const text = messages.map((message) => {
-    const compact = compactRecentMessage(message.content);
-    if (compact.length !== message.content.length) truncated = true;
+    const sanitized = sanitizeRecentMessage(message.content);
+    if (sanitized !== message.content) truncated = true;
+    const compact = compactRecentMessage(sanitized);
+    if (compact.length !== sanitized.length) truncated = true;
     return `${message.role}: ${compact}`;
   }).join("\n");
   return {
@@ -177,7 +179,11 @@ function toolObservationSection(toolResults: Array<Record<string, unknown>>): { 
 }
 
 function dynamicContextSection(context?: Record<string, unknown>): string {
-  return context ? JSON.stringify(context) : "{}";
+  if (!context) return "{}";
+  const entries = Object.entries(context)
+    .filter(([key]) => !["toolResults", "contextReport"].includes(key))
+    .map(([key, value]) => [key, compactDynamicContextValue(value)] as const);
+  return JSON.stringify(Object.fromEntries(entries));
 }
 
 function listSection(title: string, values: string[]): string {
@@ -191,6 +197,18 @@ function yesNo(value: boolean): string {
 
 const TOOL_OBSERVATION_STRING_CHARS = 12_000;
 const RECENT_MESSAGE_STRING_CHARS = 1_200;
+const DYNAMIC_CONTEXT_STRING_CHARS = 2_000;
+
+function sanitizeRecentMessage(value: string): string {
+  if (!looksLikeAssembledPrompt(value)) return value;
+  return `历史 assembled prompt 已过滤，原始长度 ${value.length} 字符。完整原始内容请查看 loop trace；下一轮模型上下文只保留可见摘要。`;
+}
+
+function looksLikeAssembledPrompt(value: string): boolean {
+  return value.includes("## 稳定提示词")
+    || value.includes("PREVIOUS_PROMPT_START")
+    || value.includes("PREVIOUS_PROMPT_END");
+}
 
 function compactRecentMessage(value: string): string {
   if (value.length <= RECENT_MESSAGE_STRING_CHARS) return value;
@@ -205,6 +223,20 @@ function compactToolObservationValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(compactToolObservationValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compactToolObservationValue(item)]));
+  }
+  return value;
+}
+
+function compactDynamicContextValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= DYNAMIC_CONTEXT_STRING_CHARS) return value;
+    return `${value.slice(0, DYNAMIC_CONTEXT_STRING_CHARS)}\n...[动态上下文截断，原始长度 ${value.length} 字符]`;
+  }
+  if (Array.isArray(value)) return value.slice(0, 50).map(compactDynamicContextValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .slice(0, 50)
+      .map(([key, item]) => [key, compactDynamicContextValue(item)]));
   }
   return value;
 }
