@@ -539,14 +539,17 @@ export class MissionControl {
     if (planItems.length === 0) return false;
 
     const runtime = this.ticketRuntime(state);
+    runtime.cancelOpenDescendants(sourceTicket.id, "PM 已重新拆解工单图");
     const ticketsByKey = new Map<string, Ticket>([[sourceTicket.id, sourceTicket]]);
     ticketsByKey.set("pm", sourceTicket);
     ticketsByKey.set("pm_plan", sourceTicket);
 
+    let previousTicket: Ticket | undefined;
     for (const [index, item] of planItems.entries()) {
       const type = ticketTypeFromValue(item.type);
-      const role = agentRoleFromValue(item.targetRole) ?? roleForPhase(phaseForTicketType(type));
-      const dependencyIds = dependencyIdsForPlanItem(item, ticketsByKey, index === 0 ? [sourceTicket.id] : []);
+      const role = canonicalRoleForTicketType(type);
+      const fallbackDependencies = index === 0 ? [sourceTicket.id] : previousTicket ? [previousTicket.id] : [sourceTicket.id];
+      const dependencyIds = dependencyIdsForPlanItem(item, ticketsByKey, fallbackDependencies);
       const parentTicketId = dependencyIds[0] ?? sourceTicket.id;
       const ticket = runtime.createTicket({
         workspaceId: state.task.workspaceId,
@@ -564,6 +567,7 @@ export class MissionControl {
       const key = stringValue(item.key) ?? stringValue(item.id) ?? `${type}_${index}`;
       ticketsByKey.set(key, ticket);
       ticketsByKey.set(ticket.id, ticket);
+      previousTicket = ticket;
     }
 
     this.syncTickets(state, runtime);
@@ -1027,10 +1031,13 @@ function ticketTypeFromValue(value: unknown): TicketType {
   return "implementation";
 }
 
-function agentRoleFromValue(value: unknown): AgentRole | undefined {
-  const text = typeof value === "string" ? value : "";
-  const allowed = new Set<AgentRole>(["boss", "pm", "architect", "dev", "qa", "specialist"]);
-  return allowed.has(text as AgentRole) ? text as AgentRole : undefined;
+function canonicalRoleForTicketType(type: TicketType): AgentRole {
+  if (type === "boss_intake" || type === "boss_acceptance" || type === "human_action") return "boss";
+  if (type === "pm_plan") return "pm";
+  if (type === "architect_plan") return "architect";
+  if (type === "qa") return "qa";
+  if (type === "specialist") return "specialist";
+  return "dev";
 }
 
 function dependencyIdsForPlanItem(item: Record<string, unknown>, ticketsByKey: Map<string, Ticket>, fallback: string[]): string[] {

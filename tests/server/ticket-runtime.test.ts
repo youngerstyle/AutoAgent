@@ -154,6 +154,55 @@ describe("ticket runtime", () => {
     });
     expect(runtime.inboxForAgent(dev.id).map((message) => message.status)).toEqual(["cancelled"]);
   });
+
+  it("cancels only open descendants of a ticket branch", () => {
+    const runtime = createTicketRuntime();
+    const pm = agent("wa_pm", "pm");
+    const qa = agent("wa_qa", "qa");
+    const boss = agent("wa_boss", "boss");
+    const pmTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "pm_plan",
+      brief: "计划",
+      expectedArtifact: "工单图",
+      targetAgentId: pm.id
+    });
+    const qaTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "qa",
+      brief: "旧 QA",
+      expectedArtifact: "测试报告",
+      targetAgentId: qa.id,
+      parentTicketId: pmTicket.id,
+      createdByTicketId: pmTicket.id
+    });
+    const bossTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "boss_acceptance",
+      brief: "旧验收",
+      expectedArtifact: "验收结论",
+      targetAgentId: boss.id,
+      parentTicketId: qaTicket.id,
+      createdByTicketId: qaTicket.id,
+      dependsOnTicketIds: [qaTicket.id]
+    });
+
+    runtime.ack(qaTicket.id, { passed: true }, new Date("2026-07-01T01:00:00.000Z"));
+    runtime.cancelOpenDescendants(pmTicket.id, "PM 已重新拆解", new Date("2026-07-01T01:00:01.000Z"));
+
+    expect(runtime.ticket(qaTicket.id)?.status).toBe("completed");
+    expect(runtime.ticket(bossTicket.id)).toMatchObject({
+      status: "cancelled",
+      returnReason: "PM 已重新拆解"
+    });
+    expect(runtime.inboxForAgent(boss.id).map((message) => message.status)).toEqual(["cancelled"]);
+  });
 });
 
 function agent(id: string, roleInWorkspace: WorkspaceAgent["roleInWorkspace"]): WorkspaceAgent {

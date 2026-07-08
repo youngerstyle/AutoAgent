@@ -216,6 +216,42 @@ export class TicketRuntime {
     }
   }
 
+  cancelOpenDescendants(rootTicketId: string, reason: string, now = new Date()): void {
+    const timestamp = now.toISOString();
+    const descendantIds = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const ticket of this.tickets.values()) {
+        if (ticket.id === rootTicketId || descendantIds.has(ticket.id)) continue;
+        const linkedToRoot = ticket.parentTicketId === rootTicketId
+          || ticket.createdByTicketId === rootTicketId
+          || ticket.dependsOnTicketIds?.includes(rootTicketId);
+        const linkedToDescendant = ticket.parentTicketId && descendantIds.has(ticket.parentTicketId)
+          || ticket.createdByTicketId && descendantIds.has(ticket.createdByTicketId)
+          || ticket.dependsOnTicketIds?.some((id) => descendantIds.has(id));
+        if (!linkedToRoot && !linkedToDescendant) continue;
+        descendantIds.add(ticket.id);
+        changed = true;
+      }
+    }
+
+    for (const ticketId of descendantIds) {
+      const ticket = this.tickets.get(ticketId);
+      if (!ticket || (ticket.status !== "pending" && ticket.status !== "running" && ticket.status !== "blocked")) continue;
+      ticket.status = "cancelled";
+      ticket.returnReason = reason;
+      ticket.leaseUntil = undefined;
+      ticket.updatedAt = timestamp;
+      for (const message of this.messages.values()) {
+        if (message.ticketId !== ticketId || (message.status !== "pending" && message.status !== "claimed" && message.status !== "expired")) continue;
+        message.status = "cancelled";
+        message.leaseUntil = undefined;
+        message.updatedAt = timestamp;
+      }
+    }
+  }
+
   private deliver(ticket: Ticket, now = new Date()): AgentInboxMessage {
     const createdAt = now.toISOString();
     const message: AgentInboxMessage = {

@@ -158,6 +158,42 @@ describe("MissionControl", () => {
     expect((acceptance as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([qa?.id]);
   });
 
+  it("treats omitted PM graph dependencies as ordered ticket flow instead of runnable roots", async () => {
+    const fixture = await missionFixture(new PmReturnsOrderedTicketGraphWithoutDependsProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build an ordered flow" },
+      { runSynchronously: true }
+    );
+
+    const tickets = snapshot.tickets ?? [];
+    const pm = tickets.find((ticket) => ticket.type === "pm_plan");
+    const dev = tickets.find((ticket) => ticket.type === "implementation");
+    const qa = tickets.find((ticket) => ticket.type === "qa");
+    const acceptance = tickets.find((ticket) => ticket.type === "boss_acceptance");
+
+    expect(snapshot.status).toBe("completed");
+    expect((dev as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([pm?.id]);
+    expect((qa as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([dev?.id]);
+    expect((acceptance as unknown as { dependsOnTicketIds?: string[] })?.dependsOnTicketIds).toEqual([qa?.id]);
+  });
+
+  it("routes PM graph tickets by ticket type when the model returns the wrong target role", async () => {
+    const fixture = await missionFixture(new PmReturnsAcceptanceTicketWithWrongRoleProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build with a wrong target role" },
+      { runSynchronously: true }
+    );
+
+    const acceptance = snapshot.tickets?.find((ticket) => ticket.type === "boss_acceptance");
+    const acceptanceMessage = snapshot.inboxMessages?.find((message) => message.ticketId === acceptance?.id);
+
+    expect(snapshot.status).toBe("completed");
+    expect(acceptance).toMatchObject({ targetRole: "boss" });
+    expect(acceptanceMessage).toMatchObject({ toRole: "boss" });
+  });
+
   it("keeps the agent loop autonomous when a role asks for clarification", async () => {
     const fixture = await missionFixture(new BossClarifiesThenTeamCompletesProvider());
 
@@ -769,6 +805,81 @@ class PmReturnsExecutionTicketGraphProvider implements ProviderRunner {
             expectedArtifact: "验收结论",
             targetRole: "boss",
             dependsOn: ["qa_mvp"]
+          }
+        ]
+      });
+    }
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmReturnsOrderedTicketGraphWithoutDependsProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        plan: "PM 按自然顺序列出开发、测试、验收，但没有显式填写 dependsOn。",
+        ticketGraph: [
+          {
+            key: "dev_ordered",
+            type: "implementation",
+            brief: "实现可运行交付物",
+            expectedArtifact: "index.html",
+            targetRole: "dev"
+          },
+          {
+            key: "qa_ordered",
+            type: "qa",
+            brief: "验证可运行交付物",
+            expectedArtifact: "质量检查结论",
+            targetRole: "qa"
+          },
+          {
+            key: "accept_ordered",
+            type: "boss_acceptance",
+            brief: "验收通过 QA 的交付物",
+            expectedArtifact: "验收结论",
+            targetRole: "boss"
+          }
+        ]
+      });
+    }
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class PmReturnsAcceptanceTicketWithWrongRoleProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        ticketGraph: [
+          {
+            key: "dev_wrong_role",
+            type: "implementation",
+            brief: "实现交付物",
+            expectedArtifact: "index.html",
+            targetRole: "dev"
+          },
+          {
+            key: "qa_wrong_role",
+            type: "qa",
+            brief: "验证交付物",
+            expectedArtifact: "测试报告",
+            targetRole: "qa",
+            dependsOn: ["dev_wrong_role"]
+          },
+          {
+            key: "accept_wrong_role",
+            type: "boss_acceptance",
+            brief: "验收交付物",
+            expectedArtifact: "验收结论",
+            targetRole: "pm",
+            dependsOn: ["qa_wrong_role"]
           }
         ]
       });
