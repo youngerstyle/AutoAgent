@@ -6,7 +6,7 @@ import type { EventLedger } from "../storage/event-ledger.js";
 import { LoopTraceStore } from "../storage/loop-trace-store.js";
 import { SessionStore } from "../storage/session-store.js";
 import { readWorkspaceFile, listWorkspaceFiles, writeWorkspaceFile } from "../tools/file-tools.js";
-import { runWorkspaceCommand } from "../tools/shell-tool.js";
+import { pollWorkspaceProcess, runWorkspaceCommand, startWorkspaceService } from "../tools/shell-tool.js";
 import type { ToolContext } from "../tools/tool-runtime.js";
 import { ContextAssembler } from "../context/context-assembler.js";
 import { profileForRole } from "./roster.js";
@@ -311,6 +311,12 @@ export class AgentRuntime {
         } else if (tool === "shell") {
           const result = await runWorkspaceCommand(context, String(intent.command ?? ""));
           results.push({ tool, command: String(intent.command ?? ""), ...result, ok: Number(result.exitCode) === 0 });
+        } else if (tool === "startService") {
+          const result = await startWorkspaceService(context, String(intent.command ?? ""));
+          results.push({ tool, command: String(intent.command ?? ""), ...result, ok: Number(result.exitCode) === 0 });
+        } else if (tool === "pollProcess") {
+          const result = await pollWorkspaceProcess(context, String(intent.serviceId ?? intent.processId ?? ""));
+          results.push({ tool, serviceId: String(intent.serviceId ?? intent.processId ?? ""), ...result, ok: true });
         } else if (tool) {
           await this.emit(input, "tool.denied", `未知工具：${tool}`, { tool, error: "未知工具" });
           results.push({ tool, ok: false, error: "未知工具" });
@@ -427,7 +433,7 @@ function normalizeToolIntents(structured?: Record<string, unknown>): Array<Recor
   if (action === "readFiles" && Array.isArray(structured.paths)) {
     return structured.paths.map((targetPath) => ({ tool: "readFile", path: targetPath }));
   }
-  if (action === "readFile" || action === "listFiles" || action === "writeFile" || action === "shell") {
+  if (action === "readFile" || action === "listFiles" || action === "writeFile" || action === "shell" || action === "startService" || action === "pollProcess") {
     return [{ ...structured, tool: action }];
   }
   return [];

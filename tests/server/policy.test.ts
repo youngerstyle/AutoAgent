@@ -1,10 +1,10 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { EventLedger } from "../../src/server/storage/event-ledger";
 import { writeWorkspaceFile } from "../../src/server/tools/file-tools";
-import { runWorkspaceCommand } from "../../src/server/tools/shell-tool";
+import { pollWorkspaceProcess, runWorkspaceCommand, startWorkspaceService } from "../../src/server/tools/shell-tool";
 import type { Workspace, WorkspaceAgent } from "../../src/shared/types";
 
 describe("tool policy", () => {
@@ -49,6 +49,36 @@ describe("tool policy", () => {
     const context = toolContext(workspace(root, "production"), agent("pm"));
 
     await expect(writeWorkspaceFile(context, "index.html", "<canvas></canvas>")).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("starts long-running services without blocking the agent loop", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-policy-"));
+    const context = toolContext(workspace(root, "development"), agent("dev"));
+    await writeFile(
+      path.join(root, "service.js"),
+      "console.log('http://127.0.0.1:12345'); setTimeout(() => process.exit(0), 10000); setInterval(() => {}, 1000);\n",
+      "utf8"
+    );
+
+    const result = await startWorkspaceService(context, "node service.js");
+
+    try {
+      expect(result.exitCode).toBe(0);
+      expect(result.running).toBe(true);
+      expect(result.serviceId).toMatch(/^svc_/);
+      expect(result.urls).toContain("http://127.0.0.1:12345");
+      const poll = await pollWorkspaceProcess(context, result.serviceId);
+      expect(poll.running).toBe(true);
+      expect(poll.stdout).toContain("http://127.0.0.1:12345");
+    } finally {
+      if (result.pid) {
+        try {
+          process.kill(result.pid);
+        } catch {
+          // Process may have exited on its own.
+        }
+      }
+    }
   });
 });
 
