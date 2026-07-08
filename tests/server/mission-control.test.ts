@@ -91,19 +91,32 @@ describe("MissionControl", () => {
     );
 
     expect(snapshot.status).toBe("running");
-    expect(snapshot.tickets).toHaveLength(1);
-    expect(snapshot.tickets?.[0]).toMatchObject({
+    expect(snapshot.tickets).toHaveLength(2);
+    const bossTicket = snapshot.tickets?.find((ticket) => ticket.type === "boss_intake");
+    const pmTicket = snapshot.tickets?.find((ticket) => ticket.type === "pm_plan");
+    expect(bossTicket).toMatchObject({
       type: "boss_intake",
       status: "pending",
       targetRole: "boss"
     });
-    expect(snapshot.tickets?.[0]).not.toHaveProperty("parentTicketId");
-    expect(snapshot.tickets?.[0]).not.toHaveProperty("createdByTicketId");
-    expect(snapshot.inboxMessages).toHaveLength(1);
-    expect(snapshot.inboxMessages?.[0]).toMatchObject({
-      ticketId: snapshot.tickets?.[0].id,
+    expect(bossTicket).not.toHaveProperty("parentTicketId");
+    expect(bossTicket).not.toHaveProperty("createdByTicketId");
+    expect(pmTicket).toMatchObject({
+      type: "pm_plan",
+      status: "pending",
+      targetRole: "pm",
+      parentTicketId: bossTicket?.id,
+      createdByTicketId: bossTicket?.id,
+      dependsOnTicketIds: [bossTicket?.id]
+    });
+    expect(snapshot.inboxMessages).toHaveLength(2);
+    expect(snapshot.inboxMessages?.find((message) => message.ticketId === bossTicket?.id)).toMatchObject({
       status: "pending",
       toRole: "boss"
+    });
+    expect(snapshot.inboxMessages?.find((message) => message.ticketId === pmTicket?.id)).toMatchObject({
+      status: "pending",
+      toRole: "pm"
     });
   });
 
@@ -194,6 +207,25 @@ describe("MissionControl", () => {
     expect(acceptanceMessage).toMatchObject({ toRole: "boss" });
   });
 
+  it("blocks PM planning when PM does not return a ticket graph instead of falling back to phases", async () => {
+    const fixture = await missionFixture(new PmReturnsNarrativeOnlyProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build from a narrative-only PM plan" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.tickets?.filter((ticket) => ticket.type === "pm_plan")).toHaveLength(1);
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "architect_plan")).toBe(false);
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "implementation")).toBe(false);
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "external_dependency" }
+    });
+  });
+
   it("keeps the agent loop autonomous when a role asks for clarification", async () => {
     const fixture = await missionFixture(new BossClarifiesThenTeamCompletesProvider());
 
@@ -206,7 +238,7 @@ describe("MissionControl", () => {
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toContain("run.completed");
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
-    expect(events.some((event) => event.summary.includes("Agent 自治继续"))).toBe(true);
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "pm_plan" && ticket.status === "completed")).toBe(true);
   });
 
   it("routes a boss write attempt to the team instead of blocking human", async () => {
@@ -222,8 +254,8 @@ describe("MissionControl", () => {
     expect(events.some((event) => event.type === "tool.denied" && event.summary.includes("文件写入被拒绝"))).toBe(true);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
     expect(events.some((event) => event.summary.includes("开发开始开发执行"))).toBe(true);
-    expect(events.find((event) => event.type === "handoff.created")?.payload).toMatchObject({
-      phase: "implementation"
+    expect(events.find((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("没有写项目文件权限"))?.payload).toMatchObject({
+      ticketType: "implementation"
     });
     const bossTicket = snapshot.tickets?.find((ticket) => ticket.type === "boss_intake");
     const implementationTicket = snapshot.tickets?.find((ticket) => ticket.type === "implementation");
@@ -501,10 +533,10 @@ describe("MissionControl", () => {
     expect(snapshot.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
-    expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("敌人生成点"))).toBe(true);
+    expect(events.some((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("敌人生成点"))).toBe(true);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
     const qaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa");
-    const reworkTicket = snapshot.tickets?.find((ticket) => ticket.type === "implementation" && ticket.returnReason?.includes("敌人生成点"));
+    const reworkTicket = snapshot.tickets?.find((ticket) => ticket.type === "rework" && ticket.returnReason?.includes("敌人生成点"));
     expect(reworkTicket).toMatchObject({
       parentTicketId: qaTicket?.id,
       createdByTicketId: qaTicket?.id
@@ -522,7 +554,7 @@ describe("MissionControl", () => {
     expect(snapshot.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
-    expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("DEFECT-001"))).toBe(true);
+    expect(events.some((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("DEFECT-001"))).toBe(true);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
   });
 
@@ -537,7 +569,7 @@ describe("MissionControl", () => {
     expect(snapshot.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
-    expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("需求和验收标准冲突"))).toBe(true);
+    expect(events.some((event) => event.type === "ticket.created" && String((event.payload as Record<string, unknown>).reason).includes("需求和验收标准冲突"))).toBe(true);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(2);
   });
 
@@ -549,10 +581,15 @@ describe("MissionControl", () => {
       { runSynchronously: true }
     );
 
-    expect(snapshot.status).toBe("completed");
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("implementation");
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "implementation" && ticket.status === "blocked")).toMatchObject({
+      blocker: { type: "external_dependency" }
+    });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(1);
-    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(2);
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(1);
+    expect(events.map((event) => event.type)).toContain("run.blocked");
   });
 
   it("routes PM implementation artifact blockers to development instead of retrying PM planning", async () => {
@@ -563,13 +600,16 @@ describe("MissionControl", () => {
       { runSynchronously: true }
     );
 
-    expect(snapshot.status).toBe("completed");
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "external_dependency" }
+    });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("计划拆解"))).toHaveLength(1);
-    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(1);
-    expect(events.find((event) => event.type === "handoff.created")?.payload).toMatchObject({
-      phase: "implementation"
-    });
+    expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("开发执行"))).toHaveLength(0);
+    expect(events.map((event) => event.type)).toContain("run.blocked");
     expect(events.map((event) => event.type)).not.toContain("run.failed");
   });
 
@@ -648,7 +688,7 @@ describe("MissionControl", () => {
       status: "blocked",
       blocker: { type: "manual_test_required" }
     });
-    expect(afterQuestion.tickets?.some((ticket) => ticket.type === "boss_acceptance")).toBe(false);
+    expect(afterQuestion.tickets?.find((ticket) => ticket.type === "boss_acceptance")).toMatchObject({ status: "pending" });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, afterQuestion.activeTask!.id, afterQuestion.activeTaskRun!.id);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("质量检查"))).toHaveLength(2);
     expect(afterQuestion.activeTaskRun?.status).toBe("blocked");
@@ -742,6 +782,7 @@ class QaFailsOnceProvider implements ProviderRunner {
   private qaCalls = 0;
 
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "qa") {
       this.qaCalls += 1;
       const passed = this.qaCalls > 1;
@@ -755,6 +796,7 @@ class QaFailsOnceProvider implements ProviderRunner {
 
 class NeedsSpecialistProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: true, capabilityGap: "安全/认证" });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     return result({ ok: true });
@@ -765,12 +807,12 @@ class BossClarifiesThenTeamCompletesProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
     if (input.role === "boss" && input.assignmentType === "boss_intake") {
       return result({
-        decision: "暂不执行，需澄清",
-        clarification_required: true,
-        reason: "目标缺少验收标准和交付边界",
-        action: "awaiting_clarification"
+        decision: "继续交给 PM 拆解",
+        reason: "目标还需要细化，但可由 PM 继续拆成工单",
+        action: "continue_to_pm"
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -789,6 +831,7 @@ class BossAttemptsWriteThenTeamCompletesProvider implements ProviderRunner {
         toolIntents: [{ tool: "writeFile", path: "index.html", content: "<!doctype html><canvas></canvas>\n" }]
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult(false);
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -911,6 +954,18 @@ class PmReturnsAcceptanceTicketWithWrongRoleProvider implements ProviderRunner {
   }
 }
 
+class PmReturnsNarrativeOnlyProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        plan: "先做技术方案，再开发，再测试验收。",
+        tasks: ["技术方案", "开发实现", "质量检查"]
+      });
+    }
+    return result({ ok: true });
+  }
+}
+
 class ChineseClarificationProvider implements ProviderRunner {
   rolesSeen: string[] = [];
 
@@ -924,6 +979,7 @@ class ChineseClarificationProvider implements ProviderRunner {
         action: "check_project_files"
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -933,6 +989,7 @@ class ChineseClarificationProvider implements ProviderRunner {
 
 class NoImplementationEvidenceProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") return result({ ok: true, summary: "已完成" });
     return result({ ok: true });
@@ -941,6 +998,7 @@ class NoImplementationEvidenceProvider implements ProviderRunner {
 
 class ExistingArtifactProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") return result({ status: "delivered", deliverable: "index.html", summary: "已交付 index.html" });
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -951,6 +1009,7 @@ class ExistingArtifactProvider implements ProviderRunner {
 
 class ManualTestFileImplementationProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") {
       return result({
@@ -967,6 +1026,7 @@ class ManualTestFileImplementationProvider implements ProviderRunner {
 
 class ManualTestStepsPathImplementationProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") {
       return result({
@@ -997,6 +1057,7 @@ class ClarifiesAfterHumanProvider implements ProviderRunner {
         action: "awaiting_clarification"
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (latest?.message) this.seenFollowup = latest.message;
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
@@ -1023,10 +1084,7 @@ class MissingFileThenEmptyProjectProvider implements ProviderRunner {
       const toolResults = (input.context?.toolResults as Array<Record<string, unknown>> | undefined) ?? [];
       this.sawMissingFile = toolResults.some((result) => result.tool === "readFile" && result.ok === false && String(result.error).includes("ENOENT"));
       if (this.sawMissingFile) {
-        return result({
-          plan: "从空项目创建 Web Canvas MVP",
-          tasks: ["创建 package.json", "实现 Canvas 坦克大战", "补充验收命令"]
-        });
+        return defaultTicketGraphResult();
       }
       return result({
         toolIntents: [{ tool: "readFile", path: "missing-package.json" }],
@@ -1052,6 +1110,7 @@ class RequiresAuthorizationProvider implements ProviderRunner {
         reason: "生产部署需要人工授权"
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -1084,6 +1143,7 @@ class AuthorizationReviewProvider implements ProviderRunner {
         reason: "human 已明确授权继续"
       });
     }
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -1153,6 +1213,7 @@ class PmResumeReviewProvider implements ProviderRunner {
 
 class ManualBrowserQaProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") {
@@ -1177,6 +1238,7 @@ class ManualQaWithDefectRiskProvider implements ProviderRunner {
   private qaCalls = 0;
 
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") {
@@ -1202,6 +1264,7 @@ class NestedQaFailureReportProvider implements ProviderRunner {
   private qaCalls = 0;
 
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") {
@@ -1234,13 +1297,14 @@ class DevReturnsRequirementConflictProvider implements ProviderRunner {
   private devCalls = 0;
 
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") {
       this.devCalls += 1;
       if (this.devCalls === 1) {
         return result({
           status: "blocked",
-          target_phase: "pm_plan",
+          target_ticket_type: "pm_plan",
           reason: "需求和验收标准冲突：目标说只做单文件，但验收要求包含后端接口。需要 PM 重新拆解范围。"
         });
       }
@@ -1256,13 +1320,14 @@ class DevReturnsUnroutedRequirementTextProvider implements ProviderRunner {
   private devCalls = 0;
 
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev") {
       this.devCalls += 1;
       if (this.devCalls === 1) {
         return result({
           status: "blocked",
-          reason: "需求和验收标准冲突：这句话里出现 PM 和范围，但没有结构化 target_phase。"
+          reason: "需求和验收标准冲突：这句话里出现 PM 和范围，但没有结构化 target_ticket_type。"
         });
       }
       return implementationResult();
@@ -1315,6 +1380,7 @@ class PmNeedsClarificationProvider implements ProviderRunner {
 class SlowDevProvider implements ProviderRunner {
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
     await new Promise((resolve) => setTimeout(resolve, 150));
+    if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
     if (input.role === "qa") return result({ passed: true, report: "Pass" });
@@ -1330,6 +1396,72 @@ function result(structured: Record<string, unknown>): AgentTurnResult {
     events: [{ type: "text", text: "ok" }],
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
   };
+}
+
+function defaultTicketGraphResult(includeArchitect = true): AgentTurnResult {
+  const ticketGraph = includeArchitect
+    ? [
+        {
+          key: "architecture",
+          type: "architect_plan",
+          brief: "判断架构方案、技术路径和能力缺口",
+          expectedArtifact: "技术方案",
+          targetRole: "architect"
+        },
+        {
+          key: "implementation",
+          type: "implementation",
+          brief: "按计划开发并产出交付物",
+          expectedArtifact: "真实项目文件或可运行交付物",
+          targetRole: "dev",
+          dependsOn: ["architecture"]
+        },
+        {
+          key: "qa",
+          type: "qa",
+          brief: "验证实现并给出通过或失败结论",
+          expectedArtifact: "质量检查结论",
+          targetRole: "qa",
+          dependsOn: ["implementation"]
+        },
+        {
+          key: "acceptance",
+          type: "boss_acceptance",
+          brief: "验收已通过质量检查的交付物",
+          expectedArtifact: "验收结论",
+          targetRole: "boss",
+          dependsOn: ["qa"]
+        }
+      ]
+    : [
+        {
+          key: "implementation",
+          type: "implementation",
+          brief: "按计划开发并产出交付物",
+          expectedArtifact: "真实项目文件或可运行交付物",
+          targetRole: "dev"
+        },
+        {
+          key: "qa",
+          type: "qa",
+          brief: "验证实现并给出通过或失败结论",
+          expectedArtifact: "质量检查结论",
+          targetRole: "qa",
+          dependsOn: ["implementation"]
+        },
+        {
+          key: "acceptance",
+          type: "boss_acceptance",
+          brief: "验收已通过质量检查的交付物",
+          expectedArtifact: "验收结论",
+          targetRole: "boss",
+          dependsOn: ["qa"]
+        }
+      ];
+  return result({
+    plan: "PM 明确创建 ticket DAG。",
+    ticketGraph
+  });
 }
 
 function implementationResult(): AgentTurnResult {

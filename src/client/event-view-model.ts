@@ -111,8 +111,8 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
 
   if (event.type === "handoff.created") {
     const phase = stringPayload(event, "phase") as MissionPhase | undefined;
-    const reason = stringPayload(event, "reason") ?? displayText(event.summary.replace(/^Agent 自治返工[:：]\s*/, ""));
-    return item(event, "任务流", "自治返工", [phase ? phaseLabel(phase) : undefined, reason].filter(Boolean).join("：") || undefined, "warning");
+    const reason = stringPayload(event, "reason") ?? displayText(event.summary);
+    return item(event, "任务流", "工单排队", [phase ? phaseLabel(phase) : undefined, reason].filter(Boolean).join("：") || undefined, "warning");
   }
 
   if (event.type === "assignment.created") {
@@ -143,8 +143,8 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     const detail = [
       displayText(event.summary) ?? event.summary,
       reason,
-      attempts ? `自治尝试 ${attempts} 次` : undefined
-    ].filter(Boolean).join("：").replace("：自治尝试", "；自治尝试");
+      attempts ? `工单尝试 ${attempts} 次` : undefined
+    ].filter(Boolean).join("：").replace("：工单尝试", "；工单尝试");
     return item(event, "任务", "任务失败", detail || undefined, "danger");
   }
 
@@ -178,7 +178,7 @@ function actorForTimelineGroup(event: AutoAgentEvent, item: EventTimelineItem, p
 }
 
 function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): string | undefined {
-  if (event.type === "handoff.created") return "自治返工";
+  if (event.type === "handoff.created") return "工单排队";
   if (event.type === "run.failed") return "任务失败";
   const phase = stringPayload(event, "phase") as MissionPhase | undefined;
   if (phase) return phaseLabel(phase);

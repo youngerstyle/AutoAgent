@@ -13,6 +13,7 @@ export const EVENT_TYPES = [
   "tool.failed",
   "tool.denied",
   "handoff.created",
+  "ticket.created",
   "human.followup",
   "qa.feedback",
   "qa.failed",

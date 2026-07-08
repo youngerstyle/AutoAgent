@@ -162,16 +162,16 @@ describe("event view model", () => {
     expect(groups[0].events.map((item) => item.id)).toEqual(["ev_1", "ev_2", "ev_3"]);
   });
 
-  it("shows autonomous handoff records as task-flow events instead of fake agents", () => {
-    const item = buildEventTimelineItem(event("handoff.created", "Agent 自治返工：需要人工修改地图数据并验证。", {
+  it("shows handoff records as queued ticket-flow events instead of fake agents", () => {
+    const item = buildEventTimelineItem(event("handoff.created", "老板正在忙，老板验收工单已进入队列", {
       phase: "boss_intake",
-      reason: "需要人工修改地图数据并验证。"
+      reason: "老板验收工单已进入队列"
     }));
 
     expect(item).toMatchObject({
       actor: "任务流",
-      title: "自治返工",
-      detail: "需求接收：需要人工修改地图数据并验证。"
+      title: "工单排队",
+      detail: "需求接收：老板验收工单已进入队列"
     });
   });
 
@@ -179,7 +179,7 @@ describe("event view model", () => {
     const groups = buildEventTimelineGroups([
       event("task.phase_changed", "进入阶段：计划拆解", { phase: "pm_plan" }, "ev_1"),
       event("assignment.completed", "产品/项目已完成计划拆解", { assignment: { type: "pm_plan" } }, "ev_2"),
-      event("run.failed", "需求接收无法自治修复，任务失败", {
+      event("run.failed", "需求接收无法完成后续处理，任务失败", {
         reason: "当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。",
         attempts: 3
       }, "ev_3")
@@ -193,7 +193,7 @@ describe("event view model", () => {
     expect(buildEventTimelineItem(groups[1].events[0])).toMatchObject({
       actor: "任务",
       title: "任务失败",
-      detail: "需求接收无法自治修复，任务失败：当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。；自治尝试 3 次"
+      detail: "需求接收无法完成后续处理，任务失败：当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。；工单尝试 3 次"
     });
   });
 });

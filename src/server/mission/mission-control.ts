@@ -13,7 +13,6 @@ import { projectWorkspaceState } from "../storage/state-projector.js";
 import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
 import { readJson, writeJson } from "../storage/json.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
-import { assignmentTypeForPhase, nextPhase } from "./phases.js";
 import { buildLoopDebugLog } from "./loop-debug-log.js";
 import { createTicketRuntime, type TicketRuntime } from "./ticket-runtime.js";
 
@@ -128,7 +127,8 @@ export class MissionControl {
       if (state.taskRun.phase === "qa" && isManualTestingBoundary(state)) return this.snapshot(workspace, state.task.id, state.taskRun.id);
       this.applyHumanActionToTickets(state, "继续");
     }
-    const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state) : state.nextPhase;
+    const resumeTicket = this.nextRunnableTicket(state);
+    const resumePhase = resumeTicket ? phaseForTicket(resumeTicket) : state.nextPhase;
     state.pauseRequested = false;
     state.status = "running";
     state.task.status = "running";
@@ -155,17 +155,17 @@ export class MissionControl {
       throw new HttpError(409, "Task is already terminal", "TASK_TERMINAL");
     }
 
-    const currentPhase = state.taskRun.phase;
+    const blockedTicket = state.status === "blocked" ? this.blockedTicket(state) : undefined;
+    const currentPhase = blockedTicket ? phaseForTicket(blockedTicket) : state.taskRun.phase;
     const blockedFollowupAction = state.status === "blocked"
       ? await this.runTicketResumeReview(workspace, state, followup)
       : "continue";
-    const resumePhase = state.status === "blocked" ? phaseAfterHumanFollowup(state, blockedFollowupAction) : state.nextPhase;
     const followups = Array.isArray(state.context.humanFollowups) ? state.context.humanFollowups as Array<Record<string, unknown>> : [];
     const entry = {
       message: followup,
-      blockedPhase: state.status === "blocked" ? currentPhase : undefined,
+      blockedTicketId: blockedTicket?.id,
+      blockedPhase: blockedTicket ? currentPhase : undefined,
       fromPhase: currentPhase,
-      resumePhase,
       at: new Date().toISOString()
     };
     state.context.humanFollowups = [...followups, entry];
@@ -174,6 +174,8 @@ export class MissionControl {
       this.applyHumanActionToTickets(state, followup);
     }
     if ((state.status === "blocked" && blockedFollowupAction !== "hold") || state.status === "paused") {
+      const resumeTicket = this.nextRunnableTicket(state);
+      const resumePhase = resumeTicket ? phaseForTicket(resumeTicket) : currentPhase;
       state.nextPhase = resumePhase;
       state.pauseRequested = false;
       state.stopRequested = false;
@@ -187,12 +189,12 @@ export class MissionControl {
     await this.append(workspace, state, "human.followup", "human 已补充说明", {
       message: followup,
       fromPhase: currentPhase,
-      resumePhase,
+      resumeTicketId: blockedTicket?.id,
       action: blockedFollowupAction
     });
     if (blockedFollowupAction !== "hold") {
-      await this.append(workspace, state, "task.phase_changed", `收到补充，返回阶段：${phaseLabel(resumePhase)}`, {
-        phase: resumePhase,
+      await this.append(workspace, state, "task.phase_changed", "收到补充，恢复可运行工单", {
+        phase: state.taskRun.phase,
         status: "running",
         fromPhase: currentPhase
       });
@@ -358,51 +360,39 @@ export class MissionControl {
     if (roleToolBoundaryReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.routeBackToPhaseOrFail(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
+      return this.createFollowupTicketOrFail(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
-    if (humanAuthorizationReason || manualOnlyReason || planningClarificationReason) {
-      const reason = humanAuthorizationReason ?? manualOnlyReason ?? planningClarificationReason ?? "需要 human 处理";
-      const blockerManualReason = manualOnlyReason ? manualTestingReason : undefined;
-      ticketRuntime.blockTicket(ticket.id, ticketBlockerFor({
-        reason,
-        manualTestingReason: blockerManualReason,
+    const invalidPmPlanReason = phase === "pm_plan"
+      && !planningClarificationReason
+      && plannedTicketItems(phaseResult).length === 0
+      ? "PM 没有返回 ticketGraph，无法形成可执行工单 DAG"
+      : undefined;
+
+    if (humanAuthorizationReason || manualOnlyReason || planningClarificationReason || invalidPmPlanReason) {
+      const reason = humanAuthorizationReason ?? manualOnlyReason ?? planningClarificationReason ?? invalidPmPlanReason ?? "需要 human 处理";
+      return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, reason, {
+        manualTestingReason: manualOnlyReason ? manualTestingReason : undefined,
         explicitAuthorization: Boolean(explicitAuthorizationReason),
         toolPolicyBlocked: Boolean(blockingToolFailureReason)
-      }));
-      this.syncTickets(state, ticketRuntime);
-      result.assignment.status = "blocked";
-      state.status = "blocked";
-      state.task.status = "blocked";
-      state.taskRun.status = "blocked";
-      state.taskRun.phase = phase;
-      state.taskRun.endedAt = new Date().toISOString();
-      await this.writeState(workspace, state);
-      await this.append(workspace, state, "assignment.blocked", `${phaseLabel(phase)}受阻：${reason}`, {
-        assignmentId: result.assignment.id,
-        assignmentRun: result.assignmentRun,
-        reason,
-        result: phaseResult,
-        rawText: result.providerResult.text,
-        toolResults: result.toolResults
       });
-      await this.append(workspace, state, "run.blocked", `任务受阻：${phaseLabel(phase)}受阻：${reason}`, { task: state.task, taskRun: state.taskRun, reason, phase });
-      return state;
     }
 
     if (qaDefectReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.routeBackToPhaseOrFail(workspace, state, "implementation", qaDefectReason, "qaDefectRetries", ticket);
+      return this.createFollowupTicketOrFail(workspace, state, "rework", qaDefectReason, "qaDefectRetries", ticket);
     }
 
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = agentObstacle
-        ? targetPhaseFromStructured(result.providerResult.structured, "implementation")
-        : "implementation";
-      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", `${targetPhase}AutonomyRetries`, ticket);
+      const targetType = agentObstacle ? targetTicketTypeFromStructured(result.providerResult.structured) : "rework";
+      if (!targetType) {
+        return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, agentObstacle ?? "开发受阻但未明确后续工单");
+      }
+      const retryKey = missingImplementation ? "implementationAutonomyRetries" : `${targetType}AutonomyRetries`;
+      return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", retryKey, ticket);
     }
 
     if (phase === "qa") {
@@ -415,7 +405,7 @@ export class MissionControl {
         });
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
-        this.createTicketForPhase(state, "implementation", ticket, agentObstacle ?? "测试要求开发返工");
+        this.createFollowupTicket(state, "rework", ticket, agentObstacle ?? "测试要求开发返工");
         await this.writeState(workspace, state);
         return state;
       }
@@ -434,22 +424,18 @@ export class MissionControl {
     if (phase === "boss_acceptance" && agentObstacle) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      const targetPhase = targetPhaseFromStructured(result.providerResult.structured, "implementation");
-      return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle, "bossAcceptanceReworkRetries", ticket);
+      const targetType = targetTicketTypeFromStructured(result.providerResult.structured) ?? "rework";
+      return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle, "bossAcceptanceReworkRetries", ticket);
     }
 
     if (agentObstacle) {
-      const targetPhase = targetPhaseFromStructured(result.providerResult.structured, defaultTransferPhaseForObstacle(phase));
-      if (targetPhase !== nextPhase(phase)) {
+      const targetType = targetTicketTypeFromStructured(result.providerResult.structured);
+      if (targetType) {
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
-        return this.routeBackToPhaseOrFail(workspace, state, targetPhase, agentObstacle, `${targetPhase}AutonomyRetries`, ticket);
+        return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle, `${targetType}AutonomyRetries`, ticket);
       }
-      await this.append(workspace, state, "task.phase_changed", `Agent 自治继续：${agentObstacle}`, {
-        phase,
-        status: "running",
-        reason: agentObstacle
-      });
+      return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, agentObstacle);
     }
 
     if (phase === "architect_plan" && result.providerResult.structured?.needsSpecialist) {
@@ -488,7 +474,7 @@ export class MissionControl {
 
   private seedInitialTickets(workspace: Workspace, state: MissionState): void {
     const runtime = this.ticketRuntime(state);
-    runtime.createTicket({
+    const bossTicket = runtime.createTicket({
       workspaceId: workspace.id,
       taskId: state.task.id,
       taskRunId: state.taskRun.id,
@@ -496,6 +482,18 @@ export class MissionControl {
       brief: briefForPhase("boss_intake", state),
       expectedArtifact: expectedArtifactForPhase("boss_intake"),
       targetRole: "boss"
+    });
+    runtime.createTicket({
+      workspaceId: workspace.id,
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      type: "pm_plan",
+      brief: briefForPhase("pm_plan", state),
+      expectedArtifact: expectedArtifactForPhase("pm_plan"),
+      targetRole: "pm",
+      parentTicketId: bossTicket.id,
+      createdByTicketId: bossTicket.id,
+      dependsOnTicketIds: [bossTicket.id]
     });
     this.syncTickets(state, runtime);
   }
@@ -525,14 +523,6 @@ export class MissionControl {
       ? this.createTicketsFromPmPlan(state, sourceTicket)
       : false;
     if (planned || this.hasPlannedSuccessor(state, sourceTicket)) return;
-
-    const next = nextPhase(phaseForTicket(sourceTicket));
-    if (next === "completed") {
-      state.nextPhase = "completed";
-      state.taskRun.phase = "completed";
-      return;
-    }
-    this.createTicketForPhase(state, next, sourceTicket);
   }
 
   private createTicketsFromPmPlan(state: MissionState, sourceTicket: Ticket): boolean {
@@ -587,15 +577,15 @@ export class MissionControl {
     });
   }
 
-  private createTicketForPhase(state: MissionState, phase: MissionPhase, sourceTicket: Ticket, returnReason?: string): Ticket | undefined {
-    if (phase === "completed" || phase === "failed" || phase === "interrupted" || phase === "idle" || phase === "paused") return undefined;
+  private createFollowupTicket(state: MissionState, type: TicketType, sourceTicket: Ticket, returnReason?: string): Ticket | undefined {
     const runtime = this.ticketRuntime(state);
-    const role = roleForPhase(phase);
+    const phase = phaseForTicketType(type);
+    const role = canonicalRoleForTicketType(type);
     const ticket = runtime.createTicket({
       workspaceId: state.task.workspaceId,
       taskId: state.task.id,
       taskRunId: state.taskRun.id,
-      type: assignmentTypeForPhase(phase),
+      type,
       brief: returnReason ? `${briefForPhase(phase, state)}：${returnReason}` : briefForPhase(phase, state),
       expectedArtifact: expectedArtifactForPhase(phase),
       targetRole: role,
@@ -629,14 +619,15 @@ export class MissionControl {
     return agent;
   }
 
-  private async routeBackToPhaseOrFail(workspace: Workspace, state: MissionState, targetPhase: MissionPhase, reason: string, retryKey: string, sourceTicket: Ticket): Promise<MissionState> {
+  private async createFollowupTicketOrFail(workspace: Workspace, state: MissionState, targetType: TicketType, reason: string, retryKey: string, sourceTicket: Ticket): Promise<MissionState> {
     const retries = Number(state.context[retryKey] ?? 0) + 1;
     state.context[retryKey] = retries;
     if (retries < 3) {
-      this.createTicketForPhase(state, targetPhase, sourceTicket, reason);
+      const ticket = this.createFollowupTicket(state, targetType, sourceTicket, reason);
       await this.writeState(workspace, state);
-      await this.append(workspace, state, "handoff.created", `Agent 自治返工：${reason}`, {
-        phase: targetPhase,
+      await this.append(workspace, state, "ticket.created", `已创建后续工单：${phaseLabel(phaseForTicketType(targetType))}`, {
+        ticketId: ticket?.id,
+        ticketType: targetType,
         reason,
         attempt: retries
       });
@@ -651,13 +642,47 @@ export class MissionControl {
     await this.writeState(workspace, state);
     const summary = retryKey === "implementationAutonomyRetries"
       ? "开发无法产出真实交付证据，任务失败"
-      : `${phaseLabel(targetPhase)}无法自治修复，任务失败`;
+      : `${phaseLabel(phaseForTicketType(targetType))}无法完成后续处理，任务失败`;
     await this.append(workspace, state, "run.failed", summary, {
       task: state.task,
       taskRun: state.taskRun,
       reason,
       attempts: retries
     });
+    return state;
+  }
+
+  private async blockCurrentTicket(
+    workspace: Workspace,
+    state: MissionState,
+    ticketRuntime: TicketRuntime,
+    ticket: Ticket,
+    result: Awaited<ReturnType<AgentRuntime["runAssignment"]>>,
+    phaseResult: unknown,
+    reason: string,
+    blockerInput: { manualTestingReason?: string; explicitAuthorization?: boolean; toolPolicyBlocked?: boolean } = {}
+  ): Promise<MissionState> {
+    const phase = phaseForTicket(ticket);
+    ticketRuntime.blockTicket(ticket.id, ticketBlockerFor({ reason, ...blockerInput }));
+    this.syncTickets(state, ticketRuntime);
+    result.assignment.status = "blocked";
+    state.status = "blocked";
+    state.task.status = "blocked";
+    state.taskRun.status = "blocked";
+    state.taskRun.phase = phase;
+    state.nextPhase = phase;
+    state.taskRun.endedAt = new Date().toISOString();
+    await this.writeState(workspace, state);
+    await this.append(workspace, state, "assignment.blocked", `${phaseLabel(phase)}受阻：${reason}`, {
+      assignmentId: result.assignment.id,
+      assignmentRun: result.assignmentRun,
+      reason,
+      result: phaseResult,
+      rawText: result.providerResult.text,
+      toolResults: result.toolResults,
+      ticketId: ticket.id
+    });
+    await this.append(workspace, state, "run.blocked", `任务受阻：${phaseLabel(phase)}受阻：${reason}`, { task: state.task, taskRun: state.taskRun, reason, phase, ticketId: ticket.id });
     return state;
   }
 
@@ -1060,34 +1085,21 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function defaultTransferPhaseForObstacle(currentPhase: MissionPhase): MissionPhase {
-  if (currentPhase === "boss_intake") return "pm_plan";
-  if (currentPhase === "pm_plan") return "implementation";
-  if (currentPhase === "architect_plan") return "pm_plan";
-  if (currentPhase === "qa" || currentPhase === "boss_acceptance") return "implementation";
-  if (currentPhase === "implementation") return "implementation";
-  return currentPhase;
+function targetTicketTypeFromStructured(structured: Record<string, unknown> | undefined): TicketType | undefined {
+  const raw = stringValue(structured?.target_ticket_type)
+    ?? stringValue(structured?.targetTicketType);
+  return raw ? ticketTypeFromValueOrUndefined(raw) : undefined;
 }
 
-function targetPhaseFromStructured(structured: Record<string, unknown> | undefined, fallback: MissionPhase): MissionPhase {
-  const raw = stringValue(structured?.target_phase)
-    ?? stringValue(structured?.targetPhase)
-    ?? stringValue(structured?.return_to)
-    ?? stringValue(structured?.returnTo)
-    ?? stringValue(structured?.route_to)
-    ?? stringValue(structured?.routeTo);
-  return raw ? missionPhaseFromValue(raw, fallback) : fallback;
-}
-
-function missionPhaseFromValue(value: string, fallback: MissionPhase): MissionPhase {
+function ticketTypeFromValueOrUndefined(value: string): TicketType | undefined {
   const normalized = value.trim();
-  const allowed = new Set<MissionPhase>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance"]);
-  if (allowed.has(normalized as MissionPhase)) return normalized as MissionPhase;
+  const allowed = new Set<TicketType>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance", "specialist", "rework", "human_action"]);
+  if (allowed.has(normalized as TicketType)) return normalized as TicketType;
   if (normalized === "pm" || normalized === "product") return "pm_plan";
   if (normalized === "architect" || normalized === "architecture") return "architect_plan";
-  if (normalized === "dev" || normalized === "development" || normalized === "rework") return "implementation";
+  if (normalized === "dev" || normalized === "development") return "implementation";
   if (normalized === "acceptance") return "boss_acceptance";
-  return fallback;
+  return undefined;
 }
 
 function humanAuthorizationReasonForPhase(structured?: Record<string, unknown>): string | undefined {
@@ -1317,19 +1329,6 @@ function phaseFromAssignmentSummary(summary: string): MissionPhase {
   if (summary.includes("质量检查")) return "qa";
   if (summary.includes("老板验收")) return "boss_acceptance";
   return "boss_acceptance";
-}
-
-function phaseAfterHumanFollowup(state: MissionState, action: BlockedFollowupAction = "continue"): MissionPhase {
-  const blockedPhase = state.taskRun.phase;
-  if (blockedPhase === "qa") {
-    if (isManualTestingBoundary(state)) {
-      if (action === "pass_manual_test") return "boss_acceptance";
-      if (action === "fail_manual_test") return "implementation";
-      return "qa";
-    }
-    return "implementation";
-  }
-  return blockedPhase;
 }
 
 function isManualTestingBoundary(state: MissionState): boolean {
