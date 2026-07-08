@@ -149,6 +149,8 @@ function assignmentStatus(type: AutoAgentEvent["type"]): EntityStatus {
   return "blocked";
 }
 
+const PROJECTED_RECENT_EVENTS_LIMIT = 100;
+
 function visibleRecentEvents(events: AutoAgentEvent[]): AutoAgentEvent[] {
   let lastBlockedIndex = -1;
   for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -160,7 +162,7 @@ function visibleRecentEvents(events: AutoAgentEvent[]): AutoAgentEvent[] {
   const visible = lastBlockedIndex < 0
     ? events
     : events.filter((event, index) => !(index < lastBlockedIndex && event.type === "run.completed"));
-  return visible.slice(-100);
+  return visible.slice(-PROJECTED_RECENT_EVENTS_LIMIT);
 }
 
 function lastEventIndex(events: AutoAgentEvent[], type: AutoAgentEvent["type"]): number {

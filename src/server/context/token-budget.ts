@@ -18,6 +18,8 @@ export interface ContextBudget {
   recentTurnTokens: number;
   toolObservationTokens: number;
   dynamicContextTokens: number;
+  maxRecentSessionGroups: number;
+  compactionTriggerRatio: number;
 }
 
 export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
@@ -29,7 +31,9 @@ export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
   sessionSummaryTokens: 8_000,
   recentTurnTokens: 12_000,
   toolObservationTokens: 12_000,
-  dynamicContextTokens: 8_000
+  dynamicContextTokens: 8_000,
+  maxRecentSessionGroups: 3,
+  compactionTriggerRatio: 0.75
 };
 
 const CHARS_PER_TOKEN = 4;
@@ -72,4 +76,3 @@ export function sectionReport(name: string, value: TruncatedText): ContextSectio
     truncated: value.truncated
   };
 }
-

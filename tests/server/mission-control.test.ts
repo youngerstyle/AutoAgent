@@ -282,18 +282,19 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
   });
 
-  it("retries and then fails implementation that reports success without real tool evidence", async () => {
-    const fixture = await missionFixture(new NoImplementationEvidenceProvider());
+  it("keeps creating implementation follow-up tickets until real delivery evidence appears", async () => {
+    const fixture = await missionFixture(new DelayedImplementationEvidenceProvider());
 
     const snapshot = await fixture.mission.startTask(
       { workspaceId: fixture.workspace.id, goal: "Build without files" },
       { runSynchronously: true }
     );
 
-    expect(snapshot.status).toBe("failed");
+    expect(snapshot.status).toBe("completed");
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.filter((event) => event.type === "ticket.created" && String(event.summary).includes("开发执行"))).toHaveLength(3);
     expect(events.map((event) => event.type)).not.toContain("run.blocked");
-    expect(events.find((event) => event.type === "run.failed")?.summary).toContain("开发无法产出真实交付证据");
+    expect(events.map((event) => event.type)).not.toContain("run.failed");
   });
 
   it("accepts an existing declared workspace artifact as implementation evidence", async () => {
@@ -987,11 +988,19 @@ class ChineseClarificationProvider implements ProviderRunner {
   }
 }
 
-class NoImplementationEvidenceProvider implements ProviderRunner {
+class DelayedImplementationEvidenceProvider implements ProviderRunner {
+  private devCalls = 0;
+
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
     if (input.role === "pm") return defaultTicketGraphResult();
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
-    if (input.role === "dev") return result({ ok: true, summary: "已完成" });
+    if (input.role === "dev") {
+      this.devCalls += 1;
+      if (this.devCalls <= 3) return result({ ok: true, summary: "已完成但没有交付文件证据" });
+      return implementationResult();
+    }
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
     return result({ ok: true });
   }
 }

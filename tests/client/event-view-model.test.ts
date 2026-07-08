@@ -15,6 +15,29 @@ describe("event view model", () => {
     expect(item.debugType).toBe("provider.started");
   });
 
+  it("turns context assembly events into readable budget summaries", () => {
+    const item = buildEventTimelineItem(event("context.assembled", "老板完成上下文组装", {
+      report: {
+        originalSessionChars: 12000,
+        injectedChars: 1333,
+        estimatedTokens: 333,
+        sections: [
+          { name: "stable_prompt", originalChars: 79, injectedChars: 79, estimatedTokens: 20, truncated: false },
+          { name: "dynamic_context", originalChars: 1054, injectedChars: 1054, estimatedTokens: 264, truncated: false }
+        ],
+        compaction: { compacted: false }
+      }
+    }));
+
+    expect(item).toMatchObject({
+      actor: "老板",
+      title: "上下文组装完成",
+      detail: "发送 1,333 字，约 333 tokens，原始 session 12,000 字，未压缩"
+    });
+    expect(item.detail).not.toContain("originalChars");
+    expect(item.detail).not.toContain("{");
+  });
+
   it("turns agent step events into actor, action, and detail", () => {
     const item = buildEventTimelineItem(event("agent.step_started", "架构师: 判断架构方案、技术路径和能力缺口", {
       step: "判断架构方案、技术路径和能力缺口"

@@ -234,6 +234,30 @@ describe("AgentRuntime", () => {
     expect(followUpPrompt).not.toContain("FILE_END");
   });
 
+  it("allows real development work to observe several files before completing", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    await writeFile(path.join(root, "index.html"), "<main></main>", "utf8");
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    const provider = new MultiObservationThenCompleteProvider();
+    const runtime = new AgentRuntime(new EventLedger(), provider);
+
+    const result = await runtime.runAssignment({
+      workspace,
+      agent: dev,
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      goal: "Inspect enough project files before implementation",
+      type: "implementation",
+      brief: "Read project files and then complete",
+      expectedArtifact: "Implementation conclusion"
+    });
+
+    expect(provider.calls).toBe(6);
+    expect(result.providerResult.structured).toMatchObject({ action: "complete", summary: "done after enough observations" });
+    expect(result.providerResult.structured?.reason).toBeUndefined();
+  });
+
   it("uses workspace agent provider and model overrides during assignment execution", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
     const workspace = testWorkspace(root);
@@ -368,6 +392,28 @@ class HugeFileObservationProvider implements ProviderRunner {
     return {
       text: JSON.stringify({ action: "complete", summary: "done" }),
       structured: { action: "complete", summary: "done" },
+      events: [{ type: "text", text: "done" }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+    };
+  }
+}
+
+class MultiObservationThenCompleteProvider implements ProviderRunner {
+  calls = 0;
+
+  async runWithRetry(): Promise<AgentTurnResult> {
+    this.calls += 1;
+    if (this.calls <= 5) {
+      return {
+        text: JSON.stringify({ toolIntents: [{ tool: "readFile", path: "index.html" }] }),
+        structured: { toolIntents: [{ tool: "readFile", path: "index.html" }] },
+        events: [{ type: "text", text: "read file" }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+      };
+    }
+    return {
+      text: JSON.stringify({ action: "complete", summary: "done after enough observations" }),
+      structured: { action: "complete", summary: "done after enough observations" },
       events: [{ type: "text", text: "done" }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     };

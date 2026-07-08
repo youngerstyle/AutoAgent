@@ -3,6 +3,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const writeQueues = new Map<string, Promise<void>>();
+const RENAME_MAX_ATTEMPTS = 6;
+const RENAME_RETRY_BACKOFF_MS = 25;
 
 export async function readJson<T>(filePath: string, fallback: T): Promise<T> {
   try {
@@ -42,14 +44,13 @@ async function writeJsonNow(filePath: string, value: unknown): Promise<void> {
 }
 
 async function renameWithRetry(source: string, target: string): Promise<void> {
-  const maxAttempts = 6;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt += 1) {
     try {
       await rename(source, target);
       return;
     } catch (error) {
-      if (!isRetriableRenameError(error) || attempt === maxAttempts - 1) throw error;
-      await delay(25 * (attempt + 1));
+      if (!isRetriableRenameError(error) || attempt === RENAME_MAX_ATTEMPTS - 1) throw error;
+      await delay(RENAME_RETRY_BACKOFF_MS * (attempt + 1));
     }
   }
 }

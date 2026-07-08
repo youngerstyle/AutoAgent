@@ -38,6 +38,7 @@ const TASK_PANEL_MIN_WIDTH = 220;
 const TASK_PANEL_MAX_WIDTH = 420;
 const EVENT_PANEL_MIN_WIDTH = 260;
 const EVENT_PANEL_MAX_WIDTH = 520;
+const LIVE_EVENT_BUFFER_LIMIT = 80;
 
 type RunLayoutWidths = {
   workspace: number;
@@ -115,7 +116,7 @@ export function App() {
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
-      setEvents((current) => [...current, event].slice(-80));
+      setEvents((current) => [...current, event].slice(-LIVE_EVENT_BUFFER_LIMIT));
       void refreshSnapshot(selectedId);
     });
     source.onerror = () => setError("Live event stream disconnected");
@@ -814,6 +815,7 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
   const [expanded, setExpanded] = useState(false);
   const item = buildEventTimelineItem(props.event);
   const loopEntries = relatedLoopEntries(props.event, item.actor, props.debugLog);
+  const contextSummary = contextReportDebugText(props.event);
   const payload = JSON.stringify(props.event.payload ?? {}, null, 2);
   return (
     <article className={`event-item ${item.tone}`} title={item.debugType}>
@@ -826,10 +828,16 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
       </button>
       {expanded ? (
         <div className="event-debug-body">
+          {contextSummary ? (
+            <DebugBlock title="上下文摘要" subtitle="本轮模型输入预算" content={contextSummary} kind="flow" />
+          ) : null}
           {loopEntries.map((entry) => (
             <DebugBlock key={entry.id} title={debugKindLabel(entry.kind)} subtitle={entry.detail} content={entry.content} kind={entry.kind} />
           ))}
-          <DebugBlock title="事件原始数据" subtitle={props.event.type} content={payload} kind="flow" />
+          <details className="event-raw-details">
+            <summary>查看事件原始数据</summary>
+            <DebugBlock title="事件原始数据" subtitle={props.event.type} content={payload} kind="flow" />
+          </details>
         </div>
       ) : null}
     </article>
@@ -869,6 +877,63 @@ function DebugBlock(props: { title: string; subtitle?: string; content: string; 
       <pre>{props.content || "{}"}</pre>
     </section>
   );
+}
+
+function contextReportDebugText(event: AutoAgentEvent): string | undefined {
+  if (event.type !== "context.assembled") return undefined;
+  const report = recordValue(event.payload.report);
+  if (!report) return undefined;
+  const sections = Array.isArray(report.sections) ? report.sections : [];
+  const sectionLines = sections
+    .map((section) => recordValue(section))
+    .filter((section): section is Record<string, unknown> => Boolean(section))
+    .map((section) => {
+      const name = contextSectionLabel(stringValue(section.name));
+      const injectedChars = numberValue(section.injectedChars);
+      const estimatedTokens = numberValue(section.estimatedTokens);
+      const originalChars = numberValue(section.originalChars);
+      const truncated = section.truncated === true ? "，已截断" : "";
+      return `- ${name}：${formatCount(injectedChars)} 字，约 ${formatCount(estimatedTokens)} tokens，原始 ${formatCount(originalChars)} 字${truncated}`;
+    });
+  const compaction = recordValue(report.compaction);
+  const compacted = compaction?.compacted === true ? "已压缩" : "未压缩";
+  const header = [
+    `实际发送：${formatCount(numberValue(report.injectedChars))} 字，约 ${formatCount(numberValue(report.estimatedTokens))} tokens`,
+    `原始 session：${formatCount(numberValue(report.originalSessionChars))} 字`,
+    `会话压缩：${compacted}`
+  ];
+  return [...header, "", "分段：", ...sectionLines].join("\n");
+}
+
+function contextSectionLabel(name: string | undefined): string {
+  const labels: Record<string, string> = {
+    stable_prompt: "稳定提示词",
+    current_assignment: "当前工单",
+    workspace_memory: "工作区记忆",
+    session_summary: "会话摘要",
+    recent_turns: "近期会话",
+    tool_observations: "工具结果",
+    dynamic_context: "动态上下文"
+  };
+  return name ? labels[name] ?? name : "未知分段";
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatCount(value: number | undefined): string {
+  return value === undefined ? "-" : Math.round(value).toLocaleString("zh-CN");
 }
 
 function relatedLoopEntries(event: AutoAgentEvent, actor: string, log: LoopDebugLog): LoopDebugEntry[] {

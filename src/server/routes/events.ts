@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { AutoAgentEvent } from "../../shared/types.js";
 import type { EventLedger } from "../storage/event-ledger.js";
+import { RUNTIME_LIMITS } from "../runtime-limits.js";
 
 export function createEventRouter(ledger: EventLedger) {
   const router = Router({ mergeParams: true });
@@ -20,7 +21,7 @@ export function createEventRouter(ledger: EventLedger) {
     };
     const heartbeat = setInterval(() => {
       res.write(": heartbeat\n\n");
-    }, 15000);
+    }, RUNTIME_LIMITS.sseHeartbeatMs);
     heartbeat.unref?.();
 
     ledger.bus.on(`workspace:${workspaceId}`, onEvent);

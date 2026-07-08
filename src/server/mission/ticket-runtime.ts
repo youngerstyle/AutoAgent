@@ -1,5 +1,6 @@
 import { createId } from "../../shared/ids.js";
 import type { AgentInboxMessage, AgentRole, Ticket, TicketBlocker, TicketType, WorkspaceAgent } from "../../shared/types.js";
+import { RUNTIME_LIMITS } from "../runtime-limits.js";
 
 export interface CreateTicketInput {
   workspaceId: string;
@@ -78,7 +79,7 @@ export class TicketRuntime {
     return this.allMessages().filter((message) => message.toAgentId === agentId || message.claimedByAgentId === agentId);
   }
 
-  claimNext(agent: WorkspaceAgent, nowFactory: () => Date = () => new Date(), leaseMs = 60_000): ClaimedTicket | undefined {
+  claimNext(agent: WorkspaceAgent, nowFactory: () => Date = () => new Date(), leaseMs = RUNTIME_LIMITS.ticketLeaseMs): ClaimedTicket | undefined {
     const now = nowFactory();
     this.expireLeases(now);
     const alreadyBusy = this.allMessages().some((message) =>

@@ -87,6 +87,10 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, actorFromSummary(event.summary), "模型调用失败", displayText(event.summary), "danger");
   }
 
+  if (event.type === "context.assembled") {
+    return item(event, contextActorFromSummary(event.summary), "上下文组装完成", contextAssemblyDetail(event), "neutral");
+  }
+
   if (event.type === "agent.step_started") {
     return item(event, actorFromSummary(event.summary), "开始执行", stepDetail(event), "running");
   }
@@ -360,6 +364,47 @@ function stringPayload(event: AutoAgentEvent, key: string): string | undefined {
 function numberPayload(event: AutoAgentEvent, key: string): number | undefined {
   const value = event.payload[key];
   return typeof value === "number" ? value : undefined;
+}
+
+function recordPayload(event: AutoAgentEvent, key: string): Record<string, unknown> | undefined {
+  const value = event.payload[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function contextAssemblyDetail(event: AutoAgentEvent): string | undefined {
+  const report = recordPayload(event, "report");
+  if (!report) return displayText(event.summary);
+  const injectedChars = numberFromRecord(report, "injectedChars");
+  const estimatedTokens = numberFromRecord(report, "estimatedTokens");
+  const originalSessionChars = numberFromRecord(report, "originalSessionChars");
+  const compaction = report.compaction && typeof report.compaction === "object" && !Array.isArray(report.compaction)
+    ? report.compaction as Record<string, unknown>
+    : undefined;
+  const compacted = compaction?.compacted === true;
+  const parts = [
+    injectedChars !== undefined ? `发送 ${formatCount(injectedChars)} 字` : undefined,
+    estimatedTokens !== undefined ? `约 ${formatCount(estimatedTokens)} tokens` : undefined,
+    originalSessionChars !== undefined ? `原始 session ${formatCount(originalSessionChars)} 字` : undefined,
+    compacted ? "已压缩" : "未压缩"
+  ];
+  return parts.filter(Boolean).join("，");
+}
+
+function contextActorFromSummary(summary: string): string {
+  const readable = displayText(summary) ?? summary;
+  const match = readable.match(/^(.+?)完成上下文组装/);
+  return match?.[1] ? actorLabel(match[1].trim()) : actorFromSummary(summary) || "系统";
+}
+
+function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatCount(value: number): string {
+  return Math.round(value).toLocaleString("zh-CN");
 }
 
 function nestedStringPayload(event: AutoAgentEvent, objectKey: string, key: string): string | undefined {

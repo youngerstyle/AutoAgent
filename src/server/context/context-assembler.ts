@@ -40,8 +40,8 @@ export class ContextAssembler {
     const contextState = await this.store.readState(input.workspace.rootPath, input.agent.id, input.taskRunId);
     const memory = await this.store.readMemory(input.workspace.rootPath, input.agent.id);
     const compaction = compactSessionIfNeeded(input.session, {
-      maxRecentGroups: 3,
-      triggerTokens: Math.floor((this.budget.maxInputTokens - this.budget.reservedOutputTokens) * 0.75),
+      maxRecentGroups: this.budget.maxRecentSessionGroups,
+      triggerTokens: Math.floor((this.budget.maxInputTokens - this.budget.reservedOutputTokens) * this.budget.compactionTriggerRatio),
       compactToTokens: this.budget.sessionSummaryTokens,
       reason: "threshold"
     });

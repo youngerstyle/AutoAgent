@@ -10,6 +10,7 @@ import { runWorkspaceCommand } from "../tools/shell-tool.js";
 import type { ToolContext } from "../tools/tool-runtime.js";
 import { ContextAssembler } from "../context/context-assembler.js";
 import { profileForRole } from "./roster.js";
+import { RUNTIME_LIMITS } from "../runtime-limits.js";
 
 export interface ProviderRunner {
   runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult>;
@@ -36,7 +37,6 @@ export interface AssignmentResult {
   toolResults: Array<Record<string, unknown>>;
 }
 
-const MAX_TOOL_FOLLOW_UPS = 4;
 const OBSERVATION_TOOLS = new Set(["readFile", "listFiles", "shell"]);
 
 export class AgentRuntime {
@@ -85,7 +85,7 @@ export class AgentRuntime {
       let providerResult: AgentTurnResult | undefined;
       const allToolResults: Array<Record<string, unknown>> = [];
 
-      for (let turn = 1; turn <= MAX_TOOL_FOLLOW_UPS; turn += 1) {
+      for (let turn = 1; turn <= RUNTIME_LIMITS.maxToolFollowUps; turn += 1) {
         const session = await this.sessionStore.read(input.workspace.rootPath, input.agent.id, sessionId);
         const assembled = await this.contextAssembler.assemble({
           ...input,
@@ -187,7 +187,7 @@ export class AgentRuntime {
         });
 
         if (!needsToolFollowUp(toolResults)) break;
-        if (turn === MAX_TOOL_FOLLOW_UPS) {
+        if (turn === RUNTIME_LIMITS.maxToolFollowUps) {
           providerResult = {
             ...providerResult,
             structured: {

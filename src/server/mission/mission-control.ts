@@ -360,7 +360,7 @@ export class MissionControl {
     if (roleToolBoundaryReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.createFollowupTicketOrFail(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
+      return this.createFollowupTicketAndContinue(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
     const invalidPmPlanReason = phase === "pm_plan"
@@ -381,7 +381,7 @@ export class MissionControl {
     if (qaDefectReason) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
-      return this.createFollowupTicketOrFail(workspace, state, "rework", qaDefectReason, "qaDefectRetries", ticket);
+      return this.createFollowupTicketAndContinue(workspace, state, "rework", qaDefectReason, "qaDefectRetries", ticket);
     }
 
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
@@ -392,13 +392,13 @@ export class MissionControl {
         return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, agentObstacle ?? "开发受阻但未明确后续工单");
       }
       const retryKey = missingImplementation ? "implementationAutonomyRetries" : `${targetType}AutonomyRetries`;
-      return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", retryKey, ticket);
+      return this.createFollowupTicketAndContinue(workspace, state, targetType, agentObstacle ?? missingImplementation ?? "开发未产出交付证据", retryKey, ticket);
     }
 
     if (phase === "qa") {
       state.qaAttempts += 1;
       const passed = result.providerResult.structured?.passed !== false && !agentObstacle;
-      if (!passed && state.qaAttempts < 3) {
+      if (!passed) {
         await this.append(workspace, state, "qa.failed", "测试要求开发返工", {
           feedback: agentObstacle ?? result.providerResult.structured?.report ?? result.providerResult.text,
           attempt: state.qaAttempts
@@ -409,23 +409,13 @@ export class MissionControl {
         await this.writeState(workspace, state);
         return state;
       }
-      if (!passed) {
-        state.status = "failed";
-        state.task.status = "failed";
-        state.taskRun.status = "failed";
-        state.taskRun.phase = "failed";
-        state.taskRun.endedAt = new Date().toISOString();
-        await this.writeState(workspace, state);
-        await this.append(workspace, state, "run.failed", "测试重试次数耗尽，任务失败", { task: state.task, taskRun: state.taskRun, reason: agentObstacle });
-        return state;
-      }
     }
 
     if (phase === "boss_acceptance" && agentObstacle) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
       const targetType = targetTicketTypeFromStructured(result.providerResult.structured) ?? "rework";
-      return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle, "bossAcceptanceReworkRetries", ticket);
+      return this.createFollowupTicketAndContinue(workspace, state, targetType, agentObstacle, "bossAcceptanceReworkRetries", ticket);
     }
 
     if (agentObstacle) {
@@ -433,7 +423,7 @@ export class MissionControl {
       if (targetType) {
         ticketRuntime.ack(ticket.id, phaseResult);
         this.syncTickets(state, ticketRuntime);
-        return this.createFollowupTicketOrFail(workspace, state, targetType, agentObstacle, `${targetType}AutonomyRetries`, ticket);
+        return this.createFollowupTicketAndContinue(workspace, state, targetType, agentObstacle, `${targetType}AutonomyRetries`, ticket);
       }
       return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, agentObstacle);
     }
@@ -619,35 +609,16 @@ export class MissionControl {
     return agent;
   }
 
-  private async createFollowupTicketOrFail(workspace: Workspace, state: MissionState, targetType: TicketType, reason: string, retryKey: string, sourceTicket: Ticket): Promise<MissionState> {
+  private async createFollowupTicketAndContinue(workspace: Workspace, state: MissionState, targetType: TicketType, reason: string, retryKey: string, sourceTicket: Ticket): Promise<MissionState> {
     const retries = Number(state.context[retryKey] ?? 0) + 1;
     state.context[retryKey] = retries;
-    if (retries < 3) {
-      const ticket = this.createFollowupTicket(state, targetType, sourceTicket, reason);
-      await this.writeState(workspace, state);
-      await this.append(workspace, state, "ticket.created", `已创建后续工单：${phaseLabel(phaseForTicketType(targetType))}`, {
-        ticketId: ticket?.id,
-        ticketType: targetType,
-        reason,
-        attempt: retries
-      });
-      return state;
-    }
-
-    state.status = "failed";
-    state.task.status = "failed";
-    state.taskRun.status = "failed";
-    state.taskRun.phase = "failed";
-    state.taskRun.endedAt = new Date().toISOString();
+    const ticket = this.createFollowupTicket(state, targetType, sourceTicket, reason);
     await this.writeState(workspace, state);
-    const summary = retryKey === "implementationAutonomyRetries"
-      ? "开发无法产出真实交付证据，任务失败"
-      : `${phaseLabel(phaseForTicketType(targetType))}无法完成后续处理，任务失败`;
-    await this.append(workspace, state, "run.failed", summary, {
-      task: state.task,
-      taskRun: state.taskRun,
+    await this.append(workspace, state, "ticket.created", `已创建后续工单：${phaseLabel(phaseForTicketType(targetType))}`, {
+      ticketId: ticket?.id,
+      ticketType: targetType,
       reason,
-      attempts: retries
+      attempt: retries
     });
     return state;
   }

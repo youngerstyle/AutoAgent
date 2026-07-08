@@ -109,7 +109,6 @@ export function displayText(text: string | undefined): string | undefined {
   if (translatedCapability === "Task completed") return "任务已完成";
   if (translatedCapability === "Task failed") return "任务失败";
   if (translatedCapability === "QA requested implementation changes") return "测试要求开发返工";
-  if (translatedCapability === "QA failed after retry budget") return "测试重试次数耗尽，任务失败";
   if (translatedCapability.startsWith("Boss requested specialist: ")) return translatedCapability.replace("Boss requested specialist: ", "老板发起专家招聘：");
   if (translatedCapability.startsWith("Boss hired ") && translatedCapability.endsWith(" specialist")) {
     return `老板已招募${translatedCapability.slice("Boss hired ".length, -" specialist".length)}专家`;

@@ -1292,6 +1292,27 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.event-raw-details {
+  border: 1px solid #dce4ec;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.event-raw-details summary {
+  padding: 8px 10px;
+  color: #314255;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.event-raw-details .event-debug-block {
+  border: 0;
+  border-top: 1px solid #eef2f6;
+  border-left: 4px solid #2f80c0;
+  border-radius: 0;
+}
+
 .management-panel {
   height: 100%;
   min-height: 0;
