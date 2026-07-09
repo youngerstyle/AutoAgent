@@ -743,6 +743,30 @@ describe("MissionControl", () => {
     expect(firstBossAcceptanceIndex).toBeGreaterThan(secondQaCompletedIndex);
   });
 
+  it("blocks the current QA ticket when QA asks for more information instead of treating it as passed", async () => {
+    const fixture = await missionFixture(new QaNeedsMoreInfoProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Verify a local server access issue" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("qa");
+    const qaTicket = snapshot.tickets?.find((ticket) => ticket.type === "qa");
+    expect(qaTicket).toMatchObject({
+      status: "blocked",
+      blocker: {
+        type: "external_dependency",
+        reason: expect.stringContaining("需要确认 human 的访问方式")
+      }
+    });
+    const acceptanceTicket = snapshot.tickets?.find((ticket) => ticket.type === "boss_acceptance");
+    expect(acceptanceTicket).toMatchObject({ status: "pending" });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.some((event) => event.type === "assignment.started" && event.summary.includes("老板验收"))).toBe(false);
+  });
+
   it("routes nested QA failure reports back to development instead of treating them as manual testing", async () => {
     const fixture = await missionFixture(new NestedQaFailureReportProvider());
 
@@ -1616,6 +1640,23 @@ class ManualQaWithDefectRiskProvider implements ProviderRunner {
       return result({ passed: true, report: "Pass after rework" });
     }
     if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ ok: true });
+  }
+}
+
+class QaNeedsMoreInfoProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") return defaultTicketGraphResult();
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") {
+      return result({
+        decision: "need_more_info",
+        reason: "需要确认 human 的访问方式，不能判断质量是否通过。",
+        reply_to_human: "请确认你是通过 http://localhost:3000 访问，而不是 file:// 打开。"
+      });
+    }
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "不应进入老板验收" });
     return result({ ok: true });
   }
 }

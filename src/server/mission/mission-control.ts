@@ -470,6 +470,10 @@ export class MissionControl {
       return this.createFollowupTicketAndContinue(workspace, state, "rework", qaDefectReason, "qaDefectRetries", ticket);
     }
 
+    if (phase === "qa" && agentObstacle) {
+      return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, agentObstacle);
+    }
+
     if (phase === "implementation" && (agentObstacle || missingImplementation)) {
       ticketRuntime.ack(ticket.id, phaseResult);
       this.syncTickets(state, ticketRuntime);
@@ -1334,9 +1338,15 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
   const action = lower(result.action);
   return result.clarification_required === true
     || status === "need_clarification"
+    || status === "need_more_info"
+    || status === "need_more_information"
     || status === "awaiting_clarification"
+    || decision === "need_more_info"
+    || decision === "need_more_information"
     || status === "blocked"
     || action === "awaiting_clarification"
+    || action === "need_more_info"
+    || action === "need_more_information"
     || action === "return_to_clarification"
     || action === "block"
     || result.blocked === true
