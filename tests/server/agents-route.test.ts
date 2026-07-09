@@ -61,7 +61,14 @@ describe("agents route", () => {
     for (const profile of profiles.body.profiles) {
       await request(app)
         .patch(`/api/agent-profiles/${profile.id}`)
-        .send({ defaultProvider: "openai", defaultModel: "gpt-default" })
+        .send({
+          defaultProvider: "openai",
+          defaultModel: "gpt-default",
+          defaultPolicy: {
+            ...profile.defaultPolicy,
+            enabledTools: ["readFile"]
+          }
+        })
         .expect(200);
     }
 
@@ -76,5 +83,6 @@ describe("agents route", () => {
 
     expect(listed.body.agents).toHaveLength(5);
     expect(listed.body.agents.every((agent: { provider: string; model: string }) => agent.provider === "openai" && agent.model === "gpt-default")).toBe(true);
+    expect(listed.body.agents.every((agent: { policyOverride: { enabledTools: string[] } }) => agent.policyOverride.enabledTools.join(",") === "readFile")).toBe(true);
   });
 });

@@ -1315,9 +1315,21 @@ function AgentDefinitionEditor(props: {
   onSave: (profile: AgentProfile) => void;
 }) {
   const capabilitiesText = props.profile.capabilities.join("、");
+  const policy = normalizePolicy(props.profile.defaultPolicy);
   const modelTarget = { provider: props.profile.defaultProvider, model: props.profile.defaultModel };
   const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
   const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
+  const configuredTools = new Set(policy.enabledTools ?? roleToolDefaults(props.profile.role));
+  const effectiveTools = new Set(toolsForPolicy(policy, props.profile.role).map((tool) => tool.name));
+  const updateDefaultPolicy = (patch: Partial<AgentPolicy>) => {
+    props.onChange({ ...props.profile, defaultPolicy: { ...policy, ...patch } });
+  };
+  const setDefaultToolEnabled = (toolName: WorkspaceToolName, enabled: boolean) => {
+    const current = new Set(policy.enabledTools ?? roleToolDefaults(props.profile.role));
+    if (enabled) current.add(toolName);
+    else current.delete(toolName);
+    updateDefaultPolicy({ enabledTools: Array.from(current) });
+  };
   return (
     <aside className="agent-detail-panel agent-definition-editor">
       <header className="agent-hero">
@@ -1391,6 +1403,30 @@ function AgentDefinitionEditor(props: {
             <span>默认模型</span>
             <input value={props.profile.defaultModel} onChange={(event) => props.onChange({ ...props.profile, defaultModel: event.target.value })} />
           </label>
+        </div>
+      </section>
+
+      <section className="agent-section runtime-config">
+        <h4>默认权限与工具</h4>
+        <div className="policy-grid">
+          <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => updateDefaultPolicy({ canReadWorkspace: checked })} />
+          <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => updateDefaultPolicy({ canWriteWorkspace: checked })} />
+          <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => updateDefaultPolicy({ canExecuteCommands: checked })} />
+          <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => updateDefaultPolicy({ allowHostAccess: checked })} />
+        </div>
+        <div className="tool-config-grid">
+          {TOOL_CATALOG.map((tool) => {
+            const unavailable = toolsForPolicy({ ...policy, enabledTools: [tool.name] }, props.profile.role).length === 0;
+            return (
+              <Toggle
+                key={tool.name}
+                label={tool.label}
+                checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
+                disabled={unavailable}
+                onChange={(checked) => setDefaultToolEnabled(tool.name, checked)}
+              />
+            );
+          })}
         </div>
         <button type="button" onClick={() => props.onSave(props.profile)}>保存智能体档案</button>
       </section>
