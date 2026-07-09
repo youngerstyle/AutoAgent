@@ -226,6 +226,48 @@ describe("ContextAssembler", () => {
     expect(pmWork.prompt).toContain("这是 PM 已拆出的普通 PM 工作工单");
     expect(pmWork.prompt).toContain("工单：竞品参考与机制确认（PM 工作票）");
   });
+
+  it("only exposes command tools to agents with command permission", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
+    const workspace = testWorkspace(root);
+    const [_boss, pm, _architect, dev] = await ensureCoreTeam(workspace);
+    const sessionStore = new SessionStore();
+    const assembler = new ContextAssembler(new ContextStore());
+
+    const pmPrompt = await assembler.assemble({
+      workspace,
+      agent: pm,
+      sessionId: "tr_pm_tools",
+      taskRunId: "tr_pm_tools",
+      goal: "拆解一个 Vite 项目修复任务",
+      type: "pm_plan",
+      brief: "计划拆解",
+      expectedArtifact: "执行计划",
+      currentTicket: ticket({ id: "tk_pm_tools", brief: "计划拆解" }),
+      session: await sessionStore.read(root, pm.id, "tr_pm_tools")
+    });
+
+    const devPrompt = await assembler.assemble({
+      workspace,
+      agent: dev,
+      sessionId: "tr_dev_tools",
+      taskRunId: "tr_dev_tools",
+      goal: "修复 Vite 项目",
+      type: "implementation",
+      brief: "开发执行",
+      expectedArtifact: "可运行交付物",
+      session: await sessionStore.read(root, dev.id, "tr_dev_tools")
+    });
+
+    expect(pmPrompt.prompt).toContain("当前没有执行命令权限");
+    expect(pmPrompt.prompt).toContain("docs/notes.md");
+    expect(pmPrompt.prompt).not.toContain("\"tool\":\"shell\"");
+    expect(pmPrompt.prompt).not.toContain("\"tool\":\"startService\"");
+    expect(pmPrompt.prompt).not.toContain("\"tool\":\"pollProcess\"");
+    expect(devPrompt.prompt).toContain("\"tool\":\"shell\"");
+    expect(devPrompt.prompt).toContain("\"tool\":\"startService\"");
+    expect(devPrompt.prompt).toContain("\"tool\":\"pollProcess\"");
+  });
 });
 
 function testWorkspace(root: string): Workspace {

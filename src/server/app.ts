@@ -16,6 +16,21 @@ import { createWorkspaceRouter } from "./routes/workspaces.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
 
+function hasClientEntry(dir: string) {
+  return existsSync(path.join(dir, "index.html"));
+}
+
+export function resolveClientDir(serverDir = path.dirname(fileURLToPath(import.meta.url))) {
+  const candidates = [
+    path.resolve(serverDir, "../../dist/client"),
+    path.resolve(serverDir, "../../client"),
+    path.resolve(serverDir, "../client"),
+    path.resolve(process.cwd(), "dist/client")
+  ];
+  const clientDir = candidates.find(hasClientEntry);
+  return clientDir ?? candidates[0];
+}
+
 export function createApp() {
   const app = express();
   const config = loadConfig();
@@ -40,9 +55,7 @@ export function createApp() {
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const clientDirCandidate = path.resolve(__dirname, "../client");
-  const clientDir = existsSync(clientDirCandidate) ? clientDirCandidate : path.resolve(__dirname, "../../client");
+  const clientDir = resolveClientDir();
   app.use(express.static(clientDir));
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api")) {

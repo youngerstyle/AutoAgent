@@ -117,6 +117,7 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
   const isTicketResumeReview = isTicketResumeReviewContext(input.context);
   const isRootPmPlanningTicket = input.type === "pm_plan" && !input.currentTicket?.plannedByTicketId;
   const isPlannedPmWorkTicket = input.type === "pm_plan" && Boolean(input.currentTicket?.plannedByTicketId);
+  const toolProtocol = toolProtocolSection(policy, input.agent.roleInWorkspace);
   return [
     `你是${profile.name}，角色是${roleLabel(profile.role)}。`,
     profile.soul ? `灵魂特质：${profile.soul}` : undefined,
@@ -125,8 +126,7 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     `能力：${profile.capabilities.join("、")}`,
     `当前工具权限：读项目=${yesNo(policy.canReadWorkspace)}，写项目=${yesNo(policy.canWriteWorkspace)}，执行命令=${yesNo(policy.canExecuteCommands)}，访问本机=${yesNo(Boolean(policy.allowHostAccess))}。`,
     policy.canWriteWorkspace ? undefined : "文档交付边界：即使写项目=否，老板/产品/架构/测试仍可在 docs/、reports/、plans/ 下写 .md/.txt 文档；不能写源码、HTML、配置或可运行交付物。",
-    "工具协议：需要访问真实项目文件或执行命令时，只能返回 JSON：{\"toolIntents\":[{\"tool\":\"listFiles\",\"path\":\".\"}]}、{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"package.json\"}]}、{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]}、{\"toolIntents\":[{\"tool\":\"shell\",\"command\":\"npm test\"}]}、{\"toolIntents\":[{\"tool\":\"startService\",\"command\":\"npm run dev\"}]} 或 {\"toolIntents\":[{\"tool\":\"pollProcess\",\"serviceId\":\"svc_xxx\"}]}。",
-    "命令边界：shell 用于会结束的命令；npm run dev、vite、next dev、http-server、live-server 等长驻服务必须用 startService。工具会返回 serviceId、pid、日志路径和可能的 URL；需要继续观察时用 pollProcess，不能等待长驻命令自然退出。",
+    toolProtocol,
     "只能请求当前工具权限允许的工具；禁止编造文件列表、命令输出、测试结果或交付物。",
     "动态上下文中的 agentDirectMessages 是 human 直接发给你的私聊消息；它只属于你，不代表全局任务改写，也不能替代工单流转。",
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
@@ -135,6 +135,38 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，并按 TicketGraphContract v1 自检：ticketGraph 只能包含待执行工单，不能把已完成记录写进图；所有开发、返工或专家工单后必须进入 QA；最终叶子必须是老板验收。动态上下文若包含 ticketGraphContractReview，说明你上一次拆解未通过平台合约校验，请基于其中 reason 自行重拆，不要让 human 接锅。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
     isPlannedPmWorkTicket && !isTicketResumeReview ? "这是 PM 已拆出的普通 PM 工作工单，不是根规划工单。按当前工单说明产出文档、调研结论、范围判断或交付物即可；只有确实需要改动后续计划时，才返回新的 ticketGraph。" : undefined
   ].filter(Boolean).join("\n");
+}
+
+function toolProtocolSection(policy: ReturnType<typeof resolvePolicy>, role: WorkspaceAgent["roleInWorkspace"]): string {
+  const examples: string[] = [];
+  if (policy.canReadWorkspace) {
+    examples.push("{\"toolIntents\":[{\"tool\":\"listFiles\",\"path\":\".\"}]}");
+    examples.push("{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"package.json\"}]}");
+  }
+  if (policy.canWriteWorkspace) {
+    examples.push("{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]}");
+  } else if (canWriteDocumentArtifacts(role)) {
+    examples.push("{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"docs/notes.md\",\"content\":\"...\"}]}");
+  }
+  if (policy.canExecuteCommands) {
+    examples.push("{\"toolIntents\":[{\"tool\":\"shell\",\"command\":\"npm test\"}]}");
+    examples.push("{\"toolIntents\":[{\"tool\":\"startService\",\"command\":\"npm run dev\"}]}");
+    examples.push("{\"toolIntents\":[{\"tool\":\"pollProcess\",\"serviceId\":\"svc_xxx\"}]}");
+  }
+
+  const lines = [
+    `工具协议：需要访问真实项目文件或执行命令时，只能返回当前权限允许的 JSON：${examples.join("、")}。`
+  ];
+  if (policy.canExecuteCommands) {
+    lines.push("命令边界：shell 用于会结束的命令；npm run dev、vite、next dev、http-server、live-server 等长驻服务必须用 startService。工具会返回 serviceId、pid、日志路径和可能的 URL；需要继续观察时用 pollProcess，不能等待长驻命令自然退出。");
+  } else {
+    lines.push("命令边界：当前没有执行命令权限，禁止返回 shell、startService 或 pollProcess。需要运行服务、测试或浏览器验证时，把它拆给有权限的工单，或返回 human_action / manual_test_required。");
+  }
+  return lines.join("\n");
+}
+
+function canWriteDocumentArtifacts(role: WorkspaceAgent["roleInWorkspace"]): boolean {
+  return role === "boss" || role === "pm" || role === "architect" || role === "qa";
 }
 
 function isTicketResumeReviewContext(context?: Record<string, unknown>): boolean {
