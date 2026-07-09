@@ -793,6 +793,19 @@ describe("MissionControl", () => {
     expect(events.findIndex((event) => event.type === "assignment.yielded")).toBeLessThan(
       events.findIndex((event) => event.type === "assignment.completed" && event.summary.includes("测试"))
     );
+    const dev = snapshot.agents.find((agent) => agent.roleInWorkspace === "dev");
+    if (!dev) throw new Error("dev agent missing");
+    const devThreadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, dev.id, snapshot.activeTaskRun!.id);
+    expect(devThreadEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "tool_observation",
+        source: "tool",
+        payload: expect.objectContaining({
+          tool: "readFile",
+          path: "index.html"
+        })
+      })
+    ]));
   });
 
   it("accepts an existing declared workspace artifact as implementation evidence", async () => {

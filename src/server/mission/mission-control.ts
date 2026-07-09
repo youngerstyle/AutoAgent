@@ -440,6 +440,7 @@ export class MissionControl {
     const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
     if (latestState.stopRequested || latestState.status === "interrupted") return latestState;
     this.mergeConcurrentAgentDirectMessages(state, latestState);
+    await this.appendToolObservationThreadEvents(workspace, agent, ticket, result.toolResults);
     if (result.kind === "yielded") {
       ticketRuntime.yieldTicket(ticket.id, {
         reason: result.reason,
@@ -1170,6 +1171,26 @@ export class MissionControl {
     });
   }
 
+  private async appendToolObservationThreadEvents(
+    workspace: Workspace,
+    agent: WorkspaceAgent,
+    ticket: Ticket,
+    toolResults: Array<Record<string, unknown>>
+  ): Promise<void> {
+    for (const toolResult of toolResults) {
+      await this.agentThreadStore.append(workspace.rootPath, agent.id, ticket.taskRunId, {
+        taskId: ticket.taskId,
+        taskRunId: ticket.taskRunId,
+        workspaceAgentId: agent.id,
+        source: "tool",
+        kind: "tool_observation",
+        visibility: "timeline",
+        ticketId: ticket.id,
+        payload: compactToolObservationForThread(toolResult)
+      });
+    }
+  }
+
   private blockedTicket(state: MissionState): Ticket | undefined {
     return (state.tickets ?? []).find((ticket) => ticket.status === "blocked");
   }
@@ -1673,6 +1694,40 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
 function contextForAgent(context: Record<string, unknown>, _agentId: string): Record<string, unknown> {
   const { agentMessages, agentDirectMessageQueue, ...baseContext } = context;
   return baseContext;
+}
+
+const THREAD_TOOL_TEXT_LIMIT = 500;
+
+function compactToolObservationForThread(toolResult: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const key of ["tool", "path", "command", "ok", "error", "status"]) {
+    const value = toolResult[key];
+    if (value !== undefined) compact[key] = compactThreadValue(value);
+  }
+  if (toolResult.files !== undefined) compact.files = compactThreadValue(toolResult.files);
+  if (toolResult.content !== undefined) compact.contentPreview = compactThreadValue(toolResult.content);
+  if (toolResult.stdout !== undefined) compact.stdoutPreview = compactThreadValue(toolResult.stdout);
+  if (toolResult.stderr !== undefined) compact.stderrPreview = compactThreadValue(toolResult.stderr);
+  return compact;
+}
+
+function compactThreadValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value.length <= THREAD_TOOL_TEXT_LIMIT) return value;
+    return `${value.slice(0, THREAD_TOOL_TEXT_LIMIT)}\n...[已截断，原始长度 ${value.length} 字符]`;
+  }
+  if (Array.isArray(value)) {
+    return {
+      count: value.length,
+      preview: value.slice(0, 10).map(compactThreadValue)
+    };
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, compactThreadValue(item)])
+    );
+  }
+  return value;
 }
 
 function agentDirectMessageQueue(context: Record<string, unknown>): string[] {
