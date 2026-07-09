@@ -459,7 +459,9 @@ export class MissionControl {
     state.context[phase] = { result: phaseResult, toolResults: result.toolResults };
     state.updatedAt = new Date().toISOString();
 
-    const manualTestingReason = phase === "qa" ? manualTestingReasonForPhase(result.providerResult.structured, result.providerResult.text) : undefined;
+    const manualTestingReason = phase === "qa" || phase === "boss_acceptance"
+      ? manualTestingReasonForPhase(result.providerResult.structured, result.providerResult.text)
+      : undefined;
     const roleToolBoundaryReason = roleToolBoundaryReasonForPhase(phase, agent, result.toolResults);
     const explicitAuthorizationReason = humanAuthorizationReasonForPhase(result.providerResult.structured);
     const blockingToolFailureReason = toolFailureReason(result.toolResults);
@@ -955,14 +957,14 @@ export class MissionControl {
 
   private applyHumanActionToTickets(state: MissionState, message: string): void {
     const runtime = this.ticketRuntime(state);
-    const blockedQa = runtime.allTickets().find((ticket) => ticket.type === "qa" && ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required");
-    if (blockedQa) {
+    const blockedManualTest = runtime.allTickets().find((ticket) => ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required");
+    if (blockedManualTest) {
       const action = blockedFollowupActionFromReview(state.context.ticketResumeReview);
       if (action === "hold") {
         this.syncTickets(state, runtime);
         return;
       }
-      runtime.completeHumanAction(blockedQa.id, {
+      runtime.completeHumanAction(blockedManualTest.id, {
         action: action === "fail_manual_test" ? "manual_test_failed" : "manual_test_passed",
         message
       });

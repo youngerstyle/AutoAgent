@@ -747,6 +747,7 @@ describe("MissionControl", () => {
     const events = await fixture.ledger.read(fixture.workspace.rootPath, afterQuestion.activeTask!.id, afterQuestion.activeTaskRun!.id);
     expect(events.filter((event) => event.type === "assignment.completed" && event.summary.includes("需求接收"))).toHaveLength(2);
     expect(events.map((event) => event.type)).not.toContain("run.completed");
+
   });
 
   it("continues a non-QA blocked ticket only after the owner agent classifies the human reply as continue", async () => {
@@ -829,6 +830,36 @@ describe("MissionControl", () => {
       reason: expect.stringContaining("缺少浏览器运行环境")
     });
     expect(events.map((event) => event.type)).not.toContain("run.failed");
+  });
+
+  it("blocks as manual testing required when boss acceptance cannot verify the deliverable", async () => {
+    const fixture = await missionFixture(new BossManualAcceptanceProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Fix an interactive bug" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("boss_acceptance");
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "boss_acceptance")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "manual_test_required" }
+    });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).not.toContain("run.completed");
+
+    const accepted = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      snapshot.activeTask!.id,
+      "我已经人工测试了，没有问题，可以验收。",
+      true
+    );
+
+    expect(accepted.status).toBe("completed");
+    expect(accepted.tickets?.find((ticket) => ticket.type === "boss_acceptance")).toMatchObject({
+      status: "completed"
+    });
   });
 
   it("routes QA-found acceptance risks back to development instead of human manual testing", async () => {
@@ -1792,6 +1823,25 @@ class QaNeedsMoreInfoProvider implements ProviderRunner {
       });
     }
     if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "不应进入老板验收" });
+    return result({ ok: true });
+  }
+}
+
+class BossManualAcceptanceProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.context?.humanFollowup === "我已经人工测试了，没有问题，可以验收。") {
+      return result({ human_action: "manual_test_passed", reason: "human 明确报告人工测试通过" });
+    }
+    if (input.role === "pm") return defaultTicketGraphResult();
+    if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
+    if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "静态 QA 通过" });
+    if (input.assignmentType === "boss_acceptance") {
+      return result({
+        status: "manual_test_required",
+        report: "需要 human 在浏览器里确认交互缺陷已修复"
+      });
+    }
     return result({ ok: true });
   }
 }

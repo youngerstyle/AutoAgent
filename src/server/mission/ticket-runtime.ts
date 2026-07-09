@@ -218,9 +218,10 @@ export class TicketRuntime {
   completeHumanAction(ticketId: string, action: HumanTicketAction, now = new Date()): Ticket | undefined {
     const ticket = this.tickets.get(ticketId);
     if (!ticket) return undefined;
-    if (ticket.type === "qa" && ticket.blocker?.type === "manual_test_required") {
+    if (ticket.blocker?.type === "manual_test_required") {
       if (action.action === "manual_test_passed") {
         this.ack(ticket.id, { humanAction: action }, now);
+        if (ticket.type !== "qa") return undefined;
         return this.createTicket({
           workspaceId: ticket.workspaceId,
           taskId: ticket.taskId,
