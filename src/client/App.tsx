@@ -29,6 +29,7 @@ import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from 
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentProfileView } from "./view-model";
 import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
+import { buildAgentThreadBubbles, type AgentThreadBubble } from "./agent-thread";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
 const AGENT_PANEL_MIN_HEIGHT = 180;
@@ -467,6 +468,11 @@ export function App() {
       : "描述这个项目要交给团队完成的目标";
   const selectedAgentNeedsReply = Boolean(humanFlowPrompt && selectedAgent?.id === humanFlowPrompt.agentId);
   const selectedAgentMessages = selectedAgent ? snapshot?.agentMessages?.[selectedAgent.id] ?? [] : [];
+  const selectedAgentThreadEvents = selectedAgent ? snapshot?.agentThreads?.[selectedAgent.id] ?? [] : [];
+  const selectedAgentThreadBubbles = useMemo(
+    () => buildAgentThreadBubbles(selectedAgentThreadEvents, selectedAgentMessages),
+    [selectedAgentMessages, selectedAgentThreadEvents]
+  );
   const taskIsTerminal = snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted" || mode === "terminal";
   const agentMessageDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent || !agentMessage.trim();
   const agentActionDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent;
@@ -629,7 +635,7 @@ export function App() {
               ) : selectedAgent ? (
                 <AgentDirectChatBox
                   agent={selectedAgent}
-                  messages={selectedAgentMessages}
+                  bubbles={selectedAgentThreadBubbles}
                   value={agentMessage}
                   disabled={agentMessageDisabled}
                   sending={agentMessageSubmitting}
@@ -1174,7 +1180,7 @@ type AgentChatMessage = NonNullable<WorkspaceSnapshot["agentMessages"]>[string][
 
 function AgentDirectChatBox(props: {
   agent: WorkspaceSnapshot["agents"][number];
-  messages: AgentChatMessage[];
+  bubbles: AgentThreadBubble[];
   value: string;
   disabled: boolean;
   sending: boolean;
@@ -1197,21 +1203,16 @@ function AgentDirectChatBox(props: {
         </div>
       </header>
       <div className="chat-thread">
-        <article className="chat-message agent">
-          <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
-        </article>
-        {props.messages.map((message) => (
-          <Fragment key={message.id}>
-            <article className="chat-message human">
-              <AgentMessageBody rawText={message.message} />
-            </article>
-            {message.response ? (
-              <article className="chat-message agent">
-                <AgentMessageBody rawText={message.response} />
-              </article>
-            ) : null}
-          </Fragment>
-        ))}
+        {props.bubbles.length > 0 ? props.bubbles.map((bubble) => (
+          <article key={bubble.id} className={`chat-message ${bubble.role}`}>
+            {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
+            <AgentMessageBody rawText={bubble.body} />
+          </article>
+        )) : (
+          <article className="chat-message agent">
+            <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
+          </article>
+        )}
       </div>
       <div className="chat-composer">
         <textarea

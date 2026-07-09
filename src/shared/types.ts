@@ -274,6 +274,7 @@ export interface WorkspaceSnapshot {
   tickets?: Ticket[];
   inboxMessages?: AgentInboxMessage[];
   agentMessages?: Record<string, AgentDirectMessage[]>;
+  agentThreads?: Record<string, AgentThreadEvent[]>;
   recentEvents: AutoAgentEvent[];
   phase: MissionPhase;
   status: EntityStatus;

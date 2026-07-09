@@ -657,6 +657,33 @@ button:disabled {
   color: #123d2d;
 }
 
+.chat-message.platform,
+.chat-message.system,
+.chat-message.tool {
+  justify-self: start;
+  border: 1px solid #d8e0e8;
+  background: #f7fafc;
+  color: #243241;
+}
+
+.chat-message.platform {
+  border-left: 4px solid #0f8f83;
+}
+
+.chat-message.tool {
+  border-left: 4px solid #2d7fc1;
+}
+
+.chat-message.system {
+  border-left: 4px solid #6f7d8c;
+}
+
+.thread-bubble-title {
+  display: block;
+  margin-bottom: 6px;
+  color: #102030;
+}
+
 .quick-reply {
   justify-self: start;
   max-width: 220px;

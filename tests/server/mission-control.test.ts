@@ -327,6 +327,11 @@ describe("MissionControl", () => {
       message: "继续看 QA 的跨域报错，不要找 PM。",
       createdBy: "human"
     });
+    expect(rebuiltSnapshot.agentThreads?.[qa.id]?.at(-1)).toMatchObject({
+      workspaceAgentId: qa.id,
+      kind: "human_message",
+      payload: expect.objectContaining({ message: "继续看 QA 的跨域报错，不要找 PM。" })
+    });
   });
 
   it("merges legacy direct messages with thread-projected direct messages", async () => {

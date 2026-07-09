@@ -1,6 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentDirectMessage, AgentInboxMessage, AgentRole, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentDirectMessage, AgentInboxMessage, AgentRole, AgentThreadEvent, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel, roleLabel } from "../../shared/labels.js";
 import { AgentRuntime, type AgentRuntimeLimits, type AssignmentResult, type ProviderRunner } from "../agents/agent-runtime.js";
@@ -1122,10 +1122,20 @@ export class MissionControl {
     projected.activeTaskRun = state.taskRun;
     projected.tickets = state.tickets ?? [];
     projected.inboxMessages = state.inboxMessages ?? [];
+    projected.agentThreads = await this.projectAgentThreads(workspace, state, projected.agents);
     projected.agentMessages = await this.projectAgentMessages(workspace, state, projected.agents);
     projected.phase = state.taskRun.phase;
     projected.status = state.status;
     projected.humanLoop = humanLoopSnapshot(state);
+    return projected;
+  }
+
+  private async projectAgentThreads(workspace: Workspace, state: MissionState, agents: WorkspaceSnapshot["agents"]): Promise<Record<string, AgentThreadEvent[]>> {
+    const projected: Record<string, AgentThreadEvent[]> = {};
+    for (const agent of agents) {
+      const events = await this.agentThreadStore.read(workspace.rootPath, agent.id, state.taskRun.id);
+      if (events.length > 0) projected[agent.id] = events;
+    }
     return projected;
   }
 

@@ -1,0 +1,114 @@
+import type { AgentDirectMessage, AgentThreadEvent } from "../shared/types";
+
+export type AgentThreadBubbleRole = "human" | "agent" | "platform" | "tool" | "system";
+
+export interface AgentThreadBubble {
+  id: string;
+  role: AgentThreadBubbleRole;
+  title?: string;
+  body: string;
+}
+
+export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessages: AgentDirectMessage[] = []): AgentThreadBubble[] {
+  if (events.length === 0) return legacyMessages.flatMap(legacyMessageToBubbles);
+  return [...events]
+    .sort((a, b) => a.sequence - b.sequence)
+    .map(eventToBubble)
+    .filter((bubble): bubble is AgentThreadBubble => Boolean(bubble?.body.trim()));
+}
+
+function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
+  if (event.kind === "human_message") {
+    return { id: event.id, role: "human", body: payloadText(event.payload, "message") };
+  }
+  if (event.kind === "agent_message") {
+    return { id: event.id, role: "agent", body: payloadText(event.payload, "message") };
+  }
+  if (event.kind === "turn_failed") {
+    return { id: event.id, role: "agent", title: "本轮执行失败", body: payloadText(event.payload, "error", "message") };
+  }
+  if (event.kind === "ticket_claimed") {
+    return {
+      id: event.id,
+      role: "platform",
+      title: "开始处理工单",
+      body: payloadText(event.payload, "brief", "expectedArtifact", "ticketType")
+    };
+  }
+  if (event.kind === "ticket_outcome") {
+    return {
+      id: event.id,
+      role: "platform",
+      title: ticketOutcomeTitle(event.payload),
+      body: payloadText(event.payload, "summary", "reason", "result", "status")
+    };
+  }
+  if (event.kind === "ticket_received") {
+    return {
+      id: event.id,
+      role: "platform",
+      title: "收到工单",
+      body: payloadText(event.payload, "brief", "expectedArtifact", "ticketType")
+    };
+  }
+  if (event.kind === "tool_observation") {
+    return {
+      id: event.id,
+      role: "tool",
+      title: "工具观察",
+      body: payloadText(event.payload, "summary", "path", "command", "message")
+    };
+  }
+  if (event.kind === "system_note") {
+    return { id: event.id, role: "system", body: payloadText(event.payload, "message", "summary") };
+  }
+  return undefined;
+}
+
+function legacyMessageToBubbles(message: AgentDirectMessage): AgentThreadBubble[] {
+  const bubbles: AgentThreadBubble[] = [{ id: message.id, role: "human", body: message.message }];
+  if (message.response) bubbles.push({ id: `${message.id}:response`, role: "agent", body: message.response });
+  if (message.error) bubbles.push({ id: `${message.id}:error`, role: "agent", title: "本轮执行失败", body: message.error });
+  return bubbles;
+}
+
+function ticketOutcomeTitle(payload: unknown): string {
+  const status = readString(payload, "status");
+  if (status === "acked") return "工单处理完成";
+  if (status === "yielded") return "暂时让出工单";
+  if (status === "blocked") return "工单受阻";
+  return "工单状态更新";
+}
+
+function payloadText(payload: unknown, ...keys: string[]): string {
+  const parts = keys
+    .map((key) => readPayloadValue(payload, key))
+    .filter((value): value is string => Boolean(value?.trim()));
+  return [...new Set(parts)].join("\n");
+}
+
+function readPayloadValue(payload: unknown, key: string): string | undefined {
+  if (!payload || typeof payload !== "object") return undefined;
+  const value = (payload as Record<string, unknown>)[key];
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value && typeof value === "object") return readableNestedText(value);
+  return undefined;
+}
+
+function readString(payload: unknown, key: string): string | undefined {
+  const value = readPayloadValue(payload, key);
+  return value?.trim();
+}
+
+function readableNestedText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(readableNestedText).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  return ["summary", "reason", "message", "artifact", "expectedArtifact", "status"]
+    .map((key) => record[key])
+    .map(readableNestedText)
+    .filter(Boolean)
+    .join("\n");
+}
