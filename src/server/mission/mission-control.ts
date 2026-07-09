@@ -421,7 +421,7 @@ export class MissionControl {
       ticketType: ticket.type,
       brief: ticket.brief,
       expectedArtifact: ticket.expectedArtifact
-    });
+    }, { includeReceived: true });
     await this.writeState(workspace, state);
     const result = await this.runtime.runAssignment({
       workspace,
@@ -1156,9 +1156,13 @@ export class MissionControl {
     workspace: Workspace,
     agent: WorkspaceAgent,
     ticket: Ticket,
-    kind: "ticket_claimed" | "ticket_outcome",
-    payload: Record<string, unknown>
+    kind: "ticket_received" | "ticket_claimed" | "ticket_outcome",
+    payload: Record<string, unknown>,
+    options: { includeReceived?: boolean } = {}
   ): Promise<void> {
+    if (options.includeReceived) {
+      await this.appendTicketReceivedThreadEventOnce(workspace, agent, ticket);
+    }
     await this.agentThreadStore.append(workspace.rootPath, agent.id, ticket.taskRunId, {
       taskId: ticket.taskId,
       taskRunId: ticket.taskRunId,
@@ -1168,6 +1172,16 @@ export class MissionControl {
       visibility: "timeline",
       ticketId: ticket.id,
       payload
+    });
+  }
+
+  private async appendTicketReceivedThreadEventOnce(workspace: Workspace, agent: WorkspaceAgent, ticket: Ticket): Promise<void> {
+    const events = await this.agentThreadStore.read(workspace.rootPath, agent.id, ticket.taskRunId);
+    if (events.some((event) => event.kind === "ticket_received" && event.ticketId === ticket.id)) return;
+    await this.appendTicketThreadEvent(workspace, agent, ticket, "ticket_received", {
+      ticketType: ticket.type,
+      brief: ticket.brief,
+      expectedArtifact: ticket.expectedArtifact
     });
   }
 

@@ -31,7 +31,12 @@ describe("MissionControl", () => {
     const dev = snapshot.agents.find((agent) => agent.roleInWorkspace === "dev");
     if (!dev) throw new Error("dev agent missing");
     const devThreadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, dev.id, snapshot.activeTaskRun!.id);
-    expect(devThreadEvents.map((event) => event.kind)).toEqual(expect.arrayContaining(["ticket_claimed", "ticket_outcome"]));
+    expect(devThreadEvents.map((event) => event.kind)).toEqual(expect.arrayContaining(["ticket_received", "ticket_claimed", "ticket_outcome"]));
+    const receivedIndex = devThreadEvents.findIndex((event) => event.kind === "ticket_received");
+    const claimedIndex = devThreadEvents.findIndex((event) => event.kind === "ticket_claimed");
+    expect(receivedIndex).toBeGreaterThanOrEqual(0);
+    expect(claimedIndex).toBeGreaterThan(receivedIndex);
+    expect(devThreadEvents.filter((event) => event.kind === "ticket_received" && event.ticketId === devThreadEvents[receivedIndex].ticketId)).toHaveLength(1);
     expect(devThreadEvents.find((event) => event.kind === "ticket_claimed")).toMatchObject({
       workspaceAgentId: dev.id,
       ticketId: expect.any(String),
