@@ -262,6 +262,32 @@ describe("ContextAssembler", () => {
     expect(pmWork.prompt).toContain("工单：竞品参考与机制确认（PM 工作票）");
   });
 
+  it("tells boss intake to treat concrete bug reports as actionable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
+    const workspace = testWorkspace(root);
+    const [boss] = await ensureCoreTeam(workspace);
+    const sessionStore = new SessionStore();
+    const assembler = new ContextAssembler(new ContextStore());
+    const session = await sessionStore.read(root, boss.id, "tr_bug_intake");
+    const bugGoal = "现在不对，有左右两个坦克，但是移动是右边的，子弹发射是左边的，根本没法玩";
+
+    const assembled = await assembler.assemble({
+      workspace,
+      agent: boss,
+      sessionId: "tr_bug_intake",
+      taskRunId: "tr_bug_intake",
+      goal: bugGoal,
+      type: "boss_intake",
+      brief: `判断需求是否可执行：${bugGoal}`,
+      expectedArtifact: "可执行性判断",
+      session
+    });
+
+    expect(assembled.prompt).toContain("已有产品缺陷报告默认可执行");
+    expect(assembled.prompt).toContain("不要因为理想设计或最终玩法没有完全写清就阻塞");
+    expect(assembled.prompt).toContain("先交给团队调查、修复并由 QA 验证");
+  });
+
   it("only exposes command tools to agents with command permission", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
     const workspace = testWorkspace(root);
