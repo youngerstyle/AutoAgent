@@ -228,6 +228,35 @@ describe("MissionControl", () => {
     expect(snapshot.phase).toBe("boss_intake");
   });
 
+  it("runs a private agent turn after a direct human message", async () => {
+    const provider = new DirectAgentMessageProvider();
+    const fixture = await missionFixture(provider);
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Start later" },
+      { autoRun: false }
+    );
+    const dev = started.agents.find((agent) => agent.roleInWorkspace === "dev");
+    if (!dev) throw new Error("dev agent missing");
+
+    const snapshot = await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      started.activeTask!.id,
+      dev.id,
+      "先别等流程，告诉我你怎么看这个报错。",
+      true
+    );
+
+    expect(provider.calls[0]?.role).toBe("dev");
+    expect(provider.calls[0]?.prompt).toContain("先别等流程，告诉我你怎么看这个报错。");
+    const session = await new SessionStore().read(fixture.workspace.rootPath, dev.id, started.activeTaskRun!.id);
+    expect(session.messages.some((message) => message.role === "assistant" && message.content.includes("我会先判断报错"))).toBe(true);
+    expect(snapshot.agentMessages?.[dev.id]?.at(-1)).toMatchObject({
+      message: "先别等流程，告诉我你怎么看这个报错。",
+      handledAt: expect.any(String),
+      response: expect.stringContaining("我会先判断报错")
+    });
+  });
+
   it("creates follow-up tickets from completed tickets instead of hidden phase jumps", async () => {
     const fixture = await missionFixture();
 
@@ -1032,6 +1061,17 @@ class QaFailsOnceProvider implements ProviderRunner {
     }
     if (input.role === "architect") return result({ architecture: "small", needsSpecialist: false });
     if (input.role === "dev" || input.role === "specialist") return implementationResult();
+    return result({ ok: true });
+  }
+}
+
+class DirectAgentMessageProvider implements ProviderRunner {
+  calls: AgentTurnInput[] = [];
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    this.calls.push(input);
+    if (input.role === "dev") return result({ reply: "我会先判断报错，再决定是否需要改代码。" });
+    if (input.role === "boss") return result({ accepted: true });
     return result({ ok: true });
   }
 }

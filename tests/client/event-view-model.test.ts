@@ -104,6 +104,16 @@ describe("event view model", () => {
       title: "补充说明",
       detail: "继续到计划拆解"
     });
+
+    expect(buildEventTimelineItem(event("agent.message_handled", "开发已回复 human 私聊", {
+      role: "dev",
+      response: "我会继续检查报错。"
+    }))).toMatchObject({
+      actor: "开发",
+      title: "已回复私聊",
+      detail: "我会继续检查报错。",
+      tone: "success"
+    });
   });
 
   it("hides task-level blocked echo when an assignment already explains the same blocker", () => {

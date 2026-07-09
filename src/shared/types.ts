@@ -185,6 +185,10 @@ export interface AgentDirectMessage {
   message: string;
   createdBy: "human";
   createdAt: string;
+  handledAt?: string;
+  failedAt?: string;
+  response?: string;
+  error?: string;
 }
 
 export interface AssignmentRun {

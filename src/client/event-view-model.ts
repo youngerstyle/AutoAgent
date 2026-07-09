@@ -119,6 +119,19 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, "human", `发给${role ? roleLabel(role) : "Agent"}`, message, "running");
   }
 
+  if (event.type === "agent.message_handled" || event.type === "agent.message_failed") {
+    const role = stringPayload(event, "role") as AgentRole | undefined;
+    const response = stringPayload(event, "response");
+    const error = stringPayload(event, "error");
+    return item(
+      event,
+      role ? roleLabel(role) : actorFromSummary(event.summary) || "Agent",
+      event.type === "agent.message_handled" ? "已回复私聊" : "私聊处理失败",
+      response ?? error ?? displayText(event.summary),
+      event.type === "agent.message_handled" ? "success" : "warning"
+    );
+  }
+
   if (event.type === "handoff.created") {
     const phase = stringPayload(event, "phase") as MissionPhase | undefined;
     const reason = stringPayload(event, "reason") ?? displayText(event.summary);
@@ -208,6 +221,7 @@ function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): 
   if (event.type === "run.completed") return "任务完成";
   if (event.type === "human.followup") return "人工补充";
   if (event.type === "human.agent_message") return "Agent 私聊";
+  if (event.type === "agent.message_handled" || event.type === "agent.message_failed") return "Agent 私聊";
   if (event.type.startsWith("recruitment.")) return "专家招聘";
   return undefined;
 }

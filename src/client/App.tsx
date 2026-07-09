@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, roleToolDefaults, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
@@ -1142,9 +1142,16 @@ function AgentHumanLoopBox(props: {
           )}
         </article>
         {props.messages.map((message) => (
-          <article key={message.id} className="chat-message human">
-            <AgentMessageBody rawText={message.message} />
-          </article>
+          <Fragment key={message.id}>
+            <article className="chat-message human">
+              <AgentMessageBody rawText={message.message} />
+            </article>
+            {message.response ? (
+              <article className="chat-message agent">
+                <AgentMessageBody rawText={message.response} />
+              </article>
+            ) : null}
+          </Fragment>
         ))}
       </div>
       {!props.prompt.manualTest ? (
@@ -1194,9 +1201,16 @@ function AgentDirectChatBox(props: {
           <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
         </article>
         {props.messages.map((message) => (
-          <article key={message.id} className="chat-message human">
-            <AgentMessageBody rawText={message.message} />
-          </article>
+          <Fragment key={message.id}>
+            <article className="chat-message human">
+              <AgentMessageBody rawText={message.message} />
+            </article>
+            {message.response ? (
+              <article className="chat-message agent">
+                <AgentMessageBody rawText={message.response} />
+              </article>
+            ) : null}
+          </Fragment>
         ))}
       </div>
       <div className="chat-composer">

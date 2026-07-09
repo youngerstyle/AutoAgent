@@ -259,12 +259,14 @@ export class MissionControl {
 
     if (state.status === "waiting") {
       const nextTicket = this.nextRunnableTicket(state);
-      if (nextTicket) {
+      if (nextTicket || this.nextPendingAgentDirectMessage(state)) {
         state.status = "running";
         state.task.status = "running";
         state.taskRun.status = "running";
-        state.nextPhase = phaseForTicket(nextTicket);
-        state.taskRun.phase = state.nextPhase;
+        if (nextTicket) {
+          state.nextPhase = phaseForTicket(nextTicket);
+          state.taskRun.phase = state.nextPhase;
+        }
         state.updatedAt = new Date().toISOString();
         await this.writeState(workspace, state);
         if (runSynchronously) {
@@ -272,6 +274,12 @@ export class MissionControl {
         } else {
           this.runInBackground(workspace, state.task.id, state.taskRun.id);
         }
+      }
+    } else if (state.status === "running") {
+      if (runSynchronously) {
+        await this.runUntilIdle(workspace, state.task.id, state.taskRun.id);
+      } else {
+        this.runInBackground(workspace, state.task.id, state.taskRun.id);
       }
     }
 
@@ -334,10 +342,17 @@ export class MissionControl {
     try {
       let state = await this.readState(workspace, taskId, taskRunId);
       while (state.status === "running") {
+        state = await this.readState(workspace, taskId, taskRunId);
+        if (state.status !== "running") break;
         if (state.stopRequested) break;
         if (state.pauseRequested) {
           await this.pauseTask(workspace.id, taskId);
           break;
+        }
+        const pendingDirectMessage = this.nextPendingAgentDirectMessage(state);
+        if (pendingDirectMessage) {
+          state = await this.runAgentDirectMessageTurn(workspace, state, pendingDirectMessage);
+          continue;
         }
         const nextTicket = this.nextRunnableTicket(state);
         if (!nextTicket) break;
@@ -411,6 +426,7 @@ export class MissionControl {
     });
     const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
     if (latestState.stopRequested || latestState.status === "interrupted") return latestState;
+    this.mergeConcurrentAgentDirectMessages(state, latestState);
     if (result.kind === "yielded") {
       ticketRuntime.yieldTicket(ticket.id, {
         reason: result.reason,
@@ -568,6 +584,71 @@ export class MissionControl {
     this.createNextTicketsForCompletedTicket(state, ticket);
     await this.writeState(workspace, state);
     return state;
+  }
+
+  private async runAgentDirectMessageTurn(workspace: Workspace, state: MissionState, message: AgentDirectMessage): Promise<MissionState> {
+    const profiles = await this.agentProfiles();
+    const agents = await ensureCoreTeam(workspace, profiles);
+    const agent = agents.find((item) => item.id === message.agentId);
+    if (!agent) {
+      this.updateAgentDirectMessage(state, message.id, {
+        failedAt: new Date().toISOString(),
+        error: "Agent not found in workspace"
+      });
+      await this.writeState(workspace, state);
+      return state;
+    }
+    const profile = profileForRole(agent.roleInWorkspace, profiles);
+    const currentTicket = this.currentTicketForAgent(state, agent);
+    const assignmentType = currentTicket ? assignmentTypeForTicket(currentTicket) : assignmentTypeForAgentRole(agent.roleInWorkspace);
+    const brief = `处理 human 私聊消息；这条消息已经按时间顺序写入你的 session。请直接回复 human，必要时说明你接下来会如何处理当前工单。最新消息：${message.message}`;
+    try {
+      const result = await this.runtime.runAssignment({
+        workspace,
+        agent,
+        profile,
+        taskId: state.task.id,
+        taskRunId: state.taskRun.id,
+        goal: state.task.goal,
+        type: assignmentType,
+        brief,
+        expectedArtifact: "Agent 私聊回复或下一步判断",
+        currentTicket,
+        context: contextForAgent(state.context, agent.id),
+        sessionId: state.taskRun.id
+      });
+      const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
+      if (latestState.stopRequested || latestState.status === "interrupted") return latestState;
+      this.mergeConcurrentAgentDirectMessages(state, latestState);
+      const response = result.kind === "final" ? result.providerResult.text : result.reason;
+      this.updateAgentDirectMessage(state, message.id, {
+        handledAt: new Date().toISOString(),
+        response
+      });
+      await this.writeState(workspace, state);
+      await this.append(workspace, state, "agent.message_handled", `${roleLabel(agent.roleInWorkspace)}已回复 human 私聊`, {
+        agentId: agent.id,
+        role: agent.roleInWorkspace,
+        humanMessageId: message.id,
+        response
+      });
+      return state;
+    } catch (error) {
+      const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
+      this.mergeConcurrentAgentDirectMessages(state, latestState);
+      this.updateAgentDirectMessage(state, message.id, {
+        failedAt: new Date().toISOString(),
+        error: (error as Error).message
+      });
+      await this.writeState(workspace, state);
+      await this.append(workspace, state, "agent.message_failed", `${roleLabel(agent.roleInWorkspace)}私聊处理失败：${(error as Error).message}`, {
+        agentId: agent.id,
+        role: agent.roleInWorkspace,
+        humanMessageId: message.id,
+        error: (error as Error).message
+      });
+      return state;
+    }
   }
 
   private seedInitialTickets(workspace: Workspace, state: MissionState): void {
@@ -990,6 +1071,14 @@ export class MissionControl {
     );
   }
 
+  private currentTicketForAgent(state: MissionState, agent: WorkspaceAgent): Ticket | undefined {
+    const matchesAgent = (ticket: Ticket) =>
+      ticket.targetAgentId === agent.id || (!ticket.targetAgentId && ticket.targetRole === agent.roleInWorkspace);
+    return (state.tickets ?? []).find((ticket) => ticket.status === "running" && matchesAgent(ticket))
+      ?? (state.tickets ?? []).find((ticket) => ticket.status === "blocked" && matchesAgent(ticket))
+      ?? (state.tickets ?? []).find((ticket) => ticket.status === "pending" && matchesAgent(ticket));
+  }
+
   private appendAgentDirectMessage(state: MissionState, agentId: string, message: string): AgentDirectMessage {
     const byAgent = agentMessagesByAgent(state.context);
     const entry: AgentDirectMessage = {
@@ -1007,6 +1096,40 @@ export class MissionControl {
     };
     state.updatedAt = entry.createdAt;
     return entry;
+  }
+
+  private nextPendingAgentDirectMessage(state: MissionState): AgentDirectMessage | undefined {
+    return Object.values(agentMessagesByAgent(state.context))
+      .flat()
+      .filter((message) => !message.handledAt && !message.failedAt)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+  }
+
+  private updateAgentDirectMessage(state: MissionState, messageId: string, patch: Partial<Pick<AgentDirectMessage, "handledAt" | "failedAt" | "response" | "error">>): void {
+    const byAgent = agentMessagesByAgent(state.context);
+    let changed = false;
+    for (const [agentId, messages] of Object.entries(byAgent)) {
+      byAgent[agentId] = messages.map((message) => {
+        if (message.id !== messageId) return message;
+        changed = true;
+        return { ...message, ...patch };
+      });
+    }
+    if (changed) state.context.agentMessages = byAgent;
+  }
+
+  private mergeConcurrentAgentDirectMessages(state: MissionState, latestState: MissionState): void {
+    const merged: Record<string, AgentDirectMessage[]> = {};
+    const add = (messagesByAgent: Record<string, AgentDirectMessage[]>) => {
+      for (const [agentId, messages] of Object.entries(messagesByAgent)) {
+        const byId = new Map((merged[agentId] ?? []).map((message) => [message.id, message]));
+        for (const message of messages) byId.set(message.id, { ...byId.get(message.id), ...message });
+        merged[agentId] = [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      }
+    };
+    add(agentMessagesByAgent(state.context));
+    add(agentMessagesByAgent(latestState.context));
+    if (Object.keys(merged).length > 0) state.context.agentMessages = merged;
   }
 
   private async appendHumanSessionMessage(
@@ -1179,6 +1302,15 @@ function assignmentTypeForTicket(ticket: Ticket): AssignmentType {
   if (ticket.type === "rework") return "implementation";
   if (ticket.type === "human_action") return "boss_acceptance";
   return ticket.type;
+}
+
+function assignmentTypeForAgentRole(role: AgentRole): AssignmentType {
+  if (role === "boss") return "boss_intake";
+  if (role === "pm") return "pm_plan";
+  if (role === "architect") return "architect_plan";
+  if (role === "qa") return "qa";
+  if (role === "specialist") return "specialist";
+  return "implementation";
 }
 
 function roleForPhase(phase: MissionPhase): AgentRole {
