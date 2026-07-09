@@ -16,7 +16,7 @@ import type { WorkspaceStore } from "../storage/workspace-store.js";
 import { RUNTIME_LIMITS } from "../runtime-limits.js";
 import { isObservationTool } from "../tools/tool-catalog.js";
 import { buildLoopDebugLog } from "./loop-debug-log.js";
-import { TICKET_GRAPH_CONTRACT_NAME, planItemAliases, planItemDependencyKeys, planItemPrimaryKey, plannedTicketItems, ticketTypeFromValue, validatePlannedTicketGraph } from "./ticket-graph-contract.js";
+import { TICKET_GRAPH_CONTRACT_NAME, planItemAliases, planItemDependencyKeys, planItemPrimaryKey, planItemTicketType, plannedTicketItems, ticketTypeFromValue, validatePlannedTicketGraph } from "./ticket-graph-contract.js";
 import { createTicketRuntime, type TicketRuntime } from "./ticket-runtime.js";
 
 export interface MissionState {
@@ -615,8 +615,8 @@ export class MissionControl {
 
     let previousTicket: Ticket | undefined;
     for (const [index, item] of planItems.entries()) {
-      const type = ticketTypeFromValue(item.type);
-      if (!type) throw new Error(`Invalid planned ticket type: ${String(item.type ?? "")}`);
+      const type = planItemTicketType(item);
+      if (!type) throw new Error(`Invalid planned ticket type: ${String(item.type ?? item.ticket_type ?? "")}`);
       const role = canonicalRoleForTicketType(type);
       const fallbackDependencies = index === 0 ? [sourceTicket.id] : previousTicket ? [previousTicket.id] : [sourceTicket.id];
       const dependencyIds = dependencyIdsForPlanItem(item, ticketsByKey, fallbackDependencies);

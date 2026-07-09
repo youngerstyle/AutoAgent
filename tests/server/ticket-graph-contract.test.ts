@@ -52,6 +52,15 @@ describe("TicketGraphContract", () => {
     expect(violation?.reason).toContain("market_research");
   });
 
+  it("accepts common model field aliases for ticket type and dependencies", () => {
+    const violation = validatePlannedTicketGraph([
+      { id: "qa_verify", ticket_type: "qa", title: "QA验证", expectedArtifact: "测试报告" },
+      { id: "accept", ticket_type: "boss_acceptance", title: "老板验收", expectedArtifact: "验收结论", depends_on: ["qa_verify"] }
+    ]);
+
+    expect(violation).toBeUndefined();
+  });
+
   it("extracts ticketGraph from common model response envelopes", () => {
     expect(plannedTicketItems({ ticketGraph: { tickets: [{ key: "dev", type: "implementation" }] } })).toHaveLength(1);
     expect(plannedTicketItems({ flow: { tickets: [{ key: "qa", type: "qa" }] } })).toHaveLength(1);
