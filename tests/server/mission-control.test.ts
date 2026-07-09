@@ -254,6 +254,29 @@ describe("MissionControl", () => {
     });
   });
 
+  it("blocks an incomplete PM ticket graph before development can falsely complete the run", async () => {
+    const fixture = await missionFixture(new PmReturnsImplementationOnlyGraphProvider());
+
+    const snapshot = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Fix a browser runtime error" },
+      { runSynchronously: true }
+    );
+
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "implementation")).toBe(false);
+    expect(snapshot.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
+      status: "blocked",
+      blocker: {
+        type: "external_dependency",
+        reason: expect.stringContaining("老板验收")
+      }
+    });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).not.toContain("run.completed");
+    expect(events.some((event) => event.summary.includes("开发开始"))).toBe(false);
+  });
+
   it("allows PM work tickets from an existing DAG to complete without returning a new ticket graph", async () => {
     const fixture = await missionFixture(new PmPlansPmWorkTicketProvider());
 
@@ -1075,6 +1098,28 @@ class PmReturnsNarrativeOnlyProvider implements ProviderRunner {
   }
 }
 
+class PmReturnsImplementationOnlyGraphProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "pm") {
+      return result({
+        plan: "只启动开发服务器，不安排 QA 和老板验收。",
+        ticketGraph: [
+          {
+            key: "implementation",
+            type: "implementation",
+            brief: "启动开发服务器并验证",
+            expectedArtifact: "运行中的本地服务",
+            targetRole: "dev"
+          }
+        ]
+      });
+    }
+    if (input.role === "dev") return result({ toolIntents: [{ tool: "startService", command: "npm run dev" }] });
+    if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
+    return result({ status: "executable", reason: "ok" });
+  }
+}
+
 class ChineseClarificationProvider implements ProviderRunner {
   rolesSeen: string[] = [];
 
@@ -1401,6 +1446,14 @@ class PmResumeReviewProvider implements ProviderRunner {
             expectedArtifact: "质量检查结论",
             targetRole: "qa",
             dependsOn: ["dev_rebuild"]
+          },
+          {
+            key: "accept_rebuild",
+            type: "boss_acceptance",
+            brief: "验收已通过 QA 的 FC 坦克98 复刻版本",
+            expectedArtifact: "验收结论",
+            targetRole: "boss",
+            dependsOn: ["qa_rebuild"]
           }
         ]
       });

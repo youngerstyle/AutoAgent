@@ -132,7 +132,7 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
     "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework、human_action。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
-    isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
+    isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，描述真实工单 DAG、依赖、目标角色和验收产物。ticketGraph 只能包含待执行工单，不能把已完成记录写进图；所有开发、返工或专家工单后必须进入 QA，最终叶子必须是老板验收。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
     isPlannedPmWorkTicket && !isTicketResumeReview ? "这是 PM 已拆出的普通 PM 工作工单，不是根规划工单。按当前工单说明产出文档、调研结论、范围判断或交付物即可；只有确实需要改动后续计划时，才返回新的 ticketGraph。" : undefined
   ].filter(Boolean).join("\n");
 }
