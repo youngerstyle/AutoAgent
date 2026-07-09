@@ -28,6 +28,20 @@ describe("MissionControl", () => {
     expect(snapshot.agents.map((agent) => agent.roleInWorkspace)).toEqual(expect.arrayContaining(["boss", "pm", "architect", "dev", "qa"]));
     expect(snapshot.tickets?.map((ticket) => ticket.type)).toEqual(expect.arrayContaining(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance"]));
     expect(snapshot.inboxMessages?.every((message) => message.status === "acked")).toBe(true);
+    const dev = snapshot.agents.find((agent) => agent.roleInWorkspace === "dev");
+    if (!dev) throw new Error("dev agent missing");
+    const devThreadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, dev.id, snapshot.activeTaskRun!.id);
+    expect(devThreadEvents.map((event) => event.kind)).toEqual(expect.arrayContaining(["ticket_claimed", "ticket_outcome"]));
+    expect(devThreadEvents.find((event) => event.kind === "ticket_claimed")).toMatchObject({
+      workspaceAgentId: dev.id,
+      ticketId: expect.any(String),
+      payload: expect.objectContaining({ ticketType: "implementation" })
+    });
+    expect(devThreadEvents.find((event) => event.kind === "ticket_outcome")).toMatchObject({
+      workspaceAgentId: dev.id,
+      ticketId: expect.any(String),
+      payload: expect.objectContaining({ status: "acked" })
+    });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toContain("run.completed");
     expect(events.find((event) => event.type === "run.completed")?.summary).toBe("任务已完成");

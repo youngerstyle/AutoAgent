@@ -415,6 +415,12 @@ export class MissionControl {
       });
       return state;
     }
+    await this.appendTicketThreadEvent(workspace, agent, ticket, "ticket_claimed", {
+      status: "running",
+      ticketType: ticket.type,
+      brief: ticket.brief,
+      expectedArtifact: ticket.expectedArtifact
+    });
     await this.writeState(workspace, state);
     const result = await this.runtime.runAssignment({
       workspace,
@@ -439,6 +445,11 @@ export class MissionControl {
         assignmentRunId: result.assignmentRun.id
       });
       this.syncTickets(state, ticketRuntime);
+      await this.appendTicketThreadEvent(workspace, agent, ticket, "ticket_outcome", {
+        status: "yielded",
+        ticketType: ticket.type,
+        reason: result.reason
+      });
       state.status = "running";
       state.task.status = "running";
       state.taskRun.status = "running";
@@ -590,6 +601,11 @@ export class MissionControl {
     ticketRuntime.ack(ticket.id, phaseResult);
     this.syncTickets(state, ticketRuntime);
     this.createNextTicketsForCompletedTicket(state, ticket);
+    await this.appendTicketThreadEvent(workspace, agent, ticket, "ticket_outcome", {
+      status: "acked",
+      ticketType: ticket.type,
+      result: phaseResult
+    });
     await this.writeState(workspace, state);
     return state;
   }
@@ -889,6 +905,11 @@ export class MissionControl {
     state.nextPhase = phase;
     state.taskRun.endedAt = new Date().toISOString();
     await this.writeState(workspace, state);
+    await this.appendTicketThreadEvent(workspace, await this.agentForTicket(workspace, ticket), ticket, "ticket_outcome", {
+      status: "blocked",
+      ticketType: ticket.type,
+      reason
+    });
     await this.append(workspace, state, "assignment.blocked", `${phaseLabel(phase)}受阻：${reason}`, {
       assignmentId: result.assignment.id,
       assignmentRun: result.assignmentRun,
@@ -1117,6 +1138,25 @@ export class MissionControl {
       if (messages.length > 0) projected[agent.id] = mergeDirectMessages(legacy[agent.id] ?? [], messages);
     }
     return projected;
+  }
+
+  private async appendTicketThreadEvent(
+    workspace: Workspace,
+    agent: WorkspaceAgent,
+    ticket: Ticket,
+    kind: "ticket_claimed" | "ticket_outcome",
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    await this.agentThreadStore.append(workspace.rootPath, agent.id, ticket.taskRunId, {
+      taskId: ticket.taskId,
+      taskRunId: ticket.taskRunId,
+      workspaceAgentId: agent.id,
+      source: "platform",
+      kind,
+      visibility: "timeline",
+      ticketId: ticket.id,
+      payload
+    });
   }
 
   private blockedTicket(state: MissionState): Ticket | undefined {
