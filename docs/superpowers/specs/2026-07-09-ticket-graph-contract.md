@@ -14,12 +14,13 @@ AutoAgent 的工单系统是项目 flow 的事实来源。PM 可以用 LLM 判�
 这些规则和具体项目无关，所有 `ticketGraph` 都必须满足：
 
 1. `ticketGraph` 只能描述待执行工单，不能把 `done`、`completed`、`complete` 这类已完成记录写成新工单。
-2. 图内依赖必须能解析到当前图里的工单 key、id、ticketId 或 ticket_id。
-3. 如果省略依赖，平台按列表顺序建立相邻依赖；这只是结构默认值，不代表 PM 可以省略责任链。
-4. 最终叶子工单必须是 `boss_acceptance`。任务不能停在 PM、架构、开发、返工、专家或 QA。
-5. 每个 `implementation`、`rework`、`specialist` 工单后必须能到达 `qa`。
-6. 每个上述 QA 后必须能到达 `boss_acceptance`。
-7. `targetRole` 由工单 type 规范化，模型返回错误角色时平台按 type 修正投递角色。
+2. 根规划 `ticketGraph` 不能包含 `human_action`。人工动作是运行时边界，只能由执行中的 Agent 在真实授权、人工测试或安全边界受阻时触发；PM 不能把“让人手动启动服务/手动测试”预排成主流程工单。
+3. 图内依赖必须能解析到当前图里的工单 key、id、ticketId 或 ticket_id。
+4. 如果省略依赖，平台按列表顺序建立相邻依赖；这只是结构默认值，不代表 PM 可以省略责任链。
+5. 最终叶子工单必须是 `boss_acceptance`。任务不能停在 PM、架构、开发、返工、专家或 QA。
+6. 每个 `implementation`、`rework`、`specialist` 工单后必须能到达 `qa`。
+7. 每个上述 QA 后必须能到达 `boss_acceptance`。
+8. `targetRole` 由工单 type 规范化，模型返回错误角色时平台按 type 修正投递角色。
 
 ## 项目级标准
 

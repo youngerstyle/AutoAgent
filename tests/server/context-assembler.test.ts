@@ -221,8 +221,10 @@ describe("ContextAssembler", () => {
     });
 
     expect(rootPm.prompt).toContain("产品/项目根规划工单必须优先返回 ticketGraph 数组");
+    expect(rootPm.prompt).toContain("根规划 ticketGraph 不能包含 human_action");
     expect(rootPm.prompt).toContain("工单：计划拆解（PM 根规划票）");
     expect(pmWork.prompt).not.toContain("根规划工单必须优先返回 ticketGraph");
+    expect(pmWork.prompt).not.toContain("根规划 ticketGraph 不能包含 human_action");
     expect(pmWork.prompt).toContain("这是 PM 已拆出的普通 PM 工作工单");
     expect(pmWork.prompt).toContain("工单：竞品参考与机制确认（PM 工作票）");
   });

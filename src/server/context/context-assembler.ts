@@ -131,9 +131,9 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     "只能请求当前工具权限允许的工具；禁止编造文件列表、命令输出、测试结果或交付物。",
     "动态上下文中的 agentDirectMessages 是 human 直接发给你的私聊消息；它只属于你，不代表全局任务改写，也不能替代工单流转。",
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
-    "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework、human_action。",
+    "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
-    isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，并按 TicketGraphContract v1 自检：ticketGraph 只能包含待执行工单，不能把已完成记录写进图；所有开发、返工或专家工单后必须进入 QA；最终叶子必须是老板验收。动态上下文若包含 ticketGraphContractReview，说明你上一次拆解未通过平台合约校验，请基于其中 reason 自行重拆，不要让 human 接锅。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
+    isRootPmPlanningTicket && !isTicketResumeReview ? "产品/项目根规划工单必须优先返回 ticketGraph 数组，并按 TicketGraphContract v1 自检：ticketGraph 只能包含待执行工单，不能把已完成记录写进图；根规划 ticketGraph 不能包含 human_action，人工动作只允许由执行中的 Agent 在真实授权、人工测试或安全边界受阻时触发；所有开发、返工或专家工单后必须进入 QA；最终叶子必须是老板验收。动态上下文若包含 ticketGraphContractReview，说明你上一次拆解未通过平台合约校验，请基于其中 reason 自行重拆，不要让 human 接锅。发现前置输入缺失时，要在自己的工单结果里明确 blocked/need_clarification，而不是伪造下游完成。" : undefined,
     isPlannedPmWorkTicket && !isTicketResumeReview ? "这是 PM 已拆出的普通 PM 工作工单，不是根规划工单。按当前工单说明产出文档、调研结论、范围判断或交付物即可；只有确实需要改动后续计划时，才返回新的 ticketGraph。" : undefined
   ].filter(Boolean).join("\n");
 }

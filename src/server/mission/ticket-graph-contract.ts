@@ -47,6 +47,11 @@ export function validatePlannedTicketGraph(items: Array<Record<string, unknown>>
     return { reason: "PM ticketGraph 只能描述待执行工单，不能把已完成记录写成新工单" };
   }
 
+  const humanActionNode = nodes.find((node) => node.type === "human_action");
+  if (humanActionNode) {
+    return { reason: "PM 根规划 ticketGraph 不能包含 human_action；人工动作是运行时边界，只能由 Agent 在执行、验收或授权受阻时返回结构化状态触发" };
+  }
+
   for (const [index, item] of items.entries()) {
     const explicitDependencies = planItemDependencyKeys(item);
     if (!explicitDependencies) {

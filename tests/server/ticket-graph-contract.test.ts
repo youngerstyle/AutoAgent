@@ -31,6 +31,16 @@ describe("TicketGraphContract", () => {
     expect(violation?.reason).toContain("待执行工单");
   });
 
+  it("rejects human action tickets in root PM planned delivery graphs", () => {
+    const violation = validatePlannedTicketGraph([
+      { key: "manual_start", type: "human_action", brief: "人工启动开发服务器", expectedArtifact: "运行中的服务" },
+      { key: "accept", type: "boss_acceptance", brief: "验收", expectedArtifact: "验收结论", dependsOn: ["manual_start"] }
+    ]);
+
+    expect(violation?.reason).toContain("human_action");
+    expect(violation?.reason).toContain("运行时边界");
+  });
+
   it("extracts ticketGraph from common model response envelopes", () => {
     expect(plannedTicketItems({ ticketGraph: { tickets: [{ key: "dev", type: "implementation" }] } })).toHaveLength(1);
     expect(plannedTicketItems({ flow: { tickets: [{ key: "qa", type: "qa" }] } })).toHaveLength(1);
