@@ -13,7 +13,9 @@ import { projectWorkspaceState } from "../storage/state-projector.js";
 import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
 import { readJson, writeJson } from "../storage/json.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
+import { RUNTIME_LIMITS } from "../runtime-limits.js";
 import { buildLoopDebugLog } from "./loop-debug-log.js";
+import { TICKET_GRAPH_CONTRACT_NAME, planItemAliases, planItemDependencyKeys, planItemPrimaryKey, plannedTicketItems, ticketTypeFromValue, validatePlannedTicketGraph } from "./ticket-graph-contract.js";
 import { createTicketRuntime, type TicketRuntime } from "./ticket-runtime.js";
 
 export interface MissionState {
@@ -436,9 +438,21 @@ export class MissionControl {
       return this.createFollowupTicketAndContinue(workspace, state, "implementation", roleToolBoundaryReason, "implementationRoleBoundaryRetries", ticket);
     }
 
-    const invalidPmPlanReason = phase === "pm_plan" && !planningClarificationReason
+    const invalidPmPlanReason = phase === "pm_plan"
+      && !humanAuthorizationReason
+      && !manualOnlyReason
+      && !planningClarificationReason
+      && !agentObstacle
       ? this.pmPlanValidationReason(ticket, phaseResult)
       : undefined;
+
+    if (invalidPmPlanReason) {
+      return this.yieldPmTicketForGraphRepair(workspace, state, ticketRuntime, ticket, result, phaseResult, invalidPmPlanReason);
+    }
+
+    if (phase === "pm_plan") {
+      delete state.context.ticketGraphContractReview;
+    }
 
     if (humanAuthorizationReason || manualOnlyReason || planningClarificationReason || invalidPmPlanReason) {
       const reason = humanAuthorizationReason ?? manualOnlyReason ?? planningClarificationReason ?? invalidPmPlanReason ?? "需要 human 处理";
@@ -684,7 +698,7 @@ export class MissionControl {
       return "PM 没有返回 ticketGraph，无法形成可执行工单 DAG";
     }
     if (planItems.length === 0) return undefined;
-    return validatePlannedTicketGraph(planItems);
+    return validatePlannedTicketGraph(planItems)?.reason;
   }
 
   private async agentForPhase(workspace: Workspace, phase: MissionPhase): Promise<WorkspaceAgent> {
@@ -751,6 +765,60 @@ export class MissionControl {
       ticketId: ticket.id
     });
     await this.append(workspace, state, "run.blocked", `任务受阻：${phaseLabel(phase)}受阻：${reason}`, { task: state.task, taskRun: state.taskRun, reason, phase, ticketId: ticket.id });
+    return state;
+  }
+
+  private async yieldPmTicketForGraphRepair(
+    workspace: Workspace,
+    state: MissionState,
+    ticketRuntime: TicketRuntime,
+    ticket: Ticket,
+    result: AssignmentResult,
+    phaseResult: unknown,
+    reason: string
+  ): Promise<MissionState> {
+    const repairAttempt = (ticket.execution?.continuationCount ?? 0) + 1;
+    if (repairAttempt > RUNTIME_LIMITS.maxTicketSelfRepairAttempts) {
+      return this.blockCurrentTicket(workspace, state, ticketRuntime, ticket, result, phaseResult, `${reason}；PM 自修已达到 ${RUNTIME_LIMITS.maxTicketSelfRepairAttempts} 次，需 human 介入。`);
+    }
+
+    state.context.ticketGraphContractReview = {
+      contract: TICKET_GRAPH_CONTRACT_NAME,
+      ticketId: ticket.id,
+      reason,
+      attempt: repairAttempt,
+      maxAttempts: RUNTIME_LIMITS.maxTicketSelfRepairAttempts,
+      previousResult: phaseResult,
+      instruction: "你刚刚返回的 ticketGraph 没有通过工单合约校验。请不要请求 human 接锅；请基于校验原因重新输出完整、待执行、可交接、可验收的 ticketGraph。"
+    };
+    ticketRuntime.yieldTicket(ticket.id, {
+      reason: `PM ticketGraph 未通过合约校验：${reason}`,
+      assignmentRunId: result.assignmentRun.id
+    });
+    this.syncTickets(state, ticketRuntime);
+    state.status = "running";
+    state.task.status = "running";
+    state.taskRun.status = "running";
+    state.nextPhase = "pm_plan";
+    state.taskRun.phase = "pm_plan";
+    state.updatedAt = new Date().toISOString();
+    await this.writeState(workspace, state);
+    await this.append(workspace, state, "assignment.yielded", "产品/项目工单图未通过合约校验，已返回 PM 自修", {
+      assignmentId: result.assignment.id,
+      assignmentRun: result.assignmentRun,
+      reason,
+      ticketId: ticket.id,
+      contract: TICKET_GRAPH_CONTRACT_NAME,
+      attempt: repairAttempt,
+      maxAttempts: RUNTIME_LIMITS.maxTicketSelfRepairAttempts
+    });
+    await this.append(workspace, state, "task.phase_changed", "计划拆解已保存反馈，等待 PM 自修", {
+      phase: "pm_plan",
+      status: "running",
+      ticketId: ticket.id,
+      yielded: true,
+      reason
+    });
     return state;
   }
 
@@ -1128,151 +1196,6 @@ function roleForPhase(phase: MissionPhase): AgentRole {
   if (phase === "architect_plan") return "architect";
   if (phase === "qa") return "qa";
   return "dev";
-}
-
-function plannedTicketItems(result: unknown): Array<Record<string, unknown>> {
-  if (!isRecord(result)) return [];
-  const direct = firstRecordArray(result.ticketGraph, result.tickets, result.workItems, result.work_items);
-  if (direct.length > 0) return direct;
-  if (isRecord(result.ticketGraph) && Array.isArray(result.ticketGraph.tickets)) {
-    return result.ticketGraph.tickets.filter(isRecord);
-  }
-  if (isRecord(result.flow) && Array.isArray(result.flow.tickets)) {
-    return result.flow.tickets.filter(isRecord);
-  }
-  return [];
-}
-
-interface PlannedTicketNode {
-  key: string;
-  type: TicketType;
-  dependsOn: string[];
-  status: string;
-}
-
-function validatePlannedTicketGraph(items: Array<Record<string, unknown>>): string | undefined {
-  const nodes: PlannedTicketNode[] = [];
-  const keyToNode = new Map<string, PlannedTicketNode>();
-  for (const [index, item] of items.entries()) {
-    const type = ticketTypeFromValue(item.type);
-    const key = planItemPrimaryKey(item, type, index);
-    const node: PlannedTicketNode = {
-      key,
-      type,
-      dependsOn: [],
-      status: lower(item.status)
-    };
-    nodes.push(node);
-    for (const alias of planItemAliases(item, type, index)) keyToNode.set(alias, node);
-  }
-
-  const completedNode = nodes.find((node) => ["done", "completed", "complete"].includes(node.status));
-  if (completedNode) {
-    return "PM ticketGraph 只能描述待执行工单，不能把已完成记录写成新工单";
-  }
-
-  for (const [index, item] of items.entries()) {
-    const explicitDependencies = planItemDependencyKeys(item);
-    if (!explicitDependencies) {
-      nodes[index].dependsOn = index === 0 ? [] : [nodes[index - 1].key];
-      continue;
-    }
-    const unknown = explicitDependencies.find((key) => !keyToNode.has(key));
-    if (unknown) return `PM ticketGraph 依赖了不存在的工单：${unknown}`;
-    nodes[index].dependsOn = explicitDependencies;
-  }
-
-  if (!nodes.some((node) => node.type === "boss_acceptance")) {
-    return "PM ticketGraph 缺少老板验收工单，不能形成完整交付闭环";
-  }
-
-  const outgoing = new Map<string, PlannedTicketNode[]>();
-  for (const node of nodes) {
-    for (const dependency of node.dependsOn) {
-      const upstream = keyToNode.get(dependency);
-      if (!upstream) continue;
-      const successors = outgoing.get(upstream.key) ?? [];
-      successors.push(node);
-      outgoing.set(upstream.key, successors);
-    }
-  }
-
-  const leaf = nodes.find((node) => (outgoing.get(node.key) ?? []).length === 0 && node.type !== "boss_acceptance");
-  if (leaf) {
-    return "PM ticketGraph 的叶子工单必须是老板验收，不能在开发、测试或中间工单后直接结束";
-  }
-
-  for (const implementation of nodes.filter((node) => node.type === "implementation" || node.type === "rework" || node.type === "specialist")) {
-    const reachable = reachablePlannedNodes(implementation, outgoing);
-    const qaNodes = reachable.filter((node) => node.type === "qa");
-    if (qaNodes.length === 0) {
-      return "PM ticketGraph 中开发/返工/专家工单后必须进入 QA 质量检查";
-    }
-    const qaReachesAcceptance = qaNodes.some((qa) => reachablePlannedNodes(qa, outgoing).some((node) => node.type === "boss_acceptance"));
-    if (!qaReachesAcceptance) {
-      return "PM ticketGraph 中 QA 质量检查后必须进入老板验收";
-    }
-  }
-
-  return undefined;
-}
-
-function reachablePlannedNodes(start: PlannedTicketNode, outgoing: Map<string, PlannedTicketNode[]>): PlannedTicketNode[] {
-  const result: PlannedTicketNode[] = [];
-  const seen = new Set<string>([start.key]);
-  const queue = [...(outgoing.get(start.key) ?? [])];
-  while (queue.length > 0) {
-    const node = queue.shift();
-    if (!node || seen.has(node.key)) continue;
-    seen.add(node.key);
-    result.push(node);
-    queue.push(...(outgoing.get(node.key) ?? []));
-  }
-  return result;
-}
-
-function planItemPrimaryKey(item: Record<string, unknown>, type: TicketType, index: number): string {
-  return stringValue(item.key) ?? stringValue(item.id) ?? stringValue(item.ticketId) ?? stringValue(item.ticket_id) ?? `${type}_${index}`;
-}
-
-function planItemAliases(item: Record<string, unknown>, type: TicketType, index: number): string[] {
-  return [
-    planItemPrimaryKey(item, type, index),
-    stringValue(item.key),
-    stringValue(item.id),
-    stringValue(item.ticketId),
-    stringValue(item.ticket_id),
-    `${type}_${index}`
-  ].filter((value, valueIndex, values): value is string => Boolean(value) && values.indexOf(value) === valueIndex);
-}
-
-function planItemDependencyKeys(item: Record<string, unknown>): string[] | undefined {
-  const raw = Array.isArray(item.dependsOn)
-    ? item.dependsOn
-    : Array.isArray(item.depends_on)
-      ? item.depends_on
-      : Array.isArray(item.dependsOnTicketIds)
-        ? item.dependsOnTicketIds
-        : undefined;
-  if (!raw) return undefined;
-  return raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-}
-
-function firstRecordArray(...values: unknown[]): Array<Record<string, unknown>> {
-  for (const value of values) {
-    if (Array.isArray(value)) return value.filter(isRecord);
-  }
-  return [];
-}
-
-function ticketTypeFromValue(value: unknown): TicketType {
-  const text = typeof value === "string" ? value : "";
-  const allowed = new Set<TicketType>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance", "specialist", "rework", "human_action"]);
-  if (allowed.has(text as TicketType)) return text as TicketType;
-  if (text === "dev" || text === "development") return "implementation";
-  if (text === "architect" || text === "architecture") return "architect_plan";
-  if (text === "acceptance") return "boss_acceptance";
-  return "implementation";
 }
 
 function canonicalRoleForTicketType(type: TicketType): AgentRole {

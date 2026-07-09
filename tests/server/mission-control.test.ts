@@ -254,27 +254,25 @@ describe("MissionControl", () => {
     });
   });
 
-  it("blocks an incomplete PM ticket graph before development can falsely complete the run", async () => {
-    const fixture = await missionFixture(new PmReturnsImplementationOnlyGraphProvider());
+  it("returns an incomplete PM ticket graph to PM for self-repair before development can run", async () => {
+    const provider = new PmSelfRepairsIncompleteGraphProvider();
+    const fixture = await missionFixture(provider);
 
     const snapshot = await fixture.mission.startTask(
       { workspaceId: fixture.workspace.id, goal: "Fix a browser runtime error" },
       { runSynchronously: true }
     );
 
-    expect(snapshot.status).toBe("blocked");
-    expect(snapshot.phase).toBe("pm_plan");
-    expect(snapshot.tickets?.some((ticket) => ticket.type === "implementation")).toBe(false);
-    expect(snapshot.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
-      status: "blocked",
-      blocker: {
-        type: "external_dependency",
-        reason: expect.stringContaining("老板验收")
-      }
-    });
+    expect(provider.pmCalls).toBe(2);
+    expect(provider.pmSawContractFeedback).toBe(true);
+    expect(snapshot.status).toBe("completed");
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "implementation")).toBe(true);
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "qa")).toBe(true);
+    expect(snapshot.tickets?.some((ticket) => ticket.type === "boss_acceptance")).toBe(true);
     const events = await fixture.ledger.read(fixture.workspace.rootPath, snapshot.activeTask!.id, snapshot.activeTaskRun!.id);
-    expect(events.map((event) => event.type)).not.toContain("run.completed");
-    expect(events.some((event) => event.summary.includes("开发开始"))).toBe(false);
+    expect(events.map((event) => event.type)).toContain("assignment.yielded");
+    expect(events.map((event) => event.type)).not.toContain("run.blocked");
+    expect(events.map((event) => event.type)).toContain("run.completed");
   });
 
   it("allows PM work tickets from an existing DAG to complete without returning a new ticket graph", async () => {
@@ -1098,9 +1096,45 @@ class PmReturnsNarrativeOnlyProvider implements ProviderRunner {
   }
 }
 
-class PmReturnsImplementationOnlyGraphProvider implements ProviderRunner {
+class PmSelfRepairsIncompleteGraphProvider implements ProviderRunner {
+  pmCalls = 0;
+  pmSawContractFeedback = false;
+
   async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
     if (input.role === "pm") {
+      this.pmCalls += 1;
+      const review = input.context?.ticketGraphContractReview as { reason?: string } | undefined;
+      this.pmSawContractFeedback = this.pmSawContractFeedback || Boolean(review?.reason?.includes("老板验收"));
+      if (this.pmCalls > 1) {
+        return result({
+          plan: "根据平台工单合约反馈补齐 Dev -> QA -> 老板验收。",
+          ticketGraph: [
+            {
+              key: "implementation",
+              type: "implementation",
+              brief: "启动开发服务器并验证",
+              expectedArtifact: "运行中的本地服务",
+              targetRole: "dev"
+            },
+            {
+              key: "qa",
+              type: "qa",
+              brief: "验证开发服务器运行结果",
+              expectedArtifact: "质量检查结论",
+              targetRole: "qa",
+              dependsOn: ["implementation"]
+            },
+            {
+              key: "acceptance",
+              type: "boss_acceptance",
+              brief: "验收已通过 QA 的修复结果",
+              expectedArtifact: "验收结论",
+              targetRole: "boss",
+              dependsOn: ["qa"]
+            }
+          ]
+        });
+      }
       return result({
         plan: "只启动开发服务器，不安排 QA 和老板验收。",
         ticketGraph: [
@@ -1114,7 +1148,8 @@ class PmReturnsImplementationOnlyGraphProvider implements ProviderRunner {
         ]
       });
     }
-    if (input.role === "dev") return result({ toolIntents: [{ tool: "startService", command: "npm run dev" }] });
+    if (input.role === "dev") return implementationResult();
+    if (input.role === "qa") return result({ passed: true, report: "Pass" });
     if (input.assignmentType === "boss_acceptance") return result({ accepted: true, summary: "验收通过" });
     return result({ status: "executable", reason: "ok" });
   }

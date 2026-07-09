@@ -7,6 +7,7 @@ function positiveIntegerFromEnv(name: string, fallback: number): number {
 
 export const RUNTIME_LIMITS = {
   maxToolFollowUps: positiveIntegerFromEnv("AUTOAGENT_MAX_TOOL_FOLLOW_UPS", 200),
+  maxTicketSelfRepairAttempts: positiveIntegerFromEnv("AUTOAGENT_MAX_TICKET_SELF_REPAIR_ATTEMPTS", 20),
   ticketLeaseMs: positiveIntegerFromEnv("AUTOAGENT_TICKET_LEASE_MS", 60_000),
   sseHeartbeatMs: positiveIntegerFromEnv("AUTOAGENT_SSE_HEARTBEAT_MS", 15_000)
 };
