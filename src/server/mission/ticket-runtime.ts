@@ -335,7 +335,8 @@ export class TicketRuntime {
     });
   }
 
-  private expireLeases(now: Date): void {
+  expireLeases(now: Date): number {
+    const recoveredTicketIds = new Set<string>();
     for (const message of this.messages.values()) {
       if (message.status !== "claimed" || !message.leaseUntil) continue;
       if (new Date(message.leaseUntil).getTime() > now.getTime()) continue;
@@ -346,9 +347,13 @@ export class TicketRuntime {
         ticket.status = "pending";
         ticket.leaseUntil = undefined;
         ticket.updatedAt = now.toISOString();
-        this.deliver(ticket, now);
+        if (!this.allMessages().some((item) => item.ticketId === ticket.id && item.status === "pending")) {
+          this.deliver(ticket, now);
+        }
+        recoveredTicketIds.add(ticket.id);
       }
     }
+    return recoveredTicketIds.size;
   }
 }
 

@@ -349,6 +349,10 @@ export class MissionControl {
           await this.pauseTask(workspace.id, taskId);
           break;
         }
+        const recoveredExpiredTickets = await this.recoverExpiredTicketLeases(workspace, state);
+        if (recoveredExpiredTickets > 0) {
+          state = await this.readState(workspace, taskId, taskRunId);
+        }
         const pendingDirectMessage = this.nextPendingAgentDirectMessage(state);
         if (pendingDirectMessage) {
           state = await this.runAgentDirectMessageTurn(workspace, state, pendingDirectMessage);
@@ -929,6 +933,19 @@ export class MissionControl {
 
   private ticketRuntime(state: MissionState): TicketRuntime {
     return createTicketRuntime(state.tickets ?? [], state.inboxMessages ?? []);
+  }
+
+  private async recoverExpiredTicketLeases(workspace: Workspace, state: MissionState): Promise<number> {
+    const runtime = this.ticketRuntime(state);
+    const recovered = runtime.expireLeases(new Date());
+    if (recovered === 0) return 0;
+    this.syncTickets(state, runtime);
+    state.updatedAt = new Date().toISOString();
+    await this.writeState(workspace, state);
+    await this.append(workspace, state, "handoff.created", `已恢复 ${recovered} 张过期运行工单，重新进入队列`, {
+      recoveredExpiredTickets: recovered
+    });
+    return recovered;
   }
 
   private syncTickets(state: MissionState, runtime: TicketRuntime): void {

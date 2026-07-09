@@ -142,6 +142,39 @@ describe("MissionControl", () => {
     expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("老板"))).toBe(false);
   });
 
+  it("recovers expired running tickets before looking for runnable work", async () => {
+    const provider = new DirectAgentMessageProvider();
+    const fixture = await missionFixture(provider);
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Recover stale running ticket" },
+      { autoRun: false }
+    );
+    const taskId = started.activeTask!.id;
+    const taskRunId = started.activeTaskRun!.id;
+    const file = stateFile(fixture.workspace.rootPath, taskId, taskRunId);
+    const state = await readJson<MissionState | undefined>(file, undefined);
+    if (!state) throw new Error("state file missing");
+    const boss = started.agents.find((agent) => agent.roleInWorkspace === "boss");
+    if (!boss) throw new Error("boss agent missing");
+    const bossTicket = state.tickets.find((ticket) => ticket.type === "boss_intake");
+    if (!bossTicket) throw new Error("boss ticket missing");
+    const message = state.inboxMessages.find((item) => item.ticketId === bossTicket.id);
+    if (!message) throw new Error("boss message missing");
+    const expiredAt = "2026-07-01T00:00:00.000Z";
+    bossTicket.status = "running";
+    bossTicket.leaseUntil = expiredAt;
+    message.status = "claimed";
+    message.claimedByAgentId = boss.id;
+    message.leaseUntil = expiredAt;
+    await writeJson(file, state);
+
+    await fixture.mission.runUntilIdle(fixture.workspace, taskId, taskRunId);
+
+    expect(provider.calls[0]?.role).toBe("boss");
+    const recovered = await readJson<MissionState | undefined>(file, undefined);
+    expect(recovered?.tickets.find((ticket) => ticket.id === bossTicket.id)?.status).not.toBe("running");
+  });
+
   it("enforces one active TaskRun per workspace", async () => {
     const fixture = await missionFixture();
 
