@@ -11,6 +11,7 @@ import type { ProviderRunner } from "../../src/server/agents/agent-runtime";
 import type { AgentTurnInput, AgentTurnResult } from "../../src/server/providers/types";
 import { readJson, writeJson } from "../../src/server/storage/json";
 import { stateFile } from "../../src/server/storage/paths";
+import { SessionStore } from "../../src/server/storage/session-store";
 
 describe("MissionControl", () => {
   it("runs the fixed team happy path to completion", async () => {
@@ -211,6 +212,15 @@ describe("MissionControl", () => {
       agentId: dev.id,
       message: "继续当前开发工单，不要回到老板。",
       createdBy: "human"
+    });
+    const session = await new SessionStore().read(fixture.workspace.rootPath, dev.id, started.activeTaskRun!.id);
+    expect(session.messages.at(-1)).toMatchObject({
+      role: "user",
+      content: "继续当前开发工单，不要回到老板。",
+      metadata: expect.objectContaining({
+        source: "human.agent_message",
+        taskRunId: started.activeTaskRun!.id
+      })
     });
     const events = await fixture.ledger.read(fixture.workspace.rootPath, started.activeTask!.id, started.activeTaskRun!.id);
     expect(events.map((event) => event.type)).toContain("human.agent_message");
@@ -679,6 +689,14 @@ describe("MissionControl", () => {
     expect(provider.pmExecutedAfterHumanReply).toBe(true);
     expect(provider.pmSawLatestHumanReplyDuringExecution).toBe(true);
     expect(resumed.status).toBe("completed");
+    const pm = resumed.agents.find((agent) => agent.roleInWorkspace === "pm");
+    if (!pm) throw new Error("pm agent missing");
+    const session = await new SessionStore().read(fixture.workspace.rootPath, pm.id, resumed.activeTaskRun!.id);
+    expect(session.messages.some((message) =>
+      message.role === "user"
+      && message.content === "1.是；2.和原版一样；3.都可以"
+      && message.metadata?.source === "human.followup"
+    )).toBe(true);
     expect(resumed.tickets?.find((ticket) => ticket.type === "pm_plan")).toMatchObject({
       status: "completed",
       result: expect.objectContaining({ plan: "按 human 回复重新拆解" })

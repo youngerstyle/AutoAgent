@@ -129,6 +129,39 @@ describe("ContextAssembler", () => {
     expect(assembled.report.sections.some((section) => section.truncated)).toBe(true);
   });
 
+  it("does not inject direct human chat projections through dynamic context", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    const sessionStore = new SessionStore();
+    const assembler = new ContextAssembler(new ContextStore());
+
+    await sessionStore.appendTurn(root, dev.id, "tr_direct", {
+      user: "已有开发任务上下文",
+      assistant: "{\"status\":\"working\"}",
+      toolResults: []
+    });
+
+    const assembled = await assembler.assemble({
+      workspace,
+      agent: dev,
+      sessionId: "tr_direct",
+      taskRunId: "tr_direct",
+      goal: "继续开发",
+      type: "implementation",
+      brief: "实现功能",
+      expectedArtifact: "可运行交付物",
+      context: {
+        agentDirectMessages: [{ message: "旁路不该进入 prompt" }],
+        latestAgentDirectMessage: { message: "旁路不该进入 prompt" }
+      },
+      session: await sessionStore.read(root, dev.id, "tr_direct"),
+      toolResults: []
+    });
+
+    expect(assembled.prompt).not.toContain("旁路不该进入 prompt");
+  });
+
   it("backfills replacement history for legacy checkpoints with the same id", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-"));
     const workspace = testWorkspace(root);

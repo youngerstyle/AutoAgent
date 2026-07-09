@@ -15,6 +15,7 @@ The current implementation persists per-agent session files, but earlier version
 The important distinction is:
 
 - Agent session is the bounded, model-visible history for the next turn.
+- Human messages to an Agent are session messages. They are not a parallel context channel.
 - Loop trace is the raw audit trail: full prompts, full LLM responses, tool IO, errors, usage, and timing.
 - Active context is the bounded input sent to the LLM, assembled from session, memory, ticket state, and current observations.
 - Memory is curated, compressed, or retrieved state derived from raw facts.
@@ -47,11 +48,25 @@ Agent session files are not raw audit logs. They keep only the model-visible con
 
 Only `ContextAssembler` may create model input. `AgentRuntime` may not manually concatenate session, tool results, or assignment text into prompts.
 
-3. Compaction has thresholds, checkpoints, and replacement history.
+3. Messages are time-ordered; side channels are audit-only.
+
+Every model-visible message belongs to one ordered conversation timeline for the target workspace Agent and task run. This includes:
+
+- the compact task/assignment message created by `AgentRuntime`;
+- the assistant response;
+- bounded tool observations;
+- human messages sent directly to that Agent;
+- human replies that resume a blocked ticket owned by that Agent.
+
+The platform may still record `human.agent_message`, `human.followup`, ticket events, and UI chat rows in `events.jsonl` or `state.json`, but those records are not a second prompt input path. They are audit and projection data. If a human message should affect the next Agent turn, it must first be appended to the target Agent session as a `user` message with metadata such as `source: "human.agent_message"` or `source: "human.followup"`.
+
+This mirrors Codex-style reconstruction: durable raw events remain auditable, while the next model context is reconstructed from the model-visible timeline plus compaction replacement history. AutoAgent must not inject arrays like `agentDirectMessages` or `humanFollowups` wholesale into dynamic context.
+
+4. Compaction has thresholds, checkpoints, and replacement history.
 
 When active session context exceeds a configured threshold, old message groups are summarized into a checkpoint. Recent turns remain verbatim. The model-visible session file is not rewritten by compaction. The checkpoint must also persist `replacementHistory`: a synthetic compaction summary message followed by retained recent messages. This gives restart/replay code a concrete "use this instead of old history" boundary, similar to Codex's compacted replacement history.
 
-4. Memory is layered.
+5. Memory is layered.
 
 AutoAgent uses three practical layers for V1:
 
@@ -59,15 +74,15 @@ AutoAgent uses three practical layers for V1:
 - Workspace memory: durable project facts, conventions, paths, known commands, and recurring decisions.
 - Ticket context: current work item, dependencies, blockers, human follow-ups, and handoff facts.
 
-5. Tool observations are traced fully but injected compactly.
+6. Tool observations are traced fully but injected compactly.
 
 Full tool output remains in loop trace and event logs. Session receives only a bounded tool observation summary. The prompt receives a bounded observation summary with paths, status, key snippets, and references to raw trace records when needed.
 
-6. Prompt cache stability is a design constraint.
+7. Prompt cache stability is a design constraint.
 
-Stable content must come first: agent soul, identity, capability manual, tool protocol, schemas, and static policy. Dynamic content comes later: current ticket, recent context, tool observations, human follow-up. This improves OpenAI automatic prefix caching and Anthropic cache breakpoints.
+Stable content must come first: agent soul, identity, capability manual, tool protocol, schemas, and static policy. Dynamic content comes later: current ticket, recent context, and tool observations. Human messages are not a dynamic side channel; they enter through the ordered session history. This improves OpenAI automatic prefix caching and Anthropic cache breakpoints.
 
-7. The UI must show why a prompt is large.
+8. The UI must show why a prompt is large.
 
 Loop debug must show context sections, original size, injected size, truncation or compaction reason, and whether a checkpoint was used.
 
@@ -102,6 +117,24 @@ interface AgentSession {
   updatedAt: string;
 }
 ```
+
+Human-originated session messages use the same `messages` array:
+
+```ts
+interface AgentSessionMessage {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  timestamp: string;
+  metadata?: {
+    source?: "assignment" | "human.agent_message" | "human.followup" | "tool";
+    humanMessageId?: string;
+    ticketId?: string;
+    taskRunId?: string;
+  };
+}
+```
+
+The `content` should be the user-facing message, not a serialized state object. Extra routing data belongs in metadata and event logs.
 
 ### `loop-trace.jsonl`
 
@@ -230,7 +263,9 @@ The assembled prompt has ordered sections:
 6. Tool observations
    - current loop observations, bounded and summarized
 7. Dynamic context
-   - human follow-ups, ticket state, upstream results
+   - current ticket state, upstream results, run metadata
+
+Dynamic context must not carry full human message arrays. Human messages that matter to the Agent are already in the session timeline. Dynamic context may carry identifiers and summaries such as current ticket id, blocker type, allowed resume actions, and references to event ids.
 
 `ContextAssembler` returns both `prompt` and `ContextReport`. The complete `prompt` is written to loop trace before the provider call. It is never written back into agent session.
 
@@ -265,6 +300,8 @@ Compaction output must include:
 - test/QA evidence
 - human instructions
 - next action
+
+Human instructions here means the compacted semantic result of prior human messages. It does not mean replaying `state.context.humanFollowups` or `state.context.agentMessages` outside the session compaction path.
 
 ## Provider Interaction
 
@@ -306,8 +343,10 @@ The user should be able to tell whether a bad model response came from:
 7. Recent model-visible turns stay readable while older turns become summary.
 8. Workspace-agent memory is stored separately from session.
 9. Loop debug exposes context reports and raw prompt/LLM/tool evidence from trace.
-10. Tests cover prompt recursion, tool observation compaction, checkpoint creation, trace preservation, and session hygiene.
-11. `npm.cmd run test:run`, `npm.cmd run typecheck`, and `npm.cmd run build` pass.
+10. Direct human-to-Agent messages are appended to that Agent session in timestamp order and are not injected again through `dynamic_context`.
+11. Blocked-ticket human follow-ups are appended to the blocked ticket owner session before the resume-review turn.
+12. Tests cover prompt recursion, tool observation compaction, checkpoint creation, trace preservation, human message ordering, and session hygiene.
+13. `npm.cmd run test:run`, `npm.cmd run typecheck`, and `npm.cmd run build` pass.
 
 ## Non-Goals
 

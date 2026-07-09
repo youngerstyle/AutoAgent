@@ -36,8 +36,8 @@ AutoAgent 的运行核心必须像现实团队里的工单系统：用户提出�
 8. Human in flow 是默认，human in loop 是异常或边界态。
    用户平时观察团队流动；当某个 Agent 需要人工测试、授权、澄清或验收时，问题挂在该 Agent/工单上，用户点进该 Agent 后进入单 Agent 对话。
 
-9. Human 回复不是普通聊天消息，而是工单恢复事件。
-   当 blocked 工单收到 human 消息时，平台不能直接把消息当批准、失败或继续。必须先让当前工单 owner Agent 做一次 resume review turn，输出结构化 action；平台只消费 action 来推进工单。
+9. Human 消息首先是时间序消息，然后才可能触发工单恢复。
+   human 给某个 Agent 的私聊、blocked 工单的补充、人工测试反馈，本质上都要进入目标 Agent 的 session 时间线。事件日志、状态文件和 UI 卡片只是审计与投影，不能成为另一条模型上下文旁路。blocked 工单收到 human 消息时，平台不能直接把消息当批准、失败或继续；它必须先把这条消息写入 owner Agent session，再让 owner Agent 做一次 resume review turn，输出结构化 action；平台只消费 action 来推进工单。
 
 ## 工单模型
 
@@ -178,7 +178,7 @@ flowchart LR
 
 ## Human Resume Review
 
-human-in-loop 看起来像聊天，但它不是普通聊天。普通聊天 loop 是：
+human-in-loop 看起来像聊天，但它不是旁路状态。对模型来说，它仍然是按时间排序的对话消息。普通聊天 loop 是：
 
 ```text
 message -> Agent answer
@@ -187,7 +187,7 @@ message -> Agent answer
 工单恢复 loop 是：
 
 ```text
-human message + blocked ticket state -> owner Agent resume review -> structured action -> ticket transition
+human message appended to owner Agent session -> blocked ticket state -> owner Agent resume review -> structured action -> ticket transition
 ```
 
 输入必须包含：
@@ -195,7 +195,7 @@ human message + blocked ticket state -> owner Agent resume review -> structured 
 - 当前 blocked 工单。
 - 阻塞类型和原因。
 - 上一次 Agent 输出和工具结果。
-- human 最新回复。
+- session 时间线中的最新 human 回复。
 - 当前工单允许的 action 集合。
 - 当前工单的父子关系和依赖状态。
 
@@ -229,7 +229,9 @@ human message + blocked ticket state -> owner Agent resume review -> structured 
 }
 ```
 
-平台禁止从 human 文本、Agent 的 `reason` 或 `report` 中用关键词猜测“通过、失败、授权、返工目标”。human 问一句“为什么需要我测”，就应进入当前 Agent 的下一次 LLM review，而不是被平台关键字规则判定为通过或失败。
+平台禁止从 human 文本、Agent 的 `reason` 或 `report` 中用关键词猜测“通过、失败、授权、返工目标”。human 问一句“为什么需要我测”，就应作为一条时间序 user message 进入当前 Agent 的下一次 LLM review，而不是被平台关键字规则判定为通过或失败。
+
+平台也不能把 `humanFollowups`、`agentMessages`、`latestAgentDirectMessage` 这类数组或最新消息作为第二条动态上下文通道整体注入 prompt。若 human 消息需要影响模型，它必须已经存在于目标 Agent 的 session timeline 中；动态上下文只保留当前工单、阻塞类型、允许动作、事件 id 等结构化状态。
 
 ## 典型流转
 
@@ -307,6 +309,7 @@ human 回复后，QA 先做 resume review。QA 判断通过则 `complete`，判�
 - 根据 `target_phase`、角色名或字符串关键字跳转。
 - 从 human 文本直接判断通过、失败、授权或返工。
 - 在工单之外保存另一份真实流程。
+- 在 session 之外保存另一份会影响模型判断的 human 消息流。
 - 因工具错误替 Agent 选择业务路线。
 
 因此，现有 `defaultTransferPhaseForObstacle`、`targetPhaseFromStructured`、`phaseAfterHumanFollowup`、`routeBackToPhaseOrFail` 这类阶段路由入口都应被工单 action 映射替换或删除。
@@ -323,6 +326,14 @@ Agent 之间不直接通讯。所有交接通过 ticket + inbox message：
 - 多个可运行工单按 priority、依赖完成时间和创建时间调度。
 
 这让平台更接近真实工单系统：消息可以排队、重试、超时、死信，而不是函数调用式同步跳转。
+
+human 给单个 Agent 的私聊不是 Agent 之间的工单交接，但也必须遵守同一条时间线原则：
+
+- 先写入目标 Agent 的 session，作为下一次模型上下文的一条 `user` 消息。
+- 再写入事件日志和状态投影，供 UI 显示气泡、感叹号和运行记录。
+- 如果目标 Agent 正在执行当前 provider 调用，这条消息不能插入正在进行的调用，只能在下一次 turn 生效。
+- 如果这条消息是在恢复某张 blocked 工单，则由该工单 owner Agent 做 resume review。
+- 不能同时把同一条消息又通过 `dynamic_context.agentDirectMessages` 或类似字段注入 prompt。
 
 ## Prompt 和代码规则边界
 

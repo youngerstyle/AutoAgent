@@ -61,6 +61,29 @@ export class SessionStore {
     return session;
   }
 
+  async appendUserMessage(
+    workspaceRoot: string,
+    workspaceAgentId: string,
+    sessionId: string,
+    message: {
+      content: string;
+      metadata?: Record<string, unknown>;
+      timestamp?: string;
+    }
+  ): Promise<AgentSession> {
+    const session = await this.read(workspaceRoot, workspaceAgentId, sessionId);
+    const timestamp = message.timestamp ?? new Date().toISOString();
+    session.messages.push({
+      role: "user",
+      content: message.content,
+      timestamp,
+      metadata: message.metadata
+    });
+    session.updatedAt = timestamp;
+    await writeJson(this.sessionFile(workspaceRoot, workspaceAgentId, sessionId), session);
+    return session;
+  }
+
   async ensureAgentSessionsDir(workspaceRoot: string, workspaceAgentId: string): Promise<string> {
     const dir = workspaceAgentSessionsDir(workspaceRoot, workspaceAgentId);
     await mkdir(dir, { recursive: true });

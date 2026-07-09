@@ -9,6 +9,7 @@ import { recruitSpecialist } from "../agents/recruitment.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileForRole, profileMetadata } from "../agents/roster.js";
 import { HttpError } from "../errors.js";
 import { EventLedger } from "../storage/event-ledger.js";
+import { SessionStore } from "../storage/session-store.js";
 import { projectWorkspaceState } from "../storage/state-projector.js";
 import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
 import { readJson, writeJson } from "../storage/json.js";
@@ -40,6 +41,7 @@ export interface StartTaskOptions {
 
 export class MissionControl {
   private readonly runtime: AgentRuntime;
+  private readonly sessionStore = new SessionStore();
   private readonly running = new Set<string>();
 
   constructor(
@@ -150,7 +152,7 @@ export class MissionControl {
     return this.snapshot(workspace, state.task.id, state.taskRun.id);
   }
 
-  async followUpTask(workspaceId: string, taskId: string, message: string, runSynchronously = false): Promise<WorkspaceSnapshot> {
+  async followUpTask(workspaceId: string, taskId: string, message: string, runSynchronously = false, sessionMessageAlreadyAppended = false): Promise<WorkspaceSnapshot> {
     const workspace = await this.workspaceStore.get(workspaceId);
     const state = await this.readStateForTask(workspace, taskId);
     const followup = message.trim();
@@ -161,6 +163,15 @@ export class MissionControl {
 
     const blockedTicket = state.status === "blocked" ? this.blockedTicket(state) : undefined;
     const currentPhase = blockedTicket ? phaseForTicket(blockedTicket) : state.taskRun.phase;
+    if (blockedTicket && !sessionMessageAlreadyAppended) {
+      const ownerAgent = await this.agentForTicket(workspace, blockedTicket);
+      await this.appendHumanSessionMessage(workspace, state, ownerAgent, followup, {
+        source: "human.followup",
+        ticketId: blockedTicket.id,
+        blockedPhase: currentPhase,
+        taskRunId: state.taskRun.id
+      });
+    }
     const blockedFollowupAction = state.status === "blocked"
       ? await this.runTicketResumeReview(workspace, state, followup)
       : "continue";
@@ -226,7 +237,14 @@ export class MissionControl {
     if (!targetAgent) throw new HttpError(404, "Agent not found in workspace", "AGENT_NOT_FOUND");
 
     const blockedTicket = state.status === "blocked" ? this.blockedTicketForAgent(state, targetAgent) : undefined;
-    this.appendAgentDirectMessage(state, targetAgent.id, directMessage);
+    const directEntry = this.appendAgentDirectMessage(state, targetAgent.id, directMessage);
+    await this.appendHumanSessionMessage(workspace, state, targetAgent, directMessage, {
+      source: "human.agent_message",
+      humanMessageId: directEntry.id,
+      taskRunId: state.taskRun.id,
+      taskId: state.task.id,
+      blockedTicketId: blockedTicket?.id
+    });
     await this.writeState(workspace, state);
     await this.append(workspace, state, "human.agent_message", `human 发给${roleLabel(targetAgent.roleInWorkspace)}：${directMessage.slice(0, 80)}`, {
       agentId: targetAgent.id,
@@ -236,7 +254,7 @@ export class MissionControl {
     });
 
     if (blockedTicket) {
-      return this.followUpTask(workspaceId, taskId, directMessage, runSynchronously);
+      return this.followUpTask(workspaceId, taskId, directMessage, runSynchronously, true);
     }
 
     if (state.status === "waiting") {
@@ -972,7 +990,7 @@ export class MissionControl {
     );
   }
 
-  private appendAgentDirectMessage(state: MissionState, agentId: string, message: string): void {
+  private appendAgentDirectMessage(state: MissionState, agentId: string, message: string): AgentDirectMessage {
     const byAgent = agentMessagesByAgent(state.context);
     const entry: AgentDirectMessage = {
       id: createId("hm"),
@@ -988,6 +1006,25 @@ export class MissionControl {
       [agentId]: [...(byAgent[agentId] ?? []), entry]
     };
     state.updatedAt = entry.createdAt;
+    return entry;
+  }
+
+  private async appendHumanSessionMessage(
+    workspace: Workspace,
+    state: MissionState,
+    agent: WorkspaceAgent,
+    content: string,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    await this.sessionStore.appendUserMessage(workspace.rootPath, agent.id, state.taskRun.id, {
+      content,
+      metadata: {
+        ...metadata,
+        workspaceId: workspace.id,
+        agentId: agent.id,
+        role: agent.roleInWorkspace
+      }
+    });
   }
 
   private async reconcileBlockedTicketState(workspace: Workspace, state: MissionState): Promise<Ticket | undefined> {
@@ -1353,14 +1390,9 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
     || decision === "reject";
 }
 
-function contextForAgent(context: Record<string, unknown>, agentId: string): Record<string, unknown> {
+function contextForAgent(context: Record<string, unknown>, _agentId: string): Record<string, unknown> {
   const { agentMessages, ...baseContext } = context;
-  const directMessages = agentMessagesByAgent(context)[agentId] ?? [];
-  return {
-    ...baseContext,
-    agentDirectMessages: directMessages,
-    latestAgentDirectMessage: directMessages.at(-1)
-  };
+  return baseContext;
 }
 
 function agentMessagesByAgent(context: Record<string, unknown>): Record<string, AgentDirectMessage[]> {

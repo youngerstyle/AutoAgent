@@ -129,7 +129,7 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     policy.canWriteWorkspace ? undefined : "文档交付边界：即使写项目=否，老板/产品/架构/测试仍可在 docs/、reports/、plans/ 下写 .md/.txt 文档；不能写源码、HTML、配置或可运行交付物。",
     toolProtocol,
     "只能请求当前工具权限允许的工具；禁止编造文件列表、命令输出、测试结果或交付物。",
-    "动态上下文中的 agentDirectMessages 是 human 直接发给你的私聊消息；它只属于你，不代表全局任务改写，也不能替代工单流转。",
+    "human 私聊和 blocked 工单补充会按时间顺序出现在会话历史中；动态上下文只提供当前工单状态，不提供第二套消息流。",
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
     "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
@@ -195,7 +195,7 @@ function toolObservationSection(toolResults: Array<Record<string, unknown>>): { 
 function dynamicContextSection(context?: Record<string, unknown>): string {
   if (!context) return "{}";
   const entries = Object.entries(context)
-    .filter(([key]) => !["toolResults", "contextReport"].includes(key))
+    .filter(([key]) => !DYNAMIC_CONTEXT_HIDDEN_KEYS.has(key))
     .map(([key, value]) => [key, compactDynamicContextValue(value)] as const);
   return JSON.stringify(Object.fromEntries(entries));
 }
@@ -212,6 +212,18 @@ function yesNo(value: boolean): string {
 const TOOL_OBSERVATION_STRING_CHARS = 12_000;
 const RECENT_MESSAGE_STRING_CHARS = 1_200;
 const DYNAMIC_CONTEXT_STRING_CHARS = 2_000;
+const DYNAMIC_CONTEXT_HIDDEN_KEYS = new Set([
+  "toolResults",
+  "contextReport",
+  "agentDirectMessages",
+  "latestAgentDirectMessage",
+  "agentMessages",
+  "humanFollowups",
+  "humanFollowup",
+  "latestHumanFollowup",
+  "previousHumanFollowup",
+  "humanFollowupHistory"
+]);
 
 function sanitizeRecentMessage(value: string): string {
   if (!looksLikeAssembledPrompt(value)) return value;

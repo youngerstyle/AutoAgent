@@ -386,17 +386,9 @@ function sessionTurnUserMessage(input: RunAssignmentInput, assignmentName: strin
 function compactSessionContext(context?: Record<string, unknown>): string | undefined {
   if (!context) return undefined;
   const lines: string[] = [];
-  const humanFollowup = stringValue(context.humanFollowup);
-  const latestHumanFollowup = recordValue(context.latestHumanFollowup);
   const blockedTicket = recordValue(context.blockedTicket);
-  const previousHumanFollowup = recordValue(context.previousHumanFollowup);
   const taskContext = recordValue(context.taskContext);
 
-  if (humanFollowup) lines.push(`本轮 humanFollowup：${limitInline(humanFollowup)}`);
-  const latestMessage = stringValue(latestHumanFollowup?.message);
-  if (latestMessage) lines.push(`最新 humanFollowup：${limitInline(latestMessage)}`);
-  const previousMessage = stringValue(previousHumanFollowup?.message);
-  if (previousMessage) lines.push(`上一轮 humanFollowup：${limitInline(previousMessage)}`);
   if (blockedTicket) {
     const ticketSummary = [
       stringValue(blockedTicket.type),
@@ -409,7 +401,7 @@ function compactSessionContext(context?: Record<string, unknown>): string | unde
     if (blockerReason) lines.push(`阻塞原因：${limitInline(blockerReason)}`);
   }
   const contextKeys = Object.keys(context)
-    .filter((key) => !["toolResults", "contextReport"].includes(key))
+    .filter((key) => !SESSION_CONTEXT_HIDDEN_KEYS.has(key))
     .slice(0, 20);
   if (contextKeys.length > 0) lines.push(`上下文字段：${contextKeys.join("、")}`);
   const taskKeys = taskContext ? Object.keys(taskContext).slice(0, 20) : [];
@@ -417,6 +409,19 @@ function compactSessionContext(context?: Record<string, unknown>): string | unde
 
   return lines.length > 0 ? `上下文摘要：\n${lines.join("\n")}` : undefined;
 }
+
+const SESSION_CONTEXT_HIDDEN_KEYS = new Set([
+  "toolResults",
+  "contextReport",
+  "agentDirectMessages",
+  "latestAgentDirectMessage",
+  "agentMessages",
+  "humanFollowups",
+  "humanFollowup",
+  "latestHumanFollowup",
+  "previousHumanFollowup",
+  "humanFollowupHistory"
+]);
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
