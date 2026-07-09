@@ -1686,6 +1686,12 @@ button:disabled {
   gap: 8px;
 }
 
+.tool-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .toggle-row {
   display: flex;
   grid-template-columns: none;
@@ -1700,6 +1706,11 @@ button:disabled {
 
 .toggle-row input {
   width: auto;
+}
+
+.toggle-row:has(input:disabled) {
+  color: #8793a0;
+  background: #f7f9fb;
 }
 
 .modal-backdrop {

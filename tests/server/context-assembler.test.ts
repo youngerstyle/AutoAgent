@@ -259,7 +259,7 @@ describe("ContextAssembler", () => {
       session: await sessionStore.read(root, dev.id, "tr_dev_tools")
     });
 
-    expect(pmPrompt.prompt).toContain("当前没有执行命令权限");
+    expect(pmPrompt.prompt).toContain("当前没有启用命令类工具");
     expect(pmPrompt.prompt).toContain("docs/notes.md");
     expect(pmPrompt.prompt).not.toContain("\"tool\":\"shell\"");
     expect(pmPrompt.prompt).not.toContain("\"tool\":\"startService\"");

@@ -1,5 +1,6 @@
-import type { AgentInboxMessage, AgentPolicy, AgentProfile, ProviderName, Ticket, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentInboxMessage, AgentPolicy, AgentProfile, ProviderName, Ticket, WorkspaceAgent, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { assignmentLabel, capabilityLabels, displayText, roleLabel, statusLabel } from "../shared/labels";
+import { TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 
 export interface AgentNodeView {
   id: string;
@@ -47,7 +48,9 @@ export interface AgentProfileView {
   policy: AgentPolicyView;
 }
 
-export type AgentPolicyView = Required<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "allowHostAccess">>;
+export type AgentPolicyView = Required<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "allowHostAccess">> & {
+  enabledTools?: WorkspaceToolName[];
+};
 
 export interface HumanFlowPromptView {
   title: string;
@@ -403,11 +406,7 @@ function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: A
     },
     soul: profileDef?.soul ?? soulForRole(role),
     agentMd: profileDef?.agentMd ?? agentMdForRole(role),
-    toolGroups: [
-      { label: "文件", enabled: policy.canReadWorkspace || policy.canWriteWorkspace, description: fileToolDescription(policy) },
-      { label: "命令", enabled: policy.canExecuteCommands, description: policy.canExecuteCommands ? "可在策略范围内执行本地命令" : "默认不执行本地命令" },
-      { label: "浏览器/MCP", enabled: Boolean(policy.allowHostAccess), description: policy.allowHostAccess ? "允许访问本机外部能力" : "默认关闭本机外部访问" }
-    ],
+    toolGroups: toolGroupsForPolicy(policy, role),
     model: {
       provider: agent.provider ?? "mock",
       providerLabel: providerLabel(agent.provider ?? "mock"),
@@ -674,8 +673,18 @@ function normalizePolicy(policy?: Partial<AgentPolicy>): AgentPolicyView {
     canReadWorkspace: Boolean(policy?.canReadWorkspace),
     canWriteWorkspace: Boolean(policy?.canWriteWorkspace),
     canExecuteCommands: Boolean(policy?.canExecuteCommands),
+    enabledTools: policy?.enabledTools,
     allowHostAccess: Boolean(policy?.allowHostAccess)
   };
+}
+
+function toolGroupsForPolicy(policy: AgentPolicyView, role: WorkspaceAgent["roleInWorkspace"]): AgentProfileView["toolGroups"] {
+  const enabled = new Set(toolsForPolicy(policy, role).map((tool) => tool.name));
+  return TOOL_CATALOG.map((tool) => ({
+    label: tool.label,
+    enabled: enabled.has(tool.name),
+    description: tool.description
+  }));
 }
 
 function providerLabel(provider: ProviderName | "mock"): string {
@@ -725,10 +734,4 @@ function agentMdForRole(role: string): string {
     specialist: "# 使命\n围绕能力缺口提供专项补位。"
   };
   return labels[role] ?? labels.specialist;
-}
-
-function fileToolDescription(policy: AgentPolicyView): string {
-  if (policy.canReadWorkspace && policy.canWriteWorkspace) return "可读写项目文件";
-  if (policy.canReadWorkspace) return "只读项目文件";
-  return "不访问项目文件";
 }

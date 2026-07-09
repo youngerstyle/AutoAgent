@@ -1,4 +1,5 @@
-import type { AgentPolicy, AgentProfile, ProviderName } from "../../shared/types.js";
+import type { AgentPolicy, AgentProfile, ProviderName, WorkspaceToolName } from "../../shared/types.js";
+import { isKnownToolName } from "../tools/tool-catalog.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { globalAgentProfilesFile } from "../storage/paths.js";
 import { CORE_AGENT_PROFILES } from "./roster.js";
@@ -292,6 +293,9 @@ function sanitizePolicy(input: Record<string, unknown>): Partial<AgentPolicy> {
   if ("canReadWorkspace" in input) policy.canReadWorkspace = Boolean(input.canReadWorkspace);
   if ("canWriteWorkspace" in input) policy.canWriteWorkspace = Boolean(input.canWriteWorkspace);
   if ("canExecuteCommands" in input) policy.canExecuteCommands = Boolean(input.canExecuteCommands);
+  if (Array.isArray(input.enabledTools)) {
+    policy.enabledTools = input.enabledTools.filter((tool): tool is WorkspaceToolName => typeof tool === "string" && isKnownToolName(tool));
+  }
   if ("allowHostAccess" in input) policy.allowHostAccess = Boolean(input.allowHostAccess);
   return policy;
 }

@@ -437,9 +437,28 @@ describe("client view model", () => {
     expect(dev?.soul).toContain("可运行变化");
     expect(dev?.agentMd).toContain("# 使命");
     expect(dev && "loopSteps" in dev).toBe(false);
-    expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["文件", "命令", "浏览器/MCP"]));
+    expect(dev?.toolGroups.map((group) => group.label)).toEqual(expect.arrayContaining(["列文件", "读文件", "写文件", "执行命令", "启动服务", "查询服务"]));
     expect(dev?.model.providerLabel).toBe("模拟服务");
     expect(dev?.memory.sessionLabel).toBe("项目会话隔离");
+  });
+
+  it("projects per-tool configuration instead of only broad permission groups", () => {
+    const profiles = buildAgentProfiles({
+      ...snapshot("running"),
+      agents: snapshot("running").agents.map((agent) => agent.id === "wa_dev" ? {
+        ...agent,
+        policyOverride: {
+          canReadWorkspace: true,
+          canWriteWorkspace: true,
+          canExecuteCommands: true,
+          enabledTools: ["readFile"]
+        }
+      } : agent)
+    });
+    const dev = profiles.find((profile) => profile.role === "dev");
+
+    expect(dev?.toolGroups.find((tool) => tool.label === "读文件")).toMatchObject({ enabled: true });
+    expect(dev?.toolGroups.find((tool) => tool.label === "执行命令")).toMatchObject({ enabled: false });
   });
 
   it("uses editable global agent definitions for catalog and project team projections", () => {

@@ -320,6 +320,35 @@ describe("AgentRuntime", () => {
     expect(provider.lastInput?.model).toBe("claude-test-model");
   });
 
+  it("denies tools disabled for the agent even when the broad policy would allow them", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
+    const workspace = testWorkspace(root);
+    const [_boss, _pm, _architect, dev] = await ensureCoreTeam(workspace);
+    dev.policyOverride = {
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+      enabledTools: ["readFile"]
+    };
+    const provider = new DisabledShellThenCompleteProvider();
+    const runtime = new AgentRuntime(new EventLedger(), provider);
+
+    const result = await runtime.runAssignment({
+      workspace,
+      agent: dev,
+      taskId: "task_1",
+      taskRunId: "tr_disabled_tool",
+      goal: "Confirm disabled shell is not executed",
+      type: "implementation",
+      brief: "Try shell then recover",
+      expectedArtifact: "Tool boundary result"
+    });
+
+    expect(provider.calls).toBe(2);
+    expect(result.toolResults[0]).toMatchObject({ tool: "shell", ok: false });
+    expect(String(result.toolResults[0].error)).toContain("未启用");
+  });
+
   it("labels editable soul as a human-like soul trait in the model prompt", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-"));
     const workspace = testWorkspace(root);
@@ -492,6 +521,29 @@ class MissingReadThenPlanProvider implements ProviderRunner {
       text: JSON.stringify({ plan: "从空项目创建 Web Canvas MVP" }),
       structured: { plan: "从空项目创建 Web Canvas MVP" },
       events: [{ type: "text", text: "plan empty project" }],
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+    };
+  }
+}
+
+class DisabledShellThenCompleteProvider implements ProviderRunner {
+  calls = 0;
+
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    this.calls += 1;
+    const toolResults = (input.context?.toolResults as Array<Record<string, unknown>> | undefined) ?? [];
+    if (toolResults.length === 0) {
+      return {
+        text: JSON.stringify({ toolIntents: [{ tool: "shell", command: "node -v" }] }),
+        structured: { toolIntents: [{ tool: "shell", command: "node -v" }] },
+        events: [{ type: "text", text: "try shell" }],
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
+      };
+    }
+    return {
+      text: JSON.stringify({ action: "complete", sawDeniedTool: toolResults[0]?.ok === false }),
+      structured: { action: "complete", sawDeniedTool: toolResults[0]?.ok === false },
+      events: [{ type: "text", text: "done" }],
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }
     };
   }

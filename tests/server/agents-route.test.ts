@@ -41,6 +41,7 @@ describe("agents route", () => {
           canReadWorkspace: true,
           canWriteWorkspace: true,
           canExecuteCommands: false,
+          enabledTools: ["readFile"],
           allowHostAccess: false
         }
       })
@@ -51,6 +52,7 @@ describe("agents route", () => {
     const raw = JSON.parse(await readFile(path.join(rootPath, ".autoagent", "agents", dev.id, "agent.json"), "utf8"));
     expect(raw.provider).toBe("openai");
     expect(raw.policyOverride.canExecuteCommands).toBe(false);
+    expect(raw.policyOverride.enabledTools).toEqual(["readFile"]);
   });
 
   it("seeds workspace agents from editable global agent profile defaults", async () => {

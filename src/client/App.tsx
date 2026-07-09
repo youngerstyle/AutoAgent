@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot } from "../shared/types";
+import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
+import { roleToolDefaults, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 import {
   createModelConfig,
   createWorkspace,
@@ -1461,6 +1462,16 @@ function AgentDetailPanel(props: {
   const modelTarget = { provider: draft?.provider ?? props.profile.model.provider, model: draft?.model ?? props.profile.model.modelName };
   const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
   const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
+  const role = draft?.roleInWorkspace;
+  const configuredTools = new Set(policy.enabledTools ?? (role ? roleToolDefaults(role) : []));
+  const effectiveTools = new Set(role ? toolsForPolicy(policy, role).map((tool) => tool.name) : []);
+  const setToolEnabled = (toolName: WorkspaceToolName, enabled: boolean) => {
+    if (!draft || !role) return;
+    const current = new Set(policy.enabledTools ?? roleToolDefaults(role));
+    if (enabled) current.add(toolName);
+    else current.delete(toolName);
+    props.onDraftChange({ ...draft, policyOverride: { ...policy, enabledTools: Array.from(current) } });
+  };
   return (
     <aside className="agent-detail-panel">
       <header className="agent-hero">
@@ -1533,6 +1544,20 @@ function AgentDetailPanel(props: {
               <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
               <Toggle label="执行命令" checked={policy.canExecuteCommands} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canExecuteCommands: checked } })} />
               <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, allowHostAccess: checked } })} />
+            </div>
+            <div className="tool-config-grid">
+              {TOOL_CATALOG.map((tool) => {
+                const unavailable = role ? toolsForPolicy({ ...policy, enabledTools: [tool.name] }, role).length === 0 : true;
+                return (
+                  <Toggle
+                    key={tool.name}
+                    label={tool.label}
+                    checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
+                    disabled={unavailable}
+                    onChange={(checked) => setToolEnabled(tool.name, checked)}
+                  />
+                );
+              })}
             </div>
             <button type="button" onClick={() => props.onSave(draft)}>保存项目覆盖</button>
           </>
@@ -1657,20 +1682,21 @@ function ModelConfigCard(props: {
   );
 }
 
-function Toggle(props: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function Toggle(props: { label: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
     <label className="toggle-row">
-      <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} />
+      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.target.checked)} />
       <span>{props.label}</span>
     </label>
   );
 }
 
-function normalizePolicy(policy: Partial<AgentPolicy> | undefined): Required<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "allowHostAccess">> {
+function normalizePolicy(policy: Partial<AgentPolicy> | undefined): Required<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "allowHostAccess">> & { enabledTools?: WorkspaceToolName[] } {
   return {
     canReadWorkspace: Boolean(policy?.canReadWorkspace),
     canWriteWorkspace: Boolean(policy?.canWriteWorkspace),
     canExecuteCommands: Boolean(policy?.canExecuteCommands),
+    enabledTools: policy?.enabledTools,
     allowHostAccess: Boolean(policy?.allowHostAccess)
   };
 }

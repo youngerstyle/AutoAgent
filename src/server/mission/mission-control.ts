@@ -14,6 +14,7 @@ import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
 import { readJson, writeJson } from "../storage/json.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import { RUNTIME_LIMITS } from "../runtime-limits.js";
+import { isObservationTool } from "../tools/tool-catalog.js";
 import { buildLoopDebugLog } from "./loop-debug-log.js";
 import { TICKET_GRAPH_CONTRACT_NAME, planItemAliases, planItemDependencyKeys, planItemPrimaryKey, plannedTicketItems, ticketTypeFromValue, validatePlannedTicketGraph } from "./ticket-graph-contract.js";
 import { createTicketRuntime, type TicketRuntime } from "./ticket-runtime.js";
@@ -1338,8 +1339,6 @@ function extractArtifactPathCandidates(text: string): string[] {
   return [...candidates];
 }
 
-const OBSERVATION_TOOLS = new Set(["readFile", "listFiles", "shell"]);
-
 function toolFailureReason(toolResults: Array<Record<string, unknown>>): string | undefined {
   const failed = toolResults.find(isBlockingToolFailure);
   if (!failed) return undefined;
@@ -1353,7 +1352,7 @@ function isBlockingToolFailure(result: Record<string, unknown>): boolean {
   const failed = result.ok === false || typeof result.error === "string";
   if (!failed) return false;
   const tool = String(result.tool ?? "");
-  if (!OBSERVATION_TOOLS.has(tool)) return true;
+  if (!isObservationTool(tool)) return true;
   return isPolicyOrPermissionFailure(String(result.error ?? ""));
 }
 

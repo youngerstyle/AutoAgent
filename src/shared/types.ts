@@ -13,6 +13,7 @@ export type EntityStatus =
 
 export type AgentRole = "boss" | "pm" | "architect" | "dev" | "qa" | "specialist";
 export type ProviderName = "mock" | "openai" | "anthropic";
+export type WorkspaceToolName = "listFiles" | "readFile" | "writeFile" | "shell" | "startService" | "pollProcess";
 
 export interface Workspace {
   id: string;
@@ -26,6 +27,7 @@ export interface AgentPolicy {
   canReadWorkspace: boolean;
   canWriteWorkspace: boolean;
   canExecuteCommands: boolean;
+  enabledTools?: WorkspaceToolName[];
   allowHostAccess?: boolean;
   commandAllowlist?: string[];
 }

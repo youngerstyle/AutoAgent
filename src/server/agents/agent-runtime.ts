@@ -8,6 +8,8 @@ import { SessionStore } from "../storage/session-store.js";
 import { readWorkspaceFile, listWorkspaceFiles, writeWorkspaceFile } from "../tools/file-tools.js";
 import { pollWorkspaceProcess, runWorkspaceCommand, startWorkspaceService } from "../tools/shell-tool.js";
 import type { ToolContext } from "../tools/tool-runtime.js";
+import { isKnownToolName, isObservationTool, isToolEnabledForPolicy } from "../tools/tool-catalog.js";
+import { policyFor } from "../tools/tool-runtime.js";
 import { ContextAssembler } from "../context/context-assembler.js";
 import { profileForRole } from "./roster.js";
 import { RUNTIME_LIMITS } from "../runtime-limits.js";
@@ -58,8 +60,6 @@ export type RunAssignmentResult = AssignmentResult | YieldedAssignmentResult;
 export interface AgentRuntimeLimits {
   maxToolFollowUps: number;
 }
-
-const OBSERVATION_TOOLS = new Set(["readFile", "listFiles", "shell"]);
 
 export class AgentRuntime {
   constructor(
@@ -299,6 +299,17 @@ export class AgentRuntime {
       const intent = rawIntent as Record<string, unknown>;
       const tool = String(intent.tool ?? intent.name ?? "");
       try {
+        const policy = policyFor(context);
+        if (tool && !isKnownToolName(tool)) {
+          await this.emit(input, "tool.denied", `未知工具：${tool}`, { tool, error: "未知工具" });
+          results.push({ tool, ok: false, error: "未知工具" });
+          continue;
+        }
+        if (tool && !isToolEnabledForPolicy(policy, input.agent.roleInWorkspace, tool)) {
+          await this.emit(input, "tool.denied", `工具未启用：${tool}`, { tool, error: "工具未启用或当前权限不允许" });
+          results.push({ tool, ok: false, error: "工具未启用或当前权限不允许" });
+          continue;
+        }
         if (tool === "writeFile") {
           await writeWorkspaceFile(context, String(intent.path ?? ""), String(intent.content ?? ""));
           results.push({ tool, path: String(intent.path ?? ""), ok: true });
@@ -317,9 +328,6 @@ export class AgentRuntime {
         } else if (tool === "pollProcess") {
           const result = await pollWorkspaceProcess(context, String(intent.serviceId ?? intent.processId ?? ""));
           results.push({ tool, serviceId: String(intent.serviceId ?? intent.processId ?? ""), ...result, ok: true });
-        } else if (tool) {
-          await this.emit(input, "tool.denied", `未知工具：${tool}`, { tool, error: "未知工具" });
-          results.push({ tool, ok: false, error: "未知工具" });
         }
       } catch (error) {
         results.push({
@@ -433,12 +441,12 @@ function normalizeToolIntents(structured?: Record<string, unknown>): Array<Recor
   if (action === "readFiles" && Array.isArray(structured.paths)) {
     return structured.paths.map((targetPath) => ({ tool: "readFile", path: targetPath }));
   }
-  if (action === "readFile" || action === "listFiles" || action === "writeFile" || action === "shell" || action === "startService" || action === "pollProcess") {
+  if (isKnownToolName(action)) {
     return [{ ...structured, tool: action }];
   }
   return [];
 }
 
 function needsToolFollowUp(toolResults: Array<Record<string, unknown>>): boolean {
-  return toolResults.some((result) => OBSERVATION_TOOLS.has(String(result.tool)) || result.ok === false || typeof result.error === "string");
+  return toolResults.some((result) => isObservationTool(String(result.tool)) || result.ok === false || typeof result.error === "string");
 }
