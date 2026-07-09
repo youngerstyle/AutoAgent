@@ -31,6 +31,9 @@ export function validatePlannedTicketGraph(items: Array<Record<string, unknown>>
   const keyToNode = new Map<string, PlannedTicketNode>();
   for (const [index, item] of items.entries()) {
     const type = ticketTypeFromValue(item.type);
+    if (!type) {
+      return { reason: `PM ticketGraph 包含未知工单类型：${String(item.type ?? "")}` };
+    }
     const key = planItemPrimaryKey(item, type, index);
     const node: PlannedTicketNode = {
       key,
@@ -125,14 +128,14 @@ export function planItemDependencyKeys(item: Record<string, unknown>): string[] 
   return raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 }
 
-export function ticketTypeFromValue(value: unknown): TicketType {
+export function ticketTypeFromValue(value: unknown): TicketType | undefined {
   const text = typeof value === "string" ? value : "";
   const allowed = new Set<TicketType>(["boss_intake", "pm_plan", "architect_plan", "implementation", "qa", "boss_acceptance", "specialist", "rework", "human_action"]);
   if (allowed.has(text as TicketType)) return text as TicketType;
   if (text === "dev" || text === "development") return "implementation";
   if (text === "architect" || text === "architecture") return "architect_plan";
   if (text === "acceptance") return "boss_acceptance";
-  return "implementation";
+  return undefined;
 }
 
 function reachablePlannedNodes(start: PlannedTicketNode, outgoing: Map<string, PlannedTicketNode[]>): PlannedTicketNode[] {

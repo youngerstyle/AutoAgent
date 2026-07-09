@@ -46,7 +46,7 @@ describe("MissionControl", () => {
     expect(snapshot.recentEvents.map((event) => event.type)).toContain("run.completed");
   });
 
-  it("does not present a completed run when a ticket is still blocked", async () => {
+  it("does not revive a terminal run from stale blocked ticket residue", async () => {
     const fixture = await missionFixture();
 
     const completed = await fixture.mission.startTask(
@@ -66,9 +66,79 @@ describe("MissionControl", () => {
 
     const snapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
 
-    expect(snapshot.status).toBe("blocked");
-    expect(snapshot.phase).toBe("pm_plan");
+    expect(snapshot.status).toBe("completed");
+    expect(snapshot.phase).toBe("completed");
     expect(snapshot.tickets?.find((ticket) => ticket.id === pmTicket.id)?.status).toBe("blocked");
+  });
+
+  it("does not run downstream tickets whose dependency was returned", async () => {
+    const fixture = await missionFixture();
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Do not run stale acceptance" },
+      { autoRun: false }
+    );
+    const taskId = started.activeTask!.id;
+    const taskRunId = started.activeTaskRun!.id;
+    const file = stateFile(fixture.workspace.rootPath, taskId, taskRunId);
+    const state = await readJson<MissionState | undefined>(file, undefined);
+    if (!state) throw new Error("state file missing");
+    const timestamp = "2026-07-01T01:00:00.000Z";
+    state.tickets = [
+      {
+        id: "tk_returned_qa",
+        workspaceId: fixture.workspace.id,
+        taskId,
+        taskRunId,
+        type: "qa",
+        status: "returned",
+        brief: "旧 QA",
+        expectedArtifact: "测试报告",
+        targetRole: "qa",
+        priority: 0,
+        attempt: 1,
+        returnReason: "人工测试失败",
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      {
+        id: "tk_stale_acceptance",
+        workspaceId: fixture.workspace.id,
+        taskId,
+        taskRunId,
+        type: "boss_acceptance",
+        status: "pending",
+        brief: "旧老板验收",
+        expectedArtifact: "验收结论",
+        targetRole: "boss",
+        priority: 0,
+        attempt: 0,
+        dependsOnTicketIds: ["tk_returned_qa"],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+    ];
+    state.inboxMessages = [{
+      id: "msg_stale_acceptance",
+      workspaceId: fixture.workspace.id,
+      ticketId: "tk_stale_acceptance",
+      toRole: "boss",
+      status: "pending",
+      dedupeKey: `${taskRunId}:tk_stale_acceptance`,
+      correlationId: "tk_stale_acceptance",
+      priority: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }];
+    await writeJson(file, state);
+
+    await fixture.mission.runUntilIdle(fixture.workspace, taskId, taskRunId);
+    const snapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
+
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.tickets?.find((ticket) => ticket.id === "tk_stale_acceptance")?.status).toBe("pending");
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, taskId, taskRunId);
+    expect(events.some((event) => event.type === "assignment.started" && event.summary.includes("老板验收"))).toBe(false);
+    expect(events.some((event) => event.type === "handoff.created" && event.summary.includes("老板"))).toBe(false);
   });
 
   it("enforces one active TaskRun per workspace", async () => {

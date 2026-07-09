@@ -237,6 +237,7 @@ export class TicketRuntime {
         ticket.status = "returned";
         ticket.returnReason = action.message;
         ticket.updatedAt = now.toISOString();
+        this.cancelOpenDescendants(ticket.id, "人工测试失败，旧下游验收不再有效", now);
         return this.createTicket({
           workspaceId: ticket.workspaceId,
           taskId: ticket.taskId,
@@ -330,7 +331,7 @@ export class TicketRuntime {
     const dependencies = ticket.dependsOnTicketIds ?? [];
     return dependencies.every((id) => {
       const dependency = this.tickets.get(id);
-      return dependency?.status === "completed" || dependency?.status === "returned";
+      return dependency?.status === "completed";
     });
   }
 

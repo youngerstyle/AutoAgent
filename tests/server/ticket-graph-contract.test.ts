@@ -41,6 +41,17 @@ describe("TicketGraphContract", () => {
     expect(violation?.reason).toContain("运行时边界");
   });
 
+  it("rejects unknown ticket types instead of guessing implementation", () => {
+    const violation = validatePlannedTicketGraph([
+      { key: "research", type: "market_research", brief: "调研", expectedArtifact: "调研报告" },
+      { key: "qa", type: "qa", brief: "测试", expectedArtifact: "测试报告", dependsOn: ["research"] },
+      { key: "accept", type: "boss_acceptance", brief: "验收", expectedArtifact: "验收结论", dependsOn: ["qa"] }
+    ]);
+
+    expect(violation?.reason).toContain("未知工单类型");
+    expect(violation?.reason).toContain("market_research");
+  });
+
   it("extracts ticketGraph from common model response envelopes", () => {
     expect(plannedTicketItems({ ticketGraph: { tickets: [{ key: "dev", type: "implementation" }] } })).toHaveLength(1);
     expect(plannedTicketItems({ flow: { tickets: [{ key: "qa", type: "qa" }] } })).toHaveLength(1);

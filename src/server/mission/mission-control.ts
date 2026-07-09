@@ -585,7 +585,7 @@ export class MissionControl {
     const dependencies = ticket.dependsOnTicketIds ?? [];
     return dependencies.every((id) => {
       const dependency = state.tickets.find((item) => item.id === id);
-      return dependency?.status === "completed" || dependency?.status === "returned";
+      return dependency?.status === "completed";
     });
   }
 
@@ -599,14 +599,8 @@ export class MissionControl {
       ? this.createTicketsFromPmPlan(state, sourceTicket)
       : false;
     if (planned || this.hasPlannedSuccessor(state, sourceTicket)) return;
-    if (sourceTicket.type === "rework") {
-      this.createFollowupTicket(state, "qa", sourceTicket, "返工完成后需要重新质量检查");
-      return;
-    }
-    if (sourceTicket.type === "qa") {
-      this.createFollowupTicket(state, "boss_acceptance", sourceTicket, "质量检查通过，进入老板验收");
-      return;
-    }
+    const transition = transitionAfterCompletedTicket(sourceTicket);
+    if (transition) this.createFollowupTicket(state, transition.type, sourceTicket, transition.reason);
   }
 
   private createTicketsFromPmPlan(state: MissionState, sourceTicket: Ticket): boolean {
@@ -622,6 +616,7 @@ export class MissionControl {
     let previousTicket: Ticket | undefined;
     for (const [index, item] of planItems.entries()) {
       const type = ticketTypeFromValue(item.type);
+      if (!type) throw new Error(`Invalid planned ticket type: ${String(item.type ?? "")}`);
       const role = canonicalRoleForTicketType(type);
       const fallbackDependencies = index === 0 ? [sourceTicket.id] : previousTicket ? [previousTicket.id] : [sourceTicket.id];
       const dependencyIds = dependencyIdsForPlanItem(item, ticketsByKey, fallbackDependencies);
@@ -901,7 +896,7 @@ export class MissionControl {
   }
 
   private async findActiveState(workspace: Workspace): Promise<MissionState | undefined> {
-    return (await this.readAllStates(workspace)).find((state) => state.status === "running" || state.status === "waiting" || state.status === "paused" || state.status === "blocked" || Boolean(this.blockedTicket(state)));
+    return (await this.readAllStates(workspace)).find((state) => state.status === "running" || state.status === "waiting" || state.status === "paused" || state.status === "blocked");
   }
 
   private async findLatestState(workspace: Workspace): Promise<MissionState | undefined> {
@@ -931,7 +926,6 @@ export class MissionControl {
   private async readStateForTask(workspace: Workspace, taskId: string): Promise<MissionState> {
     const active = await this.findActiveState(workspace);
     if (active?.task.id === taskId) {
-      await this.reconcileBlockedTicketState(workspace, active);
       return active;
     }
     throw new HttpError(404, `Active task not found: ${taskId}`, "TASK_NOT_FOUND");
@@ -950,58 +944,7 @@ export class MissionControl {
 
   private async snapshot(workspace: Workspace, taskId: string, taskRunId: string): Promise<WorkspaceSnapshot> {
     const state = await this.readState(workspace, taskId, taskRunId);
-    let events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
-    const reconciledBlockedTicket = await this.reconcileBlockedTicketState(workspace, state);
-    if (reconciledBlockedTicket) {
-      const phase = phaseForTicket(reconciledBlockedTicket);
-      const reason = reconciledBlockedTicket.blocker?.reason ?? reconciledBlockedTicket.returnReason ?? `${phaseLabel(phase)}工单受阻`;
-      await this.append(workspace, state, "run.blocked", `任务受阻：${phaseLabel(phase)}受阻：${reason}`, {
-        task: state.task,
-        taskRun: state.taskRun,
-        ticketId: reconciledBlockedTicket.id,
-        reason,
-        phase
-      });
-      events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
-    }
-    const historicalBlockReason = terminalCompletionBlockReason(events);
-    const historicalFailureBlockReason = terminalFailureBlockReason(events);
-    if (state.status === "blocked" && historicalBlockReason && state.taskRun.phase !== historicalBlockReason.phase) {
-      state.taskRun.phase = historicalBlockReason.phase;
-      await this.writeState(workspace, state);
-    }
-    if (state.status === "completed" && historicalBlockReason && !events.some((event) => event.type === "run.blocked")) {
-      state.status = "blocked";
-      state.task.status = "blocked";
-      state.taskRun.status = "blocked";
-      state.taskRun.phase = historicalBlockReason.phase;
-      state.taskRun.endedAt = new Date().toISOString();
-      await this.writeState(workspace, state);
-      if (historicalBlockReason.assignmentId) {
-        await this.append(workspace, state, "assignment.blocked", `${phaseLabel(historicalBlockReason.phase)}受阻：${historicalBlockReason.reason}`, {
-          assignmentId: historicalBlockReason.assignmentId,
-          reason: historicalBlockReason.reason
-        });
-      }
-      await this.append(workspace, state, "run.blocked", `任务受阻：${historicalBlockReason.reason}`, { task: state.task, taskRun: state.taskRun, reason: historicalBlockReason.reason });
-      events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
-    }
-    if (state.status === "failed" && historicalFailureBlockReason && !hasRunBlockedAfterLatestFailure(events)) {
-      state.status = "blocked";
-      state.task.status = "blocked";
-      state.taskRun.status = "blocked";
-      state.taskRun.phase = historicalFailureBlockReason.phase;
-      state.taskRun.endedAt = new Date().toISOString();
-      state.nextPhase = historicalFailureBlockReason.phase;
-      await this.writeState(workspace, state);
-      await this.append(workspace, state, "assignment.blocked", `${phaseLabel(historicalFailureBlockReason.phase)}受阻：${historicalFailureBlockReason.reason}`, {
-        assignmentId: historicalFailureBlockReason.assignmentId,
-        assignmentRun: historicalFailureBlockReason.assignmentRun,
-        reason: historicalFailureBlockReason.reason
-      });
-      await this.append(workspace, state, "run.blocked", `任务受阻：${historicalFailureBlockReason.reason}`, { task: state.task, taskRun: state.taskRun, reason: historicalFailureBlockReason.reason });
-      events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
-    }
+    const events = await this.ledger.read(workspace.rootPath, taskId, taskRunId);
     const projected = projectWorkspaceState(workspace, events);
     projected.activeTask = state.task;
     projected.activeTaskRun = state.taskRun;
@@ -1111,6 +1054,12 @@ function ticketBlockerFor(input: {
   if (input.explicitAuthorization) return { type: "human_authorization_required", reason: input.reason };
   if (input.toolPolicyBlocked) return { type: "tool_policy_blocked", reason: input.reason };
   return { type: "external_dependency", reason: input.reason };
+}
+
+function transitionAfterCompletedTicket(ticket: Ticket): { type: TicketType; reason: string } | undefined {
+  if (ticket.type === "rework") return { type: "qa", reason: "返工完成后需要重新质量检查" };
+  if (ticket.type === "qa") return { type: "boss_acceptance", reason: "质量检查通过，进入老板验收" };
+  return undefined;
 }
 
 function agentObstacleReasonForPhase(phase: MissionPhase, structured?: Record<string, unknown>): string | undefined {
@@ -1394,49 +1343,6 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
     || decision === "reject";
 }
 
-function terminalCompletionBlockReason(events: AutoAgentEvent[]): { phase: MissionPhase; reason: string; assignmentId?: string } | undefined {
-  const lastHumanFollowupIndex = lastEventIndex(events, "human.followup");
-  const completedAssignments = events.filter((event, index) => index > lastHumanFollowupIndex && event.type === "assignment.completed");
-  for (const event of completedAssignments) {
-    const payload = event.payload as Record<string, unknown>;
-    const result = payload.result;
-    const phase = phaseFromAssignmentSummary(event.summary);
-    const reason = result && typeof result === "object"
-      ? humanAuthorizationReasonForPhase(result as Record<string, unknown>)
-      : undefined;
-    if (reason) return { phase, reason, assignmentId: stringValue(payload.assignmentId) };
-  }
-
-  const implementation = completedAssignments.find((event) => event.summary.includes("开发"));
-  if (implementation) {
-    const payload = implementation.payload as Record<string, unknown>;
-    const toolResults = Array.isArray(payload.toolResults) ? payload.toolResults as Array<Record<string, unknown>> : [];
-  }
-  return undefined;
-}
-
-function terminalFailureBlockReason(events: AutoAgentEvent[]): { phase: MissionPhase; reason: string; assignmentId?: string; assignmentRun?: unknown } | undefined {
-  const latestFailureIndex = lastEventIndex(events, "run.failed");
-  if (latestFailureIndex < 0) return undefined;
-  const failedAssignment = events.slice(0, latestFailureIndex + 1).reverse().find((event) => event.type === "assignment.failed");
-  if (!failedAssignment) return undefined;
-  const payload = failedAssignment.payload as Record<string, unknown>;
-  const reason = stringValue(payload.error) ?? "Agent 执行失败";
-  if (!isPolicyOrPermissionFailure(reason)) return undefined;
-  return {
-    phase: phaseFromAssignmentId(events, stringValue(payload.assignmentId)) ?? phaseFromAssignmentSummary(failedAssignment.summary),
-    reason,
-    assignmentId: stringValue(payload.assignmentId),
-    assignmentRun: payload.assignmentRun
-  };
-}
-
-function hasRunBlockedAfterLatestFailure(events: AutoAgentEvent[]): boolean {
-  const latestFailureIndex = lastEventIndex(events, "run.failed");
-  if (latestFailureIndex < 0) return false;
-  return events.some((event, index) => index > latestFailureIndex && event.type === "run.blocked");
-}
-
 function contextForAgent(context: Record<string, unknown>, agentId: string): Record<string, unknown> {
   const { agentMessages, ...baseContext } = context;
   const directMessages = agentMessagesByAgent(context)[agentId] ?? [];
@@ -1467,34 +1373,6 @@ function isAgentDirectMessage(value: unknown): value is AgentDirectMessage {
     && typeof value.message === "string"
     && value.createdBy === "human"
     && typeof value.createdAt === "string";
-}
-
-function lastEventIndex(events: AutoAgentEvent[], type: AutoAgentEvent["type"]): number {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index].type === type) return index;
-  }
-  return -1;
-}
-
-function phaseFromAssignmentId(events: AutoAgentEvent[], assignmentId?: string): MissionPhase | undefined {
-  if (!assignmentId) return undefined;
-  const created = events.find((event) => {
-    if (event.type !== "assignment.created") return false;
-    const assignment = (event.payload as Record<string, unknown>).assignment as { id?: string } | undefined;
-    return assignment?.id === assignmentId;
-  });
-  const assignment = (created?.payload as Record<string, unknown> | undefined)?.assignment as { type?: MissionPhase } | undefined;
-  return assignment?.type;
-}
-
-function phaseFromAssignmentSummary(summary: string): MissionPhase {
-  if (summary.includes("需求接收")) return "boss_intake";
-  if (summary.includes("计划拆解")) return "pm_plan";
-  if (summary.includes("架构设计")) return "architect_plan";
-  if (summary.includes("开发执行")) return "implementation";
-  if (summary.includes("质量检查")) return "qa";
-  if (summary.includes("老板验收")) return "boss_acceptance";
-  return "boss_acceptance";
 }
 
 function isManualTestingBoundary(state: MissionState): boolean {

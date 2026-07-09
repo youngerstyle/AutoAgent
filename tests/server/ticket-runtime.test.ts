@@ -98,6 +98,41 @@ describe("ticket runtime", () => {
     expect(claimedQa?.ticket.id).toBe(qaTicket.id);
   });
 
+  it("does not unlock dependents when an upstream ticket is returned", () => {
+    const runtime = createTicketRuntime();
+    const qa = agent("wa_qa", "qa");
+    const boss = agent("wa_boss", "boss");
+    const qaTicket = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "qa",
+      brief: "质量检查",
+      expectedArtifact: "测试报告",
+      targetAgentId: qa.id
+    });
+    const acceptance = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "boss_acceptance",
+      brief: "老板验收",
+      expectedArtifact: "验收结论",
+      targetAgentId: boss.id,
+      dependsOnTicketIds: [qaTicket.id]
+    });
+
+    runtime.blockTicket(qaTicket.id, { type: "manual_test_required", reason: "需要人工测试" });
+    runtime.completeHumanAction(qaTicket.id, {
+      action: "manual_test_failed",
+      message: "人工测试失败"
+    });
+
+    expect(runtime.ticket(qaTicket.id)?.status).toBe("returned");
+    expect(runtime.claimNext(boss, now("2026-07-01T01:00:00.000Z"))).toBeUndefined();
+    expect(runtime.ticket(acceptance.id)?.status).not.toBe("running");
+  });
+
   it("requeues the same ticket when an execution slice yields", () => {
     const runtime = createTicketRuntime();
     const dev = agent("wa_dev", "dev");
@@ -136,6 +171,7 @@ describe("ticket runtime", () => {
 
   it("returns failed manual QA as a development rework ticket", () => {
     const runtime = createTicketRuntime();
+    const boss = agent("wa_boss", "boss");
     const qaTicket = runtime.createTicket({
       workspaceId: "ws_1",
       taskId: "task_1",
@@ -144,6 +180,18 @@ describe("ticket runtime", () => {
       brief: "人工测试",
       expectedArtifact: "测试结论",
       targetRole: "qa"
+    });
+    const staleAcceptance = runtime.createTicket({
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "boss_acceptance",
+      brief: "旧验收",
+      expectedArtifact: "验收结论",
+      targetAgentId: boss.id,
+      parentTicketId: qaTicket.id,
+      createdByTicketId: qaTicket.id,
+      dependsOnTicketIds: [qaTicket.id]
     });
 
     runtime.blockTicket(qaTicket.id, {
@@ -166,6 +214,11 @@ describe("ticket runtime", () => {
       targetRole: "dev",
       returnReason: "碰撞有问题"
     });
+    expect(runtime.ticket(staleAcceptance.id)).toMatchObject({
+      status: "cancelled",
+      returnReason: "人工测试失败，旧下游验收不再有效"
+    });
+    expect(runtime.inboxForAgent(boss.id).map((message) => message.status)).toEqual(["cancelled"]);
   });
 
   it("cancels open tickets and messages when a task is stopped", () => {
