@@ -492,6 +492,46 @@ describe("MissionControl", () => {
     expect(provider.calls.map((call) => call.role)).not.toContain("pm");
   });
 
+  it("runs pending direct human messages from the agent thread when legacy queue state is missing", async () => {
+    const provider = new DirectAgentMessageProvider();
+    const fixture = await missionFixture(provider);
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Handle thread-sourced direct chat" },
+      { autoRun: false }
+    );
+    const qa = started.agents.find((agent) => agent.roleInWorkspace === "qa");
+    if (!qa) throw new Error("qa agent missing");
+
+    await new AgentThreadStore().append(fixture.workspace.rootPath, qa.id, started.activeTaskRun!.id, {
+      taskId: started.activeTask!.id,
+      taskRunId: started.activeTaskRun!.id,
+      workspaceAgentId: qa.id,
+      source: "human",
+      kind: "human_message",
+      visibility: "chat",
+      payload: { message: "QA 继续检查这个控制台错误。" }
+    });
+
+    const file = stateFile(fixture.workspace.rootPath, started.activeTask!.id, started.activeTaskRun!.id);
+    const state = await readJson<MissionState | undefined>(file, undefined);
+    if (!state) throw new Error("state file missing");
+    delete state.context.agentMessages;
+    delete state.context.agentDirectMessageQueue;
+    state.status = "running";
+    state.task.status = "running";
+    state.taskRun.status = "running";
+    await writeJson(file, state);
+
+    await fixture.mission.runUntilIdle(fixture.workspace, started.activeTask!.id, started.activeTaskRun!.id);
+
+    expect(provider.calls[0]?.role).toBe("qa");
+    expect(provider.calls[0]?.prompt).toContain("QA 继续检查这个控制台错误。");
+    const threadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, qa.id, started.activeTaskRun!.id);
+    expect(threadEvents.map((event) => event.kind)).toEqual(["human_message", "agent_message"]);
+    const updatedState = await readJson<MissionState | undefined>(file, undefined);
+    expect(updatedState?.context.agentDirectMessageQueue).toBeUndefined();
+  });
+
   it("creates follow-up tickets from completed tickets instead of hidden phase jumps", async () => {
     const fixture = await missionFixture();
 

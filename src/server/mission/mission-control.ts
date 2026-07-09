@@ -261,7 +261,8 @@ export class MissionControl {
 
     if (state.status === "waiting") {
       const nextTicket = this.nextRunnableTicket(state);
-      if (nextTicket || this.nextPendingAgentDirectMessage(state)) {
+      const pendingDirectMessage = await this.nextPendingAgentDirectMessage(workspace, state);
+      if (nextTicket || pendingDirectMessage) {
         state.status = "running";
         state.task.status = "running";
         state.taskRun.status = "running";
@@ -355,7 +356,7 @@ export class MissionControl {
         if (recoveredExpiredTickets > 0) {
           state = await this.readState(workspace, taskId, taskRunId);
         }
-        const pendingDirectMessage = this.nextPendingAgentDirectMessage(state);
+        const pendingDirectMessage = await this.nextPendingAgentDirectMessage(workspace, state);
         if (pendingDirectMessage) {
           state = await this.runAgentDirectMessageTurn(workspace, state, pendingDirectMessage);
           continue;
@@ -1213,12 +1214,20 @@ export class MissionControl {
       ...byAgent,
       [agentId]: [...(byAgent[agentId] ?? []), entry]
     };
-    state.context.agentDirectMessageQueue = [...agentDirectMessageQueue(state.context), entry.id];
     state.updatedAt = entry.createdAt;
     return entry;
   }
 
-  private nextPendingAgentDirectMessage(state: MissionState): AgentDirectMessage | undefined {
+  private async nextPendingAgentDirectMessage(workspace: Workspace, state: MissionState): Promise<AgentDirectMessage | undefined> {
+    const profiles = await this.agentProfiles();
+    const agents = await ensureCoreTeam(workspace, profiles);
+    const pending: AgentDirectMessage[] = [];
+    for (const agent of agents) {
+      const events = await this.agentThreadStore.read(workspace.rootPath, agent.id, state.taskRun.id);
+      pending.push(...this.agentThreadStore.projectDirectMessages(events).filter((message) => !message.handledAt && !message.failedAt));
+    }
+    if (pending.length > 0) return pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+
     const messagesById = new Map(Object.values(agentMessagesByAgent(state.context)).flat().map((message) => [message.id, message]));
     for (const messageId of agentDirectMessageQueue(state.context)) {
       const message = messagesById.get(messageId);
@@ -1240,7 +1249,9 @@ export class MissionControl {
     if (changed) {
       state.context.agentMessages = byAgent;
       if (patch.handledAt || patch.failedAt) {
-        state.context.agentDirectMessageQueue = agentDirectMessageQueue(state.context).filter((id) => id !== messageId);
+        const queue = agentDirectMessageQueue(state.context).filter((id) => id !== messageId);
+        if (queue.length > 0) state.context.agentDirectMessageQueue = queue;
+        else delete state.context.agentDirectMessageQueue;
       }
     }
   }
@@ -1259,12 +1270,14 @@ export class MissionControl {
     if (Object.keys(merged).length > 0) state.context.agentMessages = merged;
     const queued = [...agentDirectMessageQueue(state.context), ...agentDirectMessageQueue(latestState.context)];
     const seen = new Set<string>();
-    state.context.agentDirectMessageQueue = queued.filter((id) => {
+    const queue = queued.filter((id) => {
       if (seen.has(id)) return false;
       seen.add(id);
       const message = Object.values(merged).flat().find((item) => item.id === id);
       return Boolean(message && !message.handledAt && !message.failedAt);
     });
+    if (queue.length > 0) state.context.agentDirectMessageQueue = queue;
+    else delete state.context.agentDirectMessageQueue;
   }
 
   private async appendHumanSessionMessage(
