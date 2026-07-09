@@ -257,6 +257,50 @@ describe("MissionControl", () => {
     });
   });
 
+  it("prioritizes the agent selected by the latest direct human message over stale direct messages", async () => {
+    const provider = new DirectAgentMessageProvider();
+    const fixture = await missionFixture(provider);
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Handle targeted chat" },
+      { autoRun: false }
+    );
+    const pm = started.agents.find((agent) => agent.roleInWorkspace === "pm");
+    const qa = started.agents.find((agent) => agent.roleInWorkspace === "qa");
+    if (!pm || !qa) throw new Error("pm or qa agent missing");
+
+    const taskId = started.activeTask!.id;
+    const taskRunId = started.activeTaskRun!.id;
+    const file = stateFile(fixture.workspace.rootPath, taskId, taskRunId);
+    const state = await readJson<MissionState | undefined>(file, undefined);
+    if (!state) throw new Error("state file missing");
+    state.tickets = [];
+    state.inboxMessages = [];
+    state.context.agentMessages = {
+      [pm.id]: [{
+        id: "hm_stale_pm",
+        agentId: pm.id,
+        taskId,
+        taskRunId,
+        message: "旧的 PM 私聊，不应该被 QA 私聊唤醒",
+        createdBy: "human",
+        createdAt: "2026-07-01T00:00:00.000Z"
+      }]
+    };
+    await writeJson(file, state);
+
+    await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      taskId,
+      qa.id,
+      "QA 继续看这个错误。",
+      true
+    );
+
+    expect(provider.calls[0]?.role).toBe("qa");
+    expect(provider.calls[0]?.prompt).toContain("QA 继续看这个错误。");
+    expect(provider.calls.map((call) => call.role)).not.toContain("pm");
+  });
+
   it("creates follow-up tickets from completed tickets instead of hidden phase jumps", async () => {
     const fixture = await missionFixture();
 

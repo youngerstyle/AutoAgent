@@ -1094,15 +1094,18 @@ export class MissionControl {
       ...byAgent,
       [agentId]: [...(byAgent[agentId] ?? []), entry]
     };
+    state.context.agentDirectMessageQueue = [...agentDirectMessageQueue(state.context), entry.id];
     state.updatedAt = entry.createdAt;
     return entry;
   }
 
   private nextPendingAgentDirectMessage(state: MissionState): AgentDirectMessage | undefined {
-    return Object.values(agentMessagesByAgent(state.context))
-      .flat()
-      .filter((message) => !message.handledAt && !message.failedAt)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+    const messagesById = new Map(Object.values(agentMessagesByAgent(state.context)).flat().map((message) => [message.id, message]));
+    for (const messageId of agentDirectMessageQueue(state.context)) {
+      const message = messagesById.get(messageId);
+      if (message && !message.handledAt && !message.failedAt) return message;
+    }
+    return undefined;
   }
 
   private updateAgentDirectMessage(state: MissionState, messageId: string, patch: Partial<Pick<AgentDirectMessage, "handledAt" | "failedAt" | "response" | "error">>): void {
@@ -1115,7 +1118,12 @@ export class MissionControl {
         return { ...message, ...patch };
       });
     }
-    if (changed) state.context.agentMessages = byAgent;
+    if (changed) {
+      state.context.agentMessages = byAgent;
+      if (patch.handledAt || patch.failedAt) {
+        state.context.agentDirectMessageQueue = agentDirectMessageQueue(state.context).filter((id) => id !== messageId);
+      }
+    }
   }
 
   private mergeConcurrentAgentDirectMessages(state: MissionState, latestState: MissionState): void {
@@ -1130,6 +1138,14 @@ export class MissionControl {
     add(agentMessagesByAgent(state.context));
     add(agentMessagesByAgent(latestState.context));
     if (Object.keys(merged).length > 0) state.context.agentMessages = merged;
+    const queued = [...agentDirectMessageQueue(state.context), ...agentDirectMessageQueue(latestState.context)];
+    const seen = new Set<string>();
+    state.context.agentDirectMessageQueue = queued.filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      const message = Object.values(merged).flat().find((item) => item.id === id);
+      return Boolean(message && !message.handledAt && !message.failedAt);
+    });
   }
 
   private async appendHumanSessionMessage(
@@ -1523,8 +1539,14 @@ function isBlockingDecision(result: Record<string, unknown>): boolean {
 }
 
 function contextForAgent(context: Record<string, unknown>, _agentId: string): Record<string, unknown> {
-  const { agentMessages, ...baseContext } = context;
+  const { agentMessages, agentDirectMessageQueue, ...baseContext } = context;
   return baseContext;
+}
+
+function agentDirectMessageQueue(context: Record<string, unknown>): string[] {
+  const raw = context.agentDirectMessageQueue;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === "string");
 }
 
 function agentMessagesByAgent(context: Record<string, unknown>): Record<string, AgentDirectMessage[]> {
