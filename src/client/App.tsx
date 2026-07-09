@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
-import { roleToolDefaults, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
+import { permissionPatchForTool, roleToolDefaults, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 import {
   createModelConfig,
   createWorkspace,
@@ -1328,7 +1328,10 @@ function AgentDefinitionEditor(props: {
     const current = new Set(policy.enabledTools ?? roleToolDefaults(props.profile.role));
     if (enabled) current.add(toolName);
     else current.delete(toolName);
-    updateDefaultPolicy({ enabledTools: Array.from(current) });
+    updateDefaultPolicy({
+      ...(enabled ? permissionPatchForTool(toolName) : {}),
+      enabledTools: Array.from(current)
+    });
   };
   return (
     <aside className="agent-detail-panel agent-definition-editor">
@@ -1415,18 +1418,14 @@ function AgentDefinitionEditor(props: {
           <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => updateDefaultPolicy({ allowHostAccess: checked })} />
         </div>
         <div className="tool-config-grid">
-          {TOOL_CATALOG.map((tool) => {
-            const unavailable = toolsForPolicy({ ...policy, enabledTools: [tool.name] }, props.profile.role).length === 0;
-            return (
-              <Toggle
-                key={tool.name}
-                label={tool.label}
-                checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
-                disabled={unavailable}
-                onChange={(checked) => setDefaultToolEnabled(tool.name, checked)}
-              />
-            );
-          })}
+          {TOOL_CATALOG.map((tool) => (
+            <Toggle
+              key={tool.name}
+              label={tool.label}
+              checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
+              onChange={(checked) => setDefaultToolEnabled(tool.name, checked)}
+            />
+          ))}
         </div>
         <button type="button" onClick={() => props.onSave(props.profile)}>保存智能体档案</button>
       </section>
@@ -1506,7 +1505,14 @@ function AgentDetailPanel(props: {
     const current = new Set(policy.enabledTools ?? roleToolDefaults(role));
     if (enabled) current.add(toolName);
     else current.delete(toolName);
-    props.onDraftChange({ ...draft, policyOverride: { ...policy, enabledTools: Array.from(current) } });
+    props.onDraftChange({
+      ...draft,
+      policyOverride: {
+        ...policy,
+        ...(enabled ? permissionPatchForTool(toolName) : {}),
+        enabledTools: Array.from(current)
+      }
+    });
   };
   return (
     <aside className="agent-detail-panel">
@@ -1582,18 +1588,14 @@ function AgentDetailPanel(props: {
               <Toggle label="访问本机" checked={Boolean(policy.allowHostAccess)} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, allowHostAccess: checked } })} />
             </div>
             <div className="tool-config-grid">
-              {TOOL_CATALOG.map((tool) => {
-                const unavailable = role ? toolsForPolicy({ ...policy, enabledTools: [tool.name] }, role).length === 0 : true;
-                return (
-                  <Toggle
-                    key={tool.name}
-                    label={tool.label}
-                    checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
-                    disabled={unavailable}
-                    onChange={(checked) => setToolEnabled(tool.name, checked)}
-                  />
-                );
-              })}
+              {TOOL_CATALOG.map((tool) => (
+                <Toggle
+                  key={tool.name}
+                  label={tool.label}
+                  checked={configuredTools.has(tool.name) && effectiveTools.has(tool.name)}
+                  onChange={(checked) => setToolEnabled(tool.name, checked)}
+                />
+              ))}
             </div>
             <button type="button" onClick={() => props.onSave(draft)}>保存项目覆盖</button>
           </>

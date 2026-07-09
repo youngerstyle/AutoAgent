@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { roleToolDefaults, toolProtocolFor, toolsForPolicy } from "../../src/server/tools/tool-catalog";
+import { permissionPatchForTool, roleToolDefaults, toolProtocolFor, toolsForPolicy } from "../../src/server/tools/tool-catalog";
 import type { AgentPolicy } from "../../src/shared/types";
 
 describe("tool catalog", () => {
@@ -26,5 +26,11 @@ describe("tool catalog", () => {
     expect(roleToolDefaults("pm")).toEqual(["listFiles", "readFile", "writeFile"]);
     expect(roleToolDefaults("dev")).toEqual(["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"]);
     expect(roleToolDefaults("qa")).toEqual(["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"]);
+  });
+
+  it("maps enabled tools back to the coarse permissions they require", () => {
+    expect(permissionPatchForTool("readFile")).toEqual({ canReadWorkspace: true });
+    expect(permissionPatchForTool("writeFile")).toEqual({ canWriteWorkspace: true });
+    expect(permissionPatchForTool("startService")).toEqual({ canExecuteCommands: true });
   });
 });

@@ -84,6 +84,12 @@ export function isToolEnabledForPolicy(policy: Pick<AgentPolicy, "canReadWorkspa
   return isKnownToolName(name) && toolsForPolicy(policy, role).some((tool) => tool.name === name);
 }
 
+export function permissionPatchForTool(toolName: WorkspaceToolName): Partial<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">> {
+  if (toolName === "listFiles" || toolName === "readFile") return { canReadWorkspace: true };
+  if (toolName === "writeFile") return { canWriteWorkspace: true };
+  return { canExecuteCommands: true };
+}
+
 export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">, role: AgentRole): string {
   const tools = toolsForPolicy(policy, role);
   const examples = tools.map((tool) => {
