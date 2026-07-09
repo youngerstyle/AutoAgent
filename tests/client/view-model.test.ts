@@ -25,6 +25,17 @@ describe("client view model", () => {
     expect(dev!.currentStep!.length).toBeLessThanOrEqual(18);
   });
 
+  it("does not treat a retained current step as an active running agent", () => {
+    const nodes = buildAgentNodes({
+      ...snapshot("running"),
+      agents: snapshot("running").agents.map((agent) => agent.id === "wa_dev" ? { ...agent, status: "waiting" as const, currentStep: "已保存进度，等待继续" } : agent)
+    });
+    const dev = nodes.find((node) => node.id === "wa_dev");
+
+    expect(dev?.active).toBe(false);
+    expect(dev?.currentStep).toBe("已保存进度，等待继续");
+  });
+
   it("derives task controls from snapshot status", () => {
     expect(taskControlMode(undefined)).toBe("empty");
     expect(taskControlMode(snapshot("paused"))).toBe("paused");
@@ -77,7 +88,10 @@ describe("client view model", () => {
     };
 
     expect(taskControlMode(waitingPm)).toBe("blocked");
-    expect(buildAgentNodes(waitingPm).find((node) => node.role === "pm")?.needsAttention).toBe(true);
+    const pmNode = buildAgentNodes(waitingPm).find((node) => node.role === "pm");
+    expect(pmNode?.needsAttention).toBe(true);
+    expect(pmNode?.active).toBe(false);
+    expect(pmNode?.currentStep).toBe("需要你回复");
     expect(buildHumanFlowPrompt(waitingPm)).toMatchObject({
       agentId: "wa_pm",
       waiter: "产品/项目",

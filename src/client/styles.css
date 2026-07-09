@@ -495,6 +495,11 @@ button:disabled {
   color: #41515d;
 }
 
+.agent-node.needs-attention .agent-step-bubble {
+  background: #fff7df;
+  color: #7a5208;
+}
+
 .agent-detail {
   border-top: 1px solid #d7dde5;
   padding: 16px;

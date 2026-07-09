@@ -99,7 +99,8 @@ const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
   if (!snapshot) return [];
-  const problemAgentId = hasBlockingWork(snapshot) ? blockedAgentProblem(snapshot)?.agentId : undefined;
+  const problem = hasBlockingWork(snapshot) ? blockedAgentProblem(snapshot) : undefined;
+  const problemAgentId = problem?.agentId;
   return snapshot.agents
     .slice()
     .sort((a, b) => ROLE_ORDER.indexOf(a.roleInWorkspace) - ROLE_ORDER.indexOf(b.roleInWorkspace))
@@ -107,17 +108,19 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
       const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
       const currentStep = displayText(agent.currentStep);
+      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id);
+      const displayStep = needsAttention ? "需要你回复" : canvasStepLabel(currentStep);
       return {
         id: agent.id,
         label: roleLabel(agent.roleInWorkspace),
         role: agent.roleInWorkspace,
         status: agent.status,
-        currentStep: canvasStepLabel(currentStep),
-        currentStepTitle: currentStep,
+        currentStep: displayStep,
+        currentStepTitle: needsAttention ? problem?.rawOutput : currentStep,
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
-        active: agent.status === "running" || Boolean(currentStep),
-        needsAttention: Boolean(problemAgentId && problemAgentId === agent.id)
+        active: agent.status === "running" && !needsAttention,
+        needsAttention
       };
     });
 }
