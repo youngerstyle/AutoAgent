@@ -191,6 +191,37 @@ export interface AgentDirectMessage {
   error?: string;
 }
 
+export type AgentThreadEventSource = "human" | "agent" | "platform" | "tool" | "system";
+
+export type AgentThreadEventKind =
+  | "human_message"
+  | "agent_message"
+  | "turn_failed"
+  | "ticket_received"
+  | "ticket_claimed"
+  | "ticket_outcome"
+  | "tool_observation"
+  | "system_note";
+
+export type AgentThreadVisibility = "chat" | "timeline" | "debug";
+
+export interface AgentThreadEvent<TPayload = Record<string, unknown>> {
+  id: string;
+  taskId: string;
+  taskRunId: string;
+  workspaceAgentId: string;
+  sequence: number;
+  timestamp: string;
+  source: AgentThreadEventSource;
+  kind: AgentThreadEventKind;
+  visibility: AgentThreadVisibility;
+  ticketId?: string;
+  assignmentRunId?: string;
+  humanMessageId?: string;
+  traceId?: string;
+  payload: TPayload;
+}
+
 export interface AssignmentRun {
   id: string;
   taskId: string;

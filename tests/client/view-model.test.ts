@@ -312,6 +312,40 @@ describe("client view model", () => {
     });
   });
 
+  it("uses boss acceptance wording for plain-text manual test blockers from boss", () => {
+    const ticket = {
+      id: "tk_boss",
+      workspaceId: "ws_1",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      type: "boss_acceptance" as const,
+      status: "blocked" as const,
+      brief: "老板验收",
+      expectedArtifact: "验收结论",
+      targetRole: "boss" as const,
+      priority: 0,
+      attempt: 1,
+      blocker: {
+        type: "manual_test_required" as const,
+        reason: "代码修复已完成并编译通过，但当前无浏览器交互能力，需要人工执行验收测试。"
+      },
+      createdAt: "now",
+      updatedAt: "now"
+    };
+
+    expect(buildManualTestAction(ticket)).toMatchObject({
+      summary: "代码修复已完成并编译通过，但当前无浏览器交互能力，需要人工执行验收测试。",
+      passMessage: "我已按老板验收要求人工测试通过，可以完成验收。",
+      failMessage: "老板验收未通过，请根据人工测试发现的问题打回开发。"
+    });
+
+    expect(buildTicketAgentMessage(ticket)).toMatchObject({
+      speaker: "老板",
+      title: "老板：需要你人工测试",
+      meta: "老板验收需要你人工确认结果。"
+    });
+  });
+
   it("presents blocked QA manual tests as messages from the QA agent", () => {
     const ticket = {
       id: "tk_qa",
@@ -441,6 +475,49 @@ describe("client view model", () => {
 
     expect(buildHumanFlowPrompt(completed)).toBeUndefined();
     expect(buildAgentNodes(completed).find((node) => node.id === "wa_qa")?.needsAttention).toBe(false);
+  });
+
+  it("does not show stale running agents as active when a different ticket is blocked", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      phase: "qa" as const,
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
+      agents: snapshot("blocked").agents.map((agent) => {
+        if (agent.id === "wa_dev") return { ...agent, status: "waiting" as const, currentStep: undefined };
+        if (agent.id === "wa_pm") return { ...agent, status: "running" as const, currentStep: "把目标拆成小规模执行计划" };
+        return agent;
+      }).concat({
+        id: "wa_pm",
+        workspaceId: "ws_1",
+        profileId: "prof_pm",
+        roleInWorkspace: "pm" as const,
+        agentDir: "pm",
+        status: "running" as const,
+        name: "PM",
+        currentStep: "把目标拆成小规模执行计划"
+      }),
+      tickets: [{
+        id: "tk_qa",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "qa" as const,
+        status: "blocked" as const,
+        brief: "质量检查",
+        expectedArtifact: "测试报告",
+        targetRole: "qa" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: { type: "manual_test_required" as const, reason: "需要人工测试" },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    const nodes = buildAgentNodes(blocked);
+
+    expect(nodes.find((node) => node.id === "wa_pm")?.active).toBe(false);
+    expect(nodes.find((node) => node.id === "wa_qa")?.needsAttention).toBe(true);
   });
 
   it("projects agents as platform profiles with identity, soul, agent.md, tools, model, and memory", () => {

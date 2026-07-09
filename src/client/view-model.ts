@@ -99,7 +99,8 @@ const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
   if (!snapshot) return [];
-  const problem = hasBlockingWork(snapshot) ? blockedAgentProblem(snapshot) : undefined;
+  const blockingWork = hasBlockingWork(snapshot);
+  const problem = blockingWork ? blockedAgentProblem(snapshot) : undefined;
   const problemAgentId = problem?.agentId;
   return snapshot.agents
     .slice()
@@ -119,7 +120,7 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
         currentStepTitle: needsAttention ? problem?.rawOutput : currentStep,
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
-        active: agent.status === "running" && !needsAttention,
+        active: agent.status === "running" && !needsAttention && !blockingWork,
         needsAttention
       };
     });
@@ -225,32 +226,41 @@ export function buildManualTestAction(ticket: Ticket): ManualTestActionView | un
   if (ticket.status !== "blocked" || ticket.blocker?.type !== "manual_test_required") return undefined;
   const parsed = parseBlockerJson(ticket.blocker.reason);
   const report = isRecord(parsed?.report) ? parsed.report : isRecord(parsed) ? parsed : undefined;
-  const summary = stringValue(report?.summary) ?? "QA 静态检查已完成，但当前 Agent 没有浏览器交互能力，需要你人工测试。";
+  const summary = stringValue(report?.summary) ?? (report ? undefined : ticket.blocker.reason) ?? manualTestDefaultSummary(ticket);
   const testFile = stringValue(report?.test_file) ?? stringValue(report?.testFile) ?? stringValue(report?.target);
   const steps = stringArray(report?.test_steps)
     ?? stringArray(report?.manual_test_steps)
     ?? stringArray(report?.steps)
     ?? [];
   const expectedResult = stringValue(report?.expected_result) ?? stringValue(report?.expectedResult) ?? stringValue(report?.conclusion_boundary);
+  const bossAcceptance = ticket.type === "boss_acceptance" || ticket.targetRole === "boss";
   return {
     summary,
     testFile,
     steps,
     expectedResult,
-    passMessage: "我已按 QA 给出的人工测试步骤验证通过，可以进入老板验收。",
-    failMessage: "人工测试未通过，请开发根据 QA 测试步骤和失败现象继续返工。"
+    passMessage: bossAcceptance ? "我已按老板验收要求人工测试通过，可以完成验收。" : "我已按 QA 给出的人工测试步骤验证通过，可以进入老板验收。",
+    failMessage: bossAcceptance ? "老板验收未通过，请根据人工测试发现的问题打回开发。" : "人工测试未通过，请开发根据 QA 测试步骤和失败现象继续返工。"
   };
+}
+
+function manualTestDefaultSummary(ticket: Ticket): string {
+  if (ticket.type === "boss_acceptance" || ticket.targetRole === "boss") {
+    return "老板验收需要你人工确认交付物是否真的可用。";
+  }
+  return "QA 静态检查已完成，但当前 Agent 没有浏览器交互能力，需要你人工测试。";
 }
 
 export function buildTicketAgentMessage(ticket: Ticket, message?: AgentInboxMessage): TicketAgentMessageView {
   const speaker = ticket.targetRole ? roleLabel(ticket.targetRole) : "团队";
   const workOrderDetail = `工单：${ticketLabel(ticket)}${message ? `；消息：${messageStatusLabel(message.status)}` : ""}`;
   if (ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required") {
+    const bossAcceptance = ticket.type === "boss_acceptance" || ticket.targetRole === "boss";
     return {
       speaker,
       title: `${speaker}：需要你人工测试`,
       statusLabel: "等你处理",
-      meta: "QA 已完成静态检查，等待你测试后回复。",
+      meta: bossAcceptance ? "老板验收需要你人工确认结果。" : "QA 已完成静态检查，等待你测试后回复。",
       workOrderDetail
     };
   }

@@ -12,6 +12,7 @@ import type { AgentTurnInput, AgentTurnResult } from "../../src/server/providers
 import { readJson, writeJson } from "../../src/server/storage/json";
 import { stateFile } from "../../src/server/storage/paths";
 import { SessionStore } from "../../src/server/storage/session-store";
+import { AgentThreadStore } from "../../src/server/storage/agent-thread-store";
 
 describe("MissionControl", () => {
   it("runs the fixed team happy path to completion", async () => {
@@ -261,6 +262,99 @@ describe("MissionControl", () => {
     expect(snapshot.phase).toBe("boss_intake");
   });
 
+  it("persists direct human messages in the selected agent thread only", async () => {
+    const fixture = await missionFixture();
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Debug selected agent chat" },
+      { autoRun: false }
+    );
+    const pm = started.agents.find((agent) => agent.roleInWorkspace === "pm");
+    const qa = started.agents.find((agent) => agent.roleInWorkspace === "qa");
+    if (!pm || !qa) throw new Error("pm or qa agent missing");
+
+    const snapshot = await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      started.activeTask!.id,
+      qa.id,
+      "继续看 QA 的跨域报错，不要找 PM。",
+      false
+    );
+
+    const threadStore = new AgentThreadStore();
+    const qaEvents = await threadStore.read(fixture.workspace.rootPath, qa.id, started.activeTaskRun!.id);
+    const pmEvents = await threadStore.read(fixture.workspace.rootPath, pm.id, started.activeTaskRun!.id);
+    const pmSession = await new SessionStore().read(fixture.workspace.rootPath, pm.id, started.activeTaskRun!.id);
+
+    expect(qaEvents).toEqual([
+      expect.objectContaining({
+        workspaceAgentId: qa.id,
+        kind: "human_message",
+        source: "human",
+        payload: expect.objectContaining({ message: "继续看 QA 的跨域报错，不要找 PM。" })
+      })
+    ]);
+    expect(pmEvents).toEqual([]);
+    expect(pmSession.messages).toEqual([]);
+    expect(snapshot.agentMessages?.[qa.id]?.at(-1)).toMatchObject({
+      agentId: qa.id,
+      message: "继续看 QA 的跨域报错，不要找 PM。",
+      createdBy: "human"
+    });
+
+    const statePath = stateFile(fixture.workspace.rootPath, started.activeTask!.id, started.activeTaskRun!.id);
+    const state = await readJson<MissionState | undefined>(statePath, undefined);
+    if (!state) throw new Error("state file missing");
+    delete state.context.agentMessages;
+    await writeJson(statePath, state);
+
+    const rebuiltSnapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
+    expect(rebuiltSnapshot.agentMessages?.[qa.id]?.at(-1)).toMatchObject({
+      agentId: qa.id,
+      message: "继续看 QA 的跨域报错，不要找 PM。",
+      createdBy: "human"
+    });
+  });
+
+  it("merges legacy direct messages with thread-projected direct messages", async () => {
+    const fixture = await missionFixture();
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Keep upgraded chat history" },
+      { autoRun: false }
+    );
+    const qa = started.agents.find((agent) => agent.roleInWorkspace === "qa");
+    if (!qa) throw new Error("qa agent missing");
+
+    const statePath = stateFile(fixture.workspace.rootPath, started.activeTask!.id, started.activeTaskRun!.id);
+    const state = await readJson<MissionState | undefined>(statePath, undefined);
+    if (!state) throw new Error("state file missing");
+    state.context.agentMessages = {
+      [qa.id]: [{
+        id: "hm_legacy_qa",
+        agentId: qa.id,
+        taskId: started.activeTask!.id,
+        taskRunId: started.activeTaskRun!.id,
+        message: "升级前的 QA 私聊",
+        createdBy: "human",
+        createdAt: "2026-07-09T01:00:00.000Z"
+      }]
+    };
+    await writeJson(statePath, state);
+
+    await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      started.activeTask!.id,
+      qa.id,
+      "升级后的 QA 私聊",
+      false
+    );
+
+    const snapshot = await fixture.mission.snapshotByWorkspace(fixture.workspace.id);
+    expect(snapshot.agentMessages?.[qa.id]?.map((message) => message.message)).toEqual([
+      "升级前的 QA 私聊",
+      "升级后的 QA 私聊"
+    ]);
+  });
+
   it("runs a private agent turn after a direct human message", async () => {
     const provider = new DirectAgentMessageProvider();
     const fixture = await missionFixture(provider);
@@ -281,12 +375,57 @@ describe("MissionControl", () => {
 
     expect(provider.calls[0]?.role).toBe("dev");
     expect(provider.calls[0]?.prompt).toContain("先别等流程，告诉我你怎么看这个报错。");
+    expect(provider.calls[0]?.prompt).toContain("私聊本身不会创建、更新、关闭或流转工单");
     const session = await new SessionStore().read(fixture.workspace.rootPath, dev.id, started.activeTaskRun!.id);
     expect(session.messages.some((message) => message.role === "assistant" && message.content.includes("我会先判断报错"))).toBe(true);
+    const threadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, dev.id, started.activeTaskRun!.id);
+    expect(threadEvents.map((event) => event.kind)).toEqual(["human_message", "agent_message"]);
+    expect(threadEvents.at(-1)).toMatchObject({
+      workspaceAgentId: dev.id,
+      source: "agent",
+      kind: "agent_message",
+      humanMessageId: threadEvents[0].id,
+      payload: expect.objectContaining({
+        message: expect.stringContaining("我会先判断报错")
+      })
+    });
     expect(snapshot.agentMessages?.[dev.id]?.at(-1)).toMatchObject({
       message: "先别等流程，告诉我你怎么看这个报错。",
       handledAt: expect.any(String),
       response: expect.stringContaining("我会先判断报错")
+    });
+  });
+
+  it("persists failed private agent turns in the same agent thread", async () => {
+    const provider = new FailingDirectAgentMessageProvider();
+    const fixture = await missionFixture(provider);
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Debug failed selected agent chat" },
+      { autoRun: false }
+    );
+    const dev = started.agents.find((agent) => agent.roleInWorkspace === "dev");
+    if (!dev) throw new Error("dev agent missing");
+
+    const snapshot = await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      started.activeTask!.id,
+      dev.id,
+      "继续处理这个报错。",
+      true
+    );
+
+    const threadEvents = await new AgentThreadStore().read(fixture.workspace.rootPath, dev.id, started.activeTaskRun!.id);
+    expect(threadEvents.map((event) => event.kind)).toEqual(["human_message", "turn_failed"]);
+    expect(threadEvents.at(-1)).toMatchObject({
+      source: "agent",
+      kind: "turn_failed",
+      humanMessageId: threadEvents[0].id,
+      payload: expect.objectContaining({ error: "provider exploded" })
+    });
+    expect(snapshot.agentMessages?.[dev.id]?.at(-1)).toMatchObject({
+      message: "继续处理这个报错。",
+      failedAt: expect.any(String),
+      error: "provider exploded"
     });
   });
 
@@ -1075,6 +1214,37 @@ describe("MissionControl", () => {
     expect(events.map((event) => event.type)).not.toContain("run.completed");
   });
 
+  it("does not treat continue as manual test pass on QA manual-test boundaries", async () => {
+    const provider = new ManualBrowserQaProvider();
+    const fixture = await missionFixture(provider);
+
+    const blocked = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build a canvas game" },
+      { runSynchronously: true }
+    );
+
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.phase).toBe("qa");
+
+    const afterInvalidContinue = await fixture.mission.followUpTask(
+      fixture.workspace.id,
+      blocked.activeTask!.id,
+      "http://localhost:3000 拒绝连接",
+      true
+    );
+
+    expect(afterInvalidContinue.status).toBe("blocked");
+    expect(afterInvalidContinue.phase).toBe("qa");
+    expect(afterInvalidContinue.tickets?.find((ticket) => ticket.type === "qa")).toMatchObject({
+      status: "blocked",
+      blocker: { type: "manual_test_required" }
+    });
+    expect(afterInvalidContinue.tickets?.find((ticket) => ticket.type === "boss_acceptance")).toMatchObject({ status: "pending" });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, afterInvalidContinue.activeTask!.id, afterInvalidContinue.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).not.toContain("run.completed");
+    expect(events.filter((event) => event.type === "task.phase_changed" && event.summary.includes("收到补充"))).toHaveLength(0);
+  });
+
   it("supports pause, resume, and stop controls", async () => {
     const fixture = await missionFixture();
     const snapshot = await fixture.mission.startTask({ workspaceId: fixture.workspace.id, goal: "Controllable task" }, { autoRun: false });
@@ -1180,6 +1350,13 @@ class DirectAgentMessageProvider implements ProviderRunner {
     this.calls.push(input);
     if (input.role === "dev") return result({ reply: "我会先判断报错，再决定是否需要改代码。" });
     if (input.role === "boss") return result({ accepted: true });
+    return result({ ok: true });
+  }
+}
+
+class FailingDirectAgentMessageProvider implements ProviderRunner {
+  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
+    if (input.role === "dev") throw new Error("provider exploded");
     return result({ ok: true });
   }
 }
@@ -1772,6 +1949,12 @@ class ManualBrowserQaProvider implements ProviderRunner {
       }
       if (input.context?.humanFollowup === "页面打不开，这是路径不对吗？") {
         return result({ human_action: "need_more_info", reason: "human 在询问页面无法打开的问题，不是验收结论" });
+      }
+      if (input.context?.humanFollowup === "http://localhost:3000 拒绝连接") {
+        return result({
+          decision: "continue",
+          reason: "human 报告页面打不开，QA 想自行处理服务问题，但这不是人工测试通过"
+        });
       }
       return result({
         passed: false,

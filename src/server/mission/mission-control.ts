@@ -9,6 +9,7 @@ import { recruitSpecialist } from "../agents/recruitment.js";
 import { ensureCoreTeam, listWorkspaceAgents, profileForRole, profileMetadata } from "../agents/roster.js";
 import { HttpError } from "../errors.js";
 import { EventLedger } from "../storage/event-ledger.js";
+import { AgentThreadStore } from "../storage/agent-thread-store.js";
 import { SessionStore } from "../storage/session-store.js";
 import { projectWorkspaceState } from "../storage/state-projector.js";
 import { stateFile, workspaceAutoAgentDir } from "../storage/paths.js";
@@ -41,6 +42,7 @@ export interface StartTaskOptions {
 
 export class MissionControl {
   private readonly runtime: AgentRuntime;
+  private readonly agentThreadStore = new AgentThreadStore();
   private readonly sessionStore = new SessionStore();
   private readonly running = new Set<string>();
 
@@ -237,7 +239,7 @@ export class MissionControl {
     if (!targetAgent) throw new HttpError(404, "Agent not found in workspace", "AGENT_NOT_FOUND");
 
     const blockedTicket = state.status === "blocked" ? this.blockedTicketForAgent(state, targetAgent) : undefined;
-    const directEntry = this.appendAgentDirectMessage(state, targetAgent.id, directMessage);
+    const directEntry = await this.appendAgentDirectMessage(workspace, state, targetAgent.id, directMessage, blockedTicket?.id);
     await this.appendHumanSessionMessage(workspace, state, targetAgent, directMessage, {
       source: "human.agent_message",
       humanMessageId: directEntry.id,
@@ -607,7 +609,12 @@ export class MissionControl {
     const profile = profileForRole(agent.roleInWorkspace, profiles);
     const currentTicket = this.currentTicketForAgent(state, agent);
     const assignmentType = currentTicket ? assignmentTypeForTicket(currentTicket) : assignmentTypeForAgentRole(agent.roleInWorkspace);
-    const brief = `处理 human 私聊消息；这条消息已经按时间顺序写入你的 session。请直接回复 human，必要时说明你接下来会如何处理当前工单。最新消息：${message.message}`;
+    const brief = [
+      "处理 human 私聊消息；这条消息已经按时间顺序写入你的 session。",
+      "请直接回复 human，必要时说明你接下来会如何处理当前工单。",
+      "私聊本身不会创建、更新、关闭或流转工单；除非当前工单上下文已经显示平台完成了这些动作，否则不要声称“已创建工单”“已更新状态”或“已完成流转”。",
+      `最新消息：${message.message}`
+    ].join("\n");
     try {
       const result = await this.runtime.runAssignment({
         workspace,
@@ -627,6 +634,17 @@ export class MissionControl {
       if (latestState.stopRequested || latestState.status === "interrupted") return latestState;
       this.mergeConcurrentAgentDirectMessages(state, latestState);
       const response = result.kind === "final" ? result.providerResult.text : result.reason;
+      await this.agentThreadStore.append(workspace.rootPath, agent.id, state.taskRun.id, {
+        taskId: state.task.id,
+        taskRunId: state.taskRun.id,
+        workspaceAgentId: agent.id,
+        source: "agent",
+        kind: "agent_message",
+        visibility: "chat",
+        ticketId: currentTicket?.id,
+        humanMessageId: message.id,
+        payload: { message: response }
+      });
       this.updateAgentDirectMessage(state, message.id, {
         handledAt: new Date().toISOString(),
         response
@@ -642,6 +660,17 @@ export class MissionControl {
     } catch (error) {
       const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
       this.mergeConcurrentAgentDirectMessages(state, latestState);
+      await this.agentThreadStore.append(workspace.rootPath, agent.id, state.taskRun.id, {
+        taskId: state.task.id,
+        taskRunId: state.taskRun.id,
+        workspaceAgentId: agent.id,
+        source: "agent",
+        kind: "turn_failed",
+        visibility: "chat",
+        ticketId: currentTicket?.id,
+        humanMessageId: message.id,
+        payload: { error: (error as Error).message }
+      });
       this.updateAgentDirectMessage(state, message.id, {
         failedAt: new Date().toISOString(),
         error: (error as Error).message
@@ -960,7 +989,7 @@ export class MissionControl {
     const blockedManualTest = runtime.allTickets().find((ticket) => ticket.status === "blocked" && ticket.blocker?.type === "manual_test_required");
     if (blockedManualTest) {
       const action = blockedFollowupActionFromReview(state.context.ticketResumeReview);
-      if (action === "hold") {
+      if (action !== "pass_manual_test" && action !== "fail_manual_test") {
         this.syncTickets(state, runtime);
         return;
       }
@@ -1010,7 +1039,7 @@ export class MissionControl {
       rawText: review.providerResult.text,
       toolResults: review.toolResults
     };
-    return blockedFollowupActionFromReview(state.context.ticketResumeReview);
+    return normalizeFollowupActionForTicket(ticket, blockedFollowupActionFromReview(state.context.ticketResumeReview));
   }
 
   private async agentProfiles() {
@@ -1072,10 +1101,21 @@ export class MissionControl {
     projected.activeTaskRun = state.taskRun;
     projected.tickets = state.tickets ?? [];
     projected.inboxMessages = state.inboxMessages ?? [];
-    projected.agentMessages = agentMessagesByAgent(state.context);
+    projected.agentMessages = await this.projectAgentMessages(workspace, state, projected.agents);
     projected.phase = state.taskRun.phase;
     projected.status = state.status;
     projected.humanLoop = humanLoopSnapshot(state);
+    return projected;
+  }
+
+  private async projectAgentMessages(workspace: Workspace, state: MissionState, agents: WorkspaceSnapshot["agents"]): Promise<Record<string, AgentDirectMessage[]>> {
+    const legacy = agentMessagesByAgent(state.context);
+    const projected: Record<string, AgentDirectMessage[]> = { ...legacy };
+    for (const agent of agents) {
+      const events = await this.agentThreadStore.read(workspace.rootPath, agent.id, state.taskRun.id);
+      const messages = this.agentThreadStore.projectDirectMessages(events);
+      if (messages.length > 0) projected[agent.id] = mergeDirectMessages(legacy[agent.id] ?? [], messages);
+    }
     return projected;
   }
 
@@ -1098,16 +1138,26 @@ export class MissionControl {
       ?? (state.tickets ?? []).find((ticket) => ticket.status === "pending" && matchesAgent(ticket));
   }
 
-  private appendAgentDirectMessage(state: MissionState, agentId: string, message: string): AgentDirectMessage {
+  private async appendAgentDirectMessage(workspace: Workspace, state: MissionState, agentId: string, message: string, ticketId?: string): Promise<AgentDirectMessage> {
     const byAgent = agentMessagesByAgent(state.context);
+    const event = await this.agentThreadStore.append(workspace.rootPath, agentId, state.taskRun.id, {
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      workspaceAgentId: agentId,
+      source: "human",
+      kind: "human_message",
+      visibility: "chat",
+      ticketId,
+      payload: { message }
+    });
     const entry: AgentDirectMessage = {
-      id: createId("hm"),
+      id: event.id,
       agentId,
       taskId: state.task.id,
       taskRunId: state.taskRun.id,
       message,
       createdBy: "human",
-      createdAt: new Date().toISOString()
+      createdAt: event.timestamp
     };
     state.context.agentMessages = {
       ...byAgent,
@@ -1579,6 +1629,13 @@ function agentMessagesByAgent(context: Record<string, unknown>): Record<string, 
   return result;
 }
 
+function mergeDirectMessages(left: AgentDirectMessage[], right: AgentDirectMessage[]): AgentDirectMessage[] {
+  const byId = new Map<string, AgentDirectMessage>();
+  for (const message of left) byId.set(message.id, message);
+  for (const message of right) byId.set(message.id, { ...byId.get(message.id), ...message });
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 function isAgentDirectMessage(value: unknown): value is AgentDirectMessage {
   if (!isRecord(value)) return false;
   return typeof value.id === "string"
@@ -1625,6 +1682,7 @@ function ticketResumeReviewContext(state: MissionState, ticket: Ticket, message:
 }
 
 function ticketResumeReviewBrief(ticket: Ticket, humanFollowup: string): string {
+  const manualTestBoundary = ticket.blocker?.type === "manual_test_required";
   return [
     "你正在处理一个被 human 回复唤醒的 blocked 工单。先做 ticket_resume_review 分类 turn，不要直接执行原任务。",
     "只根据当前工单状态、阻塞原因、上次输出和本轮 humanFollowup 判断下一步动作，并返回结构化 JSON。",
@@ -1632,11 +1690,10 @@ function ticketResumeReviewBrief(ticket: Ticket, humanFollowup: string): string 
     humanFollowup,
     `允许动作：${ticketResumeAllowedActions(ticket).join("、")}。`,
     "如果 human 只是在提问、补充现象、请求帮助或信息不足，返回 {\"decision\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。",
-    "如果 human 明确回答了当前阻塞问题，或把专业取舍委托给当前 Agent 自行判断，且不涉及人工测试通过、生产/安全/隐私/付费/删除等不可逆边界，返回 {\"decision\":\"continue\",\"reason\":\"...\"}；后续执行时把关键假设写进工单或产物。",
+    manualTestBoundary
+      ? "人工测试边界不能返回 continue。只有 human 原文明确表示测试通过、验收通过或没有问题，才返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}；human 原文报告报错、无法访问、失败现象或任何不通过，返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}；不明确才返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。"
+      : "如果 human 明确回答了当前阻塞问题，或把专业取舍委托给当前 Agent 自行判断，且不涉及人工测试通过、生产/安全/隐私/付费/删除等不可逆边界，返回 {\"decision\":\"continue\",\"reason\":\"...\"}；后续执行时把关键假设写进工单或产物。",
     "只有当前 Agent 无法专业判断、且缺失信息会改变不可逆边界时，才继续 need_more_info，并只问最少必要问题。",
-    ticket.blocker?.type === "manual_test_required"
-      ? "人工测试边界：测试通过返回 {\"human_action\":\"manual_test_passed\",\"reason\":\"...\"}；测试失败返回 {\"human_action\":\"manual_test_failed\",\"reason\":\"...\"}；不明确则返回 {\"human_action\":\"need_more_info\",\"reason\":\"...\",\"reply_to_human\":\"...\"}。"
-      : undefined,
     "不要把提问当成批准；不要自行猜测 human 已同意或已验收；也不要把明确授权当前 Agent 专业判断的回复当作未回答。"
   ].filter(Boolean).join("\n");
 }
@@ -1657,6 +1714,12 @@ function blockedFollowupActionFromReview(review: unknown): Exclude<BlockedFollow
   if (rawAction === "manual_test_failed" || rawAction === "failed" || rawAction === "fail") return "fail_manual_test";
   if (rawAction === "continue" || rawAction === "approve" || rawAction === "approved" || rawAction === "authorized") return "continue";
   if (rawAction === "need_more_info" || rawAction === "needs_more_info" || rawAction === "need_clarification" || rawAction === "ask_human") return "hold";
+  return "hold";
+}
+
+function normalizeFollowupActionForTicket(ticket: Ticket, action: Exclude<BlockedFollowupAction, "continue"> | "continue"): Exclude<BlockedFollowupAction, "continue"> | "continue" {
+  if (ticket.blocker?.type !== "manual_test_required") return action;
+  if (action === "pass_manual_test" || action === "fail_manual_test") return action;
   return "hold";
 }
 
