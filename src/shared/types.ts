@@ -175,6 +175,16 @@ export interface AgentInboxMessage {
   updatedAt: string;
 }
 
+export interface AgentDirectMessage {
+  id: string;
+  agentId: string;
+  taskId: string;
+  taskRunId: string;
+  message: string;
+  createdBy: "human";
+  createdAt: string;
+}
+
 export interface AssignmentRun {
   id: string;
   taskId: string;
@@ -226,6 +236,7 @@ export interface WorkspaceSnapshot {
   assignments: Assignment[];
   tickets?: Ticket[];
   inboxMessages?: AgentInboxMessage[];
+  agentMessages?: Record<string, AgentDirectMessage[]>;
   recentEvents: AutoAgentEvent[];
   phase: MissionPhase;
   status: EntityStatus;

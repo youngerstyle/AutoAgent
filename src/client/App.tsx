@@ -13,6 +13,7 @@ import {
   listWorkspaces,
   pauseTask,
   resumeTask,
+  sendAgentMessage,
   sendTaskFollowup,
   setDefaultModelConfig,
   startTask,
@@ -65,6 +66,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>();
   const [events, setEvents] = useState<AutoAgentEvent[]>([]);
   const [goal, setGoal] = useState("");
+  const [agentMessage, setAgentMessage] = useState("");
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
@@ -84,6 +86,7 @@ export function App() {
   });
   const [error, setError] = useState("");
   const [taskSubmitting, setTaskSubmitting] = useState(false);
+  const [agentMessageSubmitting, setAgentMessageSubmitting] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<DeleteWorkspaceDialogState>();
   const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
   const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
@@ -126,6 +129,10 @@ export function App() {
   useEffect(() => {
     if (humanFlowPrompt?.agentId) setSelectedAgentId(humanFlowPrompt.agentId);
   }, [humanFlowPrompt?.agentId]);
+
+  useEffect(() => {
+    setAgentMessage("");
+  }, [selectedAgentId]);
 
   useEffect(() => {
     const panel = rightPanelRef.current;
@@ -352,15 +359,22 @@ export function App() {
     }
   }
 
-  async function sendFollowupMessage(message: string) {
+  async function sendSelectedAgentMessage(message = agentMessage) {
     const taskId = snapshot?.activeTask?.id;
-    if (!selectedId || !taskId || !message.trim()) return;
+    const agentId = selectedAgentId || snapshot?.agents[0]?.id;
+    const text = message.trim();
+    if (!selectedId || !taskId || !agentId || !text || agentMessageSubmitting) return;
+    if (snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted") return;
+    setAgentMessageSubmitting(true);
     try {
-      const result = await sendTaskFollowup(selectedId, taskId, message);
+      const result = await sendAgentMessage(selectedId, taskId, agentId, text);
       setSnapshot(result.snapshot);
-      setGoal("");
+      setAgentMessage("");
+      setError("");
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setAgentMessageSubmitting(false);
     }
   }
 
@@ -451,6 +465,10 @@ export function App() {
       ? "任务控制"
       : "描述这个项目要交给团队完成的目标";
   const selectedAgentNeedsReply = Boolean(humanFlowPrompt && selectedAgent?.id === humanFlowPrompt.agentId);
+  const selectedAgentMessages = selectedAgent ? snapshot?.agentMessages?.[selectedAgent.id] ?? [] : [];
+  const taskIsTerminal = snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted" || mode === "terminal";
+  const agentMessageDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent || !agentMessage.trim();
+  const agentActionDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent;
 
   return (
     <main className="app-shell">
@@ -593,24 +611,35 @@ export function App() {
               onKeyDown={resizeAgentPanelWithKeyboard}
               title="拖动调整 Agent 对话区高度"
             />
-            <div className={selectedAgentNeedsReply ? "agent-detail chat-mode" : "agent-detail"}>
+            <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
               {selectedAgentNeedsReply && humanFlowPrompt ? (
                 <AgentHumanLoopBox
                   agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
                   prompt={humanFlowPrompt}
-                  value={goal}
-                  disabled={taskSubmitView.disabled}
-                  actionDisabled={taskSubmitting || !selectedId || !snapshot?.activeTask}
-                  onChange={setGoal}
-                  onUseSuggestion={() => setGoal(suggestedFollowup)}
-                  onFollowup={(message) => void sendFollowupMessage(message)}
-                  onSubmit={submitTask}
+                  messages={selectedAgentMessages}
+                  value={agentMessage}
+                  disabled={agentMessageDisabled}
+                  actionDisabled={agentActionDisabled}
+                  onChange={setAgentMessage}
+                  onUseSuggestion={() => setAgentMessage(suggestedFollowup)}
+                  onFollowup={(message) => void sendSelectedAgentMessage(message)}
+                  onSend={(message) => void sendSelectedAgentMessage(message)}
+                />
+              ) : selectedAgent ? (
+                <AgentDirectChatBox
+                  agent={selectedAgent}
+                  messages={selectedAgentMessages}
+                  value={agentMessage}
+                  disabled={agentMessageDisabled}
+                  sending={agentMessageSubmitting}
+                  onChange={setAgentMessage}
+                  onSend={(message) => void sendSelectedAgentMessage(message)}
                 />
               ) : (
                 <>
-                  <strong>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "未选择成员"}</strong>
-                  <span>{selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : "空闲"}</span>
-                  <p>{(displayText(selectedAgent?.currentStep) ?? (selectedAgent ? capabilityLabels(selectedAgent.roleInWorkspace, selectedAgent.capabilities).join("、") : "")) || "创建项目后会生成固定团队。"}</p>
+                  <strong>未选择成员</strong>
+                  <span>空闲</span>
+                  <p>创建项目后会生成固定团队。</p>
                 </>
               )}
             </div>
@@ -1076,17 +1105,22 @@ function clamp(value: number, min: number, max: number): number {
 function AgentHumanLoopBox(props: {
   agentName: string;
   prompt: NonNullable<ReturnType<typeof buildHumanFlowPrompt>>;
+  messages: AgentChatMessage[];
   value: string;
   disabled: boolean;
   actionDisabled: boolean;
   onChange: (value: string) => void;
   onUseSuggestion: () => void;
   onFollowup: (message: string) => void;
-  onSubmit: (event: React.FormEvent) => void;
+  onSend: (message: string) => void;
 }) {
   const messageBody = props.prompt.transcript.replace(/^[^\n]+:\n/, "");
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    props.onSend(props.value);
+  };
   return (
-    <form className="agent-chat" onSubmit={props.onSubmit}>
+    <form className="agent-chat" onSubmit={submit}>
       <header className="agent-chat-header">
         <span className="chat-avatar">{initials(props.agentName)}</span>
         <div>
@@ -1106,6 +1140,11 @@ function AgentHumanLoopBox(props: {
             <AgentMessageBody rawText={messageBody} />
           )}
         </article>
+        {props.messages.map((message) => (
+          <article key={message.id} className="chat-message human">
+            <AgentMessageBody rawText={message.message} />
+          </article>
+        ))}
       </div>
       {!props.prompt.manualTest ? (
         <button type="button" className="quick-reply" title={props.prompt.suggestion} onClick={props.onUseSuggestion}>使用建议方案</button>
@@ -1118,6 +1157,55 @@ function AgentHumanLoopBox(props: {
           placeholder={props.prompt.placeholder}
         />
         <button type="submit" disabled={props.disabled}>{props.prompt.submitLabel}</button>
+      </div>
+    </form>
+  );
+}
+
+type AgentChatMessage = NonNullable<WorkspaceSnapshot["agentMessages"]>[string][number];
+
+function AgentDirectChatBox(props: {
+  agent: WorkspaceSnapshot["agents"][number];
+  messages: AgentChatMessage[];
+  value: string;
+  disabled: boolean;
+  sending: boolean;
+  onChange: (value: string) => void;
+  onSend: (message: string) => void;
+}) {
+  const agentName = roleLabel(props.agent.roleInWorkspace);
+  const statusText = props.agent.currentStep ?? capabilityLabels(props.agent.roleInWorkspace, props.agent.capabilities).join("、") ?? statusLabel(props.agent.status);
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    props.onSend(props.value);
+  };
+  return (
+    <form className="agent-chat" onSubmit={submit}>
+      <header className="agent-chat-header">
+        <span className="chat-avatar">{initials(agentName)}</span>
+        <div>
+          <strong>{agentName} 对话</strong>
+          <small>私聊 · {statusLabel(props.agent.status)}</small>
+        </div>
+      </header>
+      <div className="chat-thread">
+        <article className="chat-message agent">
+          <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
+        </article>
+        {props.messages.map((message) => (
+          <article key={message.id} className="chat-message human">
+            <AgentMessageBody rawText={message.message} />
+          </article>
+        ))}
+      </div>
+      <div className="chat-composer">
+        <textarea
+          aria-label={`回复${agentName}`}
+          value={props.value}
+          onChange={(event) => props.onChange(event.target.value)}
+          placeholder={`回复${agentName}`}
+        />
+        <button type="submit" disabled={props.disabled}>{props.sending ? "发送中" : "发送"}</button>
       </div>
     </form>
   );

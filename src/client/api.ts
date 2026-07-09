@@ -51,6 +51,10 @@ export function sendTaskFollowup(workspaceId: string, taskId: string, message: s
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/followups`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
+export function sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<{ snapshot: WorkspaceSnapshot }> {
+  return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${agentId}/messages`, { method: "POST", body: JSON.stringify({ message }) });
+}
+
 export function stopTask(workspaceId: string, taskId: string): Promise<unknown> {
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/stop`, { method: "POST" });
 }

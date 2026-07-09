@@ -1,5 +1,5 @@
-import { assignmentLabel, displayText, phaseLabel, statusLabel } from "../shared/labels";
-import type { AssignmentType, AutoAgentEvent, EntityStatus, MissionPhase, ProviderName } from "../shared/types";
+import { assignmentLabel, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
+import type { AgentRole, AssignmentType, AutoAgentEvent, EntityStatus, MissionPhase, ProviderName } from "../shared/types";
 
 export interface EventTimelineItem {
   actor: string;
@@ -113,6 +113,12 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
     return item(event, "human", "补充说明", resumePhase ? `继续到${phaseLabel(resumePhase)}` : followupDetail(event), "running");
   }
 
+  if (event.type === "human.agent_message") {
+    const role = stringPayload(event, "role") as AgentRole | undefined;
+    const message = stringPayload(event, "message");
+    return item(event, "human", `发给${role ? roleLabel(role) : "Agent"}`, message, "running");
+  }
+
   if (event.type === "handoff.created") {
     const phase = stringPayload(event, "phase") as MissionPhase | undefined;
     const reason = stringPayload(event, "reason") ?? displayText(event.summary);
@@ -201,6 +207,7 @@ function phaseForTimelineEvent(event: AutoAgentEvent, item: EventTimelineItem): 
   if (item.actor === "任务阶段") return item.title.replace(/^进入/, "") || "任务流";
   if (event.type === "run.completed") return "任务完成";
   if (event.type === "human.followup") return "人工补充";
+  if (event.type === "human.agent_message") return "Agent 私聊";
   if (event.type.startsWith("recruitment.")) return "专家招聘";
   return undefined;
 }

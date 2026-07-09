@@ -120,6 +120,34 @@ describe("MissionControl", () => {
     });
   });
 
+  it("records direct human messages on the selected agent instead of global follow-up", async () => {
+    const fixture = await missionFixture();
+    const started = await fixture.mission.startTask(
+      { workspaceId: fixture.workspace.id, goal: "Build with targeted human guidance" },
+      { autoRun: false }
+    );
+    const dev = started.agents.find((agent) => agent.roleInWorkspace === "dev");
+    if (!dev) throw new Error("dev agent missing");
+
+    const snapshot = await fixture.mission.sendAgentMessage(
+      fixture.workspace.id,
+      started.activeTask!.id,
+      dev.id,
+      "继续当前开发工单，不要回到老板。",
+      false
+    );
+
+    expect(snapshot.agentMessages?.[dev.id]?.at(-1)).toMatchObject({
+      agentId: dev.id,
+      message: "继续当前开发工单，不要回到老板。",
+      createdBy: "human"
+    });
+    const events = await fixture.ledger.read(fixture.workspace.rootPath, started.activeTask!.id, started.activeTaskRun!.id);
+    expect(events.map((event) => event.type)).toContain("human.agent_message");
+    expect(events.map((event) => event.type)).not.toContain("human.followup");
+    expect(snapshot.phase).toBe("boss_intake");
+  });
+
   it("creates follow-up tickets from completed tickets instead of hidden phase jumps", async () => {
     const fixture = await missionFixture();
 

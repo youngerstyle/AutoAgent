@@ -1,6 +1,6 @@
 import { access, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { AgentInboxMessage, AgentRole, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentDirectMessage, AgentInboxMessage, AgentRole, Assignment, AssignmentType, AutoAgentEvent, LoopDebugLog, MissionPhase, Task, TaskRun, Ticket, TicketBlocker, TicketType, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { phaseLabel, roleLabel } from "../../shared/labels.js";
 import { AgentRuntime, type AgentRuntimeLimits, type AssignmentResult, type ProviderRunner } from "../agents/agent-runtime.js";
@@ -209,6 +209,54 @@ export class MissionControl {
     return this.snapshot(workspace, state.task.id, state.taskRun.id);
   }
 
+  async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, runSynchronously = false): Promise<WorkspaceSnapshot> {
+    const workspace = await this.workspaceStore.get(workspaceId);
+    const state = await this.readStateForTask(workspace, taskId);
+    const directMessage = message.trim();
+    if (!directMessage) throw new HttpError(400, "Agent message is required", "AGENT_MESSAGE_REQUIRED");
+    if (state.status === "completed" || state.status === "failed" || state.status === "interrupted") {
+      throw new HttpError(409, "Task is already terminal", "TASK_TERMINAL");
+    }
+
+    const agents = await listWorkspaceAgents(workspace);
+    const targetAgent = agents.find((agent) => agent.id === agentId);
+    if (!targetAgent) throw new HttpError(404, "Agent not found in workspace", "AGENT_NOT_FOUND");
+
+    const blockedTicket = state.status === "blocked" ? this.blockedTicketForAgent(state, targetAgent) : undefined;
+    this.appendAgentDirectMessage(state, targetAgent.id, directMessage);
+    await this.writeState(workspace, state);
+    await this.append(workspace, state, "human.agent_message", `human 发给${roleLabel(targetAgent.roleInWorkspace)}：${directMessage.slice(0, 80)}`, {
+      agentId: targetAgent.id,
+      role: targetAgent.roleInWorkspace,
+      message: directMessage,
+      blockedTicketId: blockedTicket?.id
+    });
+
+    if (blockedTicket) {
+      return this.followUpTask(workspaceId, taskId, directMessage, runSynchronously);
+    }
+
+    if (state.status === "waiting") {
+      const nextTicket = this.nextRunnableTicket(state);
+      if (nextTicket) {
+        state.status = "running";
+        state.task.status = "running";
+        state.taskRun.status = "running";
+        state.nextPhase = phaseForTicket(nextTicket);
+        state.taskRun.phase = state.nextPhase;
+        state.updatedAt = new Date().toISOString();
+        await this.writeState(workspace, state);
+        if (runSynchronously) {
+          await this.runUntilIdle(workspace, state.task.id, state.taskRun.id);
+        } else {
+          this.runInBackground(workspace, state.task.id, state.taskRun.id);
+        }
+      }
+    }
+
+    return this.snapshot(workspace, state.task.id, state.taskRun.id);
+  }
+
   async stopTask(workspaceId: string, taskId: string): Promise<MissionState> {
     const workspace = await this.workspaceStore.get(workspaceId);
     const state = await this.readStateForTask(workspace, taskId);
@@ -337,7 +385,7 @@ export class MissionControl {
       brief: ticket.brief,
       expectedArtifact: ticket.expectedArtifact,
       currentTicket: ticket,
-      context: state.context,
+      context: contextForAgent(state.context, agent.id),
       sessionId: state.taskRun.id
     });
     const latestState = await this.readState(workspace, state.task.id, state.taskRun.id);
@@ -740,7 +788,7 @@ export class MissionControl {
     if (!ticket) return "hold";
     const ownerAgent = await this.agentForTicket(workspace, ticket);
     const profiles = await this.agentProfiles();
-    const reviewContext = ticketResumeReviewContext(state, ticket, message);
+    const reviewContext = ticketResumeReviewContext(state, ticket, message, ownerAgent.id);
     const review = await this.runtime.runAssignment({
       workspace,
       agent: ownerAgent,
@@ -882,6 +930,7 @@ export class MissionControl {
     projected.activeTaskRun = state.taskRun;
     projected.tickets = state.tickets ?? [];
     projected.inboxMessages = state.inboxMessages ?? [];
+    projected.agentMessages = agentMessagesByAgent(state.context);
     projected.phase = state.taskRun.phase;
     projected.status = state.status;
     projected.humanLoop = humanLoopSnapshot(state);
@@ -890,6 +939,31 @@ export class MissionControl {
 
   private blockedTicket(state: MissionState): Ticket | undefined {
     return (state.tickets ?? []).find((ticket) => ticket.status === "blocked");
+  }
+
+  private blockedTicketForAgent(state: MissionState, agent: WorkspaceAgent): Ticket | undefined {
+    return (state.tickets ?? []).find((ticket) =>
+      ticket.status === "blocked"
+      && (ticket.targetAgentId === agent.id || (!ticket.targetAgentId && ticket.targetRole === agent.roleInWorkspace))
+    );
+  }
+
+  private appendAgentDirectMessage(state: MissionState, agentId: string, message: string): void {
+    const byAgent = agentMessagesByAgent(state.context);
+    const entry: AgentDirectMessage = {
+      id: createId("hm"),
+      agentId,
+      taskId: state.task.id,
+      taskRunId: state.taskRun.id,
+      message,
+      createdBy: "human",
+      createdAt: new Date().toISOString()
+    };
+    state.context.agentMessages = {
+      ...byAgent,
+      [agentId]: [...(byAgent[agentId] ?? []), entry]
+    };
+    state.updatedAt = entry.createdAt;
   }
 
   private async reconcileBlockedTicketState(workspace: Workspace, state: MissionState): Promise<Ticket | undefined> {
@@ -1324,6 +1398,38 @@ function hasRunBlockedAfterLatestFailure(events: AutoAgentEvent[]): boolean {
   return events.some((event, index) => index > latestFailureIndex && event.type === "run.blocked");
 }
 
+function contextForAgent(context: Record<string, unknown>, agentId: string): Record<string, unknown> {
+  const { agentMessages, ...baseContext } = context;
+  const directMessages = agentMessagesByAgent(context)[agentId] ?? [];
+  return {
+    ...baseContext,
+    agentDirectMessages: directMessages,
+    latestAgentDirectMessage: directMessages.at(-1)
+  };
+}
+
+function agentMessagesByAgent(context: Record<string, unknown>): Record<string, AgentDirectMessage[]> {
+  const raw = context.agentMessages;
+  if (!isRecord(raw)) return {};
+  const result: Record<string, AgentDirectMessage[]> = {};
+  for (const [agentId, value] of Object.entries(raw)) {
+    if (!Array.isArray(value)) continue;
+    result[agentId] = value.filter(isAgentDirectMessage);
+  }
+  return result;
+}
+
+function isAgentDirectMessage(value: unknown): value is AgentDirectMessage {
+  if (!isRecord(value)) return false;
+  return typeof value.id === "string"
+    && typeof value.agentId === "string"
+    && typeof value.taskId === "string"
+    && typeof value.taskRunId === "string"
+    && typeof value.message === "string"
+    && value.createdBy === "human"
+    && typeof value.createdAt === "string";
+}
+
 function lastEventIndex(events: AutoAgentEvent[], type: AutoAgentEvent["type"]): number {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     if (events[index].type === type) return index;
@@ -1364,7 +1470,7 @@ function isManualTestingBoundary(state: MissionState): boolean {
 
 type BlockedFollowupAction = "continue" | "hold" | "pass_manual_test" | "fail_manual_test";
 
-function ticketResumeReviewContext(state: MissionState, ticket: Ticket, message: string): Record<string, unknown> {
+function ticketResumeReviewContext(state: MissionState, ticket: Ticket, message: string, agentId: string): Record<string, unknown> {
   const {
     latestHumanFollowup,
     ticketResumeReview,
@@ -1382,7 +1488,7 @@ function ticketResumeReviewContext(state: MissionState, ticket: Ticket, message:
     humanFollowupHistory: humanFollowups,
     previousHumanFollowup: latestHumanFollowup,
     previousTicketResumeReview: ticketResumeReview,
-    taskContext
+    taskContext: contextForAgent(taskContext, agentId)
   };
 }
 

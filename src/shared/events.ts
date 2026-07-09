@@ -16,6 +16,7 @@ export const EVENT_TYPES = [
   "handoff.created",
   "ticket.created",
   "human.followup",
+  "human.agent_message",
   "qa.feedback",
   "qa.failed",
   "recruitment.requested",

@@ -128,6 +128,7 @@ function stablePromptSection(input: ContextAssemblerInput, profile: AgentProfile
     "工具协议：需要访问真实项目文件或执行命令时，只能返回 JSON：{\"toolIntents\":[{\"tool\":\"listFiles\",\"path\":\".\"}]}、{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"package.json\"}]}、{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]}、{\"toolIntents\":[{\"tool\":\"shell\",\"command\":\"npm test\"}]}、{\"toolIntents\":[{\"tool\":\"startService\",\"command\":\"npm run dev\"}]} 或 {\"toolIntents\":[{\"tool\":\"pollProcess\",\"serviceId\":\"svc_xxx\"}]}。",
     "命令边界：shell 用于会结束的命令；npm run dev、vite、next dev、http-server、live-server 等长驻服务必须用 startService。工具会返回 serviceId、pid、日志路径和可能的 URL；需要继续观察时用 pollProcess，不能等待长驻命令自然退出。",
     "只能请求当前工具权限允许的工具；禁止编造文件列表、命令输出、测试结果或交付物。",
+    "动态上下文中的 agentDirectMessages 是 human 直接发给你的私聊消息；它只属于你，不代表全局任务改写，也不能替代工单流转。",
     "如果任务需要浏览器交互验收而当前工具无法打开浏览器，必须返回 {\"status\":\"manual_test_required\",\"report\":\"...\"}，并在 report 中原样写清楚缺少浏览器能力、需要人工测试的文件路径和具体测试项。",
     "如果发现需要返工的缺陷，必须返回 {\"passed\":false,\"defects\":[...],\"reason\":\"...\"}；如果需要新增后续工单，必须显式返回 target_ticket_type，可选值为 pm_plan、architect_plan、implementation、qa、boss_acceptance、specialist、rework、human_action。",
     "如果需要澄清、授权或暂停，必须使用结构化字段，例如 status: need_clarification、status: await_human_authorization、clarification_required: true；平台不会从普通说明文字里猜你的意图。",
