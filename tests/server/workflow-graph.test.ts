@@ -84,6 +84,78 @@ describe("workflow graph materialization", () => {
     });
     expect(Object.getPrototypeOf(safe.ticketIdByKey)).toBeNull();
     expect(Object.getPrototypeOf(safe.definitionsByKey)).toBeNull();
+
+    for (const inheritedName of ["toString", "valueOf", "hasOwnProperty"]) {
+      const materialized = materializeWorkflowGraph({
+        workflowId,
+        graph: graph([node(inheritedName)]),
+        completionPolicy: policy(inheritedName),
+      });
+      expect(materialized.ticketIdByKey[inheritedName]).toMatch(/^tk_/);
+      expect(materialized.definitionsByKey[inheritedName]?.key).toBe(key(inheritedName));
+    }
+  });
+
+  it("rejects oversized graphs before reading node contents and supports configured limits", () => {
+    const unreadableOversizedGraph = {
+      schemaVersion: 2,
+      nodes: new Array(100_000),
+      dependencyEdges: [],
+    } as PlannedTicketGraph;
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: unreadableOversizedGraph,
+        completionPolicy: policy("unreadable"),
+      }),
+    ).toThrow(/maxNodes.*500/i);
+
+    const boundaryNodes = Array.from({ length: 501 }, (_, index) => node(`boundary-${index}`));
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph(boundaryNodes.slice(0, 500)),
+        completionPolicy: policy("boundary-499"),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph(boundaryNodes),
+        completionPolicy: policy("boundary-500"),
+      }),
+    ).toThrow(/maxNodes.*500/i);
+
+    const edgeNodes = Array.from({ length: 101 }, (_, index) => node(`edge-${index}`));
+    const tooManyEdges: Array<[string, string]> = [];
+    for (let from = 0; from < edgeNodes.length; from += 1) {
+      for (let to = from + 1; to < edgeNodes.length; to += 1) {
+        tooManyEdges.push([`edge-${from}`, `edge-${to}`]);
+      }
+    }
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph(edgeNodes, tooManyEdges.slice(0, 5_000)),
+        completionPolicy: policy("edge-100"),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph(edgeNodes, tooManyEdges.slice(0, 5_001)),
+        completionPolicy: policy("edge-100"),
+      }),
+    ).toThrow(/maxEdges.*5000/i);
+
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph([node("serialized")]),
+        completionPolicy: policy("serialized"),
+        limits: { maxSerializedBytes: 16 },
+      }),
+    ).toThrow(/maxSerializedBytes.*16/i);
   });
 
   it("rejects duplicate keys, missing references, and cycles", () => {
@@ -442,6 +514,7 @@ describe("workflow completion rules", () => {
       workflowId,
       graph: graph(nodes),
       completionPolicy: policy("leaf-3999"),
+      limits: { maxNodes: 5_000 },
     });
     expect(materialized.graph.nodes).toHaveLength(width);
   });

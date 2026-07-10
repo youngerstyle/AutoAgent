@@ -23,6 +23,7 @@ export class WorkflowGraphError extends Error {
       | "invalid_cancellation"
       | "invalid_identifier"
       | "invalid_completion_policy"
+      | "graph_limit"
       | "missing_status",
     message: string,
   ) {
@@ -47,7 +48,19 @@ export interface MaterializeWorkflowGraphInput {
   previous?: MaterializedWorkflowGraph;
   cancelTicketIds?: readonly TicketId[];
   ticketStatuses?: TicketStatusLookup;
+  limits?: Partial<GraphLimits>;
 }
+
+export interface GraphLimits {
+  maxNodes: number;
+  maxEdges: number;
+  maxSerializedBytes?: number;
+}
+
+export const DEFAULT_GRAPH_LIMITS: Readonly<GraphLimits> = Object.freeze({
+  maxNodes: 500,
+  maxEdges: 5_000,
+});
 
 export type TicketStatusLookup =
   | ReadonlyMap<TicketId, TicketStatus>
@@ -70,6 +83,8 @@ export type EvaluatedWorkflowOutcome = "active" | "blocked" | "completed" | "fai
 export function materializeWorkflowGraph(
   input: MaterializeWorkflowGraphInput,
 ): MaterializedWorkflowGraph {
+  const limits = resolveGraphLimits(input.limits);
+  enforceGraphLimits(input.graph, input.completionPolicy, limits);
   validateRuntimeIdentifier("workflow", String(input.workflowId));
   if (input.previous && input.previous.workflowId !== input.workflowId) {
     throw new WorkflowGraphError(
@@ -375,7 +390,9 @@ function indexAndValidateNodes(
     if (result.has(nodeKey)) {
       throw new WorkflowGraphError("duplicate_key", `Duplicate ticket key ${nodeKey}`);
     }
-    const previous = previousDefinitions[nodeKey];
+    const previous = Object.hasOwn(previousDefinitions, nodeKey)
+      ? previousDefinitions[nodeKey]
+      : undefined;
     if (previous && stableNodeDefinition(previous) !== stableNodeDefinition(plannedNode)) {
       throw new WorkflowGraphError(
         "immutable_key",
@@ -433,6 +450,62 @@ function validateDependencyGraph(
     seenEdges.add(edgeKey);
   }
   topologicalOrder(graph, nodes);
+}
+
+function resolveGraphLimits(overrides: Partial<GraphLimits> | undefined): GraphLimits {
+  const limits: GraphLimits = {
+    maxNodes: overrides?.maxNodes ?? DEFAULT_GRAPH_LIMITS.maxNodes,
+    maxEdges: overrides?.maxEdges ?? DEFAULT_GRAPH_LIMITS.maxEdges,
+    ...(overrides?.maxSerializedBytes === undefined
+      ? {}
+      : { maxSerializedBytes: overrides.maxSerializedBytes }),
+  };
+  for (const [name, value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new WorkflowGraphError(
+        "graph_limit",
+        `Graph limit ${name} must be a positive safe integer`,
+      );
+    }
+  }
+  return limits;
+}
+
+function enforceGraphLimits(
+  graph: PlannedTicketGraph,
+  completionPolicy: PlannedWorkflowCompletionPolicy,
+  limits: GraphLimits,
+): void {
+  if (graph.nodes.length > limits.maxNodes) {
+    throw new WorkflowGraphError(
+      "graph_limit",
+      `Graph maxNodes limit ${limits.maxNodes} exceeded by ${graph.nodes.length}`,
+    );
+  }
+  if (graph.dependencyEdges.length > limits.maxEdges) {
+    throw new WorkflowGraphError(
+      "graph_limit",
+      `Graph maxEdges limit ${limits.maxEdges} exceeded by ${graph.dependencyEdges.length}`,
+    );
+  }
+  if (limits.maxSerializedBytes !== undefined) {
+    let serialized: string;
+    try {
+      serialized = JSON.stringify({ graph, completionPolicy });
+    } catch (error) {
+      throw new WorkflowGraphError(
+        "graph_limit",
+        `Graph serialized size cannot be measured: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    if (bytes > limits.maxSerializedBytes) {
+      throw new WorkflowGraphError(
+        "graph_limit",
+        `Graph maxSerializedBytes limit ${limits.maxSerializedBytes} exceeded by ${bytes}`,
+      );
+    }
+  }
 }
 
 function validateParentGraph(
