@@ -50,6 +50,17 @@ import {
   type WorkflowPolicyPort,
   type WorkflowStatus,
 } from "../../src/shared/contracts/ticket-engine.js";
+import {
+  classifyRuntimeRecord,
+  type MissionLink,
+  type MissionProjection,
+  type MissionRecord,
+  type MissionStartRequest,
+  type RuntimeRecordEnvelope,
+  type TeamBinding,
+  type TicketPort,
+  type WorkflowDefinitionRegistryPort,
+} from "../../src/shared/contracts/index.js";
 
 describe("Agent Engine runtime contracts", () => {
   it("publishes the complete Agent Goal status set", () => {
@@ -462,5 +473,138 @@ describe("Ticket Engine runtime contracts", () => {
       // @ts-expect-error Ticket Engine does not accept role-directed phase routing commands.
       acceptPayload({ type: "advance_to_role", role: "qa" });
     }
+  });
+});
+
+describe("Mission Control runtime contracts", () => {
+  it("models Mission lifecycle separately from projected activity", () => {
+    const record = {
+      missionId: "mission-1",
+      workflowId: "workflow-1" as WorkflowId,
+      workflowCreateCommandId: "create-workflow-1",
+      status: "linked",
+      linkedAt: "2026-07-10T03:01:00.000Z",
+    } satisfies MissionRecord;
+    const projection = {
+      missionId: record.missionId,
+      lifecycle: "active",
+      activity: "waiting_for_human",
+      workflowVersion: 3,
+    } satisfies MissionProjection;
+
+    expect(record.status).toBe("linked");
+    expect(projection).toMatchObject({ lifecycle: "active", activity: "waiting_for_human" });
+  });
+
+  it("uses a staged MissionLink union for dispatch, execution, and settlement", () => {
+    const base = {
+      dispatchId: "dispatch-1",
+      missionId: "mission-1",
+      workflowId: "workflow-1" as WorkflowId,
+      ticketId: "ticket-1" as TicketId,
+      ticketVersion: 2,
+      agentId: "agent-1",
+      agentPrincipalId: "principal-1",
+      claimRequestId: "claim-request-1",
+      goalStartKey: "goal-start-1",
+      updatedAt: "2026-07-10T03:02:00.000Z",
+    } as const;
+    const dispatching = { ...base, status: "dispatching" } satisfies MissionLink;
+    const running = {
+      ...base,
+      status: "running",
+      authority: { kind: "claim", claimId: "claim-1", fencingToken: 4 },
+      agentThreadId: "thread-1",
+      agentGoalId: "goal-1",
+    } satisfies MissionLink;
+
+    expect(dispatching).not.toHaveProperty("authority");
+    expect(running.agentGoalId).toBe("goal-1");
+
+    const acceptLink = (_link: MissionLink) => undefined;
+    if (false) {
+      // @ts-expect-error dispatching is persisted before claim and must not carry execution authority.
+      acceptLink({ ...base, status: "dispatching", authority: { kind: "claim", claimId: "claim-1", fencingToken: 1 } });
+      // @ts-expect-error running links require authority and both Agent references.
+      acceptLink({ ...base, status: "running" });
+      // @ts-expect-error resolving links require authority and both Agent references.
+      acceptLink({ ...base, status: "resolving", authority: { kind: "claim", claimId: "claim-1", fencingToken: 1 }, agentThreadId: "thread-1" });
+    }
+  });
+
+  it("requires resolved workflow, immutable policy, and team binding at Mission start", () => {
+    const policyRef = { policyId: "policy-1", policyVersion: 2, contentHash: "sha256:policy" };
+    const definition = {
+      definitionId: "definition-1",
+      definitionVersion: 4,
+      initialGraph: { schemaVersion: 2, nodes: [], dependencyEdges: [] },
+      completionPolicy: {
+        requiredTerminalKeys: [],
+        failurePolicy: "require_resolution",
+        blockedPolicy: "wait",
+      },
+      policyRef,
+    } satisfies import("../../src/shared/contracts/ticket-engine.js").WorkflowDefinition;
+    const binding = {
+      teamBindingId: "team-binding-1",
+      version: 1,
+      contentHash: "sha256:team",
+      members: [{ agentId: "agent-1", principalId: "principal-1", capabilities: ["planning"] }],
+    } satisfies TeamBinding;
+    const start = {
+      missionId: "mission-1",
+      objective: "Deliver the requested change",
+      workflowDefinition: definition,
+      workflowPolicyRef: policyRef,
+      teamBindingId: binding.teamBindingId,
+      requestedByPrincipalId: "human-1",
+    } satisfies MissionStartRequest;
+
+    expect(start.workflowDefinition.definitionVersion).toBe(4);
+    expect(start.workflowPolicyRef.contentHash).toBe("sha256:policy");
+    expectTypeOf<WorkflowDefinitionRegistryPort["resolve"]>().returns.toEqualTypeOf<
+      Promise<import("../../src/shared/contracts/ticket-engine.js").WorkflowDefinition>
+    >();
+
+    if (false) {
+      // @ts-expect-error Mission Process cannot start from only an objective and synthesize the workflow.
+      const unresolvedStart: MissionStartRequest = { missionId: "mission-2", objective: "Guess a flow", teamBindingId: "team-binding-1", requestedByPrincipalId: "human-1" };
+      void unresolvedStart;
+    }
+  });
+
+  it("keeps legacy records read-only and schedules only explicit ticket_agent@2 envelopes", () => {
+    const current = {
+      engine: "ticket_agent",
+      schemaVersion: 2,
+      record: {
+        missionId: "mission-1",
+        workflowId: "workflow-1" as WorkflowId,
+        workflowCreateCommandId: "create-workflow-1",
+        status: "linked",
+        linkedAt: "2026-07-10T03:01:00.000Z",
+      },
+    } satisfies RuntimeRecordEnvelope;
+
+    expect(classifyRuntimeRecord(current)).toEqual({ kind: "ticket_agent", schedulable: true });
+    expect(classifyRuntimeRecord({ phase: "implementation", status: "running" })).toEqual({
+      kind: "legacy_readonly",
+      schedulable: false,
+    });
+    expect(classifyRuntimeRecord({ engine: "ticket_agent", schemaVersion: 2 })).toEqual({
+      kind: "legacy_readonly",
+      schedulable: false,
+    });
+    expect(classifyRuntimeRecord({ engine: "legacy_phase", schemaVersion: 1, record: {} })).toEqual({
+      kind: "legacy_readonly",
+      schedulable: false,
+    });
+  });
+
+  it("exposes only public engine ports without a second Goal resolution protocol", () => {
+    expectTypeOf<AgentPort>().toBeObject();
+    expectTypeOf<TicketPort>().toHaveProperty("createWorkflow");
+    expectTypeOf<TicketPort>().toHaveProperty("applyTicket");
+    expectTypeOf<TicketPort>().toHaveProperty("readEvents");
   });
 });
