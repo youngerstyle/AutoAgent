@@ -30,6 +30,13 @@ export interface AgentTurnResult {
   usage?: ProviderUsage;
 }
 
+export interface AgentModelTurnInput {
+  systemPrompt: string;
+  prompt: string;
+  model: string;
+  provider: ProviderName;
+}
+
 export class ProviderError extends Error {
   constructor(
     message: string,
@@ -43,4 +50,5 @@ export class ProviderError extends Error {
 export interface AgentModelProvider {
   name: ProviderName;
   runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult>;
+  runModelTurn?(input: AgentModelTurnInput): Promise<AgentTurnResult>;
 }

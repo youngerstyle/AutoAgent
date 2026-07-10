@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { roleLabel } from "../../shared/labels.js";
-import type { AgentModelProvider, AgentTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentTurnInput, AgentTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 import { normalizeProviderError } from "./openai-provider.js";
 
@@ -10,13 +10,22 @@ export class AnthropicProvider implements AgentModelProvider {
   constructor(private readonly apiKey?: string, private readonly baseURL?: string) {}
 
   async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+    return this.runModelTurn({
+      provider: input.provider,
+      model: input.model,
+      systemPrompt: `你是${roleLabel(input.role)} Agent。尽量返回简洁 JSON。`,
+      prompt: input.prompt,
+    });
+  }
+
+  async runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult> {
     if (!this.apiKey) throw new ProviderError("Anthropic API key is not configured", false, "MISSING_ANTHROPIC_API_KEY");
     try {
       const client = new Anthropic({ apiKey: this.apiKey, baseURL: this.baseURL });
       const response = await client.messages.create({
         model: input.model,
         max_tokens: 1200,
-        system: `你是${roleLabel(input.role)} Agent。尽量返回简洁 JSON。`,
+        system: input.systemPrompt,
         messages: [{ role: "user", content: input.prompt }]
       });
       const text = response.content

@@ -1,4 +1,4 @@
-import type { AgentModelProvider, AgentTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentTurnInput, AgentTurnResult } from "./types.js";
 import { assignmentLabel, roleLabel } from "../../shared/labels.js";
 
 export class MockProvider implements AgentModelProvider {
@@ -16,6 +16,16 @@ export class MockProvider implements AgentModelProvider {
         { type: "text", text },
         { type: "usage", usage: { inputTokens: 20, outputTokens: 30, totalTokens: 50 } }
       ]
+    };
+  }
+
+  async runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult> {
+    const structured = { message: "模拟 Agent turn 已完成，目标保持活动。" };
+    return {
+      text: JSON.stringify(structured),
+      structured,
+      usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
+      events: [{ type: "text", text: JSON.stringify(structured) }],
     };
   }
 }
