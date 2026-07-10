@@ -25,7 +25,7 @@ describe("client view model", () => {
     expect(dev!.currentStep!.length).toBeLessThanOrEqual(18);
   });
 
-  it("does not treat a retained current step as an active running agent", () => {
+  it("marks an active waiting Agent as needing a human reply", () => {
     const nodes = buildAgentNodes({
       ...snapshot("running"),
       agents: snapshot("running").agents.map((agent) => agent.id === "wa_dev" ? { ...agent, status: "waiting" as const, currentStep: "已保存进度，等待继续" } : agent)
@@ -33,7 +33,9 @@ describe("client view model", () => {
     const dev = nodes.find((node) => node.id === "wa_dev");
 
     expect(dev?.active).toBe(false);
-    expect(dev?.currentStep).toBe("已保存进度，等待继续");
+    expect(dev?.needsAttention).toBe(true);
+    expect(dev?.currentStep).toBe("需要你回复");
+    expect(dev?.currentStepTitle).toBe("已保存进度，等待继续");
   });
 
   it("derives task controls from snapshot status", () => {

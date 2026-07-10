@@ -109,7 +109,8 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
       const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
       const currentStep = displayText(agent.currentStep);
-      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id);
+      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id)
+        || (agent.status === "waiting" && Boolean(currentStep));
       const displayStep = needsAttention ? "需要你回复" : canvasStepLabel(currentStep);
       return {
         id: agent.id,
@@ -117,7 +118,7 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
         role: agent.roleInWorkspace,
         status: agent.status,
         currentStep: displayStep,
-        currentStepTitle: needsAttention ? problem?.rawOutput : currentStep,
+        currentStepTitle: needsAttention ? problem?.rawOutput ?? currentStep : currentStep,
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
         active: agent.status === "running" && !needsAttention && !blockingWork,

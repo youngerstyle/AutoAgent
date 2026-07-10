@@ -50,7 +50,7 @@ export function phaseLabel(phase: MissionPhase | string): string {
 export function statusLabel(status: EntityStatus | string): string {
   const labels: Record<string, string> = {
     idle: "空闲",
-    waiting: "等待中",
+    waiting: "等你回复",
     running: "运行中",
     completed: "已完成",
     failed: "失败",

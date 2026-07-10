@@ -303,7 +303,8 @@ button:disabled {
   color: #846000;
 }
 
-.status-pill.blocked {
+.status-pill.blocked,
+.status-pill.waiting {
   background: #fff7df;
   color: #846000;
 }

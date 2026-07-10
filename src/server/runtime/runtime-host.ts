@@ -550,7 +550,9 @@ function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string
   if (linkStatus === "blocked" || goalStatus === "blocked") return "blocked";
   if (goalStatus === "completed" || goalStatus === "cancelled") return "idle";
   const latestControl = [...events].reverse().find((event) => event.source === "system");
-  if (linkStatus && (latestControl?.payload as Record<string, unknown> | undefined)?.status === "running") return "running";
+  const activity = (latestControl?.payload as Record<string, unknown> | undefined)?.status;
+  if (linkStatus === "running" && (activity === "running" || activity === "yielded")) return "running";
+  if (linkStatus === "running" && activity === "waiting") return "waiting";
   if (goalStatus === "paused") return "paused";
   if (goalStatus === "failed") return "failed";
   return linkStatus === "running" ? "waiting" : "idle";

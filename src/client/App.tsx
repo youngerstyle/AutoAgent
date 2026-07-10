@@ -477,7 +477,11 @@ export function App() {
   });
   const suggestedFollowup = humanFlowPrompt?.suggestion ?? "";
   const blockedPanelCopy = buildBlockedPanelCopy(snapshot);
-  const displayedStatus = mode === "blocked" ? "blocked" : snapshot?.status ?? "idle";
+  const displayedStatus = mode === "blocked"
+    ? "blocked"
+    : nodes.some((node) => node.needsAttention)
+      ? "waiting"
+      : snapshot?.status ?? "idle";
   const primaryPanelTitle = mode === "blocked"
     ? "任务控制"
     : mode === "terminal"
