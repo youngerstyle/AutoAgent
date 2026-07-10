@@ -66,6 +66,10 @@ describe("RuntimeHost", () => {
     await fixture.host.sendAgentMessage("task-a", "wa_architect", "请独立评估技术风险");
     const context = fixture.host.context("task-a")!;
     const architect = context.engines.get("wa_architect")!;
+    await waitFor(async () => {
+      const items = (await architect.getThreadForAgent("wa_architect", "task-a"))?.items ?? [];
+      return items.some((item) => item.kind === "model") && items.at(-1)?.kind === "control";
+    });
     const thread = await architect.getThreadForAgent("wa_architect", "task-a");
 
     expect(thread?.items.map((item) => item.kind)).toEqual([
@@ -76,7 +80,35 @@ describe("RuntimeHost", () => {
     ]);
     expect(await architect.getGoalByStartKey("does-not-exist")).toBeUndefined();
   });
+
+  it("acknowledges a persisted human message without waiting for the model turn", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-async-message", title: "演示", objective: "构建演示" });
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return { text: "收到", events: [{ type: "text" as const, text: "收到" }] };
+      },
+    });
+
+    const startedAt = Date.now();
+    await fixture.host.sendAgentMessage("task-async-message", "wa_architect", "请评估风险");
+    expect(Date.now() - startedAt).toBeLessThan(250);
+
+    const architect = fixture.host.context("task-async-message")!.engines.get("wa_architect")!;
+    await waitFor(async () => (await architect.getThreadForAgent("wa_architect", "task-async-message"))?.items.some((item) => item.kind === "model") === true);
+  });
 });
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for asynchronous Agent turn");
+}
 
 async function createFixture() {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-home-"));

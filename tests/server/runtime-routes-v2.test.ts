@@ -33,8 +33,18 @@ describe("V2 runtime public routes", () => {
     if (messageResponse.status !== 201) {
       throw new Error(`Private message failed (${messageResponse.status}): ${JSON.stringify(messageResponse.body)}`);
     }
-    const snapshot = (await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200)).body.snapshot;
-    expect(snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "human_message")).toBe(true);
+    expect(messageResponse.body.snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "human_message")).toBe(true);
+    const snapshot = await pollSnapshot(app, workspaceId, (value) => value.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message"));
     expect(snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message")).toBe(true);
   });
 });
+
+async function pollSnapshot(app: Parameters<typeof request>[0], workspaceId: string, ready: (snapshot: any) => boolean) {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const snapshot = (await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200)).body.snapshot;
+    if (ready(snapshot)) return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for asynchronous Agent response");
+}

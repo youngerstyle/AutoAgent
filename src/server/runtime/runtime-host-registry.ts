@@ -58,14 +58,12 @@ export class RuntimeHostRegistry {
     const snapshot = await host.snapshot();
     const boss = snapshot.agents.find((agent) => agent.roleInWorkspace === "boss");
     if (!boss) throw new Error("Boss Agent is unavailable");
-    await host.sendAgentMessage(taskId, boss.id, message);
-    return host.snapshot();
+    return host.sendAgentMessage(taskId, boss.id, message);
   }
 
   async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId);
-    await host.sendAgentMessage(taskId, agentId, message);
-    return host.snapshot();
+    return host.sendAgentMessage(taskId, agentId, message);
   }
 
   async loopDebugLogByWorkspace(workspaceId: string): Promise<LoopDebugLog> {

@@ -74,8 +74,14 @@ export class RuntimeHost {
     return this.exclusive(() => this.tickUnlocked());
   }
 
-  sendAgentMessage(taskId: string, agentId: string, message: string): Promise<void> {
-    return this.exclusive(() => this.sendAgentMessageUnlocked(taskId, agentId, message));
+  async sendAgentMessage(taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot> {
+    const snapshot = await this.exclusive(async () => {
+      await this.appendAgentMessageUnlocked(taskId, agentId, message);
+      return this.snapshotUnlocked();
+    });
+    void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId))
+      .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error)).catch(() => undefined));
+    return snapshot;
   }
 
   pauseTask(taskId: string): Promise<void> {
@@ -163,19 +169,20 @@ export class RuntimeHost {
     }
   }
 
-  private async sendAgentMessageUnlocked(taskId: string, agentId: string, message: string): Promise<void> {
+  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
     if (!engine) throw new Error("Agent does not belong to this team");
     const thread = await engine.getThreadForAgent(agentId, context.record.missionId)
       ?? await engine.ensureThread({ agentId, scopeId: context.record.missionId, idempotencyKey: stableId("thread", context.record.missionId, agentId) });
+    const createdAt = this.now().toISOString();
     await engine.sendMessage({
-      messageId: stableId("human_message", taskId, agentId, this.now().toISOString(), message),
+      messageId: stableId("human_message", taskId, agentId, createdAt, message),
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       senderPrincipalId: "human",
       content: message,
-      createdAt: this.now().toISOString(),
+      createdAt,
     });
     const link = await this.activeLink(context, agentId);
     if (link?.status === "blocked") {
@@ -191,6 +198,12 @@ export class RuntimeHost {
         await context.manager.resumeBlockedAgent(agentId);
       }
     }
+  }
+
+  private async continueAfterAgentMessageUnlocked(taskId: string, agentId: string): Promise<void> {
+    const context = await this.requireContext(taskId);
+    const thread = await context.engines.get(agentId)?.getThreadForAgent(agentId, context.record.missionId);
+    if (!thread) return;
     const resumedLink = await this.activeLink(context, agentId);
     if (resumedLink?.status === "running") {
       await context.loops.get(agentId)?.runSlice(await this.sliceInput(context, resumedLink));
@@ -198,6 +211,30 @@ export class RuntimeHost {
       await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(context, agentId, thread.threadId));
     }
     await context.manager.tick();
+  }
+
+  private async recordAgentTurnErrorUnlocked(taskId: string, agentId: string, error: unknown): Promise<void> {
+    const context = await this.requireContext(taskId);
+    const engine = context.engines.get(agentId);
+    const thread = await engine?.getThreadForAgent(agentId, context.record.missionId);
+    if (!engine || !thread) return;
+    const createdAt = this.now().toISOString();
+    await engine.appendToolItem({
+      itemId: stableId("agent_turn_error", taskId, agentId, createdAt),
+      threadId: thread.threadId,
+      goalId: (await this.activeLink(context, agentId))?.agentGoalId,
+      kind: "observation",
+      value: { type: "agent_turn_error", error: error instanceof Error ? error.message : String(error) },
+      createdAt,
+    });
+    await engine.appendToolItem({
+      itemId: stableId("agent_turn_waiting", taskId, agentId, createdAt),
+      threadId: thread.threadId,
+      goalId: (await this.activeLink(context, agentId))?.agentGoalId,
+      kind: "control",
+      value: { status: "waiting", reason: "agent_turn_error" },
+      createdAt,
+    });
   }
 
   async listTasks(): Promise<RuntimeTaskRecord[]> {
