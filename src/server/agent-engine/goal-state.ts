@@ -29,8 +29,8 @@ export function controlGoalState(
     return { ...goal, version: goal.version + 1, status: "paused", updatedAt };
   }
   if (input.action === "resume") {
-    if (goal.status !== "paused") {
-      throw new AgentGoalTransitionError("invalid_transition", "Only paused goals can resume");
+    if (goal.status !== "paused" && goal.status !== "blocked") {
+      throw new AgentGoalTransitionError("invalid_transition", "Only paused or blocked goals can resume");
     }
     return {
       ...goal,

@@ -70,6 +70,10 @@ export function missionProcessFile(workspaceRoot: string, missionId: string): st
   return path.join(root, `${createHash("sha256").update(missionId).digest("base64url")}.json`);
 }
 
+export function runtimeHostFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "runtime-host.json");
+}
+
 export function workspaceAgentThreadsDir(workspaceRoot: string, workspaceAgentId: string): string {
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "threads");
 }

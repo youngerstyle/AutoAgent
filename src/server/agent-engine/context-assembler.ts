@@ -98,6 +98,7 @@ function goalSection(goal?: AgentGoal): string {
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
     "普通回复、工具调用或一次执行切片结束都不代表目标完成；只有显式提交 GoalResolutionProposal 才能请求改变目标结果。",
+    "显式提案格式：{\"goalResolution\":{\"status\":\"completed|blocked|failed\",\"summary\":\"...\",\"evidence\":[{\"kind\":\"...\",\"ref\":\"...\"}],\"domainOutcome\":{...}}}。没有足够事实时继续对话或调用工具，不要提交提案。",
   ].filter(Boolean).join("\n");
 }
 

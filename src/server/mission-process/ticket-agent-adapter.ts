@@ -30,6 +30,14 @@ export type MissionTicketOutcome =
   | { kind: "fail"; reason: string }
   | { kind: "return_to_parent"; parentTicketId: TicketId; reason: string };
 
+export function missionOutcomeInstruction(schemaRef: string): string {
+  const base = "完成当前 Goal 时必须使用 goalResolution；domainOutcome 必须显式描述 Ticket 结果，平台不会从普通文字猜测。";
+  if (schemaRef === "ticket-graph-v2") {
+    return `${base} 本工单必须提交 domainOutcome.kind=complete_with_graph，并提供 result、graph、completionPolicy 和可选 cancelTicketIds。graph 是 PlannedTicketGraph v2，节点按能力分配且必须无环。`;
+  }
+  return `${base} 正常交付使用 kind=complete 和 result；缺少外部输入使用 kind=block、reason、requiredInput；执行本身失败使用 kind=fail；发现上游前置缺失且存在 parentTicketId 时使用 kind=return_to_parent。`;
+}
+
 export function proposalToTicketCommand(
   proposal: GoalResolutionProposal<GoalResolutionStatus, MissionTicketOutcome>,
   link: ActiveMissionLink,

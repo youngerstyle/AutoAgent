@@ -16,7 +16,7 @@ describe("RegistryAgentProviderAdapter", () => {
       prompt: "继续处理当前目标",
     });
 
-    expect(result.structured).toEqual({ message: "模拟 Agent turn 已完成，目标保持活动。" });
+    expect(result.structured).toMatchObject({ goalResolution: { status: "completed" } });
     expect(result.structured).not.toHaveProperty("ticketGraph");
     expect(result.structured).not.toHaveProperty("next");
   });

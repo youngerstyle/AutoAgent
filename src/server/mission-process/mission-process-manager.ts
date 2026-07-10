@@ -22,6 +22,7 @@ import {
   proposalToTicketCommand,
   ticketResultToGoalDecision,
   type MissionTicketOutcome,
+  missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
 
 export interface MissionAgentDirectory {
@@ -93,6 +94,13 @@ export class MissionProcessManager {
       }
     }
     return this.tick();
+  }
+
+  async resumeBlockedAgent(agentId: string): Promise<MissionAggregate> {
+    const aggregate = await this.requireAggregate();
+    const link = aggregate.links.find((item) => item.agentId === agentId && item.status === "blocked");
+    if (!link || !isActiveLink(link)) return aggregate;
+    return this.updateLink(aggregate, link.dispatchId, { ...link, status: "running" });
   }
 
   private async pumpTicketEvents(aggregate: MissionAggregate): Promise<MissionAggregate> {
@@ -206,6 +214,14 @@ export class MissionProcessManager {
         },
       });
       goalId = goal.spec.id;
+      await agent.sendMessage({
+        messageId: stableId("mission_instruction", dispatchId),
+        threadId,
+        goalId,
+        senderPrincipalId: "mission-process",
+        content: missionOutcomeInstruction(work.definition.outputContract.schemaRef),
+        createdAt: this.now().toISOString(),
+      });
     }
     if (!link.authority || !threadId || !goalId) throw new Error("Mission dispatch is incomplete");
     const active: ActiveMissionLink = {

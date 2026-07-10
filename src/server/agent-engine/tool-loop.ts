@@ -31,7 +31,7 @@ export class AgentToolLoop {
   private readonly now: () => Date;
 
   constructor(
-    private readonly engine: AgentEngine,
+    private readonly engine: AgentEngine<any>,
     private readonly contextAssembler: AgentContextAssembler,
     private readonly provider: AgentProviderAdapter,
     private readonly tools: AgentToolRuntime,
