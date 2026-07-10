@@ -56,6 +56,36 @@ function statuses(entries: Array<[TicketId, TicketStatus]>): ReadonlyMap<TicketI
 }
 
 describe("workflow graph materialization", () => {
+  it("rejects unsafe or ambiguous runtime identifiers", () => {
+    for (const unsafeWorkflowId of ["", "__proto__", "constructor", "with space", "nul\0id", "x".repeat(129)]) {
+      expect(() =>
+        materializeWorkflowGraph({
+          workflowId: unsafeWorkflowId as WorkflowId,
+          graph: graph([node("safe")]),
+          completionPolicy: policy("safe"),
+        }),
+      ).toThrow(/workflow.*identifier/i);
+    }
+
+    for (const unsafeKey of ["", "__proto__", "constructor", "with space", "nul\0key", "x".repeat(129)]) {
+      expect(() =>
+        materializeWorkflowGraph({
+          workflowId,
+          graph: graph([node(unsafeKey)]),
+          completionPolicy: policy(unsafeKey),
+        }),
+      ).toThrow(/ticket key.*identifier/i);
+    }
+
+    const safe = materializeWorkflowGraph({
+      workflowId,
+      graph: graph([node("safe.key-1")]),
+      completionPolicy: policy("safe.key-1"),
+    });
+    expect(Object.getPrototypeOf(safe.ticketIdByKey)).toBeNull();
+    expect(Object.getPrototypeOf(safe.definitionsByKey)).toBeNull();
+  });
+
   it("rejects duplicate keys, missing references, and cycles", () => {
     expect(() =>
       materializeWorkflowGraph({
@@ -88,6 +118,33 @@ describe("workflow graph materialization", () => {
         completionPolicy: policy("b"),
       }),
     ).toThrow(/cycle/i);
+
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph([node("self", { parentKey: key("self") })]),
+        completionPolicy: policy("self"),
+      }),
+    ).toThrow(/parent.*cycle/i);
+
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph([
+          node("parent-a", { parentKey: key("parent-b") }),
+          node("parent-b", { parentKey: key("parent-a") }),
+        ]),
+        completionPolicy: policy("parent-b"),
+      }),
+    ).toThrow(/parent.*cycle/i);
+
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph([node("only")]),
+        completionPolicy: policy(),
+      }),
+    ).toThrow(/required terminal.*empty/i);
   });
 
   it("materializes deterministic runtime IDs and resolves terminal keys", () => {
@@ -193,6 +250,7 @@ describe("workflow graph materialization", () => {
       completionPolicy: policy("qa"),
       previous: initial,
       cancelTicketIds: [initial.ticketIdByKey.build],
+      ticketStatuses: statuses([[initial.ticketIdByKey.build, "ready"]]),
     });
 
     expect(amended.graph.nodes.find((item) => item.nodeKey === key("build"))).toMatchObject({
@@ -210,8 +268,32 @@ describe("workflow graph materialization", () => {
         completionPolicy: policy("qa"),
         previous: initial,
         cancelTicketIds: [initial.ticketIdByKey.build],
+        ticketStatuses: statuses([[initial.ticketIdByKey.build, "ready"]]),
       }),
     ).toThrow(/cancel.*retained.*build/i);
+
+    for (const terminalStatus of ["completed", "returned", "failed", "cancelled"] as const) {
+      expect(() =>
+        materializeWorkflowGraph({
+          workflowId,
+          graph: graph([node("plan"), node("qa")], [["plan", "qa"]]),
+          completionPolicy: policy("qa"),
+          previous: initial,
+          cancelTicketIds: [initial.ticketIdByKey.build],
+          ticketStatuses: statuses([[initial.ticketIdByKey.build, terminalStatus]]),
+        }),
+      ).toThrow(/terminal.*cannot be cancelled/i);
+    }
+
+    expect(() =>
+      materializeWorkflowGraph({
+        workflowId,
+        graph: graph([node("plan"), node("qa")], [["plan", "qa"]]),
+        completionPolicy: policy("qa"),
+        previous: initial,
+        cancelTicketIds: [initial.ticketIdByKey.build],
+      }),
+    ).toThrow(/status.*cancel/i);
 
     expect(() =>
       materializeWorkflowGraph({
@@ -284,6 +366,13 @@ describe("workflow completion rules", () => {
       materialized.ticketIdByKey.build,
       materialized.ticketIdByKey.plan,
     ]);
+
+    expect(() =>
+      computeRequiredClosure(materialized.graph, {
+        ...materialized.completionPolicy,
+        requiredTerminalTicketIds: [],
+      }),
+    ).toThrow(/required terminal.*empty/i);
   });
 
   it("only resolves a required failure through a revision chain entering the new closure", () => {
@@ -297,17 +386,20 @@ describe("workflow completion rules", () => {
       [initial.ticketIdByKey["qa-v1"], "pending"],
     ]);
 
-    const deletedOnly = materializeWorkflowGraph({
+    const deletedFromPolicyOnly = materializeWorkflowGraph({
       workflowId,
-      graph: graph([node("replacement")]),
+      graph: graph([
+        node("build-v1"),
+        node("qa-v1"),
+        node("replacement"),
+      ], [["build-v1", "qa-v1"]]),
       completionPolicy: policy("replacement"),
       previous: initial,
-      cancelTicketIds: [initial.ticketIdByKey["build-v1"], initial.ticketIdByKey["qa-v1"]],
     });
     expect(
       findUnresolvedRequiredFailures({
         previous: initial,
-        next: deletedOnly,
+        next: deletedFromPolicyOnly,
         ticketStatuses: failed,
       }),
     ).toEqual([initial.ticketIdByKey["build-v1"]]);
@@ -331,6 +423,27 @@ describe("workflow completion rules", () => {
         ticketStatuses: failed,
       }),
     ).toEqual([]);
+
+    expect(() =>
+      findUnresolvedRequiredFailures({
+        previous: initial,
+        next: revised,
+        ticketStatuses: statuses([
+          [initial.ticketIdByKey["build-v1"], "failed"],
+        ]),
+      }),
+    ).toThrow(/missing status.*qa-v1/i);
+  });
+
+  it("materializes a wide graph without quadratic ready-queue operations", () => {
+    const width = 4_000;
+    const nodes = Array.from({ length: width }, (_, index) => node(`leaf-${index}`));
+    const materialized = materializeWorkflowGraph({
+      workflowId,
+      graph: graph(nodes),
+      completionPolicy: policy("leaf-3999"),
+    });
+    expect(materialized.graph.nodes).toHaveLength(width);
   });
 
   it("completes only when terminals are complete and no active work remains", () => {
