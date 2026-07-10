@@ -32,11 +32,28 @@ import {
 
 export class AgentEngineConflictError extends Error {}
 
+export interface AgentOutputContractValidator {
+  validate(schemaRef: string, value: unknown): { valid: true } | { valid: false; reason: string };
+}
+
 export class AcceptingGoalResolutionPort implements GoalResolutionPort {
+  constructor(private readonly validator?: AgentOutputContractValidator) {}
+
   async resolve<TStatus extends GoalResolutionStatus>(
-    _goal: AgentGoal,
+    goal: AgentGoal,
     proposal: GoalResolutionProposal<TStatus>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    const outputContract = goal.spec.outputContract;
+    if (outputContract) {
+      const validation = this.validator?.validate(outputContract.schemaRef, proposal.domainOutcome)
+        ?? { valid: false as const, reason: `No validator registered for ${outputContract.schemaRef}` };
+      if (!validation.valid) {
+        return {
+          settle: true,
+          decision: { accepted: false, disposition: "correctable", reason: validation.reason },
+        };
+      }
+    }
     return {
       settle: true,
       decision: { accepted: true, committedState: proposal.status },

@@ -10,6 +10,7 @@ import type {
   GoalResolutionStatus,
 } from "../../src/shared/contracts/agent-engine.js";
 import {
+  AcceptingGoalResolutionPort,
   AgentEngine,
   AgentEngineConflictError,
 } from "../../src/server/agent-engine/agent-engine.js";
@@ -163,6 +164,39 @@ describe("AgentEngine", () => {
       after: { ...page.nextCursor, partitionId: "qa" as "dev" },
       limit: 10,
     })).rejects.toBeInstanceOf(AgentStoreCursorError);
+  });
+
+  it("rejects an explicit completion that violates the declared output contract", async () => {
+    const fixture = await createFixture({
+      resolutionPort: new AcceptingGoalResolutionPort({
+        validate: (_schemaRef, value) => value && typeof value === "object" && "artifact" in value
+          ? { valid: true }
+          : { valid: false, reason: "artifact is required" },
+      }),
+    });
+    const thread = await fixture.engine.ensureThread({ agentId: "dev", scopeId: "a", idempotencyKey: "a" });
+    const goal = await fixture.engine.startGoal({
+      agentId: "dev",
+      threadId: thread.threadId,
+      idempotencyKey: "contract-goal",
+      spec: {
+        id: "contract-goal",
+        threadId: thread.threadId,
+        objective: "deliver",
+        successCriteria: ["artifact"],
+        contextRefs: [],
+        outputContract: { schemaRef: "artifact-v1" },
+        createdAt: T0,
+      },
+    });
+    const proposal = { ...proposalFor(goal), goalId: goal.spec.id, domainOutcome: { note: "missing" } };
+    const result = await fixture.engine.proposeGoalResolution(proposal);
+
+    expect(result.attempt).toMatchObject({
+      settle: true,
+      decision: { accepted: false, disposition: "correctable", reason: "artifact is required" },
+    });
+    expect(result.goal.status).toBe("active");
   });
 });
 
