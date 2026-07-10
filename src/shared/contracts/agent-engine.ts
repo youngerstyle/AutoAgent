@@ -42,11 +42,6 @@ export interface EnsureAgentThreadRequest {
   idempotencyKey: string;
 }
 
-export interface GetAgentThreadForAgentRequest {
-  agentId: string;
-  scopeId: string;
-}
-
 export interface AgentGoalSpec {
   id: string;
   threadId: string;
@@ -206,7 +201,7 @@ export interface AgentEventPage<TEvent extends AgentEvent = AgentEvent> {
 
 export interface AgentEnginePort<TDomainOutcome = unknown> {
   ensureThread(input: EnsureAgentThreadRequest): Promise<AgentThreadSnapshot>;
-  getThreadForAgent(input: GetAgentThreadForAgentRequest): Promise<AgentThreadSnapshot | undefined>;
+  getThreadForAgent(agentId: string, scopeId: string): Promise<AgentThreadSnapshot | undefined>;
   startGoal(input: StartAgentGoalRequest): Promise<AgentGoal>;
   getGoalByStartKey(idempotencyKey: string): Promise<AgentGoal | undefined>;
   getGoal(goalId: string): Promise<AgentGoal | undefined>;

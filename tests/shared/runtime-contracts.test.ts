@@ -13,7 +13,6 @@ import {
   type GoalResolutionAttemptResult,
   type GoalResolutionDecision,
   type GoalResolutionProposal,
-  type GetAgentThreadForAgentRequest,
   type SendAgentMessageRequest,
   type SettleProposalRequest,
   type StartAgentGoalRequest,
@@ -44,9 +43,9 @@ describe("Agent Engine runtime contracts", () => {
 
     expect(request).not.toHaveProperty("goalId");
     expectTypeOf<AgentEnginePort["ensureThread"]>().parameter(0).toEqualTypeOf<EnsureAgentThreadRequest>();
-    expectTypeOf<AgentEnginePort["getThreadForAgent"]>()
-      .parameter(0)
-      .toEqualTypeOf<GetAgentThreadForAgentRequest>();
+    expectTypeOf<AgentEnginePort["getThreadForAgent"]>().toEqualTypeOf<
+      (agentId: string, scopeId: string) => Promise<AgentThreadSnapshot | undefined>
+    >();
   });
 
   it("uses one chronological sequence for every Thread item kind", () => {
