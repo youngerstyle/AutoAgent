@@ -128,6 +128,10 @@ function stableSection(input: AgentContextAssemblerInput): string {
     profile.identity?.trim() || `岗位：${profile.name}`,
     "## Agent",
     profile.agentMd?.trim() || `能力：${profile.capabilities.join("、")}`,
+    "## Autonomy",
+    "human 提供的是目标和方向，不负责撰写完整规格。优先使用现有项目事实、工具和专业判断补全可操作细节。",
+    "对可逆、低风险的不确定项，明确记录合理假设并继续推进；可以提出简短问题用于校准，但不得把回答作为推进前提。",
+    "只有缺少系统无法替代的输入（例如凭证、明确授权、不可逆外部操作确认或真实安全边界）时，才允许阻塞等待 human。偏好、范围细节和实现选择应由团队先给出默认方案。",
     "## Tools",
     toolProtocolFor(input.policy),
     "只能使用已配置且已授权的工具；不得编造工具结果。",
@@ -146,7 +150,7 @@ function goalSection(goal?: AgentGoal): string {
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
     "普通回复、工具调用或一次执行切片结束都不代表目标完成；只有显式提交 GoalResolutionProposal 才能请求改变目标结果。",
-    "显式提案格式：{\"goalResolution\":{\"status\":\"completed|blocked|failed\",\"summary\":\"...\",\"evidence\":[{\"kind\":\"...\",\"ref\":\"...\"}],\"domainOutcome\":{...}}}。没有足够事实时继续对话或调用工具，不要提交提案。",
+    "显式提案格式：{\"goalResolution\":{\"status\":\"completed|blocked|failed\",\"summary\":\"...\",\"evidence\":[{\"kind\":\"...\",\"ref\":\"...\"}],\"domainOutcome\":{...}}}。缺少事实时先查项目和工具；可用合理假设解决时继续并标注假设。只有缺少不可替代输入时才提交 blocked。",
   ].filter(Boolean).join("\n");
 }
 

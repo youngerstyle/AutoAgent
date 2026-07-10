@@ -21,8 +21,12 @@ export function createMinimalTeamWorkflowDefinition(policyRef: WorkflowPolicyRef
         {
           key: intake,
           title: "需求接收",
-          objective: `理解并处理以下 human 目标，形成可供团队计划的目标说明：\n${missionObjective.trim()}`,
-          successCriteria: ["目标、约束和已知事实被记录", "未知项被标注但不虚构"],
+          objective: `理解并处理以下 human 目标，在不要求 human 撰写完整规格的前提下，使用合理默认值形成可供团队计划的目标说明：\n${missionObjective.trim()}`,
+          successCriteria: [
+            "目标、约束、已知事实和团队采用的默认假设被记录",
+            "可逆的不确定项不阻塞交接，必要问题作为可选校准项",
+            "只有缺少凭证、授权、不可逆操作确认或真实安全边界等不可替代输入时才阻塞",
+          ],
           assignment: { requiredCapabilities: ["mission:intake"] },
           outputContract: { schemaRef: "boss-intake-v1" },
         },

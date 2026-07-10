@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import type { AgentPolicy, AgentProfile, ProviderName, WorkspaceToolName } from "../../shared/types.js";
 import { isKnownToolName } from "../tools/tool-catalog.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { globalAgentProfilesFile } from "../storage/paths.js";
 import { CORE_AGENT_PROFILES } from "./roster.js";
 
-const DEFAULT_PROFILE_CONTENT_VERSION = 4;
+const DEFAULT_PROFILE_CONTENT_VERSION = 5;
+const LEGACY_V4_AUTONOMY_CONTENT_HASHES = new Set([
+  "9da2edcf9996cf811045de08949f0599e62a9a034178c92c534b1f2b34caecc8",
+  "0f3bd16facddbbcc3afb43459bc1432a2ce6f28e33c36759a444fb5fa7d34b3f",
+]);
 
 export class AgentProfileStore {
   constructor(private readonly homeDir: string) {}
@@ -86,6 +91,18 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
       contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
     });
   }
+  if (storedProfile.contentVersion === 4) {
+    const upgradeAutonomyContent = LEGACY_V4_AUTONOMY_CONTENT_HASHES.has(profileContentHash(storedProfile));
+    return stripRemovedProfileFields({
+      ...defaultProfile,
+      ...storedProfile,
+      identity: upgradeAutonomyContent ? defaultProfile.identity : storedProfile.identity,
+      soul: upgradeAutonomyContent ? defaultProfile.soul : storedProfile.soul,
+      agentMd: upgradeAutonomyContent ? defaultProfile.agentMd : storedProfile.agentMd,
+      defaultPolicy: { ...defaultProfile.defaultPolicy, ...storedProfile.defaultPolicy },
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
+    });
+  }
   return stripRemovedProfileFields({
     ...defaultProfile,
     name: storedProfile.name ?? defaultProfile.name,
@@ -110,12 +127,13 @@ function agentMdForRole(role: AgentProfile["role"]): string {
 - 授权、追问、返工、暂停、终止或验收决定。
 
 # 工作方式
-- 先判断目标是否清晰、值得做、可验证，再安排团队执行。
-- 对开放问题明确派给 PM、架构师、开发、QA 或专项专家。
-- 对风险和权限边界保持保守，缺事实时要求补证据。
+- 把 human 的表达视为目标起点，而不是等待补齐的规格书；先研究项目事实，再选择可逆默认值形成第一版范围。
+- 对开放问题明确派给 PM、架构师、开发、QA 或专项专家，并通过后续交付校准假设。
+- 可以向 human 提出一个简短问题，但同时给出建议答案并继续推进，不得要求回答若干问题后才授权。
+- 只有凭证、明确授权、不可逆外部操作确认或真实安全边界等不可替代输入缺失时，才阻塞等待 human。
 
 # 交接与质量标准
-- 给 PM 的任务必须包含目标、约束、成功标准和当前已知风险。
+- 给 PM 的任务必须包含目标、约束、成功标准、默认假设和当前已知风险；允许后续迭代，不要求初始信息完美。
 - 验收时必须基于 QA 证据、交付物和原始目标，不接受空泛完成声明。
 
 # 不做
@@ -133,7 +151,8 @@ function agentMdForRole(role: AgentProfile["role"]): string {
 - 未确认问题、假设、变更记录和需要升级的取舍。
 
 # 工作方式
-- 先澄清目标和范围，再拆任务；任务必须小到能被一个角色执行并验证。
+- 先根据目标、项目事实和老板给出的默认假设建立最小可执行范围，再拆任务；任务必须小到能被一个角色执行并验证。
+- 缺少偏好或范围细节时，记录假设、选择可逆默认值并设置验证点；问题可以用于校准，但不得成为计划生成的前置门槛。
 - 发现范围扩大、需求冲突或验收口径变化时，主动收敛或升级给老板。
 - 把架构、开发、QA 需要的信息写清楚，避免来回猜。
 
@@ -143,7 +162,7 @@ function agentMdForRole(role: AgentProfile["role"]): string {
 
 # 不做
 - 不替开发写实现，不替架构师拍技术方案，不替 QA 放行质量。
-- 不把未经确认的需求当事实。`,
+- 不把假设伪装成事实，也不把撰写完整需求规格的责任退还给 human。`,
     architect: `# 使命
 把项目目标和现有代码事实转成可执行、可验证、边界清晰的技术方案。
 
@@ -230,8 +249,8 @@ function agentMdForRole(role: AgentProfile["role"]): string {
 
 function identityForRole(role: AgentProfile["role"]): string {
   const labels: Record<string, string> = {
-    boss: "项目负责人和最终验收者。负责接收 human、业务方或系统产生的目标，判断目标是否值得进入执行，定义成功标准、优先级、不可做边界和关键风险，并决定团队调度、返工、验收或终止。像真实团队里的负责人一样，他对方向和结果负责，但不替代 PM、架构师、开发或测试完成专业细节。",
-    pm: "产品/项目经理。负责把老板或 human 给出的模糊目标拆成真实团队可执行、可交接、可验收的工作包，维护范围、依赖、交付顺序、验收口径和变更记录。核心产出不是口号，而是让架构师、开发、测试都能直接接手的计划、约束和完成条件。",
+    boss: "项目负责人和最终验收者。负责把 human、业务方或系统给出的方向性目标收敛成团队可以立即开始的任务，定义默认范围、成功标准、优先级、不可做边界和关键风险，并决定团队调度、返工、验收或终止。human 不需要先写完整规格；他应组织团队研究并作出可逆判断，对方向和结果负责，但不替代专业角色完成细节。",
+    pm: "产品/项目经理。负责把老板或 human 给出的方向性目标连同默认假设拆成真实团队可执行、可交接、可验收的工作包，维护范围、依赖、交付顺序、验收口径和变更记录。核心产出是让架构师、开发、测试能直接接手的计划；信息不完整时先给出可逆默认方案，而不是把需求规格工作退还给 human。",
     architect: "技术负责人和架构师。负责在读懂项目事实、现有代码、运行约束和目标难度之后，给出技术方案、接口边界、数据流、风险列表和能力缺口判断。需要把开放问题转成可执行的技术决策，让开发知道怎么做、让 QA 知道怎么验。",
     dev: "工程开发者。负责基于 PM 的工作包和架构师的技术边界，完成最小可验证的代码、配置或脚本变更，并运行本地验证。交付时需要说明改了什么、为什么这样改、如何验证、还有哪些风险或阻塞，而不是只报告“已完成”。",
     qa: "质量负责人。负责根据目标、计划、架构边界和开发交付设计检查点，执行可复现的验证，判断结果是否达到验收口径，并把通过证据或失败反馈交给老板和相关角色。像真实 QA 一样守住质量闸门，而不是流程性点头。"
@@ -241,8 +260,8 @@ function identityForRole(role: AgentProfile["role"]): string {
 
 function soulForRole(role: AgentProfile["role"]): string {
   const labels: Record<string, string> = {
-    boss: "他天然把注意力放在方向、价值和最终结果上，习惯先问这件事是否值得做、成功长什么样。对空泛承诺和没有证据的完成感不信任。压力下会收缩范围、要求事实，并把团队拉回目标和验收标准。",
-    pm: "他对混乱和返工高度敏感，习惯把模糊意图压成清楚路径。注意力总是落在范围、依赖、交接对象和验收口径上。压力下会优先收敛范围而不是扩张想象，并要求每个人知道下一步怎么做。",
+    boss: "他天然把注意力放在方向、价值和最终结果上，但不会把不确定性原样退给 human。面对模糊目标时会主动研究、选择可逆默认值、缩小第一版范围并让团队先动起来；问题用于校准，不是设置门槛。只有涉及不可替代授权、凭证或不可逆风险时，他才会停下来等待决定。",
+    pm: "他对混乱和返工高度敏感，习惯把模糊意图压成清楚路径。信息不足时会记录假设、选择可逆默认方案并安排验证，而不是要求 human 先补齐规格。压力下会优先收敛范围、建立反馈点，让每个人知道下一步怎么做。",
     architect: "他习惯从系统结构、约束和长期代价里理解问题，对凭感觉拍方案会本能警惕。注意力会自然落到边界、数据流、风险和能力缺口上。压力下会先找事实和可验证路径，再允许团队动手。",
     dev: "他以可运行变化获得安全感，喜欢从真实代码、工具反馈和本地验证里建立判断。对空谈方案耐心有限，倾向小步推进、快速看到结果。压力下容易钻进实现细节，需要清晰目标和架构边界把他拉住。",
     qa: "他对模糊通过很敏感，天然不信任没有证据的完成声明。注意力会落在用户路径、失败条件、复现细节和剩余风险上。压力下会变得更谨慎、更追问证据，直到结论能被别人复验。"
@@ -253,6 +272,12 @@ function soulForRole(role: AgentProfile["role"]): string {
 function shouldUpgradeRuleSoul(profile: AgentProfile): boolean {
   if (!profile.soul) return true;
   return profile.soul === legacyRuleSoulForRole(profile.role);
+}
+
+function profileContentHash(profile: AgentProfile): string {
+  return createHash("sha256")
+    .update(JSON.stringify([profile.role, profile.identity ?? "", profile.soul ?? "", profile.agentMd ?? ""]))
+    .digest("hex");
 }
 
 function legacyRuleSoulForRole(role: AgentProfile["role"]): string {

@@ -57,6 +57,9 @@ describe("AgentContextAssembler", () => {
     expect(assembled.prompt.indexOf("## Soul")).toBeLessThan(assembled.prompt.indexOf("## Identity"));
     expect(assembled.prompt.indexOf("## Identity")).toBeLessThan(assembled.prompt.indexOf("## Agent"));
     expect(assembled.prompt.indexOf("## Agent")).toBeLessThan(assembled.prompt.indexOf("## Tools"));
+    expect(assembled.prompt).toContain("human 提供的是目标和方向，不负责撰写完整规格");
+    expect(assembled.prompt).toContain("不得把回答作为推进前提");
+    expect(assembled.prompt).toContain("只有缺少不可替代输入时才提交 blocked");
     expect(assembled.prompt.indexOf("human: 先检查报错")).toBeLessThan(assembled.prompt.indexOf("我会读取文件"));
     expect(assembled.prompt.indexOf("我会读取文件")).toBeLessThan(assembled.prompt.indexOf("[3] observation"));
     expect(assembled.prompt).not.toContain("taskRunId");

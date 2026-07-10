@@ -41,6 +41,7 @@ describe("agent profiles route", () => {
     expect(pm.soul).not.toContain("不替开发写实现");
     expect(pm.agentMd).toContain("# 使命");
     expect(pm.agentMd).toContain("交付");
+    expect(pm.agentMd).toContain("不得成为计划生成的前置门槛");
     expect(pm.capabilities).toEqual(expect.arrayContaining(["需求澄清", "任务拆解", "变更管理"]));
     expect(pm.capabilities.length).toBeGreaterThanOrEqual(6);
     expect(dev.soul).toContain("可运行变化获得安全感");
@@ -49,7 +50,7 @@ describe("agent profiles route", () => {
     const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
     const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
     expect(persistedPm.identity).toBe(pm.identity);
-    expect(persistedPm.contentVersion).toBe(4);
+    expect(persistedPm.contentVersion).toBe(5);
   });
 
   it("migrates v3 rule-like soul into v4 soul traits while preserving model and agent.md", async () => {
@@ -71,7 +72,7 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(4);
+    expect(dev.contentVersion).toBe(5);
     expect(dev.defaultModel).toBe("deepseek-v4-flash");
     expect(dev.agentMd).toContain("已经存在的手册要保留");
     expect(dev.soul).toContain("可运行变化获得安全感");
@@ -101,7 +102,7 @@ describe("agent profiles route", () => {
     expect(dev.capabilities).toEqual(["TypeScript", "验证"]);
     expect(dev.agentMd).toContain("# 使命");
     expect(dev.agentMd).toContain("实现");
-    expect(dev.contentVersion).toBe(4);
+    expect(dev.contentVersion).toBe(5);
   });
 
   it("persists editable global identity and soul separately from workspace overrides", async () => {

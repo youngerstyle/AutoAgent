@@ -7,6 +7,11 @@ describe("versioned workflow product data", () => {
   it("defines intake then planning without human or downstream topology in manager code", () => {
     const definition = createMinimalTeamWorkflowDefinition(policyRef, "构建坦克大战");
     expect(definition.initialGraph.nodes[0]?.objective).toContain("构建坦克大战");
+    expect(definition.initialGraph.nodes[0]?.objective).toContain("不要求 human 撰写完整规格");
+    expect(definition.initialGraph.nodes[0]?.successCriteria).toEqual(expect.arrayContaining([
+      expect.stringContaining("可逆的不确定项不阻塞交接"),
+      expect.stringContaining("不可替代输入时才阻塞"),
+    ]));
     expect(definition.initialGraph.nodes.map((node) => node.key)).toEqual(["intake", "planning"]);
     expect(definition.initialGraph.nodes.map((node) => node.assignment.requiredCapabilities)).toEqual([
       ["mission:intake"],
