@@ -9,6 +9,7 @@
     "start": "node dist/server/server/index.js",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:contracts": "vitest run tests/shared/runtime-contracts.test.ts && tsc --noEmit",
     "test:e2e": "vitest run tests/e2e",
     "typecheck": "tsc --noEmit"
   },

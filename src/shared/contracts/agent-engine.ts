@@ -99,22 +99,27 @@ export interface AgentGoalControlRequest {
   reason: string;
 }
 
-export interface GoalResolutionProposal<TDomainOutcome = unknown> {
+export type GoalResolutionStatus = "completed" | "blocked" | "failed";
+
+export interface GoalResolutionProposal<
+  TStatus extends GoalResolutionStatus = GoalResolutionStatus,
+  TDomainOutcome = unknown,
+> {
   proposalId: string;
   goalId: string;
   expectedGoalVersion: number;
   resolvingGoalVersion: number;
-  status: "completed" | "blocked" | "failed";
+  status: TStatus;
   summary: string;
   evidence: EvidenceRef[];
   domainOutcome?: TDomainOutcome;
   createdAt: string;
 }
 
-export type GoalResolutionDecision =
+export type GoalResolutionDecision<TStatus extends GoalResolutionStatus = GoalResolutionStatus> =
   | {
       accepted: true;
-      committedState: "completed" | "blocked" | "failed";
+      committedState: TStatus;
       domainResult?: unknown;
     }
   | {
@@ -134,8 +139,8 @@ export type GoalResolutionDecision =
       incidentId: string;
     };
 
-export type GoalResolutionAttemptResult =
-  | { settle: true; decision: GoalResolutionDecision }
+export type GoalResolutionAttemptResult<TStatus extends GoalResolutionStatus = GoalResolutionStatus> =
+  | { settle: true; decision: GoalResolutionDecision<TStatus> }
   | {
       settle: false;
       pending: "retry_later";
@@ -144,17 +149,17 @@ export type GoalResolutionAttemptResult =
     };
 
 export interface GoalResolutionPort<TDomainOutcome = unknown> {
-  resolve(
+  resolve<TStatus extends GoalResolutionStatus>(
     goal: AgentGoal,
-    proposal: GoalResolutionProposal<TDomainOutcome>,
-  ): Promise<GoalResolutionAttemptResult>;
+    proposal: GoalResolutionProposal<TStatus, TDomainOutcome>,
+  ): Promise<GoalResolutionAttemptResult<TStatus>>;
 }
 
-export interface SettleProposalRequest {
+export interface SettleProposalRequest<TStatus extends GoalResolutionStatus = GoalResolutionStatus> {
   decisionId: string;
   proposalId: string;
   expectedGoalVersion: number;
-  decision: GoalResolutionDecision;
+  decision: GoalResolutionDecision<TStatus>;
 }
 
 export type SettleProposalResult =
@@ -165,50 +170,77 @@ export type SettleProposalResult =
       goal: AgentGoal;
     };
 
-export type AgentEventPayload =
+export type AgentThreadEventPayload =
   | { type: "MessageAppended"; threadId: string; messageId: string; sequence: number }
-  | { type: "TurnStatusChanged"; threadId: string; turnId: string; status: string }
+  | { type: "TurnStatusChanged"; threadId: string; turnId: string; status: string };
+
+export type AgentGoalEventPayload =
   | { type: "GoalStatusChanged"; goalId: string; status: AgentGoalStatus }
   | { type: "GoalProposalCreated"; goalId: string; proposalId: string };
 
-export interface AgentEventEnvelope<TPayload extends AgentEventPayload = AgentEventPayload> {
+export interface AgentEventPayloadByAggregate {
+  agent_thread: AgentThreadEventPayload;
+  agent_goal: AgentGoalEventPayload;
+}
+
+export type AgentAggregateType = keyof AgentEventPayloadByAggregate;
+export type AgentEventPayload = AgentEventPayloadByAggregate[AgentAggregateType];
+
+export interface AgentEventEnvelope<
+  TAggregateType extends AgentAggregateType,
+  TPayload extends AgentEventPayloadByAggregate[TAggregateType],
+> {
   eventId: string;
-  aggregateType: "agent_thread" | "agent_goal";
+  aggregateType: TAggregateType;
   aggregateId: string;
   aggregateVersion: number;
   occurredAt: string;
   payload: TPayload;
 }
 
-export type AgentEvent = AgentEventEnvelope;
+export type AgentEvent<TAggregateType extends AgentAggregateType = AgentAggregateType> = {
+  [TCurrentAggregate in TAggregateType]: AgentEventEnvelope<
+    TCurrentAggregate,
+    AgentEventPayloadByAggregate[TCurrentAggregate]
+  >;
+}[TAggregateType];
 
-export interface AgentEventCursor {
+export interface AgentEventCursor<TAgentId extends string = string> {
   source: "agent";
-  partitionId: string;
+  partitionId: TAgentId;
   position: string;
 }
 
-export interface AgentEventQuery {
-  agentId: string;
-  after?: AgentEventCursor;
+export interface AgentEventQuery<TAgentId extends string = string> {
+  agentId: TAgentId;
+  after?: AgentEventCursor<NoInfer<TAgentId>>;
   limit: number;
 }
 
-export interface AgentEventPage<TEvent extends AgentEvent = AgentEvent> {
+export interface AgentEventPage<
+  TEvent extends AgentEvent = AgentEvent,
+  TAgentId extends string = string,
+> {
   events: TEvent[];
-  nextCursor: AgentEventCursor;
+  nextCursor: AgentEventCursor<TAgentId>;
 }
 
-export interface AgentEnginePort<TDomainOutcome = unknown> {
+export interface AgentPort<TDomainOutcome = unknown> {
   ensureThread(input: EnsureAgentThreadRequest): Promise<AgentThreadSnapshot>;
   getThreadForAgent(agentId: string, scopeId: string): Promise<AgentThreadSnapshot | undefined>;
   startGoal(input: StartAgentGoalRequest): Promise<AgentGoal>;
   getGoalByStartKey(idempotencyKey: string): Promise<AgentGoal | undefined>;
   getGoal(goalId: string): Promise<AgentGoal | undefined>;
-  getProposal(proposalId: string): Promise<GoalResolutionProposal<TDomainOutcome> | undefined>;
+  getProposal(
+    proposalId: string,
+  ): Promise<GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined>;
   getThread(threadId: string): Promise<AgentThreadSnapshot>;
   sendMessage(input: SendAgentMessageRequest): Promise<void>;
   controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal>;
-  settleProposal(input: SettleProposalRequest): Promise<SettleProposalResult>;
-  readEvents(input: AgentEventQuery): Promise<AgentEventPage>;
+  settleProposal<TStatus extends GoalResolutionStatus>(
+    input: SettleProposalRequest<TStatus>,
+  ): Promise<SettleProposalResult>;
+  readEvents<TAgentId extends string>(
+    input: AgentEventQuery<TAgentId>,
+  ): Promise<AgentEventPage<AgentEvent, TAgentId>>;
 }

@@ -2,12 +2,14 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   AGENT_GOAL_STATUSES,
-  type AgentEnginePort,
+  type AgentEvent,
   type AgentEventCursor,
   type AgentEventPage,
   type AgentEventQuery,
   type AgentGoalControlRequest,
   type AgentGoalStatus,
+  type AgentPort,
+  type AgentThreadItem,
   type AgentThreadSnapshot,
   type EnsureAgentThreadRequest,
   type GoalResolutionAttemptResult,
@@ -42,8 +44,8 @@ describe("Agent Engine runtime contracts", () => {
     } satisfies EnsureAgentThreadRequest;
 
     expect(request).not.toHaveProperty("goalId");
-    expectTypeOf<AgentEnginePort["ensureThread"]>().parameter(0).toEqualTypeOf<EnsureAgentThreadRequest>();
-    expectTypeOf<AgentEnginePort["getThreadForAgent"]>().toEqualTypeOf<
+    expectTypeOf<AgentPort["ensureThread"]>().parameter(0).toEqualTypeOf<EnsureAgentThreadRequest>();
+    expectTypeOf<AgentPort["getThreadForAgent"]>().toEqualTypeOf<
       (agentId: string, scopeId: string) => Promise<AgentThreadSnapshot | undefined>
     >();
   });
@@ -76,6 +78,12 @@ describe("Agent Engine runtime contracts", () => {
       { sequence: 1, createdAt: "2026-07-10T01:00:00.000Z" },
       { sequence: 2, createdAt: "2026-07-10T01:01:00.000Z" },
     ]);
+
+    const acceptThreadItem = (_item: AgentThreadItem) => undefined;
+    if (false) {
+      // @ts-expect-error All Thread items participate in the shared sequence.
+      acceptThreadItem({ itemId: "item-3", kind: "model", createdAt: "2026-07-10T01:02:00.000Z", payloadRef: "payload:model-1" });
+    }
   });
 
   it("requires proposal and settlement CAS versions", () => {
@@ -115,6 +123,25 @@ describe("Agent Engine runtime contracts", () => {
     expect(invalidSettlement.decision.settle).toBe(false);
   });
 
+  it("binds accepted resolution state to the proposal status", () => {
+    const blockedProposal = {
+      proposalId: "proposal-blocked",
+      goalId: "goal-1",
+      expectedGoalVersion: 2,
+      resolvingGoalVersion: 3,
+      status: "blocked",
+      summary: "Waiting for user input",
+      evidence: [],
+      createdAt: "2026-07-10T01:03:00.000Z",
+    } satisfies GoalResolutionProposal<"blocked">;
+    const settleBlocked = (_request: SettleProposalRequest<typeof blockedProposal.status>) => undefined;
+
+    if (false) {
+      // @ts-expect-error A blocked proposal cannot be accepted as completed.
+      settleBlocked({ decisionId: "decision-2", proposalId: blockedProposal.proposalId, expectedGoalVersion: 3, decision: { accepted: true, committedState: "completed" } });
+    }
+  });
+
   it("requires idempotency fields for start, message, and Goal control operations", () => {
     expectTypeOf<StartAgentGoalRequest>().toHaveProperty("idempotencyKey").toEqualTypeOf<string>();
     expectTypeOf<SendAgentMessageRequest>().toHaveProperty("messageId").toEqualTypeOf<string>();
@@ -126,9 +153,9 @@ describe("Agent Engine runtime contracts", () => {
       source: "agent",
       partitionId: "agent-1",
       position: "42",
-    } satisfies AgentEventCursor;
-    const query = { agentId: "agent-1", after: cursor, limit: 100 } satisfies AgentEventQuery;
-    const page = { events: [], nextCursor: cursor } satisfies AgentEventPage;
+    } satisfies AgentEventCursor<"agent-1">;
+    const query = { agentId: "agent-1", after: cursor, limit: 100 } satisfies AgentEventQuery<"agent-1">;
+    const page = { events: [], nextCursor: cursor } satisfies AgentEventPage<AgentEvent, "agent-1">;
 
     expect(query.agentId).toBe(cursor.partitionId);
     expect(page.nextCursor).toEqual({ source: "agent", partitionId: "agent-1", position: "42" });
@@ -136,5 +163,22 @@ describe("Agent Engine runtime contracts", () => {
     // @ts-expect-error Agent event queries cannot omit their aggregate partition.
     const invalidQuery: AgentEventQuery = { limit: 100 };
     expect(invalidQuery).not.toHaveProperty("agentId");
+
+    const agentPort = null as unknown as AgentPort;
+    if (false) {
+      // @ts-expect-error Cursor partition must match the queried agentId.
+      void agentPort.readEvents({ agentId: "agent-1", after: { source: "agent", partitionId: "agent-2", position: "43" }, limit: 100 });
+    }
+  });
+
+  it("binds Agent event payloads to their aggregate type", () => {
+    const acceptEvent = (_event: AgentEvent) => undefined;
+
+    if (false) {
+      // @ts-expect-error Goal events belong to the agent_goal aggregate.
+      acceptEvent({ eventId: "event-1", aggregateType: "agent_thread", aggregateId: "thread-1", aggregateVersion: 1, occurredAt: "2026-07-10T01:04:00.000Z", payload: { type: "GoalStatusChanged", goalId: "goal-1", status: "blocked" } });
+      // @ts-expect-error Message events belong to the agent_thread aggregate.
+      acceptEvent({ eventId: "event-2", aggregateType: "agent_goal", aggregateId: "goal-1", aggregateVersion: 2, occurredAt: "2026-07-10T01:05:00.000Z", payload: { type: "MessageAppended", threadId: "thread-1", messageId: "message-1", sequence: 3 } });
+    }
   });
 });
