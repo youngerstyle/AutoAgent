@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
@@ -29,7 +29,7 @@ import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from 
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentProfileView } from "./view-model";
 import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
-import { buildAgentThreadBubbles, type AgentThreadBubble } from "./agent-thread";
+import { appendCurrentAgentPrompt, buildAgentThreadBubbles, type AgentThreadBubble } from "./agent-thread";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
 const AGENT_PANEL_MIN_HEIGHT = 180;
@@ -646,7 +646,7 @@ export function App() {
                 <AgentHumanLoopBox
                   agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
                   prompt={humanFlowPrompt}
-                  messages={selectedAgentMessages}
+                  bubbles={selectedAgentThreadBubbles}
                   value={agentMessage}
                   disabled={agentMessageDisabled}
                   actionDisabled={agentActionDisabled}
@@ -1135,7 +1135,7 @@ function clamp(value: number, min: number, max: number): number {
 function AgentHumanLoopBox(props: {
   agentName: string;
   prompt: NonNullable<ReturnType<typeof buildHumanFlowPrompt>>;
-  messages: AgentChatMessage[];
+  bubbles: AgentThreadBubble[];
   value: string;
   disabled: boolean;
   actionDisabled: boolean;
@@ -1145,6 +1145,9 @@ function AgentHumanLoopBox(props: {
   onSend: (message: string) => void;
 }) {
   const messageBody = props.prompt.transcript.replace(/^[^\n]+:\n/, "");
+  const bubbles = props.prompt.manualTest
+    ? props.bubbles
+    : appendCurrentAgentPrompt(props.bubbles, messageBody);
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     props.onSend(props.value);
@@ -1159,29 +1162,21 @@ function AgentHumanLoopBox(props: {
         </div>
       </header>
       <div className="chat-thread">
-        <article className="chat-message agent">
-          {props.prompt.manualTest ? (
+        {bubbles.map((bubble) => (
+          <article key={bubble.id} className={`chat-message ${bubble.role}`}>
+            {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
+            <AgentMessageBody rawText={bubble.body} />
+          </article>
+        ))}
+        {props.prompt.manualTest ? (
+          <article className="chat-message agent">
             <ManualTestActionCard
               action={props.prompt.manualTest}
               disabled={props.actionDisabled}
               onFollowup={props.onFollowup}
             />
-          ) : (
-            <AgentMessageBody rawText={messageBody} />
-          )}
-        </article>
-        {props.messages.map((message) => (
-          <Fragment key={message.id}>
-            <article className="chat-message human">
-              <AgentMessageBody rawText={message.message} />
-            </article>
-            {message.response ? (
-              <article className="chat-message agent">
-                <AgentMessageBody rawText={message.response} />
-              </article>
-            ) : null}
-          </Fragment>
-        ))}
+          </article>
+        ) : null}
       </div>
       {!props.prompt.manualTest ? (
         <button type="button" className="quick-reply" title={props.prompt.suggestion} onClick={props.onUseSuggestion}>使用建议方案</button>
@@ -1198,8 +1193,6 @@ function AgentHumanLoopBox(props: {
     </form>
   );
 }
-
-type AgentChatMessage = NonNullable<WorkspaceSnapshot["agentMessages"]>[string][number];
 
 function AgentDirectChatBox(props: {
   agent: WorkspaceSnapshot["agents"][number];

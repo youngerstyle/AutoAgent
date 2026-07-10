@@ -17,12 +17,20 @@ export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessag
     .filter((bubble): bubble is AgentThreadBubble => Boolean(bubble?.body.trim()));
 }
 
+export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: string): AgentThreadBubble[] {
+  const body = prompt.trim();
+  if (!body) return bubbles;
+  const latestAgent = [...bubbles].reverse().find((bubble) => bubble.role === "agent");
+  if (latestAgent && equivalentMessage(latestAgent.body, body)) return bubbles;
+  return [...bubbles, { id: "current-agent-prompt", role: "agent", body }];
+}
+
 function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
   if (event.kind === "human_message") {
-    return { id: event.id, role: "human", body: payloadText(event.payload, "message") };
+    return { id: event.id, role: "human", body: payloadText(event.payload, "content", "message") };
   }
   if (event.kind === "agent_message") {
-    return { id: event.id, role: "agent", body: payloadText(event.payload, "message") };
+    return { id: event.id, role: "agent", body: payloadText(event.payload, "content", "message") };
   }
   if (event.kind === "turn_failed") {
     return { id: event.id, role: "agent", title: "本轮执行失败", body: payloadText(event.payload, "error", "message") };
@@ -60,9 +68,16 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
     };
   }
   if (event.kind === "system_note") {
-    return { id: event.id, role: "system", body: payloadText(event.payload, "message", "summary") };
+    return { id: event.id, role: "system", body: payloadText(event.payload, "content", "message", "summary") };
   }
   return undefined;
+}
+
+function equivalentMessage(left: string, right: string): boolean {
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+  const a = normalize(left);
+  const b = normalize(right);
+  return a === b || a.includes(b) || b.includes(a);
 }
 
 function legacyMessageToBubbles(message: AgentDirectMessage): AgentThreadBubble[] {

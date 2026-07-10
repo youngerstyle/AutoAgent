@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentThreadBubbles } from "../../src/client/agent-thread";
+import { appendCurrentAgentPrompt, buildAgentThreadBubbles } from "../../src/client/agent-thread";
 import type { AgentThreadEvent } from "../../src/shared/types";
 
 describe("agent thread view", () => {
@@ -26,6 +26,23 @@ describe("agent thread view", () => {
       expect.objectContaining({ id: "evt_claimed", role: "platform", title: "开始处理工单", body: "修复跨域启动问题\nimplementation" }),
       expect.objectContaining({ id: "evt_agent", role: "agent", body: "我会先检查启动脚本和入口文件。" }),
       expect.objectContaining({ id: "evt_done", role: "platform", title: "工单处理完成", body: "已修复启动脚本\nacked" })
+    ]);
+  });
+
+  it("renders persisted runtime content fields and does not duplicate the current prompt", () => {
+    const bubbles = buildAgentThreadBubbles([
+      threadEvent(1, "evt_human", "human", "human_message", { content: "按现有信息继续。" }),
+      threadEvent(2, "evt_agent", "agent", "agent_message", { content: "我会采用合理默认值推进。" })
+    ]);
+
+    expect(bubbles).toEqual([
+      expect.objectContaining({ role: "human", body: "按现有信息继续。" }),
+      expect.objectContaining({ role: "agent", body: "我会采用合理默认值推进。" })
+    ]);
+    expect(appendCurrentAgentPrompt(bubbles, "我会采用合理默认值推进。")).toHaveLength(2);
+    expect(appendCurrentAgentPrompt(bubbles, "需要你确认生产部署授权。")).toEqual([
+      ...bubbles,
+      expect.objectContaining({ role: "agent", body: "需要你确认生产部署授权。" })
     ]);
   });
 
