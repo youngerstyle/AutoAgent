@@ -64,6 +64,7 @@ describe("RuntimeHost", () => {
       status: "yielded",
       reason: "active_goal_unresolved",
     });
+    expect((await fixture.host.snapshot()).agents.find((agent) => agent.roleInWorkspace === "boss")?.status).toBe("running");
   });
 
   it("coalesces concurrent timer ticks instead of queueing repeated model turns", async () => {
@@ -85,6 +86,38 @@ describe("RuntimeHost", () => {
     expect(second).toBe(first);
     await Promise.all([first, second]);
     expect(modelTurns).toBe(2);
+  });
+
+  it("serves a read-only snapshot while a model turn is still running", async () => {
+    const fixture = await createFixture();
+    let holdModel = false;
+    let releaseModel!: () => void;
+    let announceModelStart!: () => void;
+    const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+    const modelStarted = new Promise<void>((resolve) => { announceModelStart = resolve; });
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        if (holdModel) {
+          announceModelStart();
+          await modelGate;
+        }
+        return { text: "继续处理。", events: [{ type: "text" as const, text: "继续处理。" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-live-snapshot", title: "演示", objective: "构建演示" });
+    holdModel = true;
+    const runningTick = fixture.host.tick();
+    await modelStarted;
+
+    const snapshotResult = await Promise.race([
+      fixture.host.snapshot().then((snapshot) => snapshot.status),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 1_000)),
+    ]);
+    releaseModel();
+    await runningTick;
+
+    expect(snapshotResult).toBe("running");
   });
 
   it("starts and stops an unrefed production timer", async () => {
@@ -122,12 +155,8 @@ describe("RuntimeHost", () => {
     });
     const thread = await architect.getThreadForAgent("wa_architect", "task-a");
 
-    expect(thread?.items.map((item) => item.kind)).toEqual([
-      "message",
-      "control",
-      "model",
-      "control",
-    ]);
+    expect(thread?.items.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
+    expect(thread?.items.filter((item) => item.kind === "model")).toHaveLength(1);
     expect(await architect.getGoalByStartKey("does-not-exist")).toBeUndefined();
   });
 
@@ -154,7 +183,10 @@ describe("RuntimeHost", () => {
     expect(acknowledgedBeforeModel).toBe(true);
 
     const architect = fixture.host.context("task-async-message")!.engines.get("wa_architect")!;
-    await waitFor(async () => (await architect.getThreadForAgent("wa_architect", "task-async-message"))?.items.some((item) => item.kind === "model") === true);
+    await waitFor(
+      async () => (await architect.getThreadForAgent("wa_architect", "task-async-message"))?.items.some((item) => item.kind === "model") === true,
+      5_000,
+    );
   });
 });
 

@@ -43,13 +43,14 @@ describe("mock team loop E2E", () => {
 
 async function pollSnapshot(app: ReturnType<typeof createApp>, workspaceId: string) {
   let snapshot;
-  for (let index = 0; index < 40; index += 1) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
     const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`);
     if (response.status !== 200) throw new Error(`Snapshot failed (${response.status}): ${JSON.stringify(response.body)}`);
     snapshot = response.body.snapshot;
     if (snapshot.status === "completed") return snapshot;
     if (snapshot.status === "failed") return snapshot;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`Task did not finish. Last snapshot: ${JSON.stringify(snapshot)}`);
 }

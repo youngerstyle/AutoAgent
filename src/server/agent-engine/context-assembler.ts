@@ -64,9 +64,11 @@ export class AgentContextAssembler {
 
   private async threadSection(thread: AgentThreadSnapshot, maxTokens: number): Promise<{ text: string; compactedItems: number; recentItems: number }> {
     const entries: Array<{ sequence: number; kind: string; line: string }> = [];
-    for (const item of [...thread.items].sort((left, right) => left.sequence - right.sequence)) {
+    const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
+    const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
+    for (const item of items) {
       if (item.kind === "goal") continue;
-      const payload = await this.store.payload(item.payloadRef);
+      const payload = payloads.get(item.payloadRef);
       entries.push({ sequence: item.sequence, kind: item.kind, line: `[${item.sequence}] ${item.kind}: ${projectPayload(payload)}` });
     }
     if (entries.length === 0) return { text: "## Thread（严格时间序）\n无历史消息", compactedItems: 0, recentItems: 0 };

@@ -160,6 +160,15 @@ export class AgentStore {
     return structuredClone((await this.read()).payloads.find((item) => item.payloadRef === payloadRef)?.value);
   }
 
+  async payloads(payloadRefs: readonly string[]): Promise<Map<string, unknown>> {
+    const wanted = new Set(payloadRefs);
+    return new Map(
+      (await this.read()).payloads
+        .filter((item) => wanted.has(item.payloadRef))
+        .map((item) => [item.payloadRef, structuredClone(item.value)]),
+    );
+  }
+
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
     const token = await this.acquireLock();
     try {

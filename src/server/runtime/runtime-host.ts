@@ -103,7 +103,7 @@ export class RuntimeHost {
   }
 
   snapshot(): Promise<WorkspaceSnapshot> {
-    return this.exclusive(() => this.snapshotUnlocked());
+    return this.snapshotUnlocked();
   }
 
   async start(): Promise<void> {
@@ -339,7 +339,7 @@ export class RuntimeHost {
       status: "idle",
     };
     const context = await this.requireContext(record.taskId);
-    const mission = await context.manager.tick();
+    const mission = await context.manager.current();
     const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
     const tickets: Ticket[] = [];
@@ -551,9 +551,10 @@ export class RuntimeHost {
 
 async function projectThread(engine: AgentEngine<any>, thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>, record: RuntimeTaskRecord): Promise<AgentThreadEvent[]> {
   const events: AgentThreadEvent[] = [];
+  const payloads = await engine.getPayloads(thread.items.map((item) => item.payloadRef));
   for (const item of thread.items) {
     if (item.kind === "goal") continue;
-    const payload = await engine.getPayload(item.payloadRef);
+    const payload = payloads.get(item.payloadRef);
     const messagePayload = payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
     const isHuman = item.kind === "message" && messagePayload?.senderPrincipalId === "human";
     events.push({
@@ -575,6 +576,7 @@ async function projectThread(engine: AgentEngine<any>, thread: Awaited<ReturnTyp
 function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string | undefined, events: AgentThreadEvent[]): EntityStatus {
   if (linkStatus === "blocked" || goalStatus === "blocked") return "blocked";
   if (goalStatus === "completed" || goalStatus === "cancelled") return "idle";
+  if (linkStatus === "running" && goalStatus === "active") return "running";
   const latestControl = [...events].reverse().find((event) => event.source === "system");
   const activity = (latestControl?.payload as Record<string, unknown> | undefined)?.status;
   if (linkStatus === "running" && (activity === "running" || activity === "yielded")) return "running";

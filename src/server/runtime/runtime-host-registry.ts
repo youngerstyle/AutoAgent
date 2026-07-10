@@ -21,7 +21,6 @@ export class RuntimeHostRegistry {
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId);
-    await host.tick();
     return host.snapshot();
   }
 

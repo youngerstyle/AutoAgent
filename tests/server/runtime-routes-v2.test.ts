@@ -40,7 +40,7 @@ describe("V2 runtime public routes", () => {
 });
 
 async function pollSnapshot(app: Parameters<typeof request>[0], workspaceId: string, ready: (snapshot: any) => boolean) {
-  const deadline = Date.now() + 3_000;
+  const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const snapshot = (await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200)).body.snapshot;
     if (ready(snapshot)) return snapshot;

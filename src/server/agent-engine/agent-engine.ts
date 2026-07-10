@@ -124,6 +124,10 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     return this.store.payload(payloadRef);
   }
 
+  async getPayloads(payloadRefs: readonly string[]): Promise<Map<string, unknown>> {
+    return this.store.payloads(payloadRefs);
+  }
+
   async sendMessage(input: SendAgentMessageRequest): Promise<void> {
     const fingerprint = hash(input);
     const current = await this.store.read();
