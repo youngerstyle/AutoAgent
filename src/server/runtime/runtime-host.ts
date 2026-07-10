@@ -48,7 +48,7 @@ export class RuntimeHost {
   private readonly store: RuntimeHostStore;
   private readonly contexts = new Map<string, RuntimeContext>();
   private timer?: NodeJS.Timeout;
-  private ticking = false;
+  private tickPromise?: Promise<void>;
   private operationTail: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -71,7 +71,13 @@ export class RuntimeHost {
   }
 
   tick(): Promise<void> {
-    return this.exclusive(() => this.tickUnlocked());
+    if (this.tickPromise) return this.tickPromise;
+    const pending = this.exclusive(() => this.tickUnlocked());
+    const tracked = pending.finally(() => {
+      if (this.tickPromise === tracked) this.tickPromise = undefined;
+    });
+    this.tickPromise = tracked;
+    return tracked;
   }
 
   async sendAgentMessage(taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot> {
@@ -160,13 +166,7 @@ export class RuntimeHost {
   }
 
   private async tickUnlocked(): Promise<void> {
-    if (this.ticking) return;
-    this.ticking = true;
-    try {
-      for (const context of this.contexts.values()) await this.tickTask(context);
-    } finally {
-      this.ticking = false;
-    }
+    for (const context of this.contexts.values()) await this.tickTask(context);
   }
 
   private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string): Promise<void> {
@@ -448,7 +448,6 @@ export class RuntimeHost {
       if (link.status !== "running") continue;
       const goal = await context.engines.get(link.agentId)?.getGoal(link.agentGoalId);
       if (goal?.status !== "active") continue;
-      if (!await this.shouldRunSlice(context, link)) continue;
       await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link));
     }
     mission = await context.manager.tick();
@@ -461,16 +460,6 @@ export class RuntimeHost {
       context.record = { ...context.record, status, updatedAt: this.now().toISOString() };
       await this.store.save(context.record);
     }
-  }
-
-  private async shouldRunSlice(context: RuntimeContext, link: ActiveMissionLink): Promise<boolean> {
-    const engine = context.engines.get(link.agentId);
-    if (!engine) return false;
-    const thread = await engine.getThread(link.agentThreadId);
-    const tail = thread.items.at(-1);
-    if (!tail || tail.kind !== "control") return true;
-    const payload = await engine.getPayload(tail.payloadRef);
-    return !isWaitingControl(payload);
   }
 
   private async compose(record: RuntimeTaskRecord): Promise<RuntimeContext> {
@@ -629,11 +618,6 @@ function presentationPhase(status: string, tickets: Ticket[]): MissionPhase {
   }
   if (current.type === "specialist" || current.type === "rework") return "implementation";
   return "idle";
-}
-
-export function isWaitingControl(value: unknown): boolean {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-    && (value as Record<string, unknown>).status === "waiting";
 }
 
 function threadEventText(event: AgentThreadEvent): string {

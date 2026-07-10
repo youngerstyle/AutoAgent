@@ -22,8 +22,13 @@ describe("AgentToolLoop", () => {
     ]);
 
     const first = await fixture.loop.runSlice(fixture.input);
-    expect(first.status).toBe("waiting");
+    expect(first.status).toBe("yielded");
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
+    const firstTail = (await fixture.engine.getThread(fixture.input.threadId)).items.at(-1)!;
+    expect(await fixture.engine.getPayload(firstTail.payloadRef)).toMatchObject({
+      status: "yielded",
+      reason: "active_goal_unresolved"
+    });
 
     const second = await fixture.loop.runSlice(fixture.input);
     expect(second).toMatchObject({ status: "yielded", toolCalls: 1 });
@@ -46,6 +51,20 @@ describe("AgentToolLoop", () => {
 
     expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "yielded", toolCalls: 1 });
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
+  });
+
+  it("stores the structured human-facing message instead of raw protocol JSON", async () => {
+    const structured = {
+      message: "已完成交付。",
+      goalResolution: { status: "completed", summary: "交付完成", evidence: [] }
+    };
+    const fixture = await createFixture([{ text: JSON.stringify(structured), structured, events: [] }]);
+
+    await fixture.loop.runSlice(fixture.input);
+
+    const thread = await fixture.engine.getThread(fixture.input.threadId);
+    const model = [...thread.items].reverse().find((item) => item.kind === "model")!;
+    expect(await fixture.engine.getPayload(model.payloadRef)).toMatchObject({ content: "已完成交付。" });
   });
 });
 

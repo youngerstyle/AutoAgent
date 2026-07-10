@@ -325,9 +325,9 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     if (!proposal) throw new Error("Proposal does not exist");
     const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
     if (existing) {
-      return existing.fingerprint === fingerprint
-        ? existing.result
-        : { applied: false, code: "idempotency_conflict", goal };
+      if (existing.fingerprint !== fingerprint) return { applied: false, code: "idempotency_conflict", goal };
+      await this.recordResolutionDecision(goal, input);
+      return existing.result;
     }
     let next: AgentGoal;
     try {
@@ -350,7 +350,26 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       }],
       pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
     }));
+    await this.recordResolutionDecision(goal, input);
     return result;
+  }
+
+  private async recordResolutionDecision<TStatus extends GoalResolutionStatus>(
+    goal: AgentGoal,
+    input: SettleProposalRequest<TStatus>,
+  ): Promise<void> {
+    await this.appendToolItem({
+      itemId: `decision:${input.decisionId}`,
+      threadId: goal.spec.threadId,
+      goalId: goal.spec.id,
+      kind: "control",
+      value: {
+        type: "goal_resolution_decision",
+        status: input.decision.accepted ? "accepted" : input.decision.disposition,
+        decision: input.decision,
+      },
+      createdAt: this.now().toISOString(),
+    });
   }
 
   async readEvents<TAgentId extends string>(

@@ -3,6 +3,7 @@ import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/a
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
+import type { AgentTurnResult } from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentProviderAdapter } from "./provider-adapter.js";
@@ -72,7 +73,12 @@ export class AgentToolLoop {
     const result = await this.provider.run({
       provider: input.provider,
       model: input.model,
-      systemPrompt: "你是一个通用、自主、可使用工具的 Agent。遵守提供的 Soul、Identity、Agent、Tools 与 Goal。",
+      systemPrompt: [
+        "你是一个通用、自主、可使用工具的 Agent。遵守提供的 Soul、Identity、Agent、Tools 与 Goal。",
+        "每轮必须只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 前后添加文字。",
+        "JSON 的 message 字段用于给 human 展示自然语言进展；机器控制字段只能使用 toolIntents 和 goalResolution。",
+        "存在活动 Goal 时，本轮必须通过非空 toolIntents 继续执行，或通过 goalResolution 明确提交 completed、blocked、failed 之一；不能只回复 message 后停止。",
+      ].join("\n"),
       prompt: assembled.prompt,
     });
     await this.trace(turnId, input, "provider_response", result);
@@ -80,7 +86,7 @@ export class AgentToolLoop {
       itemId: `${turnId}:model`,
       threadId: input.threadId,
       goalId: input.goalId,
-      content: result.text,
+      content: visibleModelMessage(result),
       createdAt: this.now().toISOString(),
     });
 
@@ -123,15 +129,23 @@ export class AgentToolLoop {
       await this.trace(turnId, input, "settlement", attempted);
       return { turnId, status: "resolution_proposed", toolCalls, goal: attempted.goal };
     }
+    const hasActiveGoal = goal?.status === "active";
     await this.engine.appendToolItem({
-      itemId: `${turnId}:waiting`,
+      itemId: `${turnId}:${hasActiveGoal ? "yielded" : "waiting"}`,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
-      value: { turnId, status: "waiting" },
+      value: hasActiveGoal
+        ? {
+            turnId,
+            status: "yielded",
+            reason: "active_goal_unresolved",
+            guidance: "当前 Goal 尚未结算。下一轮继续工作；完成、受阻或失败时必须提交 goalResolution。",
+          }
+        : { turnId, status: "waiting" },
       createdAt: this.now().toISOString(),
     });
-    return { turnId, status: "waiting", toolCalls, goal };
+    return { turnId, status: hasActiveGoal ? "yielded" : "waiting", toolCalls, goal };
   }
 
   private trace(
@@ -152,6 +166,17 @@ export class AgentToolLoop {
       data,
     });
   }
+}
+
+function visibleModelMessage(result: AgentTurnResult): string {
+  const message = result.structured?.message;
+  if (typeof message === "string" && message.trim()) return message.trim();
+  const resolution = result.structured?.goalResolution;
+  if (resolution && typeof resolution === "object" && !Array.isArray(resolution)) {
+    const summary = (resolution as Record<string, unknown>).summary;
+    if (typeof summary === "string" && summary.trim()) return summary.trim();
+  }
+  return result.text;
 }
 
 function toolIntents(value?: Record<string, unknown>): AgentToolIntent[] {

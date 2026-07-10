@@ -21,6 +21,7 @@ import { MissionStore } from "./mission-store.js";
 import {
   proposalToTicketCommand,
   ticketResultToGoalDecision,
+  validateMissionTicketOutcome,
   type MissionTicketOutcome,
   missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
@@ -172,7 +173,7 @@ export class MissionProcessManager {
     if (existing) return this.continueDispatch(aggregate, dispatchId);
     const work = await this.tickets.getWorkItem(ticketId);
     if (!work) throw new Error(`Ticket work item ${ticketId} is missing`);
-    const member = selectMember(this.team, work.definition.assignment.principalId, work.definition.assignment.requiredCapabilities ?? []);
+    const member = selectMemberOrPlanner(this.team, work.definition.assignment.principalId, work.definition.assignment.requiredCapabilities ?? []);
     const link: MissionLink = {
       dispatchId,
       missionId: aggregate.missionId,
@@ -234,6 +235,12 @@ export class MissionProcessManager {
     if (!goalId) {
       const work = await this.tickets.getWorkItem(link.ticketId);
       if (!work) throw new Error("Ticket work item is missing");
+      const member = this.team.members.find((item) => item.agentId === link.agentId)!;
+      const requiredCapabilities = work.definition.assignment.requiredCapabilities ?? [];
+      const missingCapabilities = requiredCapabilities.filter((capability) => !member.capabilities.includes(capability));
+      const assignmentIssue = missingCapabilities.length
+        ? `工单 ${link.ticketId} 要求团队中不存在的能力：${missingCapabilities.join("、")}`
+        : undefined;
       const prior = await agent.getGoalByStartKey(link.goalStartKey);
       const goal = prior ?? await agent.startGoal({
         agentId: link.agentId,
@@ -242,8 +249,12 @@ export class MissionProcessManager {
         spec: {
           id: stableId("goal", dispatchId),
           threadId,
-          objective: work.definition.objective,
-          successCriteria: work.definition.successCriteria,
+          objective: assignmentIssue
+            ? `${assignmentIssue}。评估该分配错误，并将当前工单退回父工单 ${work.ticket.parentTicketId ?? "未定义"}，由 PM 修订 Ticket DAG。`
+            : work.definition.objective,
+          successCriteria: assignmentIssue
+            ? ["明确记录无法分配的能力", "使用 return_to_parent 退回父工单，不伪装完成原工作"]
+            : work.definition.successCriteria,
           contextRefs: [
             { kind: "mission", ref: aggregate.missionId },
             { kind: "workflow", ref: link.workflowId },
@@ -260,7 +271,12 @@ export class MissionProcessManager {
         threadId,
         goalId,
         senderPrincipalId: "mission-process",
-        content: missionOutcomeInstruction(work.definition.outputContract.schemaRef),
+        content: assignmentIssue
+          ? `${assignmentIssue}。这是工单分配异常，不执行原工作；必须提交 completed + domainOutcome.kind=return_to_parent，并提供 parentTicketId=${work.ticket.parentTicketId ?? ""} 和 reason。`
+          : missionOutcomeInstruction(
+              work.definition.outputContract.schemaRef,
+              [...new Set(this.team.members.flatMap((item) => item.capabilities))],
+            ),
         createdAt: this.now().toISOString(),
       });
     }
@@ -341,6 +357,12 @@ export class MissionProcessManager {
     const workflow = await this.tickets.getWorkflow(link.workflowId);
     let command;
     try {
+      const goal = await agent.getGoal(link.agentGoalId);
+      if (!goal) throw new Error("Goal is missing");
+      const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome);
+      if (!validation.valid) throw new Error(validation.reason);
+      const assignmentError = validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, this.team);
+      if (assignmentError) throw new Error(assignmentError);
       command = proposalToTicketCommand(proposal as never, active, workflow.version, this.now().toISOString());
     } catch (error) {
       const decisionId = stableId("invalid_goal_decision", proposalId);
@@ -427,13 +449,30 @@ export class MissionProcessManager {
   }
 }
 
-function selectMember(team: TeamBinding, principalId: string | undefined, capabilities: string[]) {
+function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefined, capabilities: string[]) {
   const candidates = principalId
     ? team.members.filter((member) => member.principalId === principalId)
     : team.members;
   const member = candidates.find((item) => capabilities.every((capability) => item.capabilities.includes(capability)));
-  if (!member) throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
-  return member;
+  if (member) return member;
+  const planner = team.members.find((item) => item.capabilities.includes("workflow:plan"));
+  if (planner) return planner;
+  throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
+}
+
+function validateTeamAssignments(outcome: MissionTicketOutcome, team: TeamBinding): string | undefined {
+  if (outcome.kind !== "complete_with_graph") return undefined;
+  for (const node of outcome.graph.nodes) {
+    const candidates = node.assignment.principalId
+      ? team.members.filter((member) => member.principalId === node.assignment.principalId)
+      : team.members;
+    const required = node.assignment.requiredCapabilities ?? [];
+    if (!candidates.some((member) => required.every((capability) => member.capabilities.includes(capability)))) {
+      const available = [...new Set(team.members.flatMap((member) => member.capabilities))].join("、");
+      return `节点 ${node.key} 无可分配 Agent；要求能力：${required.join("、") || "未指定"}；团队可用能力：${available}`;
+    }
+  }
+  return undefined;
 }
 
 function isActiveLink(link: MissionLink): link is ActiveMissionLink {

@@ -211,6 +211,14 @@ describe("AgentEngine", () => {
       decision: { accepted: false, disposition: "correctable", reason: "artifact is required" },
     });
     expect(result.goal.status).toBe("active");
+    const updatedThread = await fixture.engine.getThread(thread.threadId);
+    const decisionItem = updatedThread.items.at(-1)!;
+    expect(decisionItem.kind).toBe("control");
+    expect(await fixture.engine.getPayload(decisionItem.payloadRef)).toMatchObject({
+      type: "goal_resolution_decision",
+      status: "correctable",
+      decision: { reason: "artifact is required" },
+    });
   });
 });
 

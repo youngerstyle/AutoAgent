@@ -39,6 +39,15 @@ describe("Ticket Agent resolution adapter", () => {
       valid: false,
       reason: "计划工单必须返回 complete_with_graph",
     });
+    expect(validateMissionTicketOutcome("ticket-graph-v2", "completed", {
+      kind: "complete_with_graph",
+      result: {},
+      graph: { schemaVersion: 2, nodes: [], dependencyEdges: [] },
+      completionPolicy: { failurePolicy: "require_resolution", blockedPolicy: "wait" },
+    })).toEqual({
+      valid: false,
+      reason: "completionPolicy.requiredTerminalKeys 必须是字符串数组",
+    });
   });
 
   it.each([
