@@ -12,6 +12,7 @@ import type {
   TicketCommandResult,
   TicketId,
   TicketSnapshot,
+  TicketWorkItem,
   TransferBlockedOwnershipRequest,
   WorkflowAuthorizationPolicy,
   WorkflowCommandEnvelope,
@@ -69,6 +70,32 @@ export class TicketEngine {
 
   async getClaim(claimId: string): Promise<ClaimReceipt | undefined> {
     return this.store.findClaim(claimId);
+  }
+
+  async getWorkflow(workflowId: WorkflowId) {
+    const aggregate = await this.store.read(workflowId);
+    if (!aggregate) throw new Error(`Workflow ${workflowId} does not exist`);
+    return structuredClone(aggregate.workflow);
+  }
+
+  async getTicket(ticketId: TicketId): Promise<TicketSnapshot | undefined> {
+    for (const workflowId of await this.store.listWorkflowIds()) {
+      const ticket = (await this.store.read(workflowId))?.tickets.find((item) => item.ticketId === ticketId);
+      if (ticket) return structuredClone(ticket);
+    }
+    return undefined;
+  }
+
+  async getWorkItem(ticketId: TicketId): Promise<TicketWorkItem | undefined> {
+    for (const workflowId of await this.store.listWorkflowIds()) {
+      const aggregate = await this.store.read(workflowId);
+      const ticket = aggregate?.tickets.find((item) => item.ticketId === ticketId);
+      if (!aggregate || !ticket || !aggregate.planning) continue;
+      const node = aggregate.workflow.graph.nodes.find((item) => item.ticketId === ticketId);
+      const definition = node ? aggregate.planning.definitionsByKey[String(node.nodeKey)] : undefined;
+      if (definition) return { ticket: structuredClone(ticket), definition: structuredClone(definition) };
+    }
+    return undefined;
   }
 
   async getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined> {

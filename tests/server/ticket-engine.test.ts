@@ -38,6 +38,23 @@ describe("TicketEngine workflow commands", () => {
     expect(aggregate?.commandInputs).toHaveLength(1);
   });
 
+  it("exposes the immutable work definition required to start an Agent Goal", async () => {
+    const fixture = await createFixture();
+    await fixture.engine.createWorkflow(createCommand(fixture.workflowId, fixture.policyRef));
+    const ticketId = (await fixture.store.read(fixture.workflowId))!.tickets[0]!.ticketId;
+
+    await expect(fixture.engine.getWorkItem(ticketId)).resolves.toMatchObject({
+      ticket: { ticketId, status: "ready" },
+      definition: {
+        key: "dev",
+        title: "dev",
+        objective: "complete dev",
+        successCriteria: ["dev done"],
+        outputContract: { schemaRef: "schema:dev" },
+      },
+    });
+  });
+
   it("rejects invalid definitions without creating a partial workflow", async () => {
     const fixture = await createFixture();
     const command = createCommand(fixture.workflowId, fixture.policyRef);

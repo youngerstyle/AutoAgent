@@ -13,6 +13,7 @@ import type {
   TicketExecutionAuthority,
   TicketId,
   TicketSnapshot,
+  TicketWorkItem,
   TransferBlockedOwnershipRequest,
   WorkflowCommandEnvelope,
   WorkflowCommandResult,
@@ -240,6 +241,7 @@ export interface TicketPort {
   applyWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult>;
   getWorkflow(workflowId: WorkflowId): Promise<WorkflowSnapshot>;
   getTicket(ticketId: TicketId): Promise<TicketSnapshot | undefined>;
+  getWorkItem(ticketId: TicketId): Promise<TicketWorkItem | undefined>;
   getClaim(claimId: string): Promise<ClaimReceipt | undefined>;
   getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined>;
   getWorkflowCommandResult(commandId: string): Promise<WorkflowCommandResult | undefined>;

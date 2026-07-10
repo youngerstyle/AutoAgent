@@ -342,6 +342,11 @@ export interface TicketSnapshot {
   activeAuthority?: TicketExecutionAuthority;
 }
 
+export interface TicketWorkItem {
+  ticket: TicketSnapshot;
+  definition: PlannedTicketNode;
+}
+
 export interface WorkflowSnapshot {
   workflowId: WorkflowId;
   version: number;
