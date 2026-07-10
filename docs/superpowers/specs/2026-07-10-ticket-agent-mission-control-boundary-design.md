@@ -200,6 +200,12 @@ interface StartAgentGoalRequest {
   spec: AgentGoalSpec;
 }
 
+interface EnsureAgentThreadRequest {
+  agentId: string;
+  scopeId: string;
+  idempotencyKey: string;
+}
+
 interface SendAgentMessageRequest {
   messageId: string;
   threadId: string;
@@ -211,6 +217,8 @@ interface SendAgentMessageRequest {
 
 interface AgentThreadSnapshot {
   threadId: string;
+  agentId: string;
+  scopeId: string;
   version: number;
   items: Array<{
     itemId: string;
@@ -224,7 +232,7 @@ interface AgentThreadSnapshot {
 
 `externalRef` 对 Agent Engine 是不透明标识。Mission 模式下可保存 Ticket ID，独立运行时可以为空。
 
-`sendMessage` 按 messageId 幂等，AgentThread 在同一 threadId 内分配单调 sequence。human、model、tool 和 control item 使用同一排序规则，不存在独立的 human 消息列表。
+`ensureThread` 允许在没有 Ticket、Goal 或历史 Thread 时，按 agentId + scopeId 幂等创建普通对话 Thread。`sendMessage` 按 messageId 幂等，AgentThread 在同一 threadId 内分配单调 sequence。human、model、tool 和 control item 使用同一排序规则，不存在独立的 human 消息列表。
 
 ### 6.4 Agent Goal 状态
 
@@ -498,9 +506,13 @@ interface WorkflowAuthorizationPolicy {
     capabilities: string[];
   }>;
 }
+
+interface WorkflowPolicyPort {
+  getPolicy(ref: WorkflowPolicyRef): Promise<WorkflowAuthorizationPolicy | undefined>;
+}
 ```
 
-Ticket Engine 按不可变 `WorkflowPolicyRef` 读取并校验 policy contentHash，再判断 principal 是否拥有 `ticket:claim`、`ticket_graph:create`、`workflow:control` 或 `blocked_ownership:transfer` 等 capability。角色名称可以存在于 Agent 档案和 UI，但不参与 Engine 授权代码。
+WorkflowPolicyPort 属于 Ticket Engine 公共 contract，不属于 Mission contract。Ticket Engine 按不可变 `WorkflowPolicyRef` 读取并校验 policy contentHash，再判断 principal 是否拥有 `ticket:claim`、`ticket_graph:create`、`workflow:control` 或 `blocked_ownership:transfer` 等 capability。角色名称可以存在于 Agent 档案和 UI，但不参与 Engine 授权代码。
 
 `PlannedTicketNode.key` 是一次 Workflow 内稳定且永不复用的逻辑键。命令侧的 graph/policy 全部用 key；Ticket Engine 在创建或 amend 事务内为新 key 分配 Ticket ID，把已有 key 解析为当前 Ticket ID，并持久化 `TicketGraphSnapshot`。调用方不能把 key 当作 Ticket ID。新 revision 必须使用新 key，并以 `revisionOfKey` 指向已有 key；Ticket Engine 校验一条旧 revision 同时最多有一个 active successor，再在 snapshot 双向记录 `revisionOfTicketId/supersededByTicketId`。
 
@@ -911,6 +923,14 @@ interface MissionStartRequest {
   requestedByPrincipalId: string;
 }
 
+interface WorkflowDefinitionRegistryPort {
+  resolve(input: {
+    templateId: string;
+    templateVersion?: number;
+    teamBindingId: string;
+  }): Promise<WorkflowDefinition>;
+}
+
 interface MissionRecord {
   missionId: string;
   workflowId: string;
@@ -938,10 +958,12 @@ interface TicketPort {
   releaseClaim(input: ReleaseClaimRequest): Promise<TicketSnapshot>;
   transferBlockedOwnership(input: TransferBlockedOwnershipRequest): Promise<BlockedOwnershipReceipt>;
   applyTicket(command: TicketCommandEnvelope<TicketCommandPayload>): Promise<TicketCommandResult>;
-  readEvents(input: { after?: EventCursor; limit: number }): Promise<EventPage<TicketEvent>>;
+  readEvents(input: { workflowId: string; after?: EventCursor; limit: number }): Promise<EventPage<TicketEvent>>;
 }
 
 interface AgentPort {
+  ensureThread(input: EnsureAgentThreadRequest): Promise<AgentThreadSnapshot>;
+  getThreadForAgent(agentId: string, scopeId: string): Promise<AgentThreadSnapshot | undefined>;
   startGoal(input: StartAgentGoalRequest & { idempotencyKey: string }): Promise<AgentGoal>;
   getGoalByStartKey(idempotencyKey: string): Promise<AgentGoal | undefined>;
   getGoal(goalId: string): Promise<AgentGoal | undefined>;
@@ -950,11 +972,11 @@ interface AgentPort {
   sendMessage(input: SendAgentMessageRequest): Promise<void>;
   controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal>;
   settleProposal(input: SettleProposalRequest): Promise<SettleProposalResult>;
-  readEvents(input: { after?: EventCursor; limit: number }): Promise<EventPage<AgentEvent>>;
+  readEvents(input: { agentId: string; after?: EventCursor; limit: number }): Promise<EventPage<AgentEvent>>;
 }
 ```
 
-事件消费使用 durable cursor，不依赖仅存在于进程内的 callback subscription。Mission Control 为 Ticket 和 Agent 事件流分别保存最后提交 cursor；事件允许至少一次交付，consumer 必须按 eventId 幂等。
+事件消费使用 aggregate-partitioned durable cursor，不依赖仅存在于进程内的 callback subscription。Ticket 事件按 workflowId 分区，Agent 事件按 agentId 分区；Mission Control 为每个 `ticket:<workflowId>` 与 `agent:<agentId>` 分区分别保存最后提交 cursor 和 applied aggregateVersion。事件允许至少一次交付，consumer 必须按 eventId 幂等；不同分区的 cursor 不能混用。
 
 开始、暂停、继续、停止的协议顺序：
 
@@ -1269,7 +1291,11 @@ interface EngineEventEnvelope<TPayload> {
   payload: TPayload;
 }
 
-type EventCursor = string;
+interface EventCursor {
+  source: "ticket" | "agent";
+  partitionId: string;
+  position: string;
+}
 
 interface EventPage<TEvent> {
   events: TEvent[];
