@@ -2,8 +2,10 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   AGENT_GOAL_STATUSES,
+  type AgentAggregateType,
   type AgentEvent,
   type AgentEventCursor,
+  type AgentEventEnvelope,
   type AgentEventPage,
   type AgentEventQuery,
   type AgentGoalControlRequest,
@@ -173,12 +175,15 @@ describe("Agent Engine runtime contracts", () => {
 
   it("binds Agent event payloads to their aggregate type", () => {
     const acceptEvent = (_event: AgentEvent) => undefined;
+    const acceptEnvelope = (_event: AgentEventEnvelope<AgentAggregateType>) => undefined;
 
     if (false) {
       // @ts-expect-error Goal events belong to the agent_goal aggregate.
       acceptEvent({ eventId: "event-1", aggregateType: "agent_thread", aggregateId: "thread-1", aggregateVersion: 1, occurredAt: "2026-07-10T01:04:00.000Z", payload: { type: "GoalStatusChanged", goalId: "goal-1", status: "blocked" } });
       // @ts-expect-error Message events belong to the agent_thread aggregate.
       acceptEvent({ eventId: "event-2", aggregateType: "agent_goal", aggregateId: "goal-1", aggregateVersion: 2, occurredAt: "2026-07-10T01:05:00.000Z", payload: { type: "MessageAppended", threadId: "thread-1", messageId: "message-1", sequence: 3 } });
+      // @ts-expect-error The exported envelope must preserve aggregate and payload correlation.
+      acceptEnvelope({ eventId: "event-3", aggregateType: "agent_thread", aggregateId: "thread-1", aggregateVersion: 3, occurredAt: "2026-07-10T01:06:00.000Z", payload: { type: "GoalStatusChanged", goalId: "goal-1", status: "blocked" } });
     }
   });
 });

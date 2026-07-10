@@ -186,24 +186,19 @@ export interface AgentEventPayloadByAggregate {
 export type AgentAggregateType = keyof AgentEventPayloadByAggregate;
 export type AgentEventPayload = AgentEventPayloadByAggregate[AgentAggregateType];
 
-export interface AgentEventEnvelope<
-  TAggregateType extends AgentAggregateType,
-  TPayload extends AgentEventPayloadByAggregate[TAggregateType],
-> {
-  eventId: string;
-  aggregateType: TAggregateType;
-  aggregateId: string;
-  aggregateVersion: number;
-  occurredAt: string;
-  payload: TPayload;
-}
-
-export type AgentEvent<TAggregateType extends AgentAggregateType = AgentAggregateType> = {
-  [TCurrentAggregate in TAggregateType]: AgentEventEnvelope<
-    TCurrentAggregate,
-    AgentEventPayloadByAggregate[TCurrentAggregate]
-  >;
+export type AgentEventEnvelope<TAggregateType extends AgentAggregateType = AgentAggregateType> = {
+  [TCurrentAggregate in TAggregateType]: {
+    eventId: string;
+    aggregateType: TCurrentAggregate;
+    aggregateId: string;
+    aggregateVersion: number;
+    occurredAt: string;
+    payload: AgentEventPayloadByAggregate[TCurrentAggregate];
+  };
 }[TAggregateType];
+
+export type AgentEvent<TAggregateType extends AgentAggregateType = AgentAggregateType> =
+  AgentEventEnvelope<TAggregateType>;
 
 export interface AgentEventCursor<TAgentId extends string = string> {
   source: "agent";
