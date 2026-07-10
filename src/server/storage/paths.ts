@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 export interface StoragePaths {
@@ -82,12 +83,34 @@ export function ticketEngineFile(
   taskRunId: string,
   workflowId: string,
 ): string {
-  return path.join(
-    taskRunDir(workspaceRoot, taskId, taskRunId),
-    "ticket-engine",
+  const engineRoot = path.resolve(workspaceAutoAgentDir(workspaceRoot), "ticket-engine");
+  const file = path.join(
+    engineRoot,
+    "tasks",
+    ticketEngineStorageKey(taskId),
+    "runs",
+    ticketEngineStorageKey(taskRunId),
     "workflows",
-    `${encodeURIComponent(workflowId)}.json`,
+    `${ticketEngineStorageKey(workflowId)}.json`,
   );
+  const resolved = path.resolve(file);
+  if (!resolved.startsWith(`${engineRoot}${path.sep}`)) {
+    throw new Error("Ticket Engine path escaped its storage root");
+  }
+  return resolved;
+}
+
+export function ticketEngineLockFile(
+  workspaceRoot: string,
+  taskId: string,
+  taskRunId: string,
+  workflowId: string,
+): string {
+  return `${ticketEngineFile(workspaceRoot, taskId, taskRunId, workflowId)}.lock`;
+}
+
+function ticketEngineStorageKey(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("base64url");
 }
 
 export function artifactsDir(workspaceRoot: string, taskId: string, taskRunId: string): string {
