@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
 import type {
+  BlockedOwnershipReceipt,
+  ClaimReceipt,
+  ClaimRequest,
   PlannedTicketNode,
+  ReleaseClaimRequest,
+  RenewClaimRequest,
   TicketEvent,
   TicketId,
   TicketSnapshot,
+  TransferBlockedOwnershipRequest,
   WorkflowAuthorizationPolicy,
   WorkflowCommandEnvelope,
   WorkflowCommandResult,
@@ -15,6 +21,7 @@ import {
   TicketStore,
   TicketStoreConflictError,
   type TicketAggregate,
+  type TicketOperationRecord,
   type TicketPlanningState,
 } from "./ticket-store.js";
 import {
@@ -31,10 +38,22 @@ class WorkflowCommandValidationError extends Error {}
 
 export interface TicketEngineOptions {
   teamBindingIds?: string[];
+  now?: () => Date;
+}
+
+export class TicketEngineOperationError extends Error {
+  constructor(
+    public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation",
+    message: string,
+  ) {
+    super(message);
+    this.name = "TicketEngineOperationError";
+  }
 }
 
 export class TicketEngine {
   private readonly teamBindingIds: string[];
+  private readonly now: () => Date;
 
   constructor(
     private readonly store: TicketStore,
@@ -42,6 +61,244 @@ export class TicketEngine {
     options: TicketEngineOptions = {},
   ) {
     this.teamBindingIds = [...new Set(options.teamBindingIds ?? [])].sort();
+    this.now = options.now ?? (() => new Date());
+  }
+
+  async getClaim(claimId: string): Promise<ClaimReceipt | undefined> {
+    return this.store.findClaim(claimId);
+  }
+
+  async getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined> {
+    const record = await this.store.findOperationRecord(requestId);
+    return record?.kind === "claim" || record?.kind === "renew_claim"
+      ? record.claim
+      : undefined;
+  }
+
+  async claimReady(input: ClaimRequest): Promise<ClaimReceipt | undefined> {
+    validateDuration(input.leaseDurationMs, "leaseDurationMs");
+    const fingerprint = requestFingerprint("claim", input);
+    const replay = await this.replayOperation(input.requestId, "claim", fingerprint);
+    if (replay) return replay.claim;
+    const aggregate = await this.store.read(input.workflowId);
+    if (!aggregate || aggregate.workflow.status !== "active") return undefined;
+    if (!await this.authorized(
+      aggregate.workflow.policyRef,
+      input.principalId,
+      "ticket:claim",
+    )) {
+      throw new TicketEngineOperationError("policy_violation", "Principal cannot claim tickets");
+    }
+    const ticket = aggregate.tickets.find((item) => item.ticketId === input.ticketId);
+    if (!ticket || ticket.status !== "ready" || ticket.version !== input.expectedTicketVersion) return undefined;
+
+    const nextVersion = ticket.version + 1;
+    const receipt: ClaimReceipt = {
+      requestId: input.requestId,
+      claimId: stableId("claim", input.workflowId, input.ticketId, input.requestId),
+      workflowId: input.workflowId,
+      ticketId: input.ticketId,
+      ticketVersion: nextVersion,
+      principalId: input.principalId,
+      fencingToken: nextFencingToken(aggregate, input.ticketId),
+      leaseUntil: new Date(this.now().getTime() + input.leaseDurationMs).toISOString(),
+    };
+    try {
+      await this.store.transact(
+        input.workflowId,
+        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
+        (current) => {
+          const currentTicket = current.tickets.find((item) => item.ticketId === input.ticketId);
+          if (!currentTicket || currentTicket.status !== "ready" || currentTicket.version !== input.expectedTicketVersion) {
+            throw new WorkflowCommandValidationError("Ticket is no longer ready");
+          }
+          return {
+            ...current,
+            workflow: { ...current.workflow, version: current.workflow.version + 1 },
+            tickets: current.tickets.map((item) => item.ticketId === input.ticketId ? {
+              ...item,
+              version: nextVersion,
+              status: "running" as const,
+              activeAuthority: {
+                kind: "claim" as const,
+                claimId: receipt.claimId,
+                fencingToken: receipt.fencingToken,
+              },
+            } : item),
+            claims: [...current.claims, receipt],
+            operationRecords: [...current.operationRecords, {
+              kind: "claim" as const,
+              requestId: input.requestId,
+              fingerprint,
+              claim: receipt,
+            }],
+            pendingEvents: [ticketEventFromValues(
+              input.workflowId,
+              input.ticketId,
+              nextVersion,
+              input.requestId,
+              this.now().toISOString(),
+              { type: "TicketClaimed", claimId: receipt.claimId },
+            )],
+          };
+        },
+      );
+      return receipt;
+    } catch (error) {
+      if (error instanceof TicketStoreConflictError || error instanceof WorkflowCommandValidationError) {
+        const raced = await this.replayOperation(input.requestId, "claim", fingerprint);
+        return raced?.claim;
+      }
+      throw error;
+    }
+  }
+
+  async renewClaim(input: RenewClaimRequest): Promise<ClaimReceipt> {
+    validateDuration(input.extendByMs, "extendByMs");
+    const fingerprint = requestFingerprint("renew_claim", input);
+    const replay = await this.replayOperation(input.requestId, "renew_claim", fingerprint);
+    if (replay) return replay.claim;
+    const claim = await this.requireClaim(input.claimId, input.fencingToken);
+    const aggregate = await this.requireWorkflow(claim.workflowId);
+    const ticket = requireActiveClaimTicket(aggregate, claim);
+    const nextVersion = ticket.version + 1;
+    const leaseBase = Math.max(Date.parse(claim.leaseUntil), this.now().getTime());
+    const renewed: ClaimReceipt = {
+      ...claim,
+      requestId: input.requestId,
+      ticketVersion: nextVersion,
+      leaseUntil: new Date(leaseBase + input.extendByMs).toISOString(),
+    };
+    await this.store.transact(
+      claim.workflowId,
+      { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
+      (current) => ({
+        ...current,
+        workflow: { ...current.workflow, version: current.workflow.version + 1 },
+        tickets: current.tickets.map((item) => item.ticketId === ticket.ticketId
+          ? { ...item, version: nextVersion }
+          : item),
+        claims: current.claims.map((item) => item.claimId === claim.claimId ? renewed : item),
+        operationRecords: [...current.operationRecords, {
+          kind: "renew_claim" as const,
+          requestId: input.requestId,
+          fingerprint,
+          claim: renewed,
+        }],
+      }),
+    );
+    return renewed;
+  }
+
+  async releaseClaim(input: ReleaseClaimRequest): Promise<TicketSnapshot> {
+    const fingerprint = requestFingerprint("release_claim", input);
+    const replay = await this.replayOperation(input.requestId, "release_claim", fingerprint);
+    if (replay) return replay.ticket;
+    const claim = await this.requireClaim(input.claimId, input.fencingToken);
+    return this.releaseActiveClaim(claim, input.requestId, fingerprint, "released");
+  }
+
+  async transferBlockedOwnership(
+    input: TransferBlockedOwnershipRequest,
+  ): Promise<BlockedOwnershipReceipt> {
+    const fingerprint = requestFingerprint("transfer_blocked_ownership", input);
+    const replay = await this.replayOperation(
+      input.requestId,
+      "transfer_blocked_ownership",
+      fingerprint,
+    );
+    if (replay) return replay.ownership;
+    const ownership = await this.store.findBlockedOwnership(input.ownershipId);
+    if (!ownership || ownership.fencingToken !== input.fencingToken) {
+      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is stale");
+    }
+    const aggregate = await this.requireWorkflow(ownership.workflowId);
+    if (!await this.authorized(
+      aggregate.workflow.policyRef,
+      ownership.principalId,
+      "blocked_ownership:transfer",
+    )) {
+      throw new TicketEngineOperationError("policy_violation", "Owner cannot transfer blocked ownership");
+    }
+    const ticket = aggregate.tickets.find((item) => item.ticketId === ownership.ticketId);
+    if (
+      !ticket
+      || ticket.status !== "blocked"
+      || ticket.activeAuthority?.kind !== "blocked_owner"
+      || ticket.activeAuthority.ownershipId !== ownership.ownershipId
+      || ticket.activeAuthority.fencingToken !== ownership.fencingToken
+    ) {
+      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is no longer active");
+    }
+    const nextVersion = ticket.version + 1;
+    const transferred: BlockedOwnershipReceipt = {
+      ownershipId: stableId("ownership", ownership.workflowId, ownership.ticketId, input.requestId),
+      workflowId: ownership.workflowId,
+      ticketId: ownership.ticketId,
+      ticketVersion: nextVersion,
+      principalId: input.toPrincipalId,
+      fencingToken: nextFencingToken(aggregate, ownership.ticketId),
+    };
+    await this.store.transact(
+      ownership.workflowId,
+      { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
+      (current) => ({
+        ...current,
+        workflow: { ...current.workflow, version: current.workflow.version + 1 },
+        tickets: current.tickets.map((item) => item.ticketId === ownership.ticketId ? {
+          ...item,
+          version: nextVersion,
+          activeAuthority: {
+            kind: "blocked_owner" as const,
+            ownershipId: transferred.ownershipId,
+            fencingToken: transferred.fencingToken,
+          },
+        } : item),
+        blockedOwnerships: [...current.blockedOwnerships, transferred],
+        operationRecords: [...current.operationRecords, {
+          kind: "transfer_blocked_ownership" as const,
+          requestId: input.requestId,
+          fingerprint,
+          ownership: transferred,
+        }],
+        pendingEvents: [ticketEventFromValues(
+          ownership.workflowId,
+          ownership.ticketId,
+          nextVersion,
+          input.requestId,
+          this.now().toISOString(),
+          { type: "AuthorityRevoked", fencingToken: ownership.fencingToken },
+        )],
+      }),
+    );
+    return transferred;
+  }
+
+  async scanExpiredClaims(now = this.now()): Promise<TicketSnapshot[]> {
+    const released: TicketSnapshot[] = [];
+    for (const workflowId of await this.store.listWorkflowIds()) {
+      const aggregate = await this.store.read(workflowId);
+      if (!aggregate) continue;
+      for (const claim of aggregate.claims) {
+        const ticket = aggregate.tickets.find((item) => item.ticketId === claim.ticketId);
+        if (
+          ticket?.activeAuthority?.kind !== "claim"
+          || ticket.activeAuthority.claimId !== claim.claimId
+          || Date.parse(claim.leaseUntil) > now.getTime()
+        ) continue;
+        const requestId = `expire:${claim.claimId}:${claim.leaseUntil}`;
+        const fingerprint = requestFingerprint("release_claim", { requestId, claimId: claim.claimId });
+        const replay = await this.replayOperation(requestId, "release_claim", fingerprint);
+        released.push(replay?.ticket ?? await this.releaseActiveClaim(
+          claim,
+          requestId,
+          fingerprint,
+          "expired",
+          now,
+        ));
+      }
+    }
+    return released;
   }
 
   async createWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult> {
@@ -327,6 +584,107 @@ export class TicketEngine {
     });
   }
 
+  private async replayOperation<TKind extends TicketOperationRecord["kind"]>(
+    requestId: string,
+    kind: TKind,
+    fingerprint: string,
+  ): Promise<Extract<TicketOperationRecord, { kind: TKind }> | undefined> {
+    const record = await this.store.findOperationRecord(requestId);
+    if (!record) return undefined;
+    if (record.kind !== kind || record.fingerprint !== fingerprint) {
+      throw new TicketEngineOperationError(
+        "idempotency_conflict",
+        `Request ID ${requestId} was used with different content`,
+      );
+    }
+    return record as Extract<TicketOperationRecord, { kind: TKind }>;
+  }
+
+  private async requireClaim(claimId: string, fencingToken: number): Promise<ClaimReceipt> {
+    const claim = await this.store.findClaim(claimId);
+    if (!claim || claim.fencingToken !== fencingToken) {
+      throw new TicketEngineOperationError("stale_authority", "Claim is stale");
+    }
+    return claim;
+  }
+
+  private async requireWorkflow(workflowId: WorkflowId): Promise<TicketAggregate> {
+    const aggregate = await this.store.read(workflowId);
+    if (!aggregate) throw new TicketEngineOperationError("invalid_request", "Workflow does not exist");
+    return aggregate;
+  }
+
+  private async releaseActiveClaim(
+    claim: ClaimReceipt,
+    requestId: string,
+    fingerprint: string,
+    mode: "released" | "expired",
+    occurredAt = this.now(),
+  ): Promise<TicketSnapshot> {
+    const aggregate = await this.requireWorkflow(claim.workflowId);
+    const ticket = requireActiveClaimTicket(aggregate, claim);
+    const next: TicketSnapshot = {
+      ...ticket,
+      version: ticket.version + 1,
+      status: "ready",
+      activeAuthority: undefined,
+    };
+    const pendingEvents: TicketEvent[] = [ticketEventFromValues(
+      claim.workflowId,
+      claim.ticketId,
+      next.version,
+      requestId,
+      occurredAt.toISOString(),
+      { type: "AuthorityRevoked", fencingToken: claim.fencingToken },
+    )];
+    if (mode === "expired") {
+      pendingEvents.push(ticketEventFromValues(
+        claim.workflowId,
+        claim.ticketId,
+        next.version,
+        requestId,
+        occurredAt.toISOString(),
+        { type: "ClaimExpired", claimId: claim.claimId },
+      ));
+    }
+    pendingEvents.push(ticketEventFromValues(
+      claim.workflowId,
+      claim.ticketId,
+      next.version,
+      requestId,
+      occurredAt.toISOString(),
+      { type: "TicketReady", ticketVersion: next.version },
+    ));
+    try {
+      await this.store.transact(
+        claim.workflowId,
+        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
+        (current) => {
+          requireActiveClaimTicket(current, claim);
+          return {
+            ...current,
+            workflow: { ...current.workflow, version: current.workflow.version + 1 },
+            tickets: current.tickets.map((item) => item.ticketId === claim.ticketId ? next : item),
+            operationRecords: [...current.operationRecords, {
+              kind: "release_claim" as const,
+              requestId,
+              fingerprint,
+              ticket: next,
+            }],
+            pendingEvents,
+          };
+        },
+      );
+      return next;
+    } catch (error) {
+      if (error instanceof TicketStoreConflictError || error instanceof TicketEngineOperationError) {
+        const replay = await this.replayOperation(requestId, "release_claim", fingerprint);
+        if (replay) return replay.ticket;
+      }
+      throw error;
+    }
+  }
+
   private async authorized(
     ref: TicketAggregate["workflow"]["policyRef"],
     principalId: string,
@@ -510,6 +868,69 @@ function workflowEvent(
 
 function eventId(commandId: string, type: string, aggregateId: string, version: number): string {
   return `te_${createHash("sha256").update(JSON.stringify([commandId, type, aggregateId, version])).digest("base64url")}`;
+}
+
+function ticketEventFromValues(
+  workflowId: WorkflowId,
+  ticketId: TicketId,
+  ticketVersion: number,
+  requestId: string,
+  occurredAt: string,
+  payload: Extract<TicketEvent, { aggregateType: "ticket" }>["payload"],
+): TicketEvent {
+  return {
+    eventId: eventId(requestId, payload.type, ticketId, ticketVersion),
+    workflowId,
+    aggregateType: "ticket",
+    aggregateId: ticketId,
+    aggregateVersion: ticketVersion,
+    occurredAt,
+    payload,
+  };
+}
+
+function requireActiveClaimTicket(aggregate: TicketAggregate, claim: ClaimReceipt): TicketSnapshot {
+  const ticket = aggregate.tickets.find((item) => item.ticketId === claim.ticketId);
+  if (
+    !ticket
+    || ticket.status !== "running"
+    || ticket.activeAuthority?.kind !== "claim"
+    || ticket.activeAuthority.claimId !== claim.claimId
+    || ticket.activeAuthority.fencingToken !== claim.fencingToken
+    || ticket.version !== claim.ticketVersion
+  ) {
+    throw new TicketEngineOperationError("stale_authority", "Claim is no longer active");
+  }
+  return ticket;
+}
+
+function nextFencingToken(aggregate: TicketAggregate, ticketId: TicketId): number {
+  return Math.max(
+    0,
+    ...aggregate.claims.filter((claim) => claim.ticketId === ticketId).map((claim) => claim.fencingToken),
+    ...aggregate.blockedOwnerships
+      .filter((ownership) => ownership.ticketId === ticketId)
+      .map((ownership) => ownership.fencingToken),
+  ) + 1;
+}
+
+function stableId(kind: string, workflowId: WorkflowId, ticketId: TicketId, requestId: string): string {
+  return `${kind}_${createHash("sha256")
+    .update(JSON.stringify([kind, workflowId, ticketId, requestId]))
+    .digest("base64url")}`;
+}
+
+function requestFingerprint(kind: string, input: unknown): string {
+  return `sha256:${createHash("sha256").update(canonicalJson({ kind, input })).digest("hex")}`;
+}
+
+function validateDuration(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 1 || value > 86_400_000) {
+    throw new TicketEngineOperationError(
+      "invalid_request",
+      `${label} must be an integer between 1 and 86400000`,
+    );
+  }
 }
 
 function commandFingerprint(command: WorkflowCommandEnvelope): string {

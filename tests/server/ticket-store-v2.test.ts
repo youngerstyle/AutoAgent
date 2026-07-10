@@ -39,6 +39,7 @@ describe("TicketStore", () => {
     expect(persisted.tickets).toHaveLength(1);
     expect(persisted.claims).toEqual([]);
     expect(persisted.blockedOwnerships).toEqual([]);
+    expect(persisted.operationRecords).toEqual([]);
     expect(persisted.commandInputs).toEqual([]);
     expect(persisted.commandResults).toEqual([]);
     expect(persisted.outbox).toEqual([]);
