@@ -14,11 +14,11 @@ export type WorkflowId<TValue extends string = string> = TValue & {
   readonly [workflowIdBrand]: "WorkflowId";
 };
 
-export interface OutputContract {
+export interface TicketOutputContract {
   schemaRef: string;
 }
 
-export interface EvidenceRef {
+export interface TicketEvidenceRef {
   kind: string;
   ref: string;
 }
@@ -36,7 +36,7 @@ export interface PlannedTicketNode {
   objective: string;
   successCriteria: string[];
   assignment: PlannedTicketAssignment;
-  outputContract: OutputContract;
+  outputContract: TicketOutputContract;
 }
 
 export interface PlannedTicketGraph {
@@ -148,8 +148,10 @@ export type TicketExecutionAuthority =
 
 export interface ClaimRequest {
   requestId: string;
+  workflowId: WorkflowId;
   ticketId: TicketId;
   expectedTicketVersion: number;
+  principalId: string;
   leaseDurationMs: number;
 }
 
@@ -177,13 +179,13 @@ export interface TransferBlockedOwnershipRequest {
 export interface CompleteTicketCommand {
   type: "complete";
   result: unknown;
-  evidence: EvidenceRef[];
+  evidence: TicketEvidenceRef[];
 }
 
 export interface CompleteWithGraphTicketCommand {
   type: "complete_with_graph";
   result: unknown;
-  evidence: EvidenceRef[];
+  evidence: TicketEvidenceRef[];
   expectedWorkflowVersion: number;
   graph: PlannedTicketGraph;
   completionPolicy: PlannedWorkflowCompletionPolicy;
@@ -201,13 +203,13 @@ export interface ReturnToParentTicketCommand {
   parentTicketId: TicketId;
   expectedWorkflowVersion: number;
   reason: string;
-  evidence: EvidenceRef[];
+  evidence: TicketEvidenceRef[];
 }
 
 export interface FailTicketCommand {
   type: "fail";
   reason: string;
-  evidence: EvidenceRef[];
+  evidence: TicketEvidenceRef[];
 }
 
 export type TicketCommandPayload =
@@ -311,7 +313,7 @@ export interface ClaimCommandEnvelope {
   workflowId: WorkflowId;
   actorPrincipalId: string;
   issuedAt: string;
-  payload: { type: "claim" } & ClaimRequest;
+  payload: { type: "claim" } & Omit<ClaimRequest, "workflowId" | "principalId">;
 }
 
 export type ClaimCommandResult =
@@ -350,20 +352,18 @@ export interface WorkflowSnapshot {
 }
 
 export type TicketAggregateEventPayload =
-  | { type: "TicketReady"; ticketId: TicketId; ticketVersion: number }
-  | { type: "TicketClaimed"; ticketId: TicketId; claimId: string }
-  | { type: "ClaimExpired"; ticketId: TicketId; claimId: string }
-  | { type: "TicketBlocked"; ticketId: TicketId; requiredInput?: string }
+  | { type: "TicketReady"; ticketVersion: number }
+  | { type: "TicketClaimed"; claimId: string }
+  | { type: "ClaimExpired"; claimId: string }
+  | { type: "TicketBlocked"; requiredInput?: string }
   | {
       type: "TicketTerminal";
-      ticketId: TicketId;
       status: "completed" | "returned" | "failed" | "cancelled";
     }
-  | { type: "AuthorityRevoked"; ticketId: TicketId; fencingToken: number };
+  | { type: "AuthorityRevoked"; fencingToken: number };
 
 export type WorkflowAggregateEventPayload = {
   type: "WorkflowStatusChanged";
-  workflowId: WorkflowId;
   status: WorkflowStatus;
 };
 
@@ -379,10 +379,13 @@ type TicketAggregateIdByType = {
   workflow: WorkflowId;
 };
 
-export type TicketEventEnvelope<TAggregate extends TicketAggregateType = TicketAggregateType> = {
+export type TicketEventEnvelope<
+  TAggregate extends TicketAggregateType = TicketAggregateType,
+  TWorkflowId extends WorkflowId = WorkflowId,
+> = {
   [TCurrentAggregate in TAggregate]: {
     eventId: string;
-    workflowId: WorkflowId;
+    workflowId: TWorkflowId;
     aggregateType: TCurrentAggregate;
     aggregateId: TicketAggregateIdByType[TCurrentAggregate];
     aggregateVersion: number;
@@ -391,8 +394,10 @@ export type TicketEventEnvelope<TAggregate extends TicketAggregateType = TicketA
   };
 }[TAggregate];
 
-export type TicketEvent<TAggregate extends TicketAggregateType = TicketAggregateType> =
-  TicketEventEnvelope<TAggregate>;
+export type TicketEvent<
+  TAggregate extends TicketAggregateType = TicketAggregateType,
+  TWorkflowId extends WorkflowId = WorkflowId,
+> = TicketEventEnvelope<TAggregate, TWorkflowId>;
 
 export interface TicketEventCursor<TWorkflowId extends WorkflowId = WorkflowId> {
   source: "ticket";
@@ -407,8 +412,11 @@ export interface TicketEventQuery<TWorkflowId extends WorkflowId = WorkflowId> {
 }
 
 export interface TicketEventPage<
-  TEvent extends TicketEvent = TicketEvent,
   TWorkflowId extends WorkflowId = WorkflowId,
+  TEvent extends TicketEvent<TicketAggregateType, TWorkflowId> = TicketEvent<
+    TicketAggregateType,
+    TWorkflowId
+  >,
 > {
   events: TEvent[];
   nextCursor: TicketEventCursor<TWorkflowId>;

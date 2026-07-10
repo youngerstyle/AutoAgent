@@ -432,7 +432,7 @@ describe("Ticket Engine runtime contracts", () => {
       position: "21",
     } satisfies TicketEventCursor<typeof workflowId>;
     const query = { workflowId, after: cursor, limit: 100 } satisfies TicketEventQuery<typeof workflowId>;
-    const page = { events: [], nextCursor: cursor } satisfies TicketEventPage<TicketEvent, typeof workflowId>;
+    const page = { events: [], nextCursor: cursor } satisfies TicketEventPage<typeof workflowId>;
 
     expect(query.workflowId).toBe(cursor.partitionId);
     expect(page.nextCursor.position).toBe("21");
@@ -441,12 +441,18 @@ describe("Ticket Engine runtime contracts", () => {
     const acceptEnvelope = (_event: TicketEventEnvelope) => undefined;
     if (false) {
       // @ts-expect-error Workflow events must use workflow payloads.
-      acceptEvent({ eventId: "event-1", workflowId, aggregateType: "workflow", aggregateId: workflowId, aggregateVersion: 1, occurredAt: "2026-07-10T01:03:00.000Z", payload: { type: "TicketReady", ticketId: "ticket-1" as TicketId, ticketVersion: 1 } });
+      acceptEvent({ eventId: "event-1", workflowId, aggregateType: "workflow", aggregateId: workflowId, aggregateVersion: 1, occurredAt: "2026-07-10T01:03:00.000Z", payload: { type: "TicketReady", ticketVersion: 1 } });
       // @ts-expect-error Ticket events must use Ticket payloads.
-      acceptEnvelope({ eventId: "event-2", workflowId, aggregateType: "ticket", aggregateId: "ticket-1" as TicketId, aggregateVersion: 2, occurredAt: "2026-07-10T01:04:00.000Z", payload: { type: "WorkflowStatusChanged", workflowId, status: "active" } });
+      acceptEnvelope({ eventId: "event-2", workflowId, aggregateType: "ticket", aggregateId: "ticket-1" as TicketId, aggregateVersion: 2, occurredAt: "2026-07-10T01:04:00.000Z", payload: { type: "WorkflowStatusChanged", status: "active" } });
       // @ts-expect-error Cursor partition must match the queried workflowId.
       const crossWorkflowQuery: TicketEventQuery<typeof workflowId> = { workflowId, after: { source: "ticket", partitionId: otherWorkflowId, position: "22" }, limit: 100 };
       void crossWorkflowQuery;
+      const crossWorkflowPage: TicketEventPage<typeof workflowId> = {
+        // @ts-expect-error Every event in a page must belong to the page workflow partition.
+        events: [{ eventId: "event-3", workflowId: otherWorkflowId, aggregateType: "workflow", aggregateId: otherWorkflowId, aggregateVersion: 1, occurredAt: "2026-07-10T01:05:00.000Z", payload: { type: "WorkflowStatusChanged", status: "active" } }],
+        nextCursor: cursor,
+      };
+      void crossWorkflowPage;
     }
   });
 
