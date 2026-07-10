@@ -18,7 +18,6 @@ import type {
   WorkflowCommandResult,
   WorkflowDefinition,
   WorkflowId,
-  WorkflowPolicyRef,
   WorkflowSnapshot,
   WorkflowStatus,
 } from "./ticket-engine.js";
@@ -38,12 +37,15 @@ export interface TeamBinding {
   members: TeamBindingMember[];
 }
 
+export interface ResolvedMissionStartBundle {
+  workflowDefinition: WorkflowDefinition;
+  teamBindingId: string;
+}
+
 export interface MissionStartRequest {
   missionId: string;
   objective: string;
-  workflowDefinition: WorkflowDefinition;
-  workflowPolicyRef: WorkflowPolicyRef;
-  teamBindingId: string;
+  resolvedStart: ResolvedMissionStartBundle;
   requestedByPrincipalId: string;
 }
 
@@ -52,7 +54,7 @@ export interface WorkflowDefinitionRegistryPort {
     templateId: string;
     templateVersion?: number;
     teamBindingId: string;
-  }): Promise<WorkflowDefinition>;
+  }): Promise<ResolvedMissionStartBundle>;
 }
 
 interface MissionRecordBase {
@@ -89,12 +91,24 @@ export type DispatchingMissionLink = MissionLinkBase & {
   agentGoalId?: never;
 };
 
-export type StartingMissionLink = MissionLinkBase & {
+interface StartingMissionLinkBase extends MissionLinkBase {
   status: "starting";
   authority: TicketExecutionAuthority;
-  agentThreadId?: string;
-  agentGoalId?: string;
-};
+}
+
+export type StartingMissionLink =
+  | (StartingMissionLinkBase & {
+      agentThreadId?: never;
+      agentGoalId?: never;
+    })
+  | (StartingMissionLinkBase & {
+      agentThreadId: string;
+      agentGoalId?: never;
+    })
+  | (StartingMissionLinkBase & {
+      agentThreadId: string;
+      agentGoalId: string;
+    });
 
 export type ActiveMissionLink = MissionLinkBase & {
   status: "running" | "blocked" | "resolving" | "paused" | "recovering";
@@ -143,7 +157,18 @@ export type RuntimeRecordEnvelope =
 
 export type RuntimeRecordClassification =
   | { kind: "ticket_agent"; schedulable: true }
+  | {
+      kind: "ticket_agent";
+      schedulable: false;
+      reason: "start_failed" | "invalid_record";
+    }
   | { kind: "legacy_readonly"; schedulable: false };
+
+export type RuntimeRecordVersion =
+  | "legacy_phase@1"
+  | "ticket_agent@2"
+  | "undiscriminated_legacy"
+  | "unsupported";
 
 function hasString(value: object, key: string): boolean {
   return key in value && typeof (value as Record<string, unknown>)[key] === "string";
@@ -182,12 +207,32 @@ export function isTicketAgentRuntimeEnvelope(
   return false;
 }
 
+export function classifyRuntimeRecordVersion(input: unknown): RuntimeRecordVersion {
+  if (typeof input !== "object" || input === null || !("engine" in input)) {
+    return "undiscriminated_legacy";
+  }
+  if (!("schemaVersion" in input)) return "unsupported";
+  if (input.engine === "legacy_phase" && input.schemaVersion === 1) {
+    return "legacy_phase@1";
+  }
+  if (input.engine === "ticket_agent" && input.schemaVersion === 2) {
+    return "ticket_agent@2";
+  }
+  return "unsupported";
+}
+
 export function classifyRuntimeRecord(input: unknown): RuntimeRecordClassification {
-  if (isTicketAgentRuntimeEnvelope(input)) {
-    return { kind: "ticket_agent", schedulable: true };
+  if (classifyRuntimeRecordVersion(input) !== "ticket_agent@2") {
+    return { kind: "legacy_readonly", schedulable: false };
   }
 
-  return { kind: "legacy_readonly", schedulable: false };
+  if (!isTicketAgentRuntimeEnvelope(input)) {
+    return { kind: "ticket_agent", schedulable: false, reason: "invalid_record" };
+  }
+  if (input.record.status === "start_failed") {
+    return { kind: "ticket_agent", schedulable: false, reason: "start_failed" };
+  }
+  return { kind: "ticket_agent", schedulable: true };
 }
 
 export interface TicketPort {

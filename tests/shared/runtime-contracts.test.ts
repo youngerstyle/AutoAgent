@@ -52,6 +52,7 @@ import {
 } from "../../src/shared/contracts/ticket-engine.js";
 import {
   classifyRuntimeRecord,
+  classifyRuntimeRecordVersion,
   type MissionLink,
   type MissionProjection,
   type MissionRecord,
@@ -517,9 +518,27 @@ describe("Mission Control runtime contracts", () => {
       agentThreadId: "thread-1",
       agentGoalId: "goal-1",
     } satisfies MissionLink;
+    const startingWithoutThread = {
+      ...base,
+      status: "starting",
+      authority: { kind: "claim", claimId: "claim-1", fencingToken: 4 },
+    } satisfies MissionLink;
+    const startingWithThread = {
+      ...startingWithoutThread,
+      agentThreadId: "thread-1",
+    } satisfies MissionLink;
+    const startingWithGoal = {
+      ...startingWithThread,
+      agentGoalId: "goal-1",
+    } satisfies MissionLink;
 
     expect(dispatching).not.toHaveProperty("authority");
     expect(running.agentGoalId).toBe("goal-1");
+    expect([startingWithoutThread.status, startingWithThread.agentThreadId, startingWithGoal.agentGoalId]).toEqual([
+      "starting",
+      "thread-1",
+      "goal-1",
+    ]);
 
     const acceptLink = (_link: MissionLink) => undefined;
     if (false) {
@@ -529,6 +548,8 @@ describe("Mission Control runtime contracts", () => {
       acceptLink({ ...base, status: "running" });
       // @ts-expect-error resolving links require authority and both Agent references.
       acceptLink({ ...base, status: "resolving", authority: { kind: "claim", claimId: "claim-1", fencingToken: 1 }, agentThreadId: "thread-1" });
+      // @ts-expect-error A Goal cannot exist in the starting link before its Thread is known.
+      acceptLink({ ...base, status: "starting", authority: { kind: "claim", claimId: "claim-1", fencingToken: 1 }, agentGoalId: "goal-1" });
     }
   });
 
@@ -554,22 +575,29 @@ describe("Mission Control runtime contracts", () => {
     const start = {
       missionId: "mission-1",
       objective: "Deliver the requested change",
-      workflowDefinition: definition,
-      workflowPolicyRef: policyRef,
-      teamBindingId: binding.teamBindingId,
+      resolvedStart: {
+        workflowDefinition: definition,
+        teamBindingId: binding.teamBindingId,
+      },
       requestedByPrincipalId: "human-1",
     } satisfies MissionStartRequest;
 
-    expect(start.workflowDefinition.definitionVersion).toBe(4);
-    expect(start.workflowPolicyRef.contentHash).toBe("sha256:policy");
+    expect(start.resolvedStart.workflowDefinition.definitionVersion).toBe(4);
+    expect(start.resolvedStart.workflowDefinition.policyRef.contentHash).toBe("sha256:policy");
     expectTypeOf<WorkflowDefinitionRegistryPort["resolve"]>().returns.toEqualTypeOf<
-      Promise<import("../../src/shared/contracts/ticket-engine.js").WorkflowDefinition>
+      Promise<{
+        workflowDefinition: import("../../src/shared/contracts/ticket-engine.js").WorkflowDefinition;
+        teamBindingId: string;
+      }>
     >();
 
     if (false) {
       // @ts-expect-error Mission Process cannot start from only an objective and synthesize the workflow.
       const unresolvedStart: MissionStartRequest = { missionId: "mission-2", objective: "Guess a flow", teamBindingId: "team-binding-1", requestedByPrincipalId: "human-1" };
       void unresolvedStart;
+      // @ts-expect-error There is no second policy field that can disagree with WorkflowDefinition.policyRef.
+      const mismatchedPolicy: MissionStartRequest = { ...start, workflowPolicyRef: { policyId: "other", policyVersion: 9, contentHash: "sha256:other" } };
+      void mismatchedPolicy;
     }
   });
 
@@ -587,13 +615,31 @@ describe("Mission Control runtime contracts", () => {
     } satisfies RuntimeRecordEnvelope;
 
     expect(classifyRuntimeRecord(current)).toEqual({ kind: "ticket_agent", schedulable: true });
+    const failedStart = {
+      engine: "ticket_agent",
+      schemaVersion: 2,
+      record: {
+        missionId: "mission-failed",
+        workflowId: "workflow-failed" as WorkflowId,
+        workflowCreateCommandId: "create-workflow-failed",
+        status: "start_failed",
+        failure: "Ticket Engine rejected workflow creation",
+      },
+    } satisfies RuntimeRecordEnvelope;
+    expect(classifyRuntimeRecordVersion(failedStart)).toBe("ticket_agent@2");
+    expect(classifyRuntimeRecord(failedStart)).toEqual({
+      kind: "ticket_agent",
+      schedulable: false,
+      reason: "start_failed",
+    });
     expect(classifyRuntimeRecord({ phase: "implementation", status: "running" })).toEqual({
       kind: "legacy_readonly",
       schedulable: false,
     });
     expect(classifyRuntimeRecord({ engine: "ticket_agent", schemaVersion: 2 })).toEqual({
-      kind: "legacy_readonly",
+      kind: "ticket_agent",
       schedulable: false,
+      reason: "invalid_record",
     });
     expect(classifyRuntimeRecord({ engine: "legacy_phase", schemaVersion: 1, record: {} })).toEqual({
       kind: "legacy_readonly",
