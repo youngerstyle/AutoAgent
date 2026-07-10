@@ -76,6 +76,20 @@ export function stateFile(workspaceRoot: string, taskId: string, taskRunId: stri
   return path.join(taskRunDir(workspaceRoot, taskId, taskRunId), "state.json");
 }
 
+export function ticketEngineFile(
+  workspaceRoot: string,
+  taskId: string,
+  taskRunId: string,
+  workflowId: string,
+): string {
+  return path.join(
+    taskRunDir(workspaceRoot, taskId, taskRunId),
+    "ticket-engine",
+    "workflows",
+    `${encodeURIComponent(workflowId)}.json`,
+  );
+}
+
 export function artifactsDir(workspaceRoot: string, taskId: string, taskRunId: string): string {
   return path.join(taskRunDir(workspaceRoot, taskId, taskRunId), "artifacts");
 }
