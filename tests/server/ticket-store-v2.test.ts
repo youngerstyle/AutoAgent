@@ -309,6 +309,130 @@ describe("TicketStore", () => {
     await expect(fixture.store.read(fixture.workflowId)).rejects.toThrow();
   });
 
+  it.each([
+    ["claim with missing required fields", (value: TicketAggregate) => {
+      value.claims = [{
+        claimId: "claim-incomplete",
+        workflowId: value.workflow.workflowId,
+        ticketId: value.tickets[0]!.ticketId,
+        ticketVersion: 1,
+        fencingToken: 1,
+      } as never];
+    }],
+    ["claim with invalid lease timestamp", (value: TicketAggregate) => {
+      value.claims = [validClaim(value, { leaseUntil: "not-a-time" })];
+    }],
+    ["blocked ownership without principal", (value: TicketAggregate) => {
+      value.blockedOwnerships = [{
+        ownershipId: "owner-incomplete",
+        workflowId: value.workflow.workflowId,
+        ticketId: value.tickets[0]!.ticketId,
+        ticketVersion: 1,
+        fencingToken: 1,
+      } as never];
+    }],
+    ["ticket with malformed active authority", (value: TicketAggregate) => {
+      value.tickets[0]!.activeAuthority = { kind: "claim", fencingToken: 1 } as never;
+    }],
+    ["invalid completion policy discriminator", (value: TicketAggregate) => {
+      value.workflow.completionPolicy.failurePolicy = "ignore" as never;
+    }],
+    ["invalid deferred workflow outcome", (value: TicketAggregate) => {
+      value.workflow.deferredOutcome = "cancelled" as never;
+    }],
+    ["graph revision pointing to an unknown ticket", (value: TicketAggregate) => {
+      value.workflow.graph.nodes[0]!.revisionOfTicketId = "missing-ticket" as TicketId;
+    }],
+    ["workflow dependency self-cycle", (value: TicketAggregate) => {
+      const ticketId = value.tickets[0]!.ticketId;
+      value.workflow.graph.dependencyEdges = [{ fromTicketId: ticketId, toTicketId: ticketId }];
+    }],
+    ["ticket parent self-cycle", (value: TicketAggregate) => {
+      value.tickets[0]!.parentTicketId = value.tickets[0]!.ticketId;
+    }],
+    ["accepted ticket result without proposal", (value: TicketAggregate) => {
+      value.commandResults = [{
+        accepted: true,
+        commandId: "bad-ticket-result",
+        ticketStatus: "completed",
+        ticketVersion: 1,
+        workflowStatus: "active",
+        workflowVersion: 1,
+      } as never];
+    }],
+    ["rejected command result with unknown code", (value: TicketAggregate) => {
+      value.commandResults = [{
+        accepted: false,
+        commandId: "bad-rejection",
+        code: "anything_goes",
+        reason: "bad",
+      } as never];
+    }],
+    ["accepted claim result with malformed receipt", (value: TicketAggregate) => {
+      value.commandResults = [{
+        accepted: true,
+        commandId: "bad-claim-result",
+        receipt: { claimId: "missing-everything" },
+      } as never];
+    }],
+    ["accepted claim result mixed with ticket-result fields", (value: TicketAggregate) => {
+      value.commandResults = [{
+        accepted: true,
+        commandId: "mixed-claim-result",
+        receipt: validClaim(value),
+        proposalId: "unexpected-proposal",
+      } as never];
+    }],
+    ["ambiguous rejected result with ticket and workflow versions", (value: TicketAggregate) => {
+      value.commandResults = [{
+        accepted: false,
+        commandId: "mixed-rejection",
+        code: "policy_violation",
+        reason: "ambiguous",
+        currentTicketVersion: 1,
+        currentWorkflowVersion: 1,
+      } as never];
+    }],
+    ["workflow event carrying a ticket payload", (value: TicketAggregate) => {
+      value.outbox = [{
+        position: 1,
+        event: {
+          eventId: "event-mismatch",
+          workflowId: value.workflow.workflowId,
+          aggregateType: "workflow",
+          aggregateId: value.workflow.workflowId,
+          aggregateVersion: 1,
+          occurredAt: new Date().toISOString(),
+          payload: { type: "TicketReady", ticketVersion: 1 },
+        } as never,
+      }];
+    }],
+    ["ticket event payload missing discriminator fields", (value: TicketAggregate) => {
+      value.outbox = [{
+        position: 1,
+        event: {
+          ...ticketReadyEvent(value.workflow.workflowId, 1),
+          payload: { type: "TicketClaimed" },
+        } as never,
+      }];
+    }],
+    ["event with invalid occurrence time", (value: TicketAggregate) => {
+      value.outbox = [{
+        position: 1,
+        event: { ...ticketReadyEvent(value.workflow.workflowId, 1), occurredAt: "not-a-time" },
+      }];
+    }],
+  ])("rejects a parseable aggregate containing %s", async (_label, corrupt) => {
+    const fixture = await createFixture(`workflow-schema-${_label}`);
+    await fixture.store.create(seedAggregate(fixture.workflowId));
+    const file = ticketEngineFile(fixture.root, fixture.taskId, fixture.taskRunId, fixture.workflowId);
+    const persisted = JSON.parse(await readFile(file, "utf8")) as TicketAggregate;
+    corrupt(persisted);
+    await writeFile(file, JSON.stringify(persisted), "utf8");
+
+    await expect(fixture.store.read(fixture.workflowId)).rejects.toThrow();
+  });
+
   it("leaves a parseable durable aggregate and no lock or temporary file after a committed write", async () => {
     const fixture = await createFixture("workflow-durable-write");
     await fixture.store.create(seedAggregate(fixture.workflowId));
@@ -391,6 +515,23 @@ function completedCommandResult(commandId: string, workflowVersion: number): Tic
     workflowStatus: "active",
     workflowVersion,
   };
+}
+
+function validClaim(
+  aggregate: TicketAggregate,
+  overrides: Record<string, unknown> = {},
+): TicketAggregate["claims"][number] {
+  return {
+    requestId: "request-1",
+    claimId: "claim-1",
+    workflowId: aggregate.workflow.workflowId,
+    ticketId: aggregate.tickets[0]!.ticketId,
+    ticketVersion: 1,
+    principalId: "principal-1",
+    fencingToken: 1,
+    leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    ...overrides,
+  } as TicketAggregate["claims"][number];
 }
 
 interface TransactionChildResult {

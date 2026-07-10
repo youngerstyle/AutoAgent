@@ -285,27 +285,59 @@ export class TicketStore {
     if (typeof workflow.status !== "string" || !WORKFLOW_STATUSES.has(workflow.status)) {
       this.corrupt("workflow.status is invalid");
     }
+    if (
+      workflow.deferredOutcome !== undefined
+      && (typeof workflow.deferredOutcome !== "string" || !DEFERRED_OUTCOMES.has(workflow.deferredOutcome))
+    ) {
+      this.corrupt("workflow.deferredOutcome is invalid");
+    }
 
     const graph = requireRecord(workflow.graph, "workflow.graph");
     if (graph.schemaVersion !== 2) this.corrupt("workflow.graph schemaVersion is invalid");
     const graphNodes = requireArray(graph.nodes, "workflow.graph.nodes");
     const graphTicketIds = new Set<string>();
+    const graphNodeKeys = new Set<string>();
+    const graphNodeRecords: Record<string, unknown>[] = [];
     for (const [index, rawNode] of graphNodes.entries()) {
       const node = requireRecord(rawNode, `workflow.graph.nodes[${index}]`);
+      graphNodeRecords.push(node);
       const ticketId = requireNonEmptyString(node.ticketId, `workflow.graph.nodes[${index}].ticketId`);
       if (graphTicketIds.has(ticketId)) this.corrupt(`duplicate graph ticketId ${ticketId}`);
       graphTicketIds.add(ticketId);
-      requireNonEmptyString(node.nodeKey, `workflow.graph.nodes[${index}].nodeKey`);
+      const nodeKey = requireNonEmptyString(node.nodeKey, `workflow.graph.nodes[${index}].nodeKey`);
+      if (graphNodeKeys.has(nodeKey)) this.corrupt(`duplicate graph nodeKey ${nodeKey}`);
+      graphNodeKeys.add(nodeKey);
       if (typeof node.active !== "boolean") this.corrupt(`workflow.graph.nodes[${index}].active is invalid`);
+      requireOptionalNonEmptyString(node.revisionOfTicketId, `workflow.graph.nodes[${index}].revisionOfTicketId`);
+      requireOptionalNonEmptyString(node.supersededByTicketId, `workflow.graph.nodes[${index}].supersededByTicketId`);
     }
-    for (const [index, rawEdge] of requireArray(graph.dependencyEdges, "workflow.graph.dependencyEdges").entries()) {
-      const edge = requireRecord(rawEdge, `workflow.graph.dependencyEdges[${index}]`);
-      if (!graphTicketIds.has(String(edge.fromTicketId)) || !graphTicketIds.has(String(edge.toTicketId))) {
-        this.corrupt(`workflow.graph.dependencyEdges[${index}] references an unknown ticket`);
+    for (const [index, node] of graphNodeRecords.entries()) {
+      for (const field of ["revisionOfTicketId", "supersededByTicketId"] as const) {
+        if (node[field] !== undefined && !graphTicketIds.has(String(node[field]))) {
+          this.corrupt(`workflow.graph.nodes[${index}].${field} references an unknown ticket`);
+        }
       }
     }
+    const dependencyPairs: Array<[string, string]> = [];
+    for (const [index, rawEdge] of requireArray(graph.dependencyEdges, "workflow.graph.dependencyEdges").entries()) {
+      const edge = requireRecord(rawEdge, `workflow.graph.dependencyEdges[${index}]`);
+      const fromTicketId = requireNonEmptyString(
+        edge.fromTicketId,
+        `workflow.graph.dependencyEdges[${index}].fromTicketId`,
+      );
+      const toTicketId = requireNonEmptyString(
+        edge.toTicketId,
+        `workflow.graph.dependencyEdges[${index}].toTicketId`,
+      );
+      if (!graphTicketIds.has(fromTicketId) || !graphTicketIds.has(toTicketId)) {
+        this.corrupt(`workflow.graph.dependencyEdges[${index}] references an unknown ticket`);
+      }
+      dependencyPairs.push([fromTicketId, toTicketId]);
+    }
+    assertAcyclic(graphTicketIds, dependencyPairs, "workflow.graph.dependencyEdges");
 
     const completionPolicy = requireRecord(workflow.completionPolicy, "workflow.completionPolicy");
+    const requiredTerminalIds = new Set<string>();
     for (const ticketId of requireArray(
       completionPolicy.requiredTerminalTicketIds,
       "workflow.completionPolicy.requiredTerminalTicketIds",
@@ -313,6 +345,17 @@ export class TicketStore {
       if (typeof ticketId !== "string" || !graphTicketIds.has(ticketId)) {
         this.corrupt("completion policy references an unknown ticket");
       }
+      if (requiredTerminalIds.has(ticketId)) this.corrupt(`duplicate required terminal ticket ${ticketId}`);
+      requiredTerminalIds.add(ticketId);
+    }
+    if (
+      typeof completionPolicy.failurePolicy !== "string"
+      || !FAILURE_POLICIES.has(completionPolicy.failurePolicy)
+    ) {
+      this.corrupt("workflow.completionPolicy.failurePolicy is invalid");
+    }
+    if (completionPolicy.blockedPolicy !== "wait") {
+      this.corrupt("workflow.completionPolicy.blockedPolicy is invalid");
     }
     const policyRef = requireRecord(workflow.policyRef, "workflow.policyRef");
     requireNonEmptyString(policyRef.policyId, "workflow.policyRef.policyId");
@@ -321,8 +364,10 @@ export class TicketStore {
 
     const tickets = requireArray(aggregate.tickets, "tickets");
     const ticketIds = new Set<string>();
+    const ticketRecords: Record<string, unknown>[] = [];
     for (const [index, rawTicket] of tickets.entries()) {
       const ticket = requireRecord(rawTicket, `tickets[${index}]`);
+      ticketRecords.push(ticket);
       const ticketId = requireNonEmptyString(ticket.ticketId, `tickets[${index}].ticketId`);
       if (ticketIds.has(ticketId)) this.corrupt(`duplicate ticketId ${ticketId}`);
       ticketIds.add(ticketId);
@@ -331,20 +376,50 @@ export class TicketStore {
       if (typeof ticket.status !== "string" || !TICKET_STATUSES.has(ticket.status)) {
         this.corrupt(`ticket ${ticketId} has an invalid status`);
       }
+      requireOptionalNonEmptyString(ticket.parentTicketId, `tickets[${index}].parentTicketId`);
+      if (ticket.activeAuthority !== undefined) {
+        validateAuthority(ticket.activeAuthority, `tickets[${index}].activeAuthority`);
+      }
     }
     if (ticketIds.size !== graphTicketIds.size || [...graphTicketIds].some((id) => !ticketIds.has(id))) {
       this.corrupt("workflow graph and ticket snapshots are inconsistent");
     }
+    const parentPairs: Array<[string, string]> = [];
+    for (const [index, ticket] of ticketRecords.entries()) {
+      if (ticket.parentTicketId !== undefined && !ticketIds.has(String(ticket.parentTicketId))) {
+        this.corrupt(`tickets[${index}].parentTicketId references an unknown ticket`);
+      }
+      if (ticket.parentTicketId !== undefined) {
+        parentPairs.push([String(ticket.parentTicketId), String(ticket.ticketId)]);
+      }
+    }
+    assertAcyclic(ticketIds, parentPairs, "ticket parent relationships");
 
     const claims = requireArray(aggregate.claims, "claims");
     const claimIds = new Set<string>();
+    const claimRequestIds = new Set<string>();
     for (const [index, rawClaim] of claims.entries()) {
       const claim = requireRecord(rawClaim, `claims[${index}]`);
+      assertOnlyKeys(claim, [
+        "requestId",
+        "claimId",
+        "workflowId",
+        "ticketId",
+        "ticketVersion",
+        "principalId",
+        "fencingToken",
+        "leaseUntil",
+      ], `claims[${index}]`);
+      const requestId = requireNonEmptyString(claim.requestId, `claims[${index}].requestId`);
+      if (claimRequestIds.has(requestId)) this.corrupt(`duplicate claim requestId ${requestId}`);
+      claimRequestIds.add(requestId);
       const claimId = requireNonEmptyString(claim.claimId, `claims[${index}].claimId`);
       if (claimIds.has(claimId)) this.corrupt(`duplicate claimId ${claimId}`);
       claimIds.add(claimId);
       this.validateOwnedTicket(claim, workflowId, ticketIds, `claims[${index}]`);
+      requireNonEmptyString(claim.principalId, `claims[${index}].principalId`);
       requireNonNegativeInteger(claim.fencingToken, `claims[${index}].fencingToken`);
+      requireIsoTimestamp(claim.leaseUntil, `claims[${index}].leaseUntil`);
     }
 
     const ownershipIds = new Set<string>();
@@ -353,6 +428,14 @@ export class TicketStore {
       "blockedOwnerships",
     ).entries()) {
       const ownership = requireRecord(rawOwnership, `blockedOwnerships[${index}]`);
+      assertOnlyKeys(ownership, [
+        "ownershipId",
+        "workflowId",
+        "ticketId",
+        "ticketVersion",
+        "principalId",
+        "fencingToken",
+      ], `blockedOwnerships[${index}]`);
       const ownershipId = requireNonEmptyString(
         ownership.ownershipId,
         `blockedOwnerships[${index}].ownershipId`,
@@ -360,7 +443,19 @@ export class TicketStore {
       if (ownershipIds.has(ownershipId)) this.corrupt(`duplicate ownershipId ${ownershipId}`);
       ownershipIds.add(ownershipId);
       this.validateOwnedTicket(ownership, workflowId, ticketIds, `blockedOwnerships[${index}]`);
+      requireNonEmptyString(ownership.principalId, `blockedOwnerships[${index}].principalId`);
       requireNonNegativeInteger(ownership.fencingToken, `blockedOwnerships[${index}].fencingToken`);
+    }
+
+    for (const [index, ticket] of ticketRecords.entries()) {
+      if (ticket.activeAuthority === undefined) continue;
+      const authority = ticket.activeAuthority as Record<string, unknown>;
+      if (authority.kind === "claim" && !claimIds.has(String(authority.claimId))) {
+        this.corrupt(`tickets[${index}].activeAuthority references an unknown claim`);
+      }
+      if (authority.kind === "blocked_owner" && !ownershipIds.has(String(authority.ownershipId))) {
+        this.corrupt(`tickets[${index}].activeAuthority references an unknown blocked owner`);
+      }
     }
 
     const commandIds = new Set<string>();
@@ -369,7 +464,7 @@ export class TicketStore {
       const commandId = requireNonEmptyString(result.commandId, `commandResults[${index}].commandId`);
       if (commandIds.has(commandId)) this.corrupt(`duplicate commandId ${commandId}`);
       commandIds.add(commandId);
-      if (typeof result.accepted !== "boolean") this.corrupt(`commandResults[${index}].accepted is invalid`);
+      validateCommandResult(result, workflowId, ticketIds, `commandResults[${index}]`);
     }
 
     const eventIds = new Set<string>();
@@ -382,18 +477,18 @@ export class TicketStore {
       eventIds.add(eventId);
       if (event.workflowId !== workflowId) this.corrupt(`event ${eventId} belongs to another workflow`);
       requirePositiveVersion(event.aggregateVersion, `outbox[${index}].event.aggregateVersion`);
+      requireIsoTimestamp(event.occurredAt, `outbox[${index}].event.occurredAt`);
+      const payload = requireRecord(event.payload, `outbox[${index}].event.payload`);
       if (event.aggregateType === "ticket") {
         if (typeof event.aggregateId !== "string" || !ticketIds.has(event.aggregateId)) {
           this.corrupt(`event ${eventId} references an unknown ticket`);
         }
+        validateTicketEventPayload(payload, `outbox[${index}].event.payload`);
       } else if (event.aggregateType === "workflow") {
         if (event.aggregateId !== workflowId) this.corrupt(`event ${eventId} references another workflow`);
+        validateWorkflowEventPayload(payload, `outbox[${index}].event.payload`);
       } else {
         this.corrupt(`event ${eventId} has an invalid aggregateType`);
-      }
-      const payload = requireRecord(event.payload, `outbox[${index}].event.payload`);
-      if (typeof payload.type !== "string" || !EVENT_TYPES.has(payload.type)) {
-        this.corrupt(`event ${eventId} has an invalid payload type`);
       }
     }
   }
@@ -550,6 +645,8 @@ export class TicketStore {
 }
 
 const WORKFLOW_STATUSES = new Set(["active", "paused", "blocked", "completed", "failed", "cancelled"]);
+const DEFERRED_OUTCOMES = new Set(["active", "blocked", "completed", "failed"]);
+const FAILURE_POLICIES = new Set(["fail_fast", "require_resolution"]);
 const TICKET_STATUSES = new Set([
   "pending",
   "ready",
@@ -560,21 +657,242 @@ const TICKET_STATUSES = new Set([
   "failed",
   "cancelled",
 ]);
-const EVENT_TYPES = new Set([
-  "TicketReady",
-  "TicketClaimed",
-  "ClaimExpired",
-  "TicketBlocked",
-  "TicketTerminal",
-  "AuthorityRevoked",
-  "WorkflowStatusChanged",
+const TICKET_RESULT_STATUSES = new Set(["blocked", "completed", "returned", "failed"]);
+const TICKET_REJECTION_CODES = new Set([
+  "invalid_command",
+  "policy_violation",
+  "version_conflict",
+  "stale_authority",
+  "workflow_terminal",
+  "idempotency_conflict",
 ]);
+const WORKFLOW_REJECTION_CODES = new Set([
+  "invalid_definition",
+  "policy_violation",
+  "version_conflict",
+  "workflow_terminal",
+  "idempotency_conflict",
+]);
+const CLAIM_REJECTION_CODES = new Set([
+  "not_ready",
+  "policy_violation",
+  "version_conflict",
+  "workflow_paused",
+  "workflow_terminal",
+  "idempotency_conflict",
+]);
+const TICKET_TERMINAL_EVENT_STATUSES = new Set(["completed", "returned", "failed", "cancelled"]);
+
+function validateAuthority(value: unknown, label: string): void {
+  const authority = requireRecord(value, label);
+  requireNonNegativeInteger(authority.fencingToken, `${label}.fencingToken`);
+  if (authority.kind === "claim") {
+    assertOnlyKeys(authority, ["kind", "claimId", "fencingToken"], label);
+    requireNonEmptyString(authority.claimId, `${label}.claimId`);
+    return;
+  }
+  if (authority.kind === "blocked_owner") {
+    assertOnlyKeys(authority, ["kind", "ownershipId", "fencingToken"], label);
+    requireNonEmptyString(authority.ownershipId, `${label}.ownershipId`);
+    return;
+  }
+  throw new TicketStoreCorruptionError(`${label}.kind is invalid`);
+}
+
+function validateCommandResult(
+  result: Record<string, unknown>,
+  workflowId: WorkflowId,
+  ticketIds: Set<string>,
+  label: string,
+): void {
+  if (typeof result.accepted !== "boolean") {
+    throw new TicketStoreCorruptionError(`${label}.accepted must be boolean`);
+  }
+
+  if (result.accepted) {
+    if (result.receipt !== undefined) {
+      assertOnlyKeys(result, ["accepted", "commandId", "receipt"], label);
+      validateClaimReceipt(result.receipt, workflowId, ticketIds, `${label}.receipt`);
+      return;
+    }
+    if (result.proposalId !== undefined || result.ticketStatus !== undefined) {
+      assertOnlyKeys(result, [
+        "accepted",
+        "commandId",
+        "proposalId",
+        "ticketStatus",
+        "ticketVersion",
+        "workflowStatus",
+        "workflowVersion",
+        "nextAuthority",
+      ], label);
+      requireNonEmptyString(result.proposalId, `${label}.proposalId`);
+      if (typeof result.ticketStatus !== "string" || !TICKET_RESULT_STATUSES.has(result.ticketStatus)) {
+        throw new TicketStoreCorruptionError(`${label}.ticketStatus is invalid`);
+      }
+      requirePositiveVersion(result.ticketVersion, `${label}.ticketVersion`);
+      requireWorkflowStatus(result.workflowStatus, `${label}.workflowStatus`);
+      requirePositiveVersion(result.workflowVersion, `${label}.workflowVersion`);
+      if (result.nextAuthority !== undefined) validateAuthority(result.nextAuthority, `${label}.nextAuthority`);
+      return;
+    }
+    assertOnlyKeys(result, ["accepted", "commandId", "workflowStatus", "workflowVersion"], label);
+    requireWorkflowStatus(result.workflowStatus, `${label}.workflowStatus`);
+    requirePositiveVersion(result.workflowVersion, `${label}.workflowVersion`);
+    return;
+  }
+
+  requireNonEmptyString(result.reason, `${label}.reason`);
+  if (result.proposalId !== undefined) {
+    assertOnlyKeys(result, [
+      "accepted",
+      "commandId",
+      "proposalId",
+      "code",
+      "reason",
+      "currentTicketVersion",
+      "currentWorkflowVersion",
+    ], label);
+    requireNonEmptyString(result.proposalId, `${label}.proposalId`);
+    requireCode(result.code, TICKET_REJECTION_CODES, `${label}.code`);
+  } else {
+    const code = requireNonEmptyString(result.code, `${label}.code`);
+    if (!WORKFLOW_REJECTION_CODES.has(code) && !CLAIM_REJECTION_CODES.has(code)) {
+      throw new TicketStoreCorruptionError(`${label}.code is invalid`);
+    }
+    if (result.currentTicketVersion !== undefined && result.currentWorkflowVersion !== undefined) {
+      throw new TicketStoreCorruptionError(`${label} mixes claim and workflow result versions`);
+    }
+    if (result.currentTicketVersion !== undefined || !WORKFLOW_REJECTION_CODES.has(code)) {
+      assertOnlyKeys(result, [
+        "accepted",
+        "commandId",
+        "code",
+        "reason",
+        "currentTicketVersion",
+      ], label);
+    } else if (result.currentWorkflowVersion !== undefined || !CLAIM_REJECTION_CODES.has(code)) {
+      assertOnlyKeys(result, [
+        "accepted",
+        "commandId",
+        "code",
+        "reason",
+        "currentWorkflowVersion",
+      ], label);
+    } else {
+      assertOnlyKeys(result, ["accepted", "commandId", "code", "reason"], label);
+    }
+  }
+  requireOptionalPositiveVersion(result.currentTicketVersion, `${label}.currentTicketVersion`);
+  requireOptionalPositiveVersion(result.currentWorkflowVersion, `${label}.currentWorkflowVersion`);
+}
+
+function validateClaimReceipt(
+  value: unknown,
+  workflowId: WorkflowId,
+  ticketIds: Set<string>,
+  label: string,
+): void {
+  const receipt = requireRecord(value, label);
+  assertOnlyKeys(receipt, [
+    "requestId",
+    "claimId",
+    "workflowId",
+    "ticketId",
+    "ticketVersion",
+    "principalId",
+    "fencingToken",
+    "leaseUntil",
+  ], label);
+  requireNonEmptyString(receipt.requestId, `${label}.requestId`);
+  requireNonEmptyString(receipt.claimId, `${label}.claimId`);
+  if (receipt.workflowId !== workflowId) {
+    throw new TicketStoreCorruptionError(`${label}.workflowId is invalid`);
+  }
+  if (typeof receipt.ticketId !== "string" || !ticketIds.has(receipt.ticketId)) {
+    throw new TicketStoreCorruptionError(`${label}.ticketId is invalid`);
+  }
+  requirePositiveVersion(receipt.ticketVersion, `${label}.ticketVersion`);
+  requireNonEmptyString(receipt.principalId, `${label}.principalId`);
+  requireNonNegativeInteger(receipt.fencingToken, `${label}.fencingToken`);
+  requireIsoTimestamp(receipt.leaseUntil, `${label}.leaseUntil`);
+}
+
+function validateTicketEventPayload(payload: Record<string, unknown>, label: string): void {
+  switch (payload.type) {
+    case "TicketReady":
+      assertOnlyKeys(payload, ["type", "ticketVersion"], label);
+      requirePositiveVersion(payload.ticketVersion, `${label}.ticketVersion`);
+      return;
+    case "TicketClaimed":
+    case "ClaimExpired":
+      assertOnlyKeys(payload, ["type", "claimId"], label);
+      requireNonEmptyString(payload.claimId, `${label}.claimId`);
+      return;
+    case "TicketBlocked":
+      assertOnlyKeys(payload, ["type", "requiredInput"], label);
+      requireOptionalString(payload.requiredInput, `${label}.requiredInput`);
+      return;
+    case "TicketTerminal":
+      assertOnlyKeys(payload, ["type", "status"], label);
+      requireCode(payload.status, TICKET_TERMINAL_EVENT_STATUSES, `${label}.status`);
+      return;
+    case "AuthorityRevoked":
+      assertOnlyKeys(payload, ["type", "fencingToken"], label);
+      requireNonNegativeInteger(payload.fencingToken, `${label}.fencingToken`);
+      return;
+    default:
+      throw new TicketStoreCorruptionError(`${label}.type is invalid for a ticket event`);
+  }
+}
+
+function validateWorkflowEventPayload(payload: Record<string, unknown>, label: string): void {
+  if (payload.type !== "WorkflowStatusChanged") {
+    throw new TicketStoreCorruptionError(`${label}.type is invalid for a workflow event`);
+  }
+  assertOnlyKeys(payload, ["type", "status"], label);
+  requireWorkflowStatus(payload.status, `${label}.status`);
+}
+
+function requireWorkflowStatus(value: unknown, label: string): string {
+  return requireCode(value, WORKFLOW_STATUSES, label);
+}
+
+function requireCode(value: unknown, allowed: Set<string>, label: string): string {
+  const code = requireNonEmptyString(value, label);
+  if (!allowed.has(code)) throw new TicketStoreCorruptionError(`${label} is invalid`);
+  return code;
+}
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new TicketStoreCorruptionError(`${label} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function assertOnlyKeys(value: Record<string, unknown>, keys: string[], label: string): void {
+  const allowed = new Set(keys);
+  const unknown = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknown) throw new TicketStoreCorruptionError(`${label}.${unknown} is not allowed`);
+}
+
+function assertAcyclic(nodes: Set<string>, edges: Array<[string, string]>, label: string): void {
+  const outgoing = new Map<string, string[]>();
+  for (const node of nodes) outgoing.set(node, []);
+  for (const [from, to] of edges) outgoing.get(from)?.push(to);
+
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (node: string): void => {
+    if (visiting.has(node)) throw new TicketStoreCorruptionError(`${label} contains a cycle`);
+    if (visited.has(node)) return;
+    visiting.add(node);
+    for (const child of outgoing.get(node) ?? []) visit(child);
+    visiting.delete(node);
+    visited.add(node);
+  };
+  for (const node of nodes) visit(node);
 }
 
 function requireArray(value: unknown, label: string): unknown[] {
@@ -589,6 +907,25 @@ function requireNonEmptyString(value: unknown, label: string): string {
   return value;
 }
 
+function requireOptionalNonEmptyString(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : requireNonEmptyString(value, label);
+}
+
+function requireOptionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new TicketStoreCorruptionError(`${label} must be a string`);
+  return value;
+}
+
+function requireIsoTimestamp(value: unknown, label: string): string {
+  const timestamp = requireNonEmptyString(value, label);
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== timestamp) {
+    throw new TicketStoreCorruptionError(`${label} must be a valid timestamp`);
+  }
+  return timestamp;
+}
+
 function requirePositiveVersion(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1) {
     throw new TicketStoreCorruptionError(`${label} must be a positive integer`);
@@ -601,6 +938,10 @@ function requireNonNegativeInteger(value: unknown, label: string): number {
     throw new TicketStoreCorruptionError(`${label} must be a non-negative integer`);
   }
   return Number(value);
+}
+
+function requireOptionalPositiveVersion(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : requirePositiveVersion(value, label);
 }
 
 function parseLockMetadata(content: string): WorkflowLockMetadata | undefined {
@@ -665,8 +1006,9 @@ async function renameWithRetry(source: string, target: string): Promise<void> {
 
 async function syncDirectory(directory: string): Promise<void> {
   if (process.platform === "win32") {
-    // Node cannot open directories for FlushFileBuffers on Windows. The temporary file itself is
-    // flushed before the atomic rename; POSIX additionally persists the directory entry below.
+    // Node cannot fsync a directory on Windows. Flushing the temporary file before rename gives
+    // process-crash atomic replacement, but this does not claim power-loss durability for the
+    // renamed directory entry. POSIX persists that entry with the directory fsync below.
     return;
   }
   const handle = await open(directory, "r");
