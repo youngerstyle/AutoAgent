@@ -61,12 +61,12 @@ export class AcceptingGoalResolutionPort implements GoalResolutionPort {
   }
 }
 
-export class AgentEngine implements AgentPort {
+export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainOutcome> {
   private readonly now: () => Date;
 
   constructor(
     private readonly store: AgentStore,
-    private readonly resolutionPort: GoalResolutionPort = new AcceptingGoalResolutionPort(),
+    private readonly resolutionPort: GoalResolutionPort<TDomainOutcome> = new AcceptingGoalResolutionPort(),
     options: { now?: () => Date } = {},
   ) {
     this.now = options.now ?? (() => new Date());
@@ -241,8 +241,9 @@ export class AgentEngine implements AgentPort {
     return structuredClone((await this.store.read()).goals.find((item) => item.spec.id === goalId));
   }
 
-  async getProposal(proposalId: string): Promise<GoalResolutionProposal | undefined> {
-    return structuredClone((await this.store.read()).proposals.find((item) => item.proposalId === proposalId));
+  async getProposal(proposalId: string): Promise<GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined> {
+    return structuredClone((await this.store.read()).proposals.find((item) => item.proposalId === proposalId)) as
+      GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined;
   }
 
   async controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal> {
@@ -274,14 +275,17 @@ export class AgentEngine implements AgentPort {
   }
 
   async proposeGoalResolution(
-    proposal: GoalResolutionProposal,
+    proposal: GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
   ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }> {
     const current = await this.store.read();
     const existing = current.proposals.find((item) => item.proposalId === proposal.proposalId);
     if (existing) {
       if (hash(existing) !== hash(proposal)) throw new AgentEngineConflictError("Proposal conflict");
       const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
-      const attempt = await this.resolutionPort.resolve(goal, existing);
+      const attempt = await this.resolutionPort.resolve(
+        goal,
+        existing as GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
+      );
       return { goal, attempt };
     }
     const goal = current.goals.find((item) => item.spec.id === proposal.goalId);

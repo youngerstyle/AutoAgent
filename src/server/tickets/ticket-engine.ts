@@ -7,6 +7,8 @@ import type {
   ReleaseClaimRequest,
   RenewClaimRequest,
   TicketEvent,
+  TicketEventPage,
+  TicketEventQuery,
   TicketCommandEnvelope,
   TicketCommandPayload,
   TicketCommandResult,
@@ -96,6 +98,28 @@ export class TicketEngine {
       if (definition) return { ticket: structuredClone(ticket), definition: structuredClone(definition) };
     }
     return undefined;
+  }
+
+  async getWorkflowCommandResult(commandId: string): Promise<WorkflowCommandResult | undefined> {
+    for (const workflowId of await this.store.listWorkflowIds()) {
+      const result = await this.store.getCommandResult(workflowId, commandId);
+      if (result && !('proposalId' in result) && !('receipt' in result)) return result as WorkflowCommandResult;
+    }
+    return undefined;
+  }
+
+  async getTicketCommandResult(commandId: string): Promise<TicketCommandResult | undefined> {
+    for (const workflowId of await this.store.listWorkflowIds()) {
+      const result = await this.store.getCommandResult(workflowId, commandId);
+      if (result && 'proposalId' in result) return result as TicketCommandResult;
+    }
+    return undefined;
+  }
+
+  readEvents<TWorkflowId extends WorkflowId>(
+    input: TicketEventQuery<TWorkflowId>,
+  ): Promise<TicketEventPage<TWorkflowId>> {
+    return this.store.readEvents(input);
   }
 
   async getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined> {

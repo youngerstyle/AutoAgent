@@ -154,6 +154,20 @@ describe("AgentEngine", () => {
     expect(resumed).toMatchObject({ status: "resolving", activeProposalId: proposal.proposalId });
   });
 
+  it("cancels a goal when the host reports stale authority", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const proposal = proposalFor(fixture.goal);
+    const resolving = (await fixture.engine.proposeGoalResolution(proposal)).goal;
+    const settled = await fixture.engine.settleProposal({
+      decisionId: "stale-decision",
+      proposalId: proposal.proposalId,
+      expectedGoalVersion: resolving.version,
+      decision: { accepted: false, disposition: "stale_claim", reason: "claim expired" },
+    });
+
+    expect(settled).toMatchObject({ applied: true, goal: { status: "cancelled" } });
+  });
+
   it("partitions event cursors by agent", async () => {
     const fixture = await createFixture();
     await fixture.engine.ensureThread({ agentId: "dev", scopeId: "a", idempotencyKey: "a" });
