@@ -65,6 +65,11 @@ export function agentEngineTraceFile(workspaceRoot: string, agentId: string, tra
   );
 }
 
+export function missionProcessFile(workspaceRoot: string, missionId: string): string {
+  const root = path.resolve(workspaceAutoAgentDir(workspaceRoot), "mission-process");
+  return path.join(root, `${createHash("sha256").update(missionId).digest("base64url")}.json`);
+}
+
 export function workspaceAgentThreadsDir(workspaceRoot: string, workspaceAgentId: string): string {
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "threads");
 }
