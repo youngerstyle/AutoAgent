@@ -463,8 +463,11 @@ describe("TicketEngine workflow commands", () => {
   it("completes a planning ticket with a graph update atomically", async () => {
     const fixture = await createStartedFixture();
     const claim = await claimFirstReady(fixture, "claim-plan");
-    const graph = plannedGraph();
-    graph.nodes.push(node("docs"));
+    const graph: PlannedTicketGraph = {
+      schemaVersion: 2,
+      nodes: [node("docs")],
+      dependencyEdges: [],
+    };
     const result = await fixture.engine.applyTicket(ticketCommand(
       fixture.workflowId,
       "complete-with-graph",
@@ -477,7 +480,7 @@ describe("TicketEngine workflow commands", () => {
         expectedWorkflowVersion: 2,
         graph,
         completionPolicy: {
-          requiredTerminalKeys: ["qa" as TicketNodeKey, "docs" as TicketNodeKey],
+          requiredTerminalKeys: ["docs" as TicketNodeKey],
           failurePolicy: "require_resolution",
           blockedPolicy: "wait",
         },
@@ -489,6 +492,10 @@ describe("TicketEngine workflow commands", () => {
     expect(aggregate?.tickets).toHaveLength(3);
     expect(aggregate?.tickets.filter((ticket) => ticket.status === "ready")).toHaveLength(2);
     expect(aggregate?.planning?.plannedGraph.nodes.map((item) => item.key)).toEqual(["dev", "docs", "qa"]);
+    expect(aggregate?.planning?.plannedGraph.dependencyEdges).toContainEqual({
+      fromKey: "dev",
+      toKey: "docs",
+    });
   });
 
   it("deduplicates proposal ids across different ticket command ids", async () => {

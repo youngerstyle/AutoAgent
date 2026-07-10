@@ -13,6 +13,7 @@ import type {
   TicketCommandPayload,
   TicketCommandResult,
   TicketId,
+  TicketNodeKey,
   TicketSnapshot,
   TicketWorkItem,
   TransferBlockedOwnershipRequest,
@@ -740,11 +741,12 @@ export class TicketEngine {
     fingerprint: string,
   ) {
     if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
+    const patch = appendTicketSubgraph(aggregate, command.ticketId, payload.graph, payload.completionPolicy);
     const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
     const next = materializeWorkflowGraph({
       workflowId: command.workflowId,
-      graph: payload.graph,
-      completionPolicy: payload.completionPolicy,
+      graph: patch.graph,
+      completionPolicy: patch.completionPolicy,
       previous: materializedFromAggregate(aggregate),
       cancelTicketIds: payload.cancelTicketIds,
       ticketStatuses: statuses,
@@ -1162,6 +1164,51 @@ export class TicketEngine {
     );
     return result;
   }
+}
+
+function appendTicketSubgraph(
+  aggregate: TicketAggregate,
+  plannerTicketId: TicketId,
+  addition: Extract<TicketCommandPayload, { type: "complete_with_graph" }>["graph"],
+  additionPolicy: Extract<TicketCommandPayload, { type: "complete_with_graph" }>["completionPolicy"],
+) {
+  if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
+  const existing = aggregate.planning.plannedGraph;
+  const plannerNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === plannerTicketId && node.active);
+  if (!plannerNode) throw new WorkflowCommandValidationError("Planner ticket is not an active graph node");
+  const existingKeys = new Set(existing.nodes.map((node) => String(node.key)));
+  for (const node of addition.nodes) {
+    if (existingKeys.has(String(node.key))) {
+      throw new WorkflowCommandValidationError(`Added Ticket key already exists: ${node.key}`);
+    }
+  }
+  const incoming = new Set(addition.dependencyEdges.map((edge) => String(edge.toKey)));
+  const roots = addition.nodes.filter((node) => !incoming.has(String(node.key)));
+  const attachedNodes = addition.nodes.map((node) => (
+    roots.some((root) => root.key === node.key) && !node.parentKey
+      ? { ...node, parentKey: plannerNode.nodeKey }
+      : node
+  ));
+  const dependencyEdges = [
+    ...existing.dependencyEdges,
+    ...addition.dependencyEdges,
+    ...roots.map((node) => ({ fromKey: plannerNode.nodeKey, toKey: node.key })),
+  ];
+  const preservedTerminalKeys = aggregate.workflow.completionPolicy.requiredTerminalTicketIds
+    .filter((ticketId) => ticketId !== plannerTicketId)
+    .map((ticketId) => aggregate.workflow.graph.nodes.find((node) => node.ticketId === ticketId && node.active)?.nodeKey)
+    .filter((key): key is TicketNodeKey => Boolean(key));
+  return {
+    graph: {
+      schemaVersion: 2 as const,
+      nodes: [...existing.nodes, ...attachedNodes],
+      dependencyEdges,
+    },
+    completionPolicy: {
+      ...additionPolicy,
+      requiredTerminalKeys: [...new Set([...preservedTerminalKeys, ...additionPolicy.requiredTerminalKeys])],
+    },
+  };
 }
 
 function initialTickets(materialized: MaterializedWorkflowGraph, workflowId: WorkflowId): TicketSnapshot[] {
