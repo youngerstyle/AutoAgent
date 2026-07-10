@@ -52,7 +52,12 @@ describe("TicketStore", () => {
       { aggregateVersion: 1, workflowVersion: 1 },
       (current) => ({
         ...current,
-        workflow: { ...current.workflow, version: 2, status: "paused" },
+        workflow: {
+          ...current.workflow,
+          version: 2,
+          status: "paused",
+          deferredOutcome: "active",
+        },
       }),
     );
 
@@ -207,6 +212,7 @@ describe("TicketStore", () => {
       (current) => ({
         ...current,
         workflow: { ...current.workflow, version: 2 },
+        tickets: current.tickets.map((ticket) => ({ ...ticket, version: 3 })),
         pendingEvents: events,
       }),
     );
@@ -433,6 +439,103 @@ describe("TicketStore", () => {
     await expect(fixture.store.read(fixture.workflowId)).rejects.toThrow();
   });
 
+  it.each([
+    ["claim authority with a mismatched fencing token", (value: TicketAggregate) => {
+      value.tickets[0]!.status = "running";
+      value.claims = [validClaim(value)];
+      value.tickets[0]!.activeAuthority = { kind: "claim", claimId: "claim-1", fencingToken: 2 };
+    }],
+    ["claim authority owned by another ticket", (value: TicketAggregate) => {
+      const second = addSecondTicket(value, "second");
+      value.tickets[0]!.status = "running";
+      value.claims = [validClaim(value, { ticketId: second.ticketId })];
+      value.tickets[0]!.activeAuthority = { kind: "claim", claimId: "claim-1", fencingToken: 1 };
+    }],
+    ["blocked ticket carrying claim authority", (value: TicketAggregate) => {
+      value.tickets[0]!.status = "blocked";
+      value.claims = [validClaim(value)];
+      value.tickets[0]!.activeAuthority = { kind: "claim", claimId: "claim-1", fencingToken: 1 };
+    }],
+    ["empty required terminal policy", (value: TicketAggregate) => {
+      value.workflow.completionPolicy.requiredTerminalTicketIds = [];
+    }],
+    ["inactive required terminal", (value: TicketAggregate) => {
+      value.workflow.graph.nodes[0]!.active = false;
+    }],
+    ["completed workflow with unfinished required ticket", (value: TicketAggregate) => {
+      value.workflow.status = "completed";
+    }],
+    ["one-sided revision link", (value: TicketAggregate) => {
+      const predecessor = value.workflow.graph.nodes[0]!;
+      predecessor.active = false;
+      const successor = addSecondTicket(value, "successor");
+      successor.node.revisionOfTicketId = predecessor.ticketId;
+    }],
+    ["duplicate dependency edge", (value: TicketAggregate) => {
+      const second = addSecondTicket(value, "dependency");
+      const fromTicketId = value.tickets[0]!.ticketId;
+      const edge = { fromTicketId, toTicketId: second.ticketId };
+      value.workflow.graph.dependencyEdges = [edge, edge];
+    }],
+    ["future ticket event version", (value: TicketAggregate) => {
+      value.outbox = [{ position: 1, event: ticketReadyEvent(value.workflow.workflowId, 2) }];
+    }],
+    ["TicketReady payload version different from its aggregate version", (value: TicketAggregate) => {
+      value.tickets[0]!.version = 2;
+      value.outbox = [{
+        position: 1,
+        event: {
+          ...ticketReadyEvent(value.workflow.workflowId, 2),
+          payload: { type: "TicketReady", ticketVersion: 1 },
+        } as never,
+      }];
+    }],
+    ["future workflow event version", (value: TicketAggregate) => {
+      value.outbox = [{ position: 1, event: {
+        eventId: "future-workflow-event",
+        workflowId: value.workflow.workflowId,
+        aggregateType: "workflow",
+        aggregateId: value.workflow.workflowId,
+        aggregateVersion: 2,
+        occurredAt: new Date().toISOString(),
+        payload: { type: "WorkflowStatusChanged", status: "active" },
+      } }];
+    }],
+  ])("rejects relationship corruption: %s", async (_label, corrupt) => {
+    const fixture = await createFixture(`workflow-relationship-${_label}`);
+    await fixture.store.create(seedAggregate(fixture.workflowId));
+    const file = ticketEngineFile(fixture.root, fixture.taskId, fixture.taskRunId, fixture.workflowId);
+    const persisted = JSON.parse(await readFile(file, "utf8")) as TicketAggregate;
+    corrupt(persisted);
+    await writeFile(file, JSON.stringify(persisted), "utf8");
+
+    await expect(fixture.store.read(fixture.workflowId)).rejects.toThrow();
+  });
+
+  it.each([
+    ["aggregate", (value: TicketAggregate) => { (value as never as Record<string, unknown>).extra = true; }],
+    ["storage identity", (value: TicketAggregate) => { (value.storageIdentity as never as Record<string, unknown>).extra = true; }],
+    ["workflow", (value: TicketAggregate) => { (value.workflow as never as Record<string, unknown>).extra = true; }],
+    ["graph", (value: TicketAggregate) => { (value.workflow.graph as never as Record<string, unknown>).extra = true; }],
+    ["graph node", (value: TicketAggregate) => { (value.workflow.graph.nodes[0] as never as Record<string, unknown>).extra = true; }],
+    ["completion policy", (value: TicketAggregate) => { (value.workflow.completionPolicy as never as Record<string, unknown>).extra = true; }],
+    ["policy ref", (value: TicketAggregate) => { (value.workflow.policyRef as never as Record<string, unknown>).extra = true; }],
+    ["ticket snapshot", (value: TicketAggregate) => { (value.tickets[0] as never as Record<string, unknown>).extra = true; }],
+    ["outbox envelope", (value: TicketAggregate) => {
+      value.outbox = [{ position: 1, event: ticketReadyEvent(value.workflow.workflowId, 1) }];
+      (value.outbox[0]!.event as never as Record<string, unknown>).extra = true;
+    }],
+  ])("rejects unknown schemaVersion=2 fields at %s", async (_label, corrupt) => {
+    const fixture = await createFixture(`workflow-unknown-${_label}`);
+    await fixture.store.create(seedAggregate(fixture.workflowId));
+    const file = ticketEngineFile(fixture.root, fixture.taskId, fixture.taskRunId, fixture.workflowId);
+    const persisted = JSON.parse(await readFile(file, "utf8")) as TicketAggregate;
+    corrupt(persisted);
+    await writeFile(file, JSON.stringify(persisted), "utf8");
+
+    await expect(fixture.store.read(fixture.workflowId)).rejects.toThrow();
+  });
+
   it("leaves a parseable durable aggregate and no lock or temporary file after a committed write", async () => {
     const fixture = await createFixture("workflow-durable-write");
     await fixture.store.create(seedAggregate(fixture.workflowId));
@@ -532,6 +635,24 @@ function validClaim(
     leaseUntil: new Date(Date.now() + 60_000).toISOString(),
     ...overrides,
   } as TicketAggregate["claims"][number];
+}
+
+function addSecondTicket(aggregate: TicketAggregate, suffix: string) {
+  const ticketId = `${aggregate.workflow.workflowId}-${suffix}` as TicketId;
+  const node: TicketAggregate["workflow"]["graph"]["nodes"][number] = {
+    nodeKey: suffix as never,
+    ticketId,
+    active: true,
+  };
+  const ticket: TicketSnapshot = {
+    ticketId,
+    workflowId: aggregate.workflow.workflowId,
+    version: 1,
+    status: "ready",
+  };
+  aggregate.workflow.graph.nodes.push(node);
+  aggregate.tickets.push(ticket);
+  return { ticketId, node, ticket };
 }
 
 interface TransactionChildResult {

@@ -16,6 +16,11 @@ import type {
   WorkflowSnapshot,
 } from "../../shared/contracts/ticket-engine.js";
 import { ticketEngineFile, ticketEngineLockFile } from "../storage/paths.js";
+import {
+  computeRequiredClosure,
+  evaluateWorkflowOutcome,
+  type MaterializedWorkflowGraph,
+} from "./workflow-graph.js";
 
 export type TicketStoredCommandResult =
   | TicketCommandResult
@@ -267,10 +272,22 @@ export class TicketStore {
 
   private validateAggregate(value: unknown, workflowId: WorkflowId): asserts value is TicketAggregate {
     const aggregate = requireRecord(value, "aggregate");
+    assertOnlyKeys(aggregate, [
+      "schemaVersion",
+      "storageIdentity",
+      "aggregateVersion",
+      "workflow",
+      "tickets",
+      "claims",
+      "blockedOwnerships",
+      "commandResults",
+      "outbox",
+    ], "aggregate");
     if (aggregate.schemaVersion !== 2) this.corrupt("unsupported schemaVersion");
     requirePositiveVersion(aggregate.aggregateVersion, "aggregateVersion");
 
     const identity = requireRecord(aggregate.storageIdentity, "storageIdentity");
+    assertOnlyKeys(identity, ["taskId", "taskRunId", "workflowId"], "storageIdentity");
     if (
       identity.taskId !== this.taskId
       || identity.taskRunId !== this.taskRunId
@@ -280,6 +297,15 @@ export class TicketStore {
     }
 
     const workflow = requireRecord(aggregate.workflow, "workflow");
+    assertOnlyKeys(workflow, [
+      "workflowId",
+      "version",
+      "status",
+      "deferredOutcome",
+      "graph",
+      "completionPolicy",
+      "policyRef",
+    ], "workflow");
     if (workflow.workflowId !== workflowId) this.corrupt("workflowId does not match its aggregate");
     requirePositiveVersion(workflow.version, "workflow.version");
     if (typeof workflow.status !== "string" || !WORKFLOW_STATUSES.has(workflow.status)) {
@@ -293,6 +319,7 @@ export class TicketStore {
     }
 
     const graph = requireRecord(workflow.graph, "workflow.graph");
+    assertOnlyKeys(graph, ["schemaVersion", "nodes", "dependencyEdges"], "workflow.graph");
     if (graph.schemaVersion !== 2) this.corrupt("workflow.graph schemaVersion is invalid");
     const graphNodes = requireArray(graph.nodes, "workflow.graph.nodes");
     const graphTicketIds = new Set<string>();
@@ -300,6 +327,13 @@ export class TicketStore {
     const graphNodeRecords: Record<string, unknown>[] = [];
     for (const [index, rawNode] of graphNodes.entries()) {
       const node = requireRecord(rawNode, `workflow.graph.nodes[${index}]`);
+      assertOnlyKeys(node, [
+        "nodeKey",
+        "ticketId",
+        "active",
+        "revisionOfTicketId",
+        "supersededByTicketId",
+      ], `workflow.graph.nodes[${index}]`);
       graphNodeRecords.push(node);
       const ticketId = requireNonEmptyString(node.ticketId, `workflow.graph.nodes[${index}].ticketId`);
       if (graphTicketIds.has(ticketId)) this.corrupt(`duplicate graph ticketId ${ticketId}`);
@@ -318,9 +352,12 @@ export class TicketStore {
         }
       }
     }
+    validateRevisionRelationships(graphNodeRecords);
     const dependencyPairs: Array<[string, string]> = [];
+    const dependencyKeys = new Set<string>();
     for (const [index, rawEdge] of requireArray(graph.dependencyEdges, "workflow.graph.dependencyEdges").entries()) {
       const edge = requireRecord(rawEdge, `workflow.graph.dependencyEdges[${index}]`);
+      assertOnlyKeys(edge, ["fromTicketId", "toTicketId"], `workflow.graph.dependencyEdges[${index}]`);
       const fromTicketId = requireNonEmptyString(
         edge.fromTicketId,
         `workflow.graph.dependencyEdges[${index}].fromTicketId`,
@@ -332,11 +369,20 @@ export class TicketStore {
       if (!graphTicketIds.has(fromTicketId) || !graphTicketIds.has(toTicketId)) {
         this.corrupt(`workflow.graph.dependencyEdges[${index}] references an unknown ticket`);
       }
+      if (fromTicketId === toTicketId) this.corrupt("workflow dependency cannot reference itself");
+      const dependencyKey = `${fromTicketId}\u0000${toTicketId}`;
+      if (dependencyKeys.has(dependencyKey)) this.corrupt(`duplicate workflow dependency ${fromTicketId} -> ${toTicketId}`);
+      dependencyKeys.add(dependencyKey);
       dependencyPairs.push([fromTicketId, toTicketId]);
     }
     assertAcyclic(graphTicketIds, dependencyPairs, "workflow.graph.dependencyEdges");
 
     const completionPolicy = requireRecord(workflow.completionPolicy, "workflow.completionPolicy");
+    assertOnlyKeys(completionPolicy, [
+      "requiredTerminalTicketIds",
+      "failurePolicy",
+      "blockedPolicy",
+    ], "workflow.completionPolicy");
     const requiredTerminalIds = new Set<string>();
     for (const ticketId of requireArray(
       completionPolicy.requiredTerminalTicketIds,
@@ -357,7 +403,12 @@ export class TicketStore {
     if (completionPolicy.blockedPolicy !== "wait") {
       this.corrupt("workflow.completionPolicy.blockedPolicy is invalid");
     }
+    computeRequiredClosure(
+      graph as never,
+      completionPolicy as never,
+    );
     const policyRef = requireRecord(workflow.policyRef, "workflow.policyRef");
+    assertOnlyKeys(policyRef, ["policyId", "policyVersion", "contentHash"], "workflow.policyRef");
     requireNonEmptyString(policyRef.policyId, "workflow.policyRef.policyId");
     requirePositiveVersion(policyRef.policyVersion, "workflow.policyRef.policyVersion");
     requireNonEmptyString(policyRef.contentHash, "workflow.policyRef.contentHash");
@@ -367,6 +418,14 @@ export class TicketStore {
     const ticketRecords: Record<string, unknown>[] = [];
     for (const [index, rawTicket] of tickets.entries()) {
       const ticket = requireRecord(rawTicket, `tickets[${index}]`);
+      assertOnlyKeys(ticket, [
+        "ticketId",
+        "workflowId",
+        "version",
+        "status",
+        "parentTicketId",
+        "activeAuthority",
+      ], `tickets[${index}]`);
       ticketRecords.push(ticket);
       const ticketId = requireNonEmptyString(ticket.ticketId, `tickets[${index}].ticketId`);
       if (ticketIds.has(ticketId)) this.corrupt(`duplicate ticketId ${ticketId}`);
@@ -398,6 +457,7 @@ export class TicketStore {
     const claims = requireArray(aggregate.claims, "claims");
     const claimIds = new Set<string>();
     const claimRequestIds = new Set<string>();
+    const claimsById = new Map<string, Record<string, unknown>>();
     for (const [index, rawClaim] of claims.entries()) {
       const claim = requireRecord(rawClaim, `claims[${index}]`);
       assertOnlyKeys(claim, [
@@ -416,6 +476,7 @@ export class TicketStore {
       const claimId = requireNonEmptyString(claim.claimId, `claims[${index}].claimId`);
       if (claimIds.has(claimId)) this.corrupt(`duplicate claimId ${claimId}`);
       claimIds.add(claimId);
+      claimsById.set(claimId, claim);
       this.validateOwnedTicket(claim, workflowId, ticketIds, `claims[${index}]`);
       requireNonEmptyString(claim.principalId, `claims[${index}].principalId`);
       requireNonNegativeInteger(claim.fencingToken, `claims[${index}].fencingToken`);
@@ -423,6 +484,7 @@ export class TicketStore {
     }
 
     const ownershipIds = new Set<string>();
+    const ownershipsById = new Map<string, Record<string, unknown>>();
     for (const [index, rawOwnership] of requireArray(
       aggregate.blockedOwnerships,
       "blockedOwnerships",
@@ -442,21 +504,27 @@ export class TicketStore {
       );
       if (ownershipIds.has(ownershipId)) this.corrupt(`duplicate ownershipId ${ownershipId}`);
       ownershipIds.add(ownershipId);
+      ownershipsById.set(ownershipId, ownership);
       this.validateOwnedTicket(ownership, workflowId, ticketIds, `blockedOwnerships[${index}]`);
       requireNonEmptyString(ownership.principalId, `blockedOwnerships[${index}].principalId`);
       requireNonNegativeInteger(ownership.fencingToken, `blockedOwnerships[${index}].fencingToken`);
     }
 
     for (const [index, ticket] of ticketRecords.entries()) {
-      if (ticket.activeAuthority === undefined) continue;
-      const authority = ticket.activeAuthority as Record<string, unknown>;
-      if (authority.kind === "claim" && !claimIds.has(String(authority.claimId))) {
-        this.corrupt(`tickets[${index}].activeAuthority references an unknown claim`);
-      }
-      if (authority.kind === "blocked_owner" && !ownershipIds.has(String(authority.ownershipId))) {
-        this.corrupt(`tickets[${index}].activeAuthority references an unknown blocked owner`);
-      }
+      validateTicketAuthorityRelationship(
+        ticket,
+        claimsById,
+        ownershipsById,
+        `tickets[${index}]`,
+      );
     }
+
+    validateWorkflowOutcomeRelationship(
+      workflow,
+      graph,
+      completionPolicy,
+      ticketRecords,
+    );
 
     const commandIds = new Set<string>();
     for (const [index, rawResult] of requireArray(aggregate.commandResults, "commandResults").entries()) {
@@ -468,10 +536,24 @@ export class TicketStore {
     }
 
     const eventIds = new Set<string>();
+    const ticketRecordsById = new Map(
+      ticketRecords.map((ticket) => [String(ticket.ticketId), ticket] as const),
+    );
+    const lastEventVersionByAggregate = new Map<string, number>();
     for (const [index, rawEntry] of requireArray(aggregate.outbox, "outbox").entries()) {
       const entry = requireRecord(rawEntry, `outbox[${index}]`);
+      assertOnlyKeys(entry, ["position", "event"], `outbox[${index}]`);
       if (entry.position !== index + 1) this.corrupt("outbox positions must be contiguous from one");
       const event = requireRecord(entry.event, `outbox[${index}].event`);
+      assertOnlyKeys(event, [
+        "eventId",
+        "workflowId",
+        "aggregateType",
+        "aggregateId",
+        "aggregateVersion",
+        "occurredAt",
+        "payload",
+      ], `outbox[${index}].event`);
       const eventId = requireNonEmptyString(event.eventId, `outbox[${index}].event.eventId`);
       if (eventIds.has(eventId)) this.corrupt(`duplicate eventId ${eventId}`);
       eventIds.add(eventId);
@@ -483,13 +565,29 @@ export class TicketStore {
         if (typeof event.aggregateId !== "string" || !ticketIds.has(event.aggregateId)) {
           this.corrupt(`event ${eventId} references an unknown ticket`);
         }
+        const currentTicketVersion = Number(ticketRecordsById.get(String(event.aggregateId))!.version);
+        if (Number(event.aggregateVersion) > currentTicketVersion) {
+          this.corrupt(`event ${eventId} references a future ticket version`);
+        }
         validateTicketEventPayload(payload, `outbox[${index}].event.payload`);
+        if (payload.type === "TicketReady" && payload.ticketVersion !== event.aggregateVersion) {
+          this.corrupt(`event ${eventId} has inconsistent TicketReady versions`);
+        }
       } else if (event.aggregateType === "workflow") {
         if (event.aggregateId !== workflowId) this.corrupt(`event ${eventId} references another workflow`);
+        if (Number(event.aggregateVersion) > Number(workflow.version)) {
+          this.corrupt(`event ${eventId} references a future workflow version`);
+        }
         validateWorkflowEventPayload(payload, `outbox[${index}].event.payload`);
       } else {
         this.corrupt(`event ${eventId} has an invalid aggregateType`);
       }
+      const aggregateKey = `${String(event.aggregateType)}\u0000${String(event.aggregateId)}`;
+      const previousVersion = lastEventVersionByAggregate.get(aggregateKey) ?? 0;
+      if (Number(event.aggregateVersion) < previousVersion) {
+        this.corrupt(`event ${eventId} moves aggregate history backwards`);
+      }
+      lastEventVersionByAggregate.set(aggregateKey, Number(event.aggregateVersion));
     }
   }
 
@@ -682,6 +780,117 @@ const CLAIM_REJECTION_CODES = new Set([
   "idempotency_conflict",
 ]);
 const TICKET_TERMINAL_EVENT_STATUSES = new Set(["completed", "returned", "failed", "cancelled"]);
+
+function validateRevisionRelationships(nodes: Record<string, unknown>[]): void {
+  const byId = new Map(nodes.map((node) => [String(node.ticketId), node] as const));
+  const successorsByPredecessor = new Map<string, number>();
+  const revisionEdges: Array<[string, string]> = [];
+
+  for (const node of nodes) {
+    const ticketId = String(node.ticketId);
+    const revisionOf = node.revisionOfTicketId === undefined
+      ? undefined
+      : String(node.revisionOfTicketId);
+    const supersededBy = node.supersededByTicketId === undefined
+      ? undefined
+      : String(node.supersededByTicketId);
+    if (revisionOf === ticketId || supersededBy === ticketId) {
+      throw new TicketStoreCorruptionError(`revision chain for ${ticketId} references itself`);
+    }
+    if (revisionOf) {
+      const predecessor = byId.get(revisionOf)!;
+      successorsByPredecessor.set(revisionOf, (successorsByPredecessor.get(revisionOf) ?? 0) + 1);
+      if (predecessor.supersededByTicketId !== ticketId) {
+        throw new TicketStoreCorruptionError(`revision ${revisionOf} -> ${ticketId} is not bidirectional`);
+      }
+      if (predecessor.active !== false) {
+        throw new TicketStoreCorruptionError(`revision predecessor ${revisionOf} must be inactive`);
+      }
+      revisionEdges.push([revisionOf, ticketId]);
+    }
+    if (supersededBy) {
+      const successor = byId.get(supersededBy)!;
+      if (successor.revisionOfTicketId !== ticketId) {
+        throw new TicketStoreCorruptionError(`supersession ${ticketId} -> ${supersededBy} is not bidirectional`);
+      }
+      if (node.active !== false) {
+        throw new TicketStoreCorruptionError(`superseded ticket ${ticketId} must be inactive`);
+      }
+    } else if (revisionOf && node.active !== true) {
+      throw new TicketStoreCorruptionError(`latest revision ${ticketId} must be active`);
+    }
+  }
+  for (const [predecessor, count] of successorsByPredecessor) {
+    if (count > 1) {
+      throw new TicketStoreCorruptionError(`revision predecessor ${predecessor} has multiple successors`);
+    }
+  }
+  assertAcyclic(new Set(byId.keys()), revisionEdges, "ticket revision relationships");
+}
+
+function validateTicketAuthorityRelationship(
+  ticket: Record<string, unknown>,
+  claimsById: Map<string, Record<string, unknown>>,
+  ownershipsById: Map<string, Record<string, unknown>>,
+  label: string,
+): void {
+  const authority = ticket.activeAuthority as Record<string, unknown> | undefined;
+  if (ticket.status === "running" && authority?.kind !== "claim") {
+    throw new TicketStoreCorruptionError(`${label} running status requires claim authority`);
+  }
+  if (ticket.status === "blocked" && authority?.kind !== "blocked_owner") {
+    throw new TicketStoreCorruptionError(`${label} blocked status requires blocked-owner authority`);
+  }
+  if (ticket.status !== "running" && ticket.status !== "blocked" && authority !== undefined) {
+    throw new TicketStoreCorruptionError(`${label} status cannot carry active authority`);
+  }
+  if (!authority) return;
+
+  const receipt = authority.kind === "claim"
+    ? claimsById.get(String(authority.claimId))
+    : ownershipsById.get(String(authority.ownershipId));
+  if (!receipt) throw new TicketStoreCorruptionError(`${label}.activeAuthority cannot be resolved`);
+  if (
+    receipt.workflowId !== ticket.workflowId
+    || receipt.ticketId !== ticket.ticketId
+    || receipt.ticketVersion !== ticket.version
+    || receipt.fencingToken !== authority.fencingToken
+  ) {
+    throw new TicketStoreCorruptionError(`${label}.activeAuthority does not match its receipt`);
+  }
+}
+
+function validateWorkflowOutcomeRelationship(
+  workflow: Record<string, unknown>,
+  graph: Record<string, unknown>,
+  completionPolicy: Record<string, unknown>,
+  tickets: Record<string, unknown>[],
+): void {
+  const outcome = evaluateWorkflowOutcome({
+    materialized: {
+      graph,
+      completionPolicy,
+    } as unknown as MaterializedWorkflowGraph,
+    ticketStatuses: new Map(tickets.map((ticket) => [
+      String(ticket.ticketId),
+      ticket.status,
+    ])) as never,
+  });
+  if (workflow.status === "paused") {
+    if (workflow.deferredOutcome !== outcome) {
+      throw new TicketStoreCorruptionError("paused workflow deferredOutcome is inconsistent");
+    }
+    return;
+  }
+  if (workflow.deferredOutcome !== undefined) {
+    throw new TicketStoreCorruptionError("only paused workflows may persist deferredOutcome");
+  }
+  if (workflow.status !== "cancelled" && workflow.status !== outcome) {
+    throw new TicketStoreCorruptionError(
+      `workflow status ${String(workflow.status)} does not match policy outcome ${outcome}`,
+    );
+  }
+}
 
 function validateAuthority(value: unknown, label: string): void {
   const authority = requireRecord(value, label);
