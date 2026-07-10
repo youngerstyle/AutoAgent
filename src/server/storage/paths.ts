@@ -53,6 +53,18 @@ export function agentEngineLockFile(workspaceRoot: string, agentId: string): str
   return `${agentEngineFile(workspaceRoot, agentId)}.lock`;
 }
 
+export function agentEngineTraceDir(workspaceRoot: string, agentId: string): string {
+  const aggregate = agentEngineFile(workspaceRoot, agentId);
+  return path.join(path.dirname(aggregate), "traces", path.basename(aggregate, ".json"));
+}
+
+export function agentEngineTraceFile(workspaceRoot: string, agentId: string, traceId: string): string {
+  return path.join(
+    agentEngineTraceDir(workspaceRoot, agentId),
+    `${createHash("sha256").update(traceId).digest("base64url")}.json`,
+  );
+}
+
 export function workspaceAgentThreadsDir(workspaceRoot: string, workspaceAgentId: string): string {
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "threads");
 }
