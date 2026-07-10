@@ -1,6 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   WorkflowPolicyConflictError,
@@ -45,6 +47,14 @@ describe("WorkflowPolicyStore", () => {
     })).rejects.toBeInstanceOf(WorkflowPolicyIntegrityError);
   });
 
+  it.each([".", "..", ".hidden", "trailing."])("rejects unsafe policy id %s", async (policyId) => {
+    expect(() => createWorkflowPolicy({
+      policyId,
+      policyVersion: 1,
+      grants: [{ principalId: "planner-1", capabilities: ["ticket_graph:create"] }],
+    })).toThrow(WorkflowPolicyIntegrityError);
+  });
+
   it("rejects a different policy body for an existing id and version", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-policy-"));
     const store = new WorkflowPolicyStore(root);
@@ -78,6 +88,102 @@ describe("WorkflowPolicyStore", () => {
       ref: original.ref,
       grants: [{ teamBindingId: "team-2", capabilities: ["ticket:claim"] }],
     })).rejects.toBeInstanceOf(WorkflowPolicyIntegrityError);
+  });
+
+  it("atomically creates one immutable version across competing processes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-policy-race-"));
+    const startFile = path.join(root, "start");
+    const first = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [{ principalId: "planner-1", capabilities: ["ticket_graph:create"] }],
+    });
+    const second = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [{ principalId: "planner-1", capabilities: ["workflow:control"] }],
+    });
+
+    const contenders = Array.from({ length: 24 }, (_, index) => (
+      runSeedChild(root, startFile, index % 2 === 0 ? first : second)
+    ));
+    await Promise.all(contenders.map((contender) => contender.ready));
+    await writeFile(startFile, "go", "utf8");
+    const results = await Promise.all(contenders.map((contender) => contender.result));
+
+    expect(results.every((result) => result.status !== "error")).toBe(true);
+    expect(new Set(
+      results.filter((result) => result.status === "seeded").map((result) => result.contentHash),
+    ).size).toBe(1);
+    expect(results.some((result) => result.status === "conflict")).toBe(true);
+    const stored = JSON.parse(await readFile(
+      path.join(root, "workflow-policies", "minimal-team", "1.json"),
+      "utf8",
+    ));
+    expect([first.ref.contentHash, second.ref.contentHash]).toContain(stored.ref.contentHash);
+  });
+
+  it("rejects policy content tampered on disk", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-policy-"));
+    const store = new WorkflowPolicyStore(root);
+    const policy = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [{ principalId: "planner-1", capabilities: ["ticket_graph:create"] }],
+    });
+    await store.seedPolicy(policy);
+    await writeFile(
+      path.join(root, "workflow-policies", "minimal-team", "1.json"),
+      JSON.stringify({ ...policy, grants: [{ principalId: "attacker", capabilities: ["workflow:control"] }] }),
+      "utf8",
+    );
+
+    await expect(store.getPolicy(policy.ref)).rejects.toBeInstanceOf(WorkflowPolicyIntegrityError);
+  });
+
+  it("drops unknown ref fields before hashing and persistence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-policy-"));
+    const store = new WorkflowPolicyStore(root);
+    const policy = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [{ principalId: "planner-1", capabilities: ["ticket_graph:create"] }],
+    });
+    const input = {
+      ...policy,
+      ref: { ...policy.ref, injectedAuthority: "workflow:control" },
+    } as typeof policy;
+
+    await store.seedPolicy(input);
+
+    const stored = JSON.parse(await readFile(
+      path.join(root, "workflow-policies", "minimal-team", "1.json"),
+      "utf8",
+    ));
+    expect(stored.ref).toEqual(policy.ref);
+  });
+
+  it("merges duplicate subject grants so equivalent policies share one hash", () => {
+    const split = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [
+        { principalId: "planner-1", capabilities: ["workflow:control"] },
+        { teamBindingId: "team-1", capabilities: ["ticket:claim"] },
+        { principalId: "planner-1", capabilities: ["ticket_graph:create"] },
+      ],
+    });
+    const merged = createWorkflowPolicy({
+      policyId: "minimal-team",
+      policyVersion: 1,
+      grants: [
+        { principalId: "planner-1", capabilities: ["ticket_graph:create", "workflow:control"] },
+        { teamBindingId: "team-1", capabilities: ["ticket:claim"] },
+      ],
+    });
+
+    expect(split).toEqual(merged);
+    expect(split.ref.contentHash).toBe(merged.ref.contentHash);
   });
 
   it("rejects a required policy that is missing", async () => {
@@ -116,6 +222,10 @@ describe("WorkflowPolicyStore", () => {
       principalId: "worker-1",
       teamBindingIds: ["team-2"],
     }, "ticket:claim")).resolves.toBe(false);
+    await expect(store.capabilitiesFor(policy.ref, {
+      principalId: "planner-1",
+      teamBindingIds: ["team-1"],
+    })).resolves.toEqual(["ticket:claim", "ticket_graph:create"]);
   });
 
   it("restores seeded policies after constructing a new store", async () => {
@@ -131,3 +241,82 @@ describe("WorkflowPolicyStore", () => {
     await expect(restarted.requirePolicy(policy.ref)).resolves.toEqual(policy);
   });
 });
+
+interface SeedChildResult {
+  status: "seeded" | "conflict" | "error";
+  contentHash?: string;
+  error?: string;
+}
+
+interface SeedChild {
+  ready: Promise<void>;
+  result: Promise<SeedChildResult>;
+}
+
+function runSeedChild(
+  root: string,
+  startFile: string,
+  policy: ReturnType<typeof createWorkflowPolicy>,
+): SeedChild {
+  const moduleUrl = pathToFileURL(path.resolve("src/server/tickets/workflow-policy-store.ts")).href;
+  const script = `
+    import { existsSync } from "node:fs";
+    import { setTimeout as delay } from "node:timers/promises";
+    const { WorkflowPolicyConflictError, WorkflowPolicyStore } = await import(process.env.POLICY_MODULE_URL);
+    console.log("READY");
+    while (!existsSync(process.env.START_FILE)) await delay(2);
+    try {
+      await new WorkflowPolicyStore(process.env.POLICY_ROOT).seedPolicy(JSON.parse(process.env.POLICY_JSON));
+      console.log(JSON.stringify({ status: "seeded", contentHash: JSON.parse(process.env.POLICY_JSON).ref.contentHash }));
+    } catch (error) {
+      console.log(JSON.stringify({
+        status: error instanceof WorkflowPolicyConflictError ? "conflict" : "error",
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  `;
+  let markReady!: () => void;
+  let rejectReady!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    rejectReady = reject;
+  });
+  const result = new Promise<SeedChildResult>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        POLICY_MODULE_URL: moduleUrl,
+        POLICY_ROOT: root,
+        POLICY_JSON: JSON.stringify(policy),
+        START_FILE: startFile,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (stdout.includes("READY\n") || stdout.includes("READY\r\n")) markReady();
+    });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => {
+      rejectReady(error);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        const error = new Error(`Seed child exited ${code}: ${stderr}`);
+        rejectReady(error);
+        return reject(error);
+      }
+      try {
+        const jsonLine = stdout.trim().split(/\r?\n/).at(-1) ?? "";
+        resolve(JSON.parse(jsonLine) as SeedChildResult);
+      } catch {
+        reject(new Error(`Invalid seed child output: ${stdout}\n${stderr}`));
+      }
+    });
+  });
+  return { ready, result };
+}

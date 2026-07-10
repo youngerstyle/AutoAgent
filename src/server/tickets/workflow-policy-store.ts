@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { link, mkdir, open, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   WorkflowAuthorizationGrant,
@@ -6,7 +7,7 @@ import type {
   WorkflowPolicyPort,
   WorkflowPolicyRef,
 } from "../../shared/contracts/ticket-engine.js";
-import { readJson, writeJson } from "../storage/json.js";
+import { readJson } from "../storage/json.js";
 
 export interface WorkflowPolicySeed {
   policyId: string;
@@ -40,8 +41,6 @@ export class WorkflowPolicyNotFoundError extends Error {
   }
 }
 
-const seedQueues = new Map<string, Promise<unknown>>();
-
 export class WorkflowPolicyStore implements WorkflowPolicyPort {
   constructor(private readonly rootDir: string) {}
 
@@ -51,22 +50,22 @@ export class WorkflowPolicyStore implements WorkflowPolicyPort {
     assertContentHash(normalized);
     const filePath = this.policyFile(normalized.ref);
 
-    return enqueueSeed(filePath, async () => {
-      const existing = await readJson<WorkflowAuthorizationPolicy | undefined>(filePath, undefined);
-      if (existing) {
-        const normalizedExisting = normalizePolicy(existing);
-        assertContentHash(normalizedExisting);
-        if (normalizedExisting.ref.contentHash !== normalized.ref.contentHash) {
-          throw new WorkflowPolicyConflictError(
-            `Workflow policy version is immutable: ${policyIdentity(normalized.ref)}`,
-          );
-        }
-        return normalizedExisting;
-      }
+    if (await createJsonFileIfAbsent(filePath, normalized)) return normalized;
 
-      await writeJson(filePath, normalized);
-      return normalized;
-    });
+    const existing = await readJson<WorkflowAuthorizationPolicy | undefined>(filePath, undefined);
+    if (!existing) {
+      throw new WorkflowPolicyIntegrityError(
+        `Workflow policy disappeared after create conflict: ${policyIdentity(normalized.ref)}`,
+      );
+    }
+    const normalizedExisting = normalizePolicy(existing);
+    assertContentHash(normalizedExisting);
+    if (normalizedExisting.ref.contentHash !== normalized.ref.contentHash) {
+      throw new WorkflowPolicyConflictError(
+        `Workflow policy version is immutable: ${policyIdentity(normalized.ref)}`,
+      );
+    }
+    return normalizedExisting;
   }
 
   async getPolicy(ref: WorkflowPolicyRef): Promise<WorkflowAuthorizationPolicy | undefined> {
@@ -95,17 +94,30 @@ export class WorkflowPolicyStore implements WorkflowPolicyPort {
     subject: WorkflowCapabilitySubject,
     capability: string,
   ): Promise<boolean> {
+    return (await this.capabilitiesFor(ref, subject)).includes(capability);
+  }
+
+  async capabilitiesFor(
+    ref: WorkflowPolicyRef,
+    subject: WorkflowCapabilitySubject,
+  ): Promise<string[]> {
     const policy = await this.requirePolicy(ref);
     const teamBindingIds = new Set(subject.teamBindingIds);
-    return policy.grants.some((grant) => (
-      grant.capabilities.includes(capability)
-      && (grant.principalId === subject.principalId
-        || (grant.teamBindingId !== undefined && teamBindingIds.has(grant.teamBindingId)))
-    ));
+    return [...new Set(policy.grants.flatMap((grant) => (
+      grant.principalId === subject.principalId
+        || (grant.teamBindingId !== undefined && teamBindingIds.has(grant.teamBindingId))
+        ? grant.capabilities
+        : []
+    )))].sort();
   }
 
   private policyFile(ref: Pick<WorkflowPolicyRef, "policyId" | "policyVersion">): string {
-    return path.join(this.rootDir, "workflow-policies", ref.policyId, `${ref.policyVersion}.json`);
+    const policyRoot = path.resolve(this.rootDir, "workflow-policies");
+    const policyDirectory = path.resolve(policyRoot, ref.policyId);
+    if (!isContainedPath(policyRoot, policyDirectory)) {
+      throw new WorkflowPolicyIntegrityError(`Workflow policy path escapes policy root: ${ref.policyId}`);
+    }
+    return path.resolve(policyDirectory, `${ref.policyVersion}.json`);
   }
 }
 
@@ -125,13 +137,18 @@ export function createWorkflowPolicy(seed: WorkflowPolicySeed): WorkflowAuthoriz
 function normalizePolicy(policy: WorkflowAuthorizationPolicy): WorkflowAuthorizationPolicy {
   validateRef(policy.ref);
   return {
-    ref: { ...policy.ref },
+    ref: {
+      policyId: policy.ref.policyId,
+      policyVersion: policy.ref.policyVersion,
+      contentHash: policy.ref.contentHash,
+    },
     grants: normalizeGrants(policy.grants),
   };
 }
 
 function normalizeGrants(grants: WorkflowAuthorizationGrant[]): WorkflowAuthorizationGrant[] {
-  return grants.map((grant) => {
+  const bySubject = new Map<string, { grant: WorkflowAuthorizationGrant; capabilities: Set<string> }>();
+  for (const grant of grants) {
     const hasPrincipal = typeof grant.principalId === "string" && grant.principalId.length > 0;
     const hasTeamBinding = typeof grant.teamBindingId === "string" && grant.teamBindingId.length > 0;
     if (hasPrincipal === hasTeamBinding) {
@@ -142,11 +159,18 @@ function normalizeGrants(grants: WorkflowAuthorizationGrant[]): WorkflowAuthoriz
     if (grant.capabilities.length === 0 || grant.capabilities.some((value) => !value)) {
       throw new WorkflowPolicyIntegrityError("Workflow policy grants require non-empty capabilities");
     }
-    return {
+    const normalizedGrant: WorkflowAuthorizationGrant = {
       ...(hasPrincipal ? { principalId: grant.principalId } : { teamBindingId: grant.teamBindingId }),
-      capabilities: [...new Set(grant.capabilities)].sort(),
+      capabilities: [],
     };
-  }).sort((left, right) => grantSortKey(left).localeCompare(grantSortKey(right)));
+    const key = grantSortKey(normalizedGrant);
+    const entry = bySubject.get(key) ?? { grant: normalizedGrant, capabilities: new Set<string>() };
+    for (const capability of grant.capabilities) entry.capabilities.add(capability);
+    bySubject.set(key, entry);
+  }
+  return [...bySubject.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, entry]) => ({ ...entry.grant, capabilities: [...entry.capabilities].sort() }));
 }
 
 function assertContentHash(policy: WorkflowAuthorizationPolicy): void {
@@ -163,7 +187,10 @@ function computeContentHash(
   policyVersion: number,
   grants: WorkflowAuthorizationGrant[],
 ): string {
-  const content = JSON.stringify({ policyId, policyVersion, grants });
+  const content = JSON.stringify({
+    ref: { policyId, policyVersion },
+    grants,
+  });
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
@@ -175,7 +202,7 @@ function validateRef(ref: WorkflowPolicyRef): void {
 }
 
 function validatePolicyIdentity(policyId: string, policyVersion: number): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(policyId)) {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(policyId)) {
     throw new WorkflowPolicyIntegrityError(`Invalid workflow policy id: ${policyId}`);
   }
   if (!Number.isSafeInteger(policyVersion) || policyVersion < 1) {
@@ -191,14 +218,28 @@ function policyIdentity(ref: Pick<WorkflowPolicyRef, "policyId" | "policyVersion
   return `${ref.policyId}@${ref.policyVersion}`;
 }
 
-async function enqueueSeed<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const normalizedKey = path.resolve(key).toLowerCase();
-  const previous = seedQueues.get(normalizedKey) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(operation);
-  seedQueues.set(normalizedKey, next);
+async function createJsonFileIfAbsent(filePath: string, value: unknown): Promise<boolean> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await open(tempPath, "wx", 0o600);
   try {
-    return await next;
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    try {
+      await link(tempPath, filePath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
   } finally {
-    if (seedQueues.get(normalizedKey) === next) seedQueues.delete(normalizedKey);
+    await handle.close().catch(() => undefined);
+    await rm(tempPath, { force: true }).catch(() => undefined);
   }
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
