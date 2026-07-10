@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { permissionPatchForTool, roleToolDefaults, toolProtocolFor, toolsForPolicy } from "../../src/server/tools/tool-catalog";
+import { permissionPatchForTool, toolProtocolFor, toolsForPolicy } from "../../src/server/tools/tool-catalog";
 import type { AgentPolicy } from "../../src/shared/types";
 
 describe("tool catalog", () => {
@@ -7,7 +7,8 @@ describe("tool catalog", () => {
     const pmPolicy: AgentPolicy = {
       canReadWorkspace: true,
       canWriteWorkspace: false,
-      canExecuteCommands: false
+      canExecuteCommands: false,
+      enabledTools: ["listFiles", "readFile"]
     };
     const devPolicy: AgentPolicy = {
       canReadWorkspace: true,
@@ -16,16 +17,14 @@ describe("tool catalog", () => {
       enabledTools: ["readFile"]
     };
 
-    expect(toolsForPolicy(pmPolicy, "pm").map((tool) => tool.name)).toEqual(["listFiles", "readFile", "writeFile"]);
-    expect(toolsForPolicy(devPolicy, "dev").map((tool) => tool.name)).toEqual(["readFile"]);
-    expect(toolProtocolFor(pmPolicy, "pm")).toContain("docs/notes.md");
-    expect(toolProtocolFor(pmPolicy, "pm")).not.toContain("\"tool\":\"startService\"");
+    expect(toolsForPolicy(pmPolicy).map((tool) => tool.name)).toEqual(["listFiles", "readFile"]);
+    expect(toolsForPolicy(devPolicy).map((tool) => tool.name)).toEqual(["readFile"]);
+    expect(toolProtocolFor(pmPolicy)).toContain("\"tool\":\"readFile\"");
+    expect(toolProtocolFor(pmPolicy)).not.toContain("\"tool\":\"startService\"");
   });
 
-  it("keeps role defaults explicit so new agents start with real tool choices", () => {
-    expect(roleToolDefaults("pm")).toEqual(["listFiles", "readFile", "writeFile"]);
-    expect(roleToolDefaults("dev")).toEqual(["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"]);
-    expect(roleToolDefaults("qa")).toEqual(["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"]);
+  it("does not infer tools when a policy has no explicit tool configuration", () => {
+    expect(toolsForPolicy({ canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true })).toEqual([]);
   });
 
   it("maps enabled tools back to the coarse permissions they require", () => {

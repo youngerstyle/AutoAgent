@@ -1,21 +1,11 @@
 import OpenAI from "openai";
-import { roleLabel } from "../../shared/labels.js";
-import type { AgentModelProvider, AgentModelTurnInput, AgentTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 
 export class OpenAIProvider implements AgentModelProvider {
   name = "openai" as const;
 
   constructor(private readonly apiKey?: string, private readonly baseURL?: string) {}
-
-  async runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
-    return this.runModelTurn({
-      provider: input.provider,
-      model: input.model,
-      systemPrompt: `你是${roleLabel(input.role)} Agent。尽量返回简洁 JSON。`,
-      prompt: input.prompt,
-    });
-  }
 
   async runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult> {
     if (!this.apiKey) throw new ProviderError("OpenAI API key is not configured", false, "MISSING_OPENAI_API_KEY");

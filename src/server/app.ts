@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { errorMiddleware } from "./errors.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import { AgentProfileStore } from "./agents/profile-store.js";
-import { MissionControl } from "./mission/mission-control.js";
 import { ProviderRegistry } from "./providers/provider-registry.js";
 import { createAgentProfileRouter } from "./routes/agent-profiles.js";
 import { createAgentRouter } from "./routes/agents.js";
@@ -15,6 +14,9 @@ import { createTaskRouter } from "./routes/tasks.js";
 import { createWorkspaceRouter } from "./routes/workspaces.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
+import { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
+import { WorkflowPolicyStore } from "./tickets/workflow-policy-store.js";
+import { createMinimalTeamWorkflowPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "./tickets/workflow-policy-config.js";
 
 function hasClientEntry(dir: string) {
   return existsSync(path.join(dir, "index.html"));
@@ -41,7 +43,10 @@ export function createApp(config: AppConfig = loadConfig()) {
     retryCount: config.providerRetryCount,
     env: process.env
   });
-  const mission = new MissionControl(workspaceStore, ledger, providerRegistry, profileStore);
+  const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
+  const policyRef = createMinimalTeamWorkflowPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
+  const mission = new RuntimeHostRegistry(workspaceStore, profileStore, providerRegistry, policyStore, policyRef);
+  app.locals.runtimeHostRegistry = mission;
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {

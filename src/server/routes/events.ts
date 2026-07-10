@@ -1,7 +1,8 @@
 import { Router } from "express";
 import type { AutoAgentEvent } from "../../shared/types.js";
 import type { EventLedger } from "../storage/event-ledger.js";
-import { RUNTIME_LIMITS } from "../runtime-limits.js";
+
+const SSE_HEARTBEAT_MS = positiveIntegerFromEnv("AUTOAGENT_SSE_HEARTBEAT_MS", 15_000);
 
 export function createEventRouter(ledger: EventLedger) {
   const router = Router({ mergeParams: true });
@@ -21,7 +22,7 @@ export function createEventRouter(ledger: EventLedger) {
     };
     const heartbeat = setInterval(() => {
       res.write(": heartbeat\n\n");
-    }, RUNTIME_LIMITS.sseHeartbeatMs);
+    }, SSE_HEARTBEAT_MS);
     heartbeat.unref?.();
 
     ledger.bus.on(`workspace:${workspaceId}`, onEvent);
@@ -32,4 +33,9 @@ export function createEventRouter(ledger: EventLedger) {
   });
 
   return router;
+}
+
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }

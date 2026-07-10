@@ -30,6 +30,9 @@ export interface MissionAgentDirectory {
 }
 
 export class MissionProcessManager {
+  private static readonly CLAIM_LEASE_MS = 30 * 60_000;
+  private static readonly CLAIM_RENEWAL_LEAD_MS = 10 * 60_000;
+
   constructor(
     private readonly store: MissionStore,
     private readonly tickets: TicketPort,
@@ -79,6 +82,7 @@ export class MissionProcessManager {
   async tick(): Promise<MissionAggregate> {
     let aggregate = await this.requireAggregate();
     if (aggregate.record.status !== "linked") return aggregate;
+    aggregate = await this.renewActiveClaims(aggregate);
     aggregate = await this.pumpTicketEvents(aggregate);
     aggregate = await this.pumpAgentEvents(aggregate);
     return aggregate;
@@ -101,6 +105,35 @@ export class MissionProcessManager {
     const link = aggregate.links.find((item) => item.agentId === agentId && item.status === "blocked");
     if (!link || !isActiveLink(link)) return aggregate;
     return this.updateLink(aggregate, link.dispatchId, { ...link, status: "running" });
+  }
+
+  async current(): Promise<MissionAggregate> {
+    return this.requireAggregate();
+  }
+
+  async markActiveLinksCancelled(): Promise<MissionAggregate> {
+    const aggregate = await this.requireAggregate();
+    const cancellable = aggregate.links.filter((link) => link.status !== "settled" && link.status !== "cancelled");
+    if (!cancellable.length) return aggregate;
+    const terminal = new Map<string, MissionLink>();
+    for (const link of cancellable) {
+      const [goal, ticket] = await Promise.all([
+        link.agentGoalId ? this.agents.get(link.agentId).getGoal(link.agentGoalId) : undefined,
+        this.tickets.getTicket(link.ticketId),
+      ]);
+      terminal.set(link.dispatchId, {
+        ...link,
+        status: "cancelled",
+        finalTicketVersion: ticket?.version ?? link.ticketVersion,
+        finalGoalVersion: goal?.version ?? 1,
+        updatedAt: this.now().toISOString(),
+      });
+    }
+    return this.store.transact(aggregate.version, (current) => ({
+      ...current,
+      version: current.version + 1,
+      links: current.links.map((link) => terminal.get(link.dispatchId) ?? link),
+    }));
   }
 
   private async pumpTicketEvents(aggregate: MissionAggregate): Promise<MissionAggregate> {
@@ -127,6 +160,13 @@ export class MissionProcessManager {
     ticketId: TicketId,
     ticketVersion: number,
   ): Promise<MissionAggregate> {
+    const [workflow, ticket] = await Promise.all([
+      this.tickets.getWorkflow(aggregate.record.workflowId),
+      this.tickets.getTicket(ticketId),
+    ]);
+    if (new Set(["completed", "failed", "cancelled"]).has(workflow.status) || ticket?.status !== "ready") {
+      return aggregate;
+    }
     const dispatchId = stableId("dispatch", aggregate.missionId, ticketId, String(ticketVersion));
     const existing = aggregate.links.find((item) => item.dispatchId === dispatchId);
     if (existing) return this.continueDispatch(aggregate, dispatchId);
@@ -165,7 +205,7 @@ export class MissionProcessManager {
         ticketId: link.ticketId,
         expectedTicketVersion: link.ticketVersion,
         principalId: link.agentPrincipalId,
-        leaseDurationMs: 5 * 60_000,
+        leaseDurationMs: MissionProcessManager.CLAIM_LEASE_MS,
       });
       if (!claim) return aggregate;
       aggregate = await this.updateLink(aggregate, dispatchId, {
@@ -173,6 +213,7 @@ export class MissionProcessManager {
         status: "starting",
         ticketVersion: claim.ticketVersion,
         authority: { kind: "claim", claimId: claim.claimId, fencingToken: claim.fencingToken },
+        claimLeaseUntil: claim.leaseUntil,
         updatedAt: this.now().toISOString(),
       });
       link = aggregate.links.find((item) => item.dispatchId === dispatchId)!;
@@ -247,6 +288,8 @@ export class MissionProcessManager {
       });
       for (const event of page.events) {
         if (event.aggregateType !== "agent_goal" || event.payload.type !== "GoalProposalCreated") continue;
+        const eventGoal = await this.agents.get(agentId).getGoal(event.payload.goalId);
+        if (eventGoal?.status !== "resolving" || eventGoal.activeProposalId !== event.payload.proposalId) continue;
         const link = current.links.find((item) => item.agentGoalId === event.payload.goalId);
         if (!link || !isActiveLink(link) || !new Set(["running", "resolving"]).has(link.status)) continue;
         if (link.status !== "resolving" || link.lastProposalId !== event.payload.proposalId) {
@@ -264,6 +307,26 @@ export class MissionProcessManager {
     return current;
   }
 
+  private async renewActiveClaims(aggregate: MissionAggregate): Promise<MissionAggregate> {
+    let current = aggregate;
+    for (const link of current.links) {
+      if (!isActiveLink(link) || link.authority.kind !== "claim" || !link.claimLeaseUntil) continue;
+      if (Date.parse(link.claimLeaseUntil) - this.now().getTime() > MissionProcessManager.CLAIM_RENEWAL_LEAD_MS) continue;
+      const receipt = await this.tickets.renewClaim({
+        requestId: stableId("renew_claim", link.authority.claimId, link.claimLeaseUntil),
+        claimId: link.authority.claimId,
+        fencingToken: link.authority.fencingToken,
+        extendByMs: MissionProcessManager.CLAIM_LEASE_MS,
+      });
+      current = await this.updateLink(current, link.dispatchId, {
+        ...link,
+        ticketVersion: receipt.ticketVersion,
+        claimLeaseUntil: receipt.leaseUntil,
+      });
+    }
+    return current;
+  }
+
   private async continueSettlement(
     aggregate: MissionAggregate,
     dispatchId: string,
@@ -276,7 +339,24 @@ export class MissionProcessManager {
     const proposal = await agent.getProposal(proposalId);
     if (!proposal) throw new Error("Goal proposal is missing");
     const workflow = await this.tickets.getWorkflow(link.workflowId);
-    const command = proposalToTicketCommand(proposal as never, active, workflow.version, this.now().toISOString());
+    let command;
+    try {
+      command = proposalToTicketCommand(proposal as never, active, workflow.version, this.now().toISOString());
+    } catch (error) {
+      const decisionId = stableId("invalid_goal_decision", proposalId);
+      const settled = await agent.settleProposal({
+        decisionId,
+        proposalId,
+        expectedGoalVersion: (await agent.getGoal(link.agentGoalId))!.version,
+        decision: { accepted: false, disposition: "correctable", reason: (error as Error).message },
+      });
+      if (!settled.applied) return aggregate;
+      return this.updateLink(aggregate, dispatchId, {
+        ...active,
+        status: "running",
+        lastDecisionId: decisionId,
+      });
+    }
     const result = await this.tickets.getTicketCommandResult(command.commandId) ?? await this.tickets.applyTicket(command);
     const decisionId = stableId("goal_decision", proposalId, command.commandId);
     const decision = ticketResultToGoalDecision(proposal, result);
@@ -289,7 +369,7 @@ export class MissionProcessManager {
     if (!settled.applied && settled.code === "version_conflict") return aggregate;
     let nextLink: MissionLink;
     if (result.accepted && result.ticketStatus === "blocked") {
-      nextLink = { ...active, status: "blocked", authority: result.nextAuthority ?? active.authority, lastCommandId: command.commandId, lastDecisionId: decisionId };
+      nextLink = { ...active, status: "blocked", authority: result.nextAuthority ?? active.authority, claimLeaseUntil: undefined, lastCommandId: command.commandId, lastDecisionId: decisionId };
     } else if (!result.accepted && decision.accepted === false && decision.disposition === "correctable") {
       nextLink = { ...active, status: "running", lastCommandId: command.commandId, lastDecisionId: decisionId };
     } else if (!result.accepted) {

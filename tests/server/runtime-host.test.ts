@@ -4,12 +4,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
-import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
+import { isWaitingControl, RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { seedMinimalTeamWorkflowPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/workflow-policy-config.js";
 import { WorkflowPolicyStore } from "../../src/server/tickets/workflow-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("RuntimeHost", () => {
+  it("does not schedule a new slice while the chronological thread tail is waiting", () => {
+    expect(isWaitingControl({ turnId: "turn-a", status: "waiting" })).toBe(true);
+    expect(isWaitingControl({ turnId: "turn-a", status: "yielded" })).toBe(false);
+    expect(isWaitingControl({ status: "running" })).toBe(false);
+  });
+
   it("runs a fresh mock mission through ticket DAG and survives host recreation", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-a", title: "演示", objective: "构建演示" });
@@ -35,6 +41,23 @@ describe("RuntimeHost", () => {
     const fixture = await createFixture();
     await fixture.host.start();
     fixture.host.stop();
+  });
+
+  it("lets operator cancellation bypass business-flow advancement", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-cancel", title: "取消验证", objective: "构建演示" });
+
+    await fixture.host.cancelTask("task-cancel", "operator cancelled");
+
+    expect(await fixture.host.listTasks()).toContainEqual(expect.objectContaining({
+      taskId: "task-cancel",
+      status: "cancelled",
+    }));
+    const snapshot = await fixture.host.snapshot();
+    expect(snapshot.status).toBe("interrupted");
+    expect(snapshot.agents.every((agent) => agent.status !== "running")).toBe(true);
+    const links = (await fixture.host.context("task-cancel")!.manager.current()).links;
+    expect(links.every((link) => link.status === "settled" || link.status === "cancelled")).toBe(true);
   });
 
   it("runs an ordinary turn only on the selected idle Agent", async () => {

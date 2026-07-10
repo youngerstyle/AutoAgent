@@ -1,18 +1,19 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/server/app";
+import type { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
 
 describe("mock team loop E2E", () => {
-  beforeEach(async () => {
-    process.env.NODE_ENV = "test";
-    process.env.AUTOAGENT_HOME = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-home-"));
-  });
+  let registry: RuntimeHostRegistry | undefined;
+  afterEach(() => registry?.stopAll());
 
-  it("creates a workspace, runs the fixed team, recruits a specialist, and exposes a UI-ready snapshot", async () => {
-    const app = createApp();
+  it("creates a workspace and completes the V2 Ticket-Agent mission through public routes", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-home-"));
+    const app = createApp({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0 });
+    registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-ws-"));
 
     const created = await request(app)
@@ -21,32 +22,33 @@ describe("mock team loop E2E", () => {
       .expect(201);
     const workspaceId = created.body.workspace.id as string;
 
-    await request(app)
+    const started = await request(app)
       .post(`/api/workspaces/${workspaceId}/tasks`)
-      .send({ goal: "Build auth security checks demo" })
-      .expect(201);
+      .send({ goal: "Build auth security checks demo" });
+    if (started.status !== 201) throw new Error(`Task start failed (${started.status}): ${JSON.stringify(started.body)}`);
 
     const snapshot = await pollSnapshot(app, workspaceId);
     expect(snapshot.status).toBe("completed");
     expect(snapshot.phase).toBe("completed");
     expect(snapshot.agents.map((agent: { roleInWorkspace: string }) => agent.roleInWorkspace)).toEqual(
-      expect.arrayContaining(["boss", "pm", "architect", "dev", "qa", "specialist"])
+      expect.arrayContaining(["boss", "pm", "architect", "dev", "qa"])
     );
-    expect(snapshot.recentEvents.map((event: { type: string }) => event.type)).toEqual(
-      expect.arrayContaining(["task.created", "recruitment.approved", "run.completed"])
+    expect(snapshot.assignments).toEqual([]);
+    expect(snapshot.tickets.map((ticket: { type: string }) => ticket.type)).toEqual(
+      expect.arrayContaining(["boss_intake", "pm_plan", "implementation", "qa", "boss_acceptance"])
     );
-    await expect(readFile(path.join(rootPath, "AUTOAGENT_RESULT.md"), "utf8")).resolves.toContain("已完成：");
+    expect(Object.values(snapshot.agentThreads).flat().length).toBeGreaterThan(0);
   });
 });
 
 async function pollSnapshot(app: ReturnType<typeof createApp>, workspaceId: string) {
   let snapshot;
   for (let index = 0; index < 40; index += 1) {
-    const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200);
+    const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`);
+    if (response.status !== 200) throw new Error(`Snapshot failed (${response.status}): ${JSON.stringify(response.body)}`);
     snapshot = response.body.snapshot;
-    const eventTypes = snapshot.recentEvents.map((event: { type: string }) => event.type);
-    if (snapshot.status === "completed" && eventTypes.includes("run.completed")) return snapshot;
-    if (snapshot.status === "failed" && eventTypes.includes("run.failed")) return snapshot;
+    if (snapshot.status === "completed") return snapshot;
+    if (snapshot.status === "failed") return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Task did not finish. Last snapshot: ${JSON.stringify(snapshot)}`);

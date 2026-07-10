@@ -1,4 +1,4 @@
-import type { AgentPolicy, AgentRole, WorkspaceToolName } from "./types.js";
+import type { AgentPolicy, WorkspaceToolName } from "./types.js";
 
 export interface ToolDefinition {
   name: WorkspaceToolName;
@@ -29,7 +29,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
   {
     name: "writeFile",
     label: "写文件",
-    description: "写入项目文件；非开发角色只允许写文档产物目录",
+    description: "在授权边界内写入项目文件",
     category: "file",
     observation: false,
     promptExample: "{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]}"
@@ -60,16 +60,10 @@ export const TOOL_CATALOG: ToolDefinition[] = [
   }
 ];
 
-export function roleToolDefaults(role: AgentRole): WorkspaceToolName[] {
-  if (role === "dev" || role === "specialist") return ["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"];
-  if (role === "qa") return ["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"];
-  return ["listFiles", "readFile", "writeFile"];
-}
-
-export function toolsForPolicy(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">, role: AgentRole): ToolDefinition[] {
-  const configuredNames = Array.isArray(policy.enabledTools) ? policy.enabledTools : roleToolDefaults(role);
+export function toolsForPolicy(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">): ToolDefinition[] {
+  const configuredNames = Array.isArray(policy.enabledTools) ? policy.enabledTools : [];
   const configured = new Set(configuredNames);
-  return TOOL_CATALOG.filter((tool) => configured.has(tool.name) && policyAllowsTool(policy, role, tool.name));
+  return TOOL_CATALOG.filter((tool) => configured.has(tool.name) && policyAllowsTool(policy, tool.name));
 }
 
 export function isKnownToolName(name: string): name is WorkspaceToolName {
@@ -80,8 +74,8 @@ export function isObservationTool(name: string): boolean {
   return TOOL_CATALOG.some((tool) => tool.name === name && tool.observation);
 }
 
-export function isToolEnabledForPolicy(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">, role: AgentRole, name: string): boolean {
-  return isKnownToolName(name) && toolsForPolicy(policy, role).some((tool) => tool.name === name);
+export function isToolEnabledForPolicy(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">, name: string): boolean {
+  return isKnownToolName(name) && toolsForPolicy(policy).some((tool) => tool.name === name);
 }
 
 export function permissionPatchForTool(toolName: WorkspaceToolName): Partial<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">> {
@@ -90,14 +84,9 @@ export function permissionPatchForTool(toolName: WorkspaceToolName): Partial<Pic
   return { canExecuteCommands: true };
 }
 
-export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">, role: AgentRole): string {
-  const tools = toolsForPolicy(policy, role);
-  const examples = tools.map((tool) => {
-    if (tool.name === "writeFile" && !policy.canWriteWorkspace && canWriteDocumentArtifacts(role)) {
-      return "{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"docs/notes.md\",\"content\":\"...\"}]}";
-    }
-    return tool.promptExample;
-  });
+export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">): string {
+  const tools = toolsForPolicy(policy);
+  const examples = tools.map((tool) => tool.promptExample);
   const lines = [
     examples.length > 0
       ? `工具协议：需要访问真实项目文件或执行命令时，只能返回当前已启用工具允许的 JSON：${examples.join("、")}。`
@@ -111,12 +100,8 @@ export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "
   return lines.join("\n");
 }
 
-function policyAllowsTool(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">, role: AgentRole, name: WorkspaceToolName): boolean {
+function policyAllowsTool(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">, name: WorkspaceToolName): boolean {
   if (name === "listFiles" || name === "readFile") return policy.canReadWorkspace;
-  if (name === "writeFile") return policy.canWriteWorkspace || canWriteDocumentArtifacts(role);
+  if (name === "writeFile") return policy.canWriteWorkspace;
   return policy.canExecuteCommands;
-}
-
-function canWriteDocumentArtifacts(role: AgentRole): boolean {
-  return role === "boss" || role === "pm" || role === "architect" || role === "qa";
 }

@@ -30,6 +30,42 @@ export type MissionTicketOutcome =
   | { kind: "fail"; reason: string }
   | { kind: "return_to_parent"; parentTicketId: TicketId; reason: string };
 
+export function validateMissionTicketOutcome(
+  schemaRef: string | undefined,
+  status: GoalResolutionStatus,
+  value: unknown,
+): { valid: true } | { valid: false; reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { valid: false, reason: "domainOutcome 必须是结构化 Ticket 结果" };
+  }
+  const outcome = value as Record<string, unknown>;
+  const kind = outcome.kind;
+  if (typeof kind !== "string") return { valid: false, reason: "domainOutcome.kind 缺失" };
+  if (schemaRef === "ticket-graph-v2" && kind !== "complete_with_graph") {
+    return { valid: false, reason: "计划工单必须返回 complete_with_graph" };
+  }
+  if (status === "completed" && !new Set(["complete", "complete_with_graph", "return_to_parent"]).has(kind)) {
+    return { valid: false, reason: `completed 与 Ticket 结果 ${kind} 不一致` };
+  }
+  if (status === "blocked" && kind !== "block") return { valid: false, reason: "blocked 必须返回 block" };
+  if (status === "failed" && kind !== "fail") return { valid: false, reason: "failed 必须返回 fail" };
+  if (kind === "complete" && !("result" in outcome)) return { valid: false, reason: "complete.result 缺失" };
+  if (kind === "complete_with_graph") {
+    if (!("result" in outcome) || !isRecord(outcome.graph) || !isRecord(outcome.completionPolicy)) {
+      return { valid: false, reason: "complete_with_graph 需要 result、graph 和 completionPolicy" };
+    }
+  } else if (kind === "block" || kind === "fail") {
+    if (typeof outcome.reason !== "string" || !outcome.reason.trim()) return { valid: false, reason: `${kind}.reason 缺失` };
+  } else if (kind === "return_to_parent") {
+    if (typeof outcome.parentTicketId !== "string" || typeof outcome.reason !== "string" || !outcome.reason.trim()) {
+      return { valid: false, reason: "return_to_parent 需要 parentTicketId 和 reason" };
+    }
+  } else if (!new Set(["complete", "complete_with_graph"]).has(kind)) {
+    return { valid: false, reason: `未知 Ticket 结果：${kind}` };
+  }
+  return { valid: true };
+}
+
 export function missionOutcomeInstruction(schemaRef: string): string {
   const base = "完成当前 Goal 时必须使用 goalResolution；domainOutcome 必须显式描述 Ticket 结果，平台不会从普通文字猜测。";
   if (schemaRef === "ticket-graph-v2") {
@@ -99,6 +135,10 @@ function validateStatus(status: GoalResolutionStatus, kind: MissionTicketOutcome
       ? kind === "block"
       : kind === "fail";
   if (!valid) throw new Error(`Contradictory Goal status ${status} and Ticket outcome ${kind}`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function stableId(prefix: string, value: string): string {

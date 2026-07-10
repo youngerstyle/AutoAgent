@@ -15,7 +15,7 @@ describe("workflow policy product configuration", () => {
       teamBindingId: "team-1",
     });
 
-    expect(ref).toMatchObject({ policyId: "minimal-team", policyVersion: 1 });
+    expect(ref).toMatchObject({ policyId: "minimal-team", policyVersion: 2 });
     await expect(store.capabilitiesFor(ref, {
       principalId: "planner-1",
       teamBindingIds: ["team-1"],

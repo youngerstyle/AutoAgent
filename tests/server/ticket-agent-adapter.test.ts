@@ -5,6 +5,7 @@ import type { TicketCommandResult, TicketId, WorkflowId } from "../../src/shared
 import {
   proposalToTicketCommand,
   ticketResultToGoalDecision,
+  validateMissionTicketOutcome,
   type MissionTicketOutcome,
 } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
@@ -27,6 +28,17 @@ describe("Ticket Agent resolution adapter", () => {
       4,
       NOW,
     )).toThrow("Contradictory");
+  });
+
+  it("rejects incomplete outcomes before they reach Ticket Engine", () => {
+    expect(validateMissionTicketOutcome("boss-intake-v1", "failed", {})).toEqual({
+      valid: false,
+      reason: "domainOutcome.kind 缺失",
+    });
+    expect(validateMissionTicketOutcome("ticket-graph-v2", "completed", { kind: "complete", result: {} })).toEqual({
+      valid: false,
+      reason: "计划工单必须返回 complete_with_graph",
+    });
   });
 
   it.each([

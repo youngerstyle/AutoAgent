@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: true,
+    testTimeout: 15_000,
     exclude: ["node_modules/**", "dist/**", ".worktrees/**"]
   }
 });

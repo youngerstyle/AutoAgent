@@ -691,8 +691,8 @@ function normalizePolicy(policy?: Partial<AgentPolicy>): AgentPolicyView {
   };
 }
 
-function toolGroupsForPolicy(policy: AgentPolicyView, role: WorkspaceAgent["roleInWorkspace"]): AgentProfileView["toolGroups"] {
-  const enabled = new Set(toolsForPolicy(policy, role).map((tool) => tool.name));
+function toolGroupsForPolicy(policy: AgentPolicyView, _role: WorkspaceAgent["roleInWorkspace"]): AgentProfileView["toolGroups"] {
+  const enabled = new Set(toolsForPolicy(policy).map((tool) => tool.name));
   return TOOL_CATALOG.map((tool) => ({
     label: tool.label,
     enabled: enabled.has(tool.name),

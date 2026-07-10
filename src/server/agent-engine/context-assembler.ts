@@ -16,6 +16,8 @@ export interface AgentContextReport {
   injectedChars: number;
   estimatedTokens: number;
   threadItems: number;
+  compactedThreadItems: number;
+  recentThreadItems: number;
   truncated: boolean;
   sections: Array<{ name: string; chars: number }>;
 }
@@ -38,37 +40,83 @@ export class AgentContextAssembler {
     if (input.goal && input.goal.spec.threadId !== input.thread.threadId) {
       throw new Error("Goal does not belong to thread");
     }
-    const stable = stableSection(input);
-    const goal = goalSection(input.goal);
-    const history = await this.threadSection(input.thread);
-    const original = [stable, goal, history].join("\n\n");
-    const budgeted = truncateToTokenBudget(original, this.maxInputTokens, "Agent 上下文");
+    const stable = truncateToTokenBudget(stableSection(input), Math.floor(this.maxInputTokens * 0.45), "SIA 与工具配置");
+    const goal = truncateToTokenBudget(goalSection(input.goal), Math.floor(this.maxInputTokens * 0.2), "当前 Goal");
+    const history = await this.threadSection(input.thread, Math.max(1, Math.floor(this.maxInputTokens * 0.35)));
+    const prompt = [stable.text, goal.text, history.text].join("\n\n");
     return {
-      prompt: budgeted.text,
+      prompt,
       report: {
-        injectedChars: budgeted.injectedChars,
-        estimatedTokens: estimateTokens(budgeted.text),
+        injectedChars: prompt.length,
+        estimatedTokens: estimateTokens(prompt),
         threadItems: input.thread.items.length,
-        truncated: budgeted.truncated,
+        compactedThreadItems: history.compactedItems,
+        recentThreadItems: history.recentItems,
+        truncated: stable.truncated || goal.truncated || history.compactedItems > 0,
         sections: [
-          { name: "stable", chars: stable.length },
-          { name: "goal", chars: goal.length },
-          { name: "thread", chars: history.length },
+          { name: "stable", chars: stable.text.length },
+          { name: "goal", chars: goal.text.length },
+          { name: "thread", chars: history.text.length },
         ],
       },
     };
   }
 
-  private async threadSection(thread: AgentThreadSnapshot): Promise<string> {
-    const lines: string[] = ["## Thread（严格时间序）"];
+  private async threadSection(thread: AgentThreadSnapshot, maxTokens: number): Promise<{ text: string; compactedItems: number; recentItems: number }> {
+    const entries: Array<{ sequence: number; kind: string; line: string }> = [];
     for (const item of [...thread.items].sort((left, right) => left.sequence - right.sequence)) {
       if (item.kind === "goal") continue;
       const payload = await this.store.payload(item.payloadRef);
-      lines.push(`[${item.sequence}] ${item.kind}: ${projectPayload(payload)}`);
+      entries.push({ sequence: item.sequence, kind: item.kind, line: `[${item.sequence}] ${item.kind}: ${projectPayload(payload)}` });
     }
-    if (lines.length === 1) lines.push("无历史消息");
-    return lines.join("\n");
+    if (entries.length === 0) return { text: "## Thread（严格时间序）\n无历史消息", compactedItems: 0, recentItems: 0 };
+
+    const maxChars = Math.max(1, maxTokens * 4);
+    const header = "## Thread（严格时间序）";
+    const summaryReserve = Math.min(480, Math.max(120, Math.floor(maxChars * 0.12)));
+    const recent: string[] = [];
+    let used = header.length + 1;
+    let firstRecentIndex = entries.length;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const available = maxChars - used - (index > 0 ? summaryReserve : 0);
+      if (available <= 0) break;
+      const line = entries[index].line;
+      if (line.length + 1 <= available) {
+        recent.unshift(line);
+        used += line.length + 1;
+        firstRecentIndex = index;
+        continue;
+      }
+      if (recent.length === 0) {
+        const compacted = compactSingleItem(line, available);
+        recent.unshift(compacted);
+        used += compacted.length + 1;
+        firstRecentIndex = index;
+      }
+      break;
+    }
+    const old = entries.slice(0, firstRecentIndex);
+    const lines = [header];
+    if (old.length > 0) lines.push(compactionSummary(old));
+    lines.push(...recent);
+    return { text: lines.join("\n"), compactedItems: old.length, recentItems: recent.length };
   }
+}
+
+function compactionSummary(entries: Array<{ sequence: number; kind: string }>): string {
+  const counts = new Map<string, number>();
+  for (const entry of entries) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
+  const kinds = [...counts.entries()].map(([kind, count]) => `${kind} ${count}`).join("、");
+  return `[历史已压缩：序号 ${entries[0].sequence}-${entries.at(-1)?.sequence}，${kinds}。完整原始记录仍保存在 Agent Thread。]`;
+}
+
+function compactSingleItem(line: string, available: number): string {
+  if (line.length <= available) return line;
+  const marker = "\n...[单条消息按上下文预算压缩]...\n";
+  if (available <= marker.length + 16) return line.slice(0, Math.max(0, available));
+  const content = available - marker.length;
+  const head = Math.ceil(content * 0.6);
+  return `${line.slice(0, head)}${marker}${line.slice(-(content - head))}`;
 }
 
 function stableSection(input: AgentContextAssemblerInput): string {
@@ -81,7 +129,7 @@ function stableSection(input: AgentContextAssemblerInput): string {
     "## Agent",
     profile.agentMd?.trim() || `能力：${profile.capabilities.join("、")}`,
     "## Tools",
-    toolProtocolFor(input.policy, input.agent.roleInWorkspace),
+    toolProtocolFor(input.policy),
     "只能使用已配置且已授权的工具；不得编造工具结果。",
   ].join("\n");
 }

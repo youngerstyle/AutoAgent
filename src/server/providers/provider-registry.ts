@@ -4,7 +4,7 @@ import { createId } from "../../shared/ids.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { MockProvider } from "./mock-provider.js";
 import { OpenAIProvider } from "./openai-provider.js";
-import type { AgentModelProvider, AgentModelTurnInput, AgentTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 import type { ModelConfig, ProviderConfig, ProviderName } from "../../shared/types.js";
 
@@ -34,25 +34,6 @@ export class ProviderRegistry {
     return new AnthropicProvider(config.apiKey, config.baseUrl);
   }
 
-  async runWithRetry(input: AgentTurnInput): Promise<AgentTurnResult> {
-    const provider = await this.get(input.provider);
-    const retries = this.options.retryCount ?? 2;
-    let attempt = 0;
-    let lastError: unknown;
-    while (attempt <= retries) {
-      try {
-        return await provider.runAgentTurn(input);
-      } catch (error) {
-        lastError = error;
-        if (!(error instanceof ProviderError) || !error.retryable || attempt === retries) {
-          throw error;
-        }
-        attempt += 1;
-      }
-    }
-    throw lastError;
-  }
-
   async status() {
     const configs = await this.readConfigFile();
     const modelConfigs = await this.materializeModelConfigs(configs);
@@ -65,8 +46,7 @@ export class ProviderRegistry {
 
   async runModelTurnWithRetry(input: AgentModelTurnInput): Promise<AgentTurnResult> {
     const provider = await this.get(input.provider);
-    if (!provider.runModelTurn) throw new ProviderError(`Provider ${input.provider} does not support Agent Engine turns`, false);
-    return this.retry(() => provider.runModelTurn!(input));
+    return this.retry(() => provider.runModelTurn(input));
   }
 
   private async retry(operation: () => Promise<AgentTurnResult>): Promise<AgentTurnResult> {

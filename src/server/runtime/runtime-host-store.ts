@@ -18,6 +18,8 @@ interface RuntimeHostState {
 }
 
 export class RuntimeHostStore {
+  private pending: Promise<void> = Promise.resolve();
+
   constructor(private readonly workspaceRoot: string) {}
 
   async list(): Promise<RuntimeTaskRecord[]> {
@@ -25,11 +27,15 @@ export class RuntimeHostStore {
   }
 
   async save(record: RuntimeTaskRecord): Promise<void> {
-    const tasks = await this.list();
-    await writeJson(runtimeHostFile(this.workspaceRoot), {
-      schemaVersion: 2,
-      tasks: [...tasks.filter((item) => item.taskId !== record.taskId), record],
-    } satisfies RuntimeHostState);
+    const operation = this.pending.then(async () => {
+      const tasks = await this.list();
+      await writeJson(runtimeHostFile(this.workspaceRoot), {
+        schemaVersion: 2,
+        tasks: [...tasks.filter((item) => item.taskId !== record.taskId), record],
+      } satisfies RuntimeHostState);
+    });
+    this.pending = operation.catch(() => undefined);
+    await operation;
   }
 
   async get(taskId: string): Promise<RuntimeTaskRecord | undefined> {

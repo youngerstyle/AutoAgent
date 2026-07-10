@@ -120,6 +120,10 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     return thread;
   }
 
+  async getPayload(payloadRef: string): Promise<unknown> {
+    return this.store.payload(payloadRef);
+  }
+
   async sendMessage(input: SendAgentMessageRequest): Promise<void> {
     const fingerprint = hash(input);
     const current = await this.store.read();

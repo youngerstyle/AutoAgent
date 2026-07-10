@@ -205,6 +205,24 @@ describe("event view model", () => {
     expect(groups[0].events.map((item) => item.id)).toEqual(["ev_1", "ev_2", "ev_3"]);
   });
 
+  it("uses the structured agent identity instead of parsing model JSON as an actor", () => {
+    const modelEvent = {
+      ...event("agent.status_changed", '{"goalResolution":{"outcome":"completed"}}', {}, "ev_model"),
+      actorId: "wa_custom_dev"
+    };
+
+    const groups = buildEventTimelineGroups([modelEvent], [{ id: "wa_custom_dev", name: "前端工程师" }]);
+
+    expect(groups.map((group) => group.title)).toEqual(["前端工程师 · 任务流"]);
+    expect(groups[0].title).not.toContain("goalResolution");
+    expect(groups[0].summary).toContain("最新：已提交目标结论");
+    expect(buildEventTimelineItem(modelEvent)).toMatchObject({
+      title: "已提交目标结论",
+      detail: undefined,
+      tone: "success"
+    });
+  });
+
   it("shows handoff records as queued ticket-flow events instead of fake agents", () => {
     const item = buildEventTimelineItem(event("handoff.created", "老板正在忙，老板验收工单已进入队列", {
       phase: "boss_intake",

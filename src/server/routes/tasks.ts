@@ -1,8 +1,19 @@
 import { Router } from "express";
 import { asyncHandler } from "../errors.js";
-import type { MissionControl } from "../mission/mission-control.js";
+import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
 
-export function createTaskRouter(mission: MissionControl) {
+export interface TaskRuntimeFacade {
+  snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot>;
+  loopDebugLogByWorkspace(workspaceId: string): Promise<LoopDebugLog>;
+  startTask(input: { workspaceId: string; goal: string; title?: string }): Promise<WorkspaceSnapshot>;
+  pauseTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
+  resumeTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
+  followUpTask(workspaceId: string, taskId: string, message: string): Promise<WorkspaceSnapshot>;
+  sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot>;
+  stopTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
+}
+
+export function createTaskRouter(mission: TaskRuntimeFacade) {
   const router = Router({ mergeParams: true });
 
   router.get("/snapshot", asyncHandler(async (req, res) => {

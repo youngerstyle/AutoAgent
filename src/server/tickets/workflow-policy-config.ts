@@ -17,7 +17,7 @@ export const DEFAULT_MINIMAL_TEAM_POLICY_CONFIG: Readonly<MinimalTeamWorkflowPol
 export function createMinimalTeamWorkflowPolicy(config: MinimalTeamWorkflowPolicyConfig) {
   return createWorkflowPolicy({
     policyId: "minimal-team",
-    policyVersion: 1,
+    policyVersion: 2,
     grants: [
       {
         principalId: config.plannerPrincipalId,

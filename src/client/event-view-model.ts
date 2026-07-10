@@ -35,15 +35,19 @@ export function buildVisibleTimelineEvents(events: AutoAgentEvent[]): AutoAgentE
   });
 }
 
-export function buildEventTimelineGroups(events: AutoAgentEvent[]): EventTimelineGroup[] {
+export function buildEventTimelineGroups(
+  events: AutoAgentEvent[],
+  agents: Array<{ id: string; name?: string }> = []
+): EventTimelineGroup[] {
   const groups: EventTimelineGroup[] = [];
+  const agentNames = new Map(agents.map((agent) => [agent.id, agent.name?.trim() || agent.id]));
   let currentPhase = "任务流";
 
   for (const event of events) {
     const item = buildEventTimelineItem(event);
     const phase = phaseForTimelineEvent(event, item) ?? currentPhase;
     if (event.type === "task.phase_changed") currentPhase = phase;
-    const actor = actorForTimelineGroup(event, item, groups.at(-1));
+    const actor = actorForTimelineGroup(event, item, groups.at(-1), agentNames);
     const key = `${actor}::${phase}`;
     const previous = groups.at(-1);
     if (previous && `${previous.actor}::${previous.phase}` === key) {
@@ -100,7 +104,14 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
   }
 
   if (event.type === "agent.status_changed") {
-    return item(event, actorFromSummary(event.summary), statusFromSummary(event.summary), undefined, toneForStatus(event.summary));
+    const resolution = goalResolutionFromSummary(event.summary);
+    return item(
+      event,
+      actorFromSummary(event.summary),
+      resolution ? "已提交目标结论" : statusFromSummary(event.summary),
+      resolution?.summary,
+      resolution ? toneForResolution(resolution.status) : toneForStatus(event.summary)
+    );
   }
 
   if (event.type === "task.phase_changed") {
@@ -200,9 +211,15 @@ export function buildEventTimelineItem(event: AutoAgentEvent): EventTimelineItem
   return item(event, actorFromSummary(event.summary) || "系统", displayText(event.summary) ?? event.summary, undefined, "neutral");
 }
 
-function actorForTimelineGroup(event: AutoAgentEvent, item: EventTimelineItem, previous?: EventTimelineGroup): string {
+function actorForTimelineGroup(
+  event: AutoAgentEvent,
+  item: EventTimelineItem,
+  previous: EventTimelineGroup | undefined,
+  agentNames: ReadonlyMap<string, string>
+): string {
   const phase = stringPayload(event, "phase") as MissionPhase | undefined;
   if (event.type === "task.phase_changed" && phase) return actorForPhase(phase);
+  if (event.actorId) return agentNames.get(event.actorId) ?? event.actorId;
   if (item.actor === "工具" && previous) return previous.actor;
   if ((event.type === "provider.completed" || event.type === "tool.started" || event.type === "tool.completed" || event.type === "tool.denied" || event.type === "tool.failed") && previous) {
     return item.actor === "工具" || !item.actor ? previous.actor : item.actor;
@@ -470,7 +487,29 @@ function statusFromSummary(summary: string): string {
   if (summary.includes("正在运行")) return "运行中";
   if (summary.includes("正在等待")) return "等待中";
   if (summary.includes("执行失败")) return "执行失败";
+  if (summary.trimStart().startsWith("{")) return "模型已返回结果";
   return displayText(summary) ?? summary;
+}
+
+function goalResolutionFromSummary(summary: string): { status?: string; summary?: string } | undefined {
+  if (!summary.trimStart().startsWith("{")) return undefined;
+  try {
+    const value = JSON.parse(summary) as { goalResolution?: unknown };
+    if (!value.goalResolution || typeof value.goalResolution !== "object" || Array.isArray(value.goalResolution)) return undefined;
+    const resolution = value.goalResolution as Record<string, unknown>;
+    return {
+      status: typeof resolution.status === "string" ? resolution.status : undefined,
+      summary: typeof resolution.summary === "string" ? resolution.summary : undefined
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function toneForResolution(status?: string): EventTimelineItem["tone"] {
+  if (status === "blocked") return "warning";
+  if (status === "failed") return "danger";
+  return "success";
 }
 
 function toneForStatus(summary: string): EventTimelineItem["tone"] {

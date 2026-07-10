@@ -7,6 +7,9 @@ import {
   seedMinimalTeamWorkflowPolicy,
 } from "./tickets/workflow-policy-config.js";
 import { WorkflowPolicyStore } from "./tickets/workflow-policy-store.js";
+import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
+
+export type AutoAgentServer = Server & { stopRuntimeHosts(): void };
 
 export async function bootstrapServer(config: AppConfig = loadConfig()): Promise<Express> {
   const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
@@ -14,12 +17,14 @@ export async function bootstrapServer(config: AppConfig = loadConfig()): Promise
   return createApp(config);
 }
 
-export async function startServer(config: AppConfig = loadConfig()): Promise<Server> {
+export async function startServer(config: AppConfig = loadConfig()): Promise<AutoAgentServer> {
   const app = await bootstrapServer(config);
-  return new Promise<Server>((resolve, reject) => {
+  return new Promise<AutoAgentServer>((resolve, reject) => {
     const server = app.listen(config.port, () => {
       server.off("error", reject);
-      resolve(server);
+      resolve(Object.assign(server, {
+        stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll(),
+      }));
     });
     server.once("error", reject);
   });

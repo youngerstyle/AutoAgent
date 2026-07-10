@@ -22,7 +22,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref),
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -60,7 +60,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref),
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -70,11 +70,69 @@ describe("MissionProcessManager", () => {
     expect(after.links).toHaveLength(before.links.length);
     expect(after.links[0]?.agentGoalId).toBe(before.links[0]?.agentGoalId);
   });
+
+  it("renews a running claim before expiry without creating a second dispatch", async () => {
+    const clock = { now: new Date(NOW) };
+    const fixture = await createFixture(clock);
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const before = await fixture.manager.tick();
+    const original = before.links[0]!;
+    clock.now = new Date(Date.parse(NOW) + 21 * 60_000);
+
+    const after = await fixture.manager.tick();
+    const renewed = after.links[0]!;
+
+    expect(after.links).toHaveLength(1);
+    expect(renewed.dispatchId).toBe(original.dispatchId);
+    expect(renewed.ticketVersion).toBeGreaterThan(original.ticketVersion);
+    expect(Date.parse(renewed.claimLeaseUntil!)).toBeGreaterThan(Date.parse(original.claimLeaseUntil!));
+  });
+
+  it("keeps a malformed Agent outcome correctable without poisoning Mission ticks", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    const attempt = await boss.proposeGoalResolution({
+      proposalId: "malformed-proposal",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "failed",
+      summary: "bad shape",
+      evidence: [],
+      domainOutcome: {} as never,
+      createdAt: NOW,
+    });
+
+    expect(attempt.goal.status).toBe("active");
+    await expect(fixture.manager.tick()).resolves.toMatchObject({
+      links: [expect.objectContaining({ status: "running" })],
+    });
+  });
 });
 
 const NOW = "2026-07-10T00:00:00.000Z";
 
-async function createFixture() {
+async function createFixture(clock = { now: new Date(NOW) }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-mission-manager-"));
   const policyStore = new WorkflowPolicyStore(root);
   const policy = createWorkflowPolicy({
@@ -87,7 +145,7 @@ async function createFixture() {
   });
   await policyStore.seedPolicy(policy);
   const ticketStore = new TicketStore(root, "task-a", "run-a");
-  const tickets = new TicketEngine(ticketStore, policyStore, { teamBindingIds: ["team-a"], now: () => new Date(NOW) });
+  const tickets = new TicketEngine(ticketStore, policyStore, { teamBindingIds: ["team-a"], now: () => new Date(clock.now) });
   const team: TeamBinding = {
     teamBindingId: "team-a",
     version: 1,
@@ -99,8 +157,8 @@ async function createFixture() {
   };
   const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();
   for (const member of team.members) {
-    const port = new MissionGoalResolutionPort(() => undefined, member.agentId, () => new Date(NOW));
-    engines.set(member.agentId, new AgentEngine<MissionTicketOutcome>(new AgentStore(root, member.agentId), port, { now: () => new Date(NOW) }));
+    const port = new MissionGoalResolutionPort(() => undefined, member.agentId, () => new Date(clock.now));
+    engines.set(member.agentId, new AgentEngine<MissionTicketOutcome>(new AgentStore(root, member.agentId), port, { now: () => new Date(clock.now) }));
   }
   const manager = new MissionProcessManager(
     new MissionStore(root, "mission-a"),
@@ -108,7 +166,7 @@ async function createFixture() {
     { get: (agentId) => engines.get(agentId)! },
     team,
     "planner",
-    () => new Date(NOW),
+    () => new Date(clock.now),
   );
   return { root, policy, team, tickets, engines, manager };
 }

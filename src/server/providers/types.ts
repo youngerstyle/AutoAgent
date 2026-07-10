@@ -1,13 +1,4 @@
-import type { AgentRole, ProviderName } from "../../shared/types.js";
-
-export interface AgentTurnInput {
-  role: AgentRole;
-  assignmentType: string;
-  prompt: string;
-  model: string;
-  provider: ProviderName;
-  context?: Record<string, unknown>;
-}
+import type { ProviderName } from "../../shared/types.js";
 
 export interface AgentProviderEvent {
   type: "text" | "tool_intent" | "usage" | "status";
@@ -49,6 +40,5 @@ export class ProviderError extends Error {
 
 export interface AgentModelProvider {
   name: ProviderName;
-  runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult>;
-  runModelTurn?(input: AgentModelTurnInput): Promise<AgentTurnResult>;
+  runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult>;
 }

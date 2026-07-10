@@ -36,7 +36,7 @@ export async function recruitSpecialist(input: {
       capabilities: [input.capabilityGap],
       defaultProvider: input.defaultProvider ?? "mock",
       defaultModel: input.defaultModel ?? "mock-specialist",
-      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true }
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"] }
     },
     createId("wa")
   );

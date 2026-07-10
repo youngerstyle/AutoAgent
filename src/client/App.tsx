@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
-import { permissionPatchForTool, roleToolDefaults, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
+import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 import {
   createModelConfig,
   createWorkspace,
@@ -100,7 +100,7 @@ export function App() {
   const humanFlowPrompt = useMemo(() => buildHumanFlowPrompt(snapshot), [snapshot]);
   const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
-  const eventGroups = useMemo(() => buildEventTimelineGroups(visibleEvents), [visibleEvents]);
+  const eventGroups = useMemo(() => buildEventTimelineGroups(visibleEvents, snapshot?.agents ?? []), [snapshot?.agents, visibleEvents]);
   const rightPanelScrollKey = useMemo(() => {
     if (rightPanelView === "events") return eventGroups.map((group) => group.id).join("|");
     return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
@@ -127,6 +127,25 @@ export function App() {
     source.onerror = () => setError("Live event stream disconnected");
     return () => source.close();
   }, [selectedId]);
+
+  useEffect(() => {
+    const status = snapshot?.status;
+    if (!selectedId || !snapshot?.activeTask || status === "completed" || status === "failed" || status === "interrupted") return;
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void getSnapshot(selectedId).then((result) => {
+        if (disposed) return;
+        setSnapshot(result.snapshot);
+        setEvents(result.snapshot.recentEvents);
+      }).catch((err: Error) => {
+        if (!disposed) setError(err.message);
+      });
+    }, 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedId, snapshot?.activeTask?.id, snapshot?.status]);
 
   useEffect(() => {
     if (humanFlowPrompt?.agentId) setSelectedAgentId(humanFlowPrompt.agentId);
@@ -1334,13 +1353,13 @@ function AgentDefinitionEditor(props: {
   const modelTarget = { provider: props.profile.defaultProvider, model: props.profile.defaultModel };
   const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
   const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
-  const configuredTools = new Set(policy.enabledTools ?? roleToolDefaults(props.profile.role));
-  const effectiveTools = new Set(toolsForPolicy(policy, props.profile.role).map((tool) => tool.name));
+  const configuredTools = new Set(policy.enabledTools ?? []);
+  const effectiveTools = new Set(toolsForPolicy(policy).map((tool) => tool.name));
   const updateDefaultPolicy = (patch: Partial<AgentPolicy>) => {
     props.onChange({ ...props.profile, defaultPolicy: { ...policy, ...patch } });
   };
   const setDefaultToolEnabled = (toolName: WorkspaceToolName, enabled: boolean) => {
-    const current = new Set(policy.enabledTools ?? roleToolDefaults(props.profile.role));
+    const current = new Set(policy.enabledTools ?? []);
     if (enabled) current.add(toolName);
     else current.delete(toolName);
     updateDefaultPolicy({
@@ -1513,11 +1532,11 @@ function AgentDetailPanel(props: {
   const modelOptions = modelSelectionOptions(modelTarget, props.modelConfigs);
   const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
   const role = draft?.roleInWorkspace;
-  const configuredTools = new Set(policy.enabledTools ?? (role ? roleToolDefaults(role) : []));
-  const effectiveTools = new Set(role ? toolsForPolicy(policy, role).map((tool) => tool.name) : []);
+  const configuredTools = new Set(policy.enabledTools ?? []);
+  const effectiveTools = new Set(toolsForPolicy(policy).map((tool) => tool.name));
   const setToolEnabled = (toolName: WorkspaceToolName, enabled: boolean) => {
     if (!draft || !role) return;
-    const current = new Set(policy.enabledTools ?? roleToolDefaults(role));
+    const current = new Set(policy.enabledTools ?? []);
     if (enabled) current.add(toolName);
     else current.delete(toolName);
     props.onDraftChange({

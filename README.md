@@ -11,7 +11,7 @@ AutoAgent 是一个本地自动化团队平台。当前版本可以在一个项�
 - 测试：质量检查
 - 专家：当架构师报告缺少能力时由系统招募
 
-注意：当前网页里的“团队配置”只是项目内团队成员的运行覆盖配置，例如模型服务、模型名和权限策略。真正的 Agent Studio，也就是 Agent 的 identity、soul、loop definition、capabilities，还在后续 P0 计划里。
+“智能体档案库”维护可复用 Agent 的 Soul、Identity、能力说明、工具和默认模型；“项目团队实例”维护当前项目中的模型与权限覆盖。运行代码不会根据老板、PM、开发或测试等角色偷偷补工具，实际可用工具以档案和项目实例的显式配置为准。
 
 ## 快速启动
 
@@ -68,7 +68,7 @@ $env:ANTHROPIC_API_KEY="..."
 
 ## Agent 中心和项目团队
 
-使用“Agent 中心”查看可复用 Agent 档案，包括身份、Soul、Loop、工具、模型和记忆边界。使用“项目团队”查看当前项目里的 Agent 实例。每个项目会初始化老板、产品/项目、架构师、开发和测试。运行时发现能力缺口后，可以招募专家。
+使用“智能体档案库”查看可复用 Agent 档案，包括 Soul、Identity、能力说明、工具、模型和记忆边界。使用“项目团队实例”查看当前项目里的 Agent 实例。每个项目会初始化老板、产品/项目、架构师、开发和测试；后续也可以加入招聘得到的新 Agent。
 
 项目团队页不是一组裸模型表单。它的主视图是团队成员和 Agent 详情；模型服务、模型名和权限只作为“项目级覆盖”出现在详情里的“模型与项目权限”区域。
 
@@ -89,9 +89,11 @@ $env:ANTHROPIC_API_KEY="..."
 - 模型服务状态：`AUTOAGENT_HOME/providers.json`
 - 项目状态：`<workspace>/.autoagent`
 - 团队成员状态：`<workspace>/.autoagent/agents/<workspaceAgentId>`
-- 团队成员会话：`<workspace>/.autoagent/agents/<workspaceAgentId>/sessions`
-- 任务事件：`<workspace>/.autoagent/tasks/<taskId>/runs/<taskRunId>/events.jsonl`
-- 任务控制状态：`<workspace>/.autoagent/tasks/<taskId>/runs/<taskRunId>/state.json`
+- Agent Thread、Goal、消息和协议结果：`<workspace>/.autoagent/agent-engine`
+- Agent 完整运行轨迹：`<workspace>/.autoagent/agent-engine/traces`
+- Ticket Workflow、DAG、claim 和命令结果：`<workspace>/.autoagent/ticket-engine`
+- Mission 关联与恢复游标：`<workspace>/.autoagent/mission-process`
+- 当前任务入口索引：`<workspace>/.autoagent/runtime-host.json`
 
 项目里的 `.autoagent/` 会自动写入该项目的 `.gitignore`。
 
@@ -101,11 +103,11 @@ $env:ANTHROPIC_API_KEY="..."
 2. 使用 OpenAI 或 Anthropic 时，先配置全局模型服务密钥。
 3. 在“团队配置”里按项目需要覆盖成员的模型服务、模型名和权限策略。
 4. 在运行台提交任务。
-5. 任务调度器依次调度老板、产品/项目、架构师、开发、测试和老板验收。
-6. Agent Runtime 在执行 assignment 前读取该项目成员自己的模型服务、模型名和权限。
-7. 如果架构师报告能力缺口，老板招募专家，专家会出现在画布上。
-8. 测试失败会产生 `qa.failed`，并在重试预算内把任务退回开发。
-9. UI 通过 SSE 接收实时事件，并刷新项目快照。
+5. 产品层选择版本化 Workflow 模板；Ticket Engine 按 DAG 依赖释放可执行工单。
+6. Mission Process 把可领取 Ticket 可靠地关联到一个 Agent Goal，不决定业务后继。
+7. Agent Engine 在同一 Thread 中跨多个 turn 使用显式授权的工具，直到提交 Goal 结论。
+8. Ticket Engine 接受合法命令后更新工单，并按 DAG 释放后继；拒绝原因返回同一个 Agent Goal 继续处理。
+9. UI 从三个内核的权威事实读取状态；私聊只触发选中的 Agent，全局补充发给老板。
 
 每个项目同一时间只允许一个活跃 `TaskRun`。
 
@@ -113,7 +115,7 @@ $env:ANTHROPIC_API_KEY="..."
 
 生产策略会把文件访问限制在项目目录内。开发策略允许本机路径访问，适合本地实验。
 
-默认角色权限较保守：产品/项目和老板不能执行命令，开发和测试可以执行命令，开发和专家可以写项目文件。
+核心档案提供一组可编辑的初始工具配置。档案或项目实例可以修改这些配置；Agent Engine 只执行最终显式启用且满足安全策略的工具。
 
 ## 验证命令
 
@@ -124,12 +126,11 @@ npm.cmd run typecheck
 npm.cmd run build
 ```
 
-E2E 测试会创建项目，通过 HTTP API 跑完整模拟团队流程，验证专家招募、完成后的快照，以及产物文件写入。
+E2E 测试会创建项目，通过 HTTP API 跑完整模拟团队流程，验证 Ticket DAG、Agent Goal、私聊隔离和完成后的权威快照。
 
 ## 当前边界
 
 - 还没有自动 git commit、push 或部署。
 - 还没有 marketplace 式招聘界面。
-- 真正的 Agent Studio 还未实现。
-- 当前团队配置页不是 Agent 本体配置。
+- 动态招聘目前只有运行内核与基础档案，尚未提供完整招聘管理界面。
 - UI 只在内存里保存视图状态；Agent 和任务事实保存在 `.autoagent`。

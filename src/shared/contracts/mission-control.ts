@@ -55,6 +55,7 @@ export interface WorkflowDefinitionRegistryPort {
     templateId: string;
     templateVersion?: number;
     teamBindingId: string;
+    objective: string;
   }): Promise<ResolvedMissionStartBundle>;
 }
 
@@ -80,6 +81,7 @@ interface MissionLinkBase {
   claimRequestId: string;
   goalStartKey: string;
   updatedAt: string;
+  claimLeaseUntil?: string;
   lastProposalId?: string;
   lastCommandId?: string;
   lastDecisionId?: string;
@@ -87,6 +89,7 @@ interface MissionLinkBase {
 
 export type DispatchingMissionLink = MissionLinkBase & {
   status: "dispatching";
+  claimLeaseUntil?: never;
   authority?: never;
   agentThreadId?: never;
   agentGoalId?: never;
@@ -118,8 +121,8 @@ export type ActiveMissionLink = MissionLinkBase & {
   agentGoalId: string;
 };
 
-export type TerminalMissionLink = MissionLinkBase & {
-  status: "settled" | "cancelled";
+export type SettledMissionLink = MissionLinkBase & {
+  status: "settled";
   authority: TicketExecutionAuthority;
   agentThreadId: string;
   agentGoalId: string;
@@ -127,11 +130,21 @@ export type TerminalMissionLink = MissionLinkBase & {
   finalGoalVersion: number;
 };
 
+export type CancelledMissionLink = MissionLinkBase & {
+  status: "cancelled";
+  authority?: TicketExecutionAuthority;
+  agentThreadId?: string;
+  agentGoalId?: string;
+  finalTicketVersion: number;
+  finalGoalVersion?: number;
+};
+
 export type MissionLink =
   | DispatchingMissionLink
   | StartingMissionLink
   | ActiveMissionLink
-  | TerminalMissionLink;
+  | SettledMissionLink
+  | CancelledMissionLink;
 
 export interface MissionProjection {
   missionId: string;

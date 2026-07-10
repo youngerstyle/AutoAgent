@@ -66,6 +66,7 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
     return stripRemovedProfileFields({
       ...defaultProfile,
       ...storedProfile,
+      defaultPolicy: { ...defaultProfile.defaultPolicy, ...storedProfile.defaultPolicy },
       contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
     });
   }

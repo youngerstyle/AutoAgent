@@ -2,7 +2,7 @@
 
 日期：2026-07-10
 
-状态：设计复核完成，待用户确认
+状态：已落地并通过运行核心验收
 
 ## 1. 文档目的
 
@@ -1385,38 +1385,33 @@ Canvas 上的状态必须来自实际所有者：
 - Ticket command rejected：显示在对应 Agent 对话中，不影响其他 Agent；
 - WorkflowCompleted：才显示 Mission 完成。
 
-## 16. 当前代码与目标设计的差距
+## 16. 当前落地状态
 
-### 16.1 Agent Runtime
+### 16.1 Agent Engine
 
-当前 `AgentRuntime.runAssignment()`：
+- `src/server/agent-engine` 已成为独立的 Thread、Goal、Turn、Tool、Context 与 Trace 内核，不导入 Ticket、Mission、Phase 或团队角色路由。
+- 完整 Thread 按时间序持久化；模型上下文只投影稳定配置、当前 Goal、压缩摘要与最近消息，不把组装后的 prompt 递归写回 Thread。
+- `waiting` 表示本轮需要新消息，不会被定时器反复调用；`active/yielded` Goal 可在后续执行片继续。
+- 工具来自 Agent 档案和项目实例的显式 `enabledTools`，运行代码不按角色补默认工具。
 
-- 直接依赖 Assignment、Ticket、TaskRun 和角色；
-- provider 没有更多工具调用时即把 Assignment 标为 completed；
-- 没有独立持久 Agent Goal；
-- 没有显式、可被 host 接受或拒绝的 resolution proposal。
+### 16.2 Ticket Engine
 
-目标：改为通用 Thread/Goal/Turn Runtime，Ticket 通过 adapter 注入。
+- `src/server/tickets` 独立持久化 Workflow、Ticket DAG、claim/lease、fencing token、命令结果和 outbox。
+- Ticket Engine 只执行版本化 workflow policy 允许的命令，不调用 LLM，也不创建固定角色后继。
+- 已完成 Ticket 不被改写；返工和增补通过新的 Ticket/revision/graph amend 表达。
 
-### 16.2 Ticket Runtime
+### 16.3 Mission Process 与 Runtime Host
 
-当前 Ticket Runtime：
+- `src/server/mission-process` 只维护 Ticket claim 与 Agent Goal 的 durable link、事件 cursor、proposal settle 和恢复协议。
+- `src/server/runtime` 负责生命周期、定时 tick、续租和串行化外部操作，不从摘要、关键词、角色或工具结果推断下一步。
+- 用户私聊直接写入目标 Agent 的同一时间序 Thread；全局补充明确发给老板 Agent。
+- 旧 `MissionControl`、`TicketRuntime`、phase 路由、旧 Session/Context 旁路与角色特殊执行路径已经删除，新运行没有 fallback。
 
-- 内置 human manual test 行为；
-- 硬编码通过后创建老板验收、失败后创建开发返工；
-- Ticket 与 inbox 主要从 MissionState 快照重建，不是独立 durable aggregate。
+### 16.4 Read Model
 
-目标：只处理通用 Ticket Command、DAG、lease、状态和 workflow policy。
-
-### 16.3 Mission Control
-
-当前 Mission Control：
-
-- 同时负责 API、状态存储、调度、Agent 调用、Ticket 创建、角色选择、业务判断、上下文旁路、UI 快照和恢复；
-- 包含 phase 映射、QA/老板/开发特殊分支、交付证据推断、工具错误路由和默认后继；
-- 一个文件接近 1900 行。
-
-目标：收缩为事件驱动的 process manager，并把 read projection、workflow policy、Agent Goal 和 Ticket 状态分别交还所属模块。
+- UI 快照由 Ticket、Agent 和 Mission 各自的权威事实投影。
+- 非终态任务轮询权威快照，终态后停止；Agent 绿色、黄色和空闲状态来自实际 Goal/turn/link 状态。
+- 运行记录严格按时间序保存，按结构化 `actorId` 和当前 Agent 名称分组；模型 JSON 只进入可展开详情，不参与角色判断。
 
 ## 17. 不变量
 

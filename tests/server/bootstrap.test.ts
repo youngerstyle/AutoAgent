@@ -34,7 +34,7 @@ describe("server bootstrap", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-"));
     const conflicting = createWorkflowPolicy({
       policyId: "minimal-team",
-      policyVersion: 1,
+      policyVersion: 2,
       grants: [{ principalId: "different-principal", capabilities: ["workflow:control"] }],
     });
     await new WorkflowPolicyStore(home).seedPolicy(conflicting);

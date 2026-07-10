@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import os from "node:os";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type { MissionLink, MissionRecord } from "../../shared/contracts/mission-control.js";
 import { missionProcessFile } from "../storage/paths.js";
@@ -103,12 +104,13 @@ export class MissionStore {
       const candidate = randomUUID();
       try {
         const handle = await open(this.lockFile, "wx", 0o600);
-        await handle.writeFile(candidate, "utf8");
+        await handle.writeFile(`${JSON.stringify({ token: candidate, pid: process.pid, hostname: os.hostname() })}\n`, "utf8");
         await handle.sync();
         await handle.close();
         token = candidate;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (await this.recoverStaleLock()) continue;
         if (Date.now() >= deadline) throw new Error("Timed out waiting for Mission lock");
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
@@ -117,11 +119,45 @@ export class MissionStore {
       return await operation();
     } finally {
       try {
-        if ((await readFile(this.lockFile, "utf8")) === token) await rm(this.lockFile);
+        if (parseLock(await readFile(this.lockFile, "utf8"))?.token === token) await rm(this.lockFile);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
+  }
+
+  private async recoverStaleLock(): Promise<boolean> {
+    try {
+      const [content, info] = await Promise.all([readFile(this.lockFile, "utf8"), stat(this.lockFile)]);
+      if (Date.now() - info.mtimeMs <= 30_000) return false;
+      const metadata = parseLock(content);
+      if (metadata?.hostname === os.hostname() && isProcessAlive(metadata.pid)) return false;
+      const [latest, latestInfo] = await Promise.all([readFile(this.lockFile, "utf8"), stat(this.lockFile)]);
+      if (latest !== content || latestInfo.mtimeMs !== info.mtimeMs) return false;
+      await rm(this.lockFile);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+}
+
+function parseLock(content: string): { token: string; pid: number; hostname: string } | undefined {
+  try {
+    const value = JSON.parse(content) as Record<string, unknown>;
+    if (typeof value.token !== "string" || !Number.isSafeInteger(value.pid) || typeof value.hostname !== "string") return undefined;
+    return value as { token: string; pid: number; hostname: string };
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

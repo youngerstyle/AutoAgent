@@ -1,5 +1,3 @@
-import type { ContextSectionReport } from "./types.js";
-
 export interface TruncatedText {
   text: string;
   originalChars: number;
@@ -64,15 +62,5 @@ export function truncateToTokenBudget(value: string, maxTokens: number, label: s
     injectedChars: text.length,
     estimatedTokens: estimateTokens(text),
     truncated: true
-  };
-}
-
-export function sectionReport(name: string, value: TruncatedText): ContextSectionReport {
-  return {
-    name,
-    originalChars: value.originalChars,
-    injectedChars: value.injectedChars,
-    estimatedTokens: value.estimatedTokens,
-    truncated: value.truncated
   };
 }

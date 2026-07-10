@@ -16,13 +16,14 @@ export class WorkflowDefinitionRegistry implements WorkflowDefinitionRegistryPor
     templateId: string;
     templateVersion?: number;
     teamBindingId: string;
+    objective: string;
   }): Promise<ResolvedMissionStartBundle> {
     if (input.templateId !== DEFAULT_WORKFLOW_TEMPLATE_ID) throw new Error("Workflow template does not exist");
     if (input.templateVersion !== undefined && input.templateVersion !== DEFAULT_WORKFLOW_TEMPLATE_VERSION) {
       throw new Error("Workflow template version does not exist");
     }
     return {
-      workflowDefinition: createMinimalTeamWorkflowDefinition(this.policyRef),
+      workflowDefinition: createMinimalTeamWorkflowDefinition(this.policyRef, input.objective),
       teamBindingId: input.teamBindingId,
     };
   }

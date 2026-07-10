@@ -5,7 +5,8 @@ import type { WorkflowPolicyRef } from "../../src/shared/contracts/ticket-engine
 
 describe("versioned workflow product data", () => {
   it("defines intake then planning without human or downstream topology in manager code", () => {
-    const definition = createMinimalTeamWorkflowDefinition(policyRef);
+    const definition = createMinimalTeamWorkflowDefinition(policyRef, "构建坦克大战");
+    expect(definition.initialGraph.nodes[0]?.objective).toContain("构建坦克大战");
     expect(definition.initialGraph.nodes.map((node) => node.key)).toEqual(["intake", "planning"]);
     expect(definition.initialGraph.nodes.map((node) => node.assignment.requiredCapabilities)).toEqual([
       ["mission:intake"],
@@ -17,9 +18,9 @@ describe("versioned workflow product data", () => {
 
   it("resolves an immutable version before Mission start", async () => {
     const registry = new WorkflowDefinitionRegistry(policyRef);
-    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 1, teamBindingId: "team-a" }))
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 1, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .resolves.toMatchObject({ teamBindingId: "team-a", workflowDefinition: { definitionVersion: 1 } });
-    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 2, teamBindingId: "team-a" }))
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 2, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .rejects.toThrow("version does not exist");
   });
 });

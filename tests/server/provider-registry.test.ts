@@ -3,25 +3,23 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry";
-import type { AgentModelProvider, AgentTurnInput, AgentTurnResult } from "../../src/server/providers/types";
+import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "../../src/server/providers/types";
 import { ProviderError } from "../../src/server/providers/types";
 
 describe("ProviderRegistry", () => {
-  it("runs the mock provider with usage metadata", async () => {
+  it("runs the mock Agent Engine provider with usage metadata", async () => {
     const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 0 });
 
-    const result = await registry.runWithRetry(input("boss", "boss_intake"));
+    const result = await registry.runModelTurnWithRetry(input());
 
-    expect(result.structured?.next).toBe("pm_plan");
-    expect(result.usage?.totalTokens).toBe(50);
-    expect(result.events.some((event) => event.type === "usage")).toBe(true);
-    expect(result.events.find((event) => event.type === "status")?.text).toBe("老板开始需求接收");
+    expect(result.structured?.goalResolution).toBeDefined();
+    expect(result.usage?.totalTokens).toBe(35);
   });
 
   it("reports missing real provider credentials without leaking secrets", async () => {
     const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 0 });
 
-    await expect(registry.get("openai").then((provider) => provider.runAgentTurn(input("boss", "boss_intake", "openai")))).rejects.toMatchObject({
+    await expect(registry.runModelTurnWithRetry(input("openai"))).rejects.toMatchObject({
       retryable: false,
       code: "MISSING_OPENAI_API_KEY"
     });
@@ -35,7 +33,7 @@ describe("ProviderRegistry", () => {
       return flaky;
     };
 
-    const result = await registry.runWithRetry(input("pm", "pm_plan"));
+    const result = await registry.runModelTurnWithRetry(input());
 
     expect(result.text).toBe("ok");
     expect(flaky.calls).toBe(2);
@@ -45,7 +43,7 @@ describe("ProviderRegistry", () => {
     const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 2 });
     registry.get = async () => new TerminalProvider();
 
-    await expect(registry.runWithRetry(input("pm", "pm_plan"))).rejects.toMatchObject({ retryable: false });
+    await expect(registry.runModelTurnWithRetry(input())).rejects.toMatchObject({ retryable: false });
   });
 
   it("saves provider config and redacts stored secrets in API responses", async () => {
@@ -106,8 +104,8 @@ describe("ProviderRegistry", () => {
   });
 });
 
-function input(role: AgentTurnInput["role"], assignmentType: string, provider: AgentTurnInput["provider"] = "mock"): AgentTurnInput {
-  return { role, assignmentType, provider, model: "mock-model", prompt: "Do work" };
+function input(provider: AgentModelTurnInput["provider"] = "mock"): AgentModelTurnInput {
+  return { provider, model: "mock-model", systemPrompt: "You are an Agent", prompt: "Do work" };
 }
 
 async function tempHome(): Promise<string> {
@@ -118,7 +116,7 @@ class FlakyProvider implements AgentModelProvider {
   name = "mock" as const;
   calls = 0;
 
-  async runAgentTurn() {
+  async runModelTurn() {
     this.calls += 1;
     if (this.calls === 1) throw new ProviderError("rate limited", true, "RATE_LIMIT");
     return { text: "ok", events: [{ type: "text" as const, text: "ok" }] };
@@ -127,7 +125,7 @@ class FlakyProvider implements AgentModelProvider {
 
 class TerminalProvider implements AgentModelProvider {
   name = "mock" as const;
-  async runAgentTurn(): Promise<AgentTurnResult> {
+  async runModelTurn(): Promise<AgentTurnResult> {
     throw new ProviderError("bad key", false, "BAD_KEY");
   }
 }

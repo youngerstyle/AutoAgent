@@ -63,6 +63,42 @@ describe("AgentContextAssembler", () => {
     expect(assembled.prompt).not.toContain("ticketGraph");
     expect(assembled.report.threadItems).toBe(4);
   });
+
+  it("compacts the oldest thread items while preserving the newest human turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-v2-"));
+    const store = new AgentStore(root, "dev");
+    const engine = new AgentEngine(store);
+    const thread = await engine.ensureThread({ agentId: "dev", scopeId: "ws", idempotencyKey: "compact-thread" });
+    for (let index = 0; index < 12; index += 1) {
+      await engine.sendMessage({
+        messageId: `history-${index}`,
+        threadId: thread.threadId,
+        senderPrincipalId: "human",
+        content: `旧消息 ${index} ${"历史内容".repeat(30)}`,
+        createdAt: `2026-07-10T00:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+    }
+    await engine.sendMessage({
+      messageId: "latest-human",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "这是最新指令，必须进入下一轮上下文",
+      createdAt: "2026-07-10T01:00:00.000Z",
+    });
+
+    const assembled = await new AgentContextAssembler(store, 1_000).assemble({
+      profile,
+      agent,
+      policy,
+      thread: await engine.getThread(thread.threadId),
+    });
+
+    expect(assembled.prompt).toContain("历史已压缩");
+    expect(assembled.prompt).toContain("这是最新指令，必须进入下一轮上下文");
+    expect(assembled.prompt).not.toContain("旧消息 0 历史内容历史内容历史内容");
+    expect(assembled.report.compactedThreadItems).toBeGreaterThan(0);
+    expect(assembled.report.recentThreadItems).toBeGreaterThan(0);
+  });
 });
 
 const profile: AgentProfile = {
