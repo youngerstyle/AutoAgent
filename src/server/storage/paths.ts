@@ -41,6 +41,18 @@ export function workspaceAgentSessionsDir(workspaceRoot: string, workspaceAgentI
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "sessions");
 }
 
+export function agentEngineFile(workspaceRoot: string, agentId: string): string {
+  const root = path.resolve(workspaceAutoAgentDir(workspaceRoot), "agent-engine");
+  const key = createHash("sha256").update(agentId).digest("base64url");
+  const file = path.resolve(root, `${key}.json`);
+  if (!file.startsWith(`${root}${path.sep}`)) throw new Error("Agent Engine path escaped its storage root");
+  return file;
+}
+
+export function agentEngineLockFile(workspaceRoot: string, agentId: string): string {
+  return `${agentEngineFile(workspaceRoot, agentId)}.lock`;
+}
+
 export function workspaceAgentThreadsDir(workspaceRoot: string, workspaceAgentId: string): string {
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "threads");
 }
