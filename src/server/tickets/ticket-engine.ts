@@ -7,6 +7,9 @@ import type {
   ReleaseClaimRequest,
   RenewClaimRequest,
   TicketEvent,
+  TicketCommandEnvelope,
+  TicketCommandPayload,
+  TicketCommandResult,
   TicketId,
   TicketSnapshot,
   TransferBlockedOwnershipRequest,
@@ -445,6 +448,101 @@ export class TicketEngine {
     }
   }
 
+  async applyTicket(
+    command: TicketCommandEnvelope<TicketCommandPayload>,
+  ): Promise<TicketCommandResult> {
+    const fingerprint = commandFingerprint(command);
+    const aggregate = await this.store.read(command.workflowId);
+    if (!aggregate) return ticketRejected(command, "invalid_command", "Workflow does not exist");
+    const replay = this.existingTicketCommand(aggregate, command, fingerprint);
+    if (replay) return replay;
+    const proposalConflict = aggregate.commandResults.find((result) => (
+      "proposalId" in result && result.proposalId === command.proposalId
+    ));
+    if (proposalConflict) {
+      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+        command,
+        "idempotency_conflict",
+        `Proposal ${command.proposalId} already has a command`,
+        aggregate,
+      ));
+    }
+    if (TERMINAL_WORKFLOW_STATUSES.has(aggregate.workflow.status)) {
+      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+        command,
+        "workflow_terminal",
+        `Workflow is ${aggregate.workflow.status}`,
+        aggregate,
+      ));
+    }
+    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
+    if (!ticket) {
+      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+        command,
+        "invalid_command",
+        "Ticket does not exist",
+        aggregate,
+      ));
+    }
+    if (ticket.version !== command.expectedTicketVersion) {
+      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+        command,
+        "version_conflict",
+        "Ticket version is stale",
+        aggregate,
+      ));
+    }
+    if (
+      (command.payload.type === "complete_with_graph" || command.payload.type === "return_to_parent")
+      && command.payload.expectedWorkflowVersion !== aggregate.workflow.version
+    ) {
+      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+        command,
+        "version_conflict",
+        "Workflow version is stale",
+        aggregate,
+      ));
+    }
+    try {
+      requireCommandAuthority(aggregate, ticket, command, this.now());
+      const updated = await this.store.transact(
+        command.workflowId,
+        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
+        (current) => this.applyAcceptedTicketCommand(current, command, fingerprint),
+      );
+      return updated.commandResults.find((result) => result.commandId === command.commandId) as TicketCommandResult;
+    } catch (error) {
+      if (error instanceof TicketEngineOperationError) {
+        return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+          command,
+          error.code === "stale_authority" ? "stale_authority" : "invalid_command",
+          error.message,
+          aggregate,
+        ));
+      }
+      if (error instanceof WorkflowGraphError || error instanceof WorkflowCommandValidationError) {
+        return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+          command,
+          "invalid_command",
+          error.message,
+          aggregate,
+        ));
+      }
+      if (error instanceof TicketStoreConflictError) {
+        const latest = await this.requireWorkflow(command.workflowId);
+        const raced = this.existingTicketCommand(latest, command, fingerprint);
+        if (raced) return raced;
+        return this.persistTicketRejected(latest, fingerprint, ticketRejected(
+          command,
+          "version_conflict",
+          error.message,
+          latest,
+        ));
+      }
+      throw error;
+    }
+  }
+
   private applyAcceptedCommand(
     aggregate: TicketAggregate,
     command: WorkflowCommandEnvelope,
@@ -486,6 +584,253 @@ export class TicketEngine {
       default:
         throw new Error("Unsupported workflow command");
     }
+  }
+
+  private applyAcceptedTicketCommand(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope<TicketCommandPayload>,
+    fingerprint: string,
+  ) {
+    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
+    if (!ticket || ticket.version !== command.expectedTicketVersion) {
+      throw new WorkflowCommandValidationError("Ticket changed before command commit");
+    }
+    requireCommandAuthority(aggregate, ticket, command, this.now());
+    switch (command.payload.type) {
+      case "complete":
+        return this.finishTicket(aggregate, command, fingerprint, "completed");
+      case "fail":
+        return this.finishTicket(aggregate, command, fingerprint, "failed");
+      case "block":
+        return this.blockTicket(aggregate, command, command.payload, fingerprint);
+      case "complete_with_graph":
+        return this.completeTicketWithGraph(aggregate, command, command.payload, fingerprint);
+      case "return_to_parent":
+        return this.returnTicketToParent(aggregate, command, command.payload, fingerprint);
+    }
+  }
+
+  private finishTicket(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope,
+    fingerprint: string,
+    status: "completed" | "failed",
+  ) {
+    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
+    const version = current.version + 1;
+    const finished: TicketSnapshot = {
+      ...current,
+      version,
+      status,
+      activeAuthority: undefined,
+    };
+    const pendingEvents = authorityRevocationEvents(command, current, version);
+    pendingEvents.push(ticketEvent(command, finished, { type: "TicketTerminal", status }));
+    let tickets = aggregate.tickets.map((item) => item.ticketId === finished.ticketId ? finished : item);
+    tickets = unlockReadyTickets(aggregate.workflow.graph, tickets, command, pendingEvents);
+    return ticketMutationResult(aggregate, command, fingerprint, {
+      tickets,
+      pendingEvents,
+      ticket: finished,
+    });
+  }
+
+  private blockTicket(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope,
+    payload: Extract<TicketCommandPayload, { type: "block" }>,
+    fingerprint: string,
+  ) {
+    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
+    if (current.status !== "running" || current.activeAuthority?.kind !== "claim") {
+      throw new WorkflowCommandValidationError("Only a running claim can block a ticket");
+    }
+    const activeClaim = aggregate.claims.find((item) => (
+      current.activeAuthority?.kind === "claim" && item.claimId === current.activeAuthority.claimId
+    ));
+    if (!activeClaim) throw new TicketEngineOperationError("stale_authority", "Claim is missing");
+    const version = current.version + 1;
+    const ownership: BlockedOwnershipReceipt = {
+      ownershipId: stableId("ownership", command.workflowId, command.ticketId, command.commandId),
+      workflowId: command.workflowId,
+      ticketId: command.ticketId,
+      ticketVersion: version,
+      principalId: activeClaim.principalId,
+      fencingToken: nextFencingToken(aggregate, command.ticketId),
+    };
+    const blocked: TicketSnapshot = {
+      ...current,
+      version,
+      status: "blocked",
+      activeAuthority: {
+        kind: "blocked_owner",
+        ownershipId: ownership.ownershipId,
+        fencingToken: ownership.fencingToken,
+      },
+    };
+    const pendingEvents = authorityRevocationEvents(command, current, version);
+    pendingEvents.push(ticketEvent(command, blocked, {
+      type: "TicketBlocked",
+      requiredInput: payload.requiredInput,
+    }));
+    return ticketMutationResult(aggregate, command, fingerprint, {
+      tickets: aggregate.tickets.map((item) => item.ticketId === blocked.ticketId ? blocked : item),
+      blockedOwnerships: [...aggregate.blockedOwnerships, ownership],
+      pendingEvents,
+      ticket: blocked,
+      nextAuthority: blocked.activeAuthority,
+    });
+  }
+
+  private completeTicketWithGraph(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope,
+    payload: Extract<TicketCommandPayload, { type: "complete_with_graph" }>,
+    fingerprint: string,
+  ) {
+    if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
+    const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
+    const next = materializeWorkflowGraph({
+      workflowId: command.workflowId,
+      graph: payload.graph,
+      completionPolicy: payload.completionPolicy,
+      previous: materializedFromAggregate(aggregate),
+      cancelTicketIds: payload.cancelTicketIds,
+      ticketStatuses: statuses,
+    });
+    const merged = mergeTicketsForGraph(aggregate, next, command);
+    const current = merged.tickets.find((item) => item.ticketId === command.ticketId);
+    if (!current || !next.graph.nodes.some((node) => node.ticketId === command.ticketId && node.active)) {
+      throw new WorkflowCommandValidationError("Completing planner ticket must remain in the submitted graph");
+    }
+    const completed: TicketSnapshot = {
+      ...current,
+      version: current.version + 1,
+      status: "completed",
+      activeAuthority: undefined,
+    };
+    const pendingEvents = [...merged.pendingEvents, ...authorityRevocationEvents(
+      command,
+      current,
+      completed.version,
+    )];
+    pendingEvents.push(ticketEvent(command, completed, { type: "TicketTerminal", status: "completed" }));
+    let tickets = merged.tickets.map((item) => item.ticketId === completed.ticketId ? completed : item);
+    tickets = unlockReadyTickets(next.graph, tickets, command, pendingEvents);
+    return ticketMutationResult(aggregate, command, fingerprint, {
+      planning: planningState(next),
+      workflow: {
+        ...aggregate.workflow,
+        graph: next.graph,
+        completionPolicy: next.completionPolicy,
+      },
+      tickets,
+      pendingEvents,
+      ticket: completed,
+    });
+  }
+
+  private returnTicketToParent(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope,
+    payload: Extract<TicketCommandPayload, { type: "return_to_parent" }>,
+    fingerprint: string,
+  ) {
+    if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
+    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
+    if (current.parentTicketId !== payload.parentTicketId) {
+      throw new WorkflowCommandValidationError("Return target is not the ticket parent");
+    }
+    const parentNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === payload.parentTicketId);
+    if (!parentNode) throw new WorkflowCommandValidationError("Parent ticket is missing from graph");
+    const parentDefinition = aggregate.planning.definitionsByKey[String(parentNode.nodeKey)];
+    if (!parentDefinition) throw new WorkflowCommandValidationError("Parent ticket definition is missing");
+    const currentNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === command.ticketId)!;
+    const affectedKeys = descendantKeys(
+      aggregate.planning.plannedGraph,
+      String(currentNode.nodeKey),
+    );
+    const revisionKey = `revision_${createHash("sha256").update(command.commandId).digest("hex").slice(0, 20)}`;
+    const retainedNodes = aggregate.planning.plannedGraph.nodes.filter((node) => (
+      node.key !== parentNode.nodeKey && !affectedKeys.has(String(node.key))
+    ));
+    const revisionNode: PlannedTicketNode = {
+      ...structuredClone(parentDefinition),
+      key: revisionKey as never,
+      revisionOfKey: parentNode.nodeKey,
+    };
+    const retainedKeys = new Set(retainedNodes.map((node) => String(node.key)));
+    retainedKeys.add(revisionKey);
+    const dependencyEdges = aggregate.planning.plannedGraph.dependencyEdges.flatMap((edge) => {
+      const from = edge.fromKey === parentNode.nodeKey ? revisionKey : String(edge.fromKey);
+      const to = edge.toKey === parentNode.nodeKey ? revisionKey : String(edge.toKey);
+      if (
+        affectedKeys.has(String(edge.fromKey))
+        || affectedKeys.has(String(edge.toKey))
+        || !retainedKeys.has(from)
+        || !retainedKeys.has(to)
+      ) return [];
+      return [{ fromKey: from as never, toKey: to as never }];
+    });
+    const graph = {
+      schemaVersion: 2 as const,
+      nodes: [...retainedNodes, revisionNode],
+      dependencyEdges,
+    };
+    const unrelatedTerminals = aggregate.workflow.completionPolicy.requiredTerminalTicketIds
+      .filter((ticketId) => ticketId !== command.ticketId && ticketId !== payload.parentTicketId)
+      .map((ticketId) => aggregate.workflow.graph.nodes.find((node) => node.ticketId === ticketId))
+      .filter((node): node is NonNullable<typeof node> => (
+        Boolean(node?.active) && !affectedKeys.has(String(node!.nodeKey))
+      ))
+      .map((node) => node.nodeKey);
+    const completionPolicy = {
+      requiredTerminalKeys: [...unrelatedTerminals, revisionKey as never],
+      failurePolicy: aggregate.workflow.completionPolicy.failurePolicy,
+      blockedPolicy: "wait" as const,
+    };
+    const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
+    const cancelTicketIds = aggregate.workflow.graph.nodes
+      .filter((node) => affectedKeys.has(String(node.nodeKey)))
+      .map((node) => node.ticketId)
+      .filter((ticketId) => !TERMINAL_TICKET_STATUSES.has(statuses.get(ticketId) ?? "pending"));
+    const next = materializeWorkflowGraph({
+      workflowId: command.workflowId,
+      graph,
+      completionPolicy,
+      previous: materializedFromAggregate(aggregate),
+      cancelTicketIds,
+      ticketStatuses: statuses,
+    });
+    const merged = mergeTicketsForGraph(aggregate, next, command, new Set([command.ticketId]));
+    const returned: TicketSnapshot = {
+      ...current,
+      version: current.version + 1,
+      status: "returned",
+      activeAuthority: undefined,
+    };
+    let tickets = merged.tickets.map((item) => item.ticketId === returned.ticketId ? returned : item);
+    const pendingEvents = [...merged.pendingEvents, ...authorityRevocationEvents(
+      command,
+      current,
+      returned.version,
+    )];
+    pendingEvents.push(ticketEvent(command, returned, { type: "TicketTerminal", status: "returned" }));
+    tickets = unlockReadyTickets(next.graph, tickets, command, pendingEvents);
+    const revisionTicketId = next.ticketIdByKey[revisionKey];
+    const revisionTicket = tickets.find((ticket) => ticket.ticketId === revisionTicketId)!;
+    return ticketMutationResult(aggregate, command, fingerprint, {
+      planning: planningState(next),
+      workflow: {
+        ...aggregate.workflow,
+        graph: next.graph,
+        completionPolicy: next.completionPolicy,
+      },
+      tickets,
+      pendingEvents,
+      ticket: returned,
+      nextAuthority: revisionTicket.activeAuthority,
+    });
   }
 
   private cancelWorkflow(
@@ -708,6 +1053,43 @@ export class TicketEngine {
     return result as WorkflowCommandResult;
   }
 
+  private existingTicketCommand(
+    aggregate: TicketAggregate,
+    command: TicketCommandEnvelope,
+    fingerprint: string,
+  ): TicketCommandResult | undefined {
+    const input = aggregate.commandInputs.find((item) => item.commandId === command.commandId);
+    const result = aggregate.commandResults.find((item) => item.commandId === command.commandId);
+    if (!input && !result) return undefined;
+    if (
+      !input
+      || !result
+      || input.fingerprint !== fingerprint
+      || !("proposalId" in result)
+    ) {
+      return ticketRejected(
+        command,
+        "idempotency_conflict",
+        "Command ID was used with different content",
+        aggregate,
+      );
+    }
+    return result as TicketCommandResult;
+  }
+
+  private async persistTicketRejected(
+    aggregate: TicketAggregate,
+    fingerprint: string,
+    result: TicketCommandResult,
+  ): Promise<TicketCommandResult> {
+    await this.store.recordCommandResult(
+      aggregate.workflow.workflowId,
+      { commandId: result.commandId, fingerprint },
+      result,
+    );
+    return result;
+  }
+
   private replayOrConflict(
     aggregate: TicketAggregate,
     command: WorkflowCommandEnvelope,
@@ -740,6 +1122,225 @@ function initialTickets(materialized: MaterializedWorkflowGraph, workflowId: Wor
     status: incoming.has(node.ticketId) ? "pending" : "ready",
     parentTicketId: parentTicketId(materialized, node.nodeKey),
   }));
+}
+
+function requireCommandAuthority(
+  aggregate: TicketAggregate,
+  ticket: TicketSnapshot,
+  command: TicketCommandEnvelope,
+  now: Date,
+): void {
+  if (!command.executionRef.trim()) {
+    throw new TicketEngineOperationError("invalid_request", "executionRef is required");
+  }
+  const active = ticket.activeAuthority;
+  if (!active || active.kind !== command.authority.kind || active.fencingToken !== command.authority.fencingToken) {
+    throw new TicketEngineOperationError("stale_authority", "Ticket authority is stale");
+  }
+  if (active.kind === "claim" && command.authority.kind === "claim") {
+    if (active.claimId !== command.authority.claimId || ticket.status !== "running") {
+      throw new TicketEngineOperationError("stale_authority", "Claim is stale");
+    }
+    const claim = aggregate.claims.find((item) => item.claimId === active.claimId);
+    if (
+      !claim
+      || claim.ticketId !== ticket.ticketId
+      || claim.ticketVersion !== ticket.version
+      || claim.principalId !== command.actorPrincipalId
+      || Date.parse(claim.leaseUntil) <= now.getTime()
+    ) {
+      throw new TicketEngineOperationError("stale_authority", "Claim is invalid or expired");
+    }
+    return;
+  }
+  if (active.kind === "blocked_owner" && command.authority.kind === "blocked_owner") {
+    if (active.ownershipId !== command.authority.ownershipId || ticket.status !== "blocked") {
+      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is stale");
+    }
+    const ownership = aggregate.blockedOwnerships.find((item) => item.ownershipId === active.ownershipId);
+    if (
+      !ownership
+      || ownership.ticketId !== ticket.ticketId
+      || ownership.ticketVersion !== ticket.version
+      || ownership.principalId !== command.actorPrincipalId
+    ) {
+      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is invalid");
+    }
+    return;
+  }
+  throw new TicketEngineOperationError("stale_authority", "Ticket authority kind is invalid");
+}
+
+function authorityRevocationEvents(
+  command: EventCommand,
+  ticket: TicketSnapshot,
+  nextVersion: number,
+): TicketEvent[] {
+  return ticket.activeAuthority ? [ticketEvent(command, {
+    ...ticket,
+    version: nextVersion,
+  }, {
+    type: "AuthorityRevoked",
+    fencingToken: ticket.activeAuthority.fencingToken,
+  })] : [];
+}
+
+function unlockReadyTickets(
+  graph: TicketAggregate["workflow"]["graph"],
+  tickets: TicketSnapshot[],
+  command: EventCommand,
+  pendingEvents: TicketEvent[],
+  newTicketIds: ReadonlySet<TicketId> = new Set(),
+): TicketSnapshot[] {
+  const active = new Set(graph.nodes.filter((node) => node.active).map((node) => node.ticketId));
+  const predecessors = new Map<TicketId, TicketId[]>();
+  for (const edge of graph.dependencyEdges) {
+    predecessors.set(edge.toTicketId, [...(predecessors.get(edge.toTicketId) ?? []), edge.fromTicketId]);
+  }
+  const byId = new Map(tickets.map((ticket) => [ticket.ticketId, ticket] as const));
+  return tickets.map((ticket) => {
+    if (!active.has(ticket.ticketId) || ticket.status !== "pending") return ticket;
+    const dependencies = predecessors.get(ticket.ticketId) ?? [];
+    if (!dependencies.every((ticketId) => byId.get(ticketId)?.status === "completed")) return ticket;
+    const ready = {
+      ...ticket,
+      version: newTicketIds.has(ticket.ticketId) ? ticket.version : ticket.version + 1,
+      status: "ready" as const,
+    };
+    pendingEvents.push(ticketEvent(command, ready, { type: "TicketReady", ticketVersion: ready.version }));
+    return ready;
+  });
+}
+
+function mergeTicketsForGraph(
+  aggregate: TicketAggregate,
+  materialized: MaterializedWorkflowGraph,
+  command: EventCommand,
+  preserveInactiveTicketIds: ReadonlySet<TicketId> = new Set(),
+): { tickets: TicketSnapshot[]; pendingEvents: TicketEvent[] } {
+  const currentById = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket] as const));
+  const newTicketIds = new Set<TicketId>();
+  const activeIds = new Set(materialized.graph.nodes.filter((node) => node.active).map((node) => node.ticketId));
+  const pendingEvents: TicketEvent[] = [];
+  let tickets = materialized.graph.nodes.map((node) => {
+    const current = currentById.get(node.ticketId);
+    if (!current) {
+      newTicketIds.add(node.ticketId);
+      return ticketFromNode(materialized, node.ticketId, aggregate.workflow.workflowId);
+    }
+    if (
+      !activeIds.has(current.ticketId)
+      && !preserveInactiveTicketIds.has(current.ticketId)
+      && !TERMINAL_TICKET_STATUSES.has(current.status)
+    ) {
+      const cancelled = { ...current, version: current.version + 1, status: "cancelled" as const, activeAuthority: undefined };
+      pendingEvents.push(...authorityRevocationEvents(command, current, cancelled.version));
+      pendingEvents.push(ticketEvent(command, cancelled, { type: "TicketTerminal", status: "cancelled" }));
+      return cancelled;
+    }
+    return current;
+  });
+  tickets = unlockReadyTickets(materialized.graph, tickets, command, pendingEvents, newTicketIds);
+  return { tickets, pendingEvents };
+}
+
+function descendantKeys(
+  graph: TicketPlanningState["plannedGraph"],
+  rootKey: string,
+): Set<string> {
+  const outgoing = new Map<string, string[]>();
+  for (const edge of graph.dependencyEdges) {
+    const from = String(edge.fromKey);
+    outgoing.set(from, [...(outgoing.get(from) ?? []), String(edge.toKey)]);
+  }
+  const result = new Set<string>();
+  const queue = [rootKey];
+  for (let index = 0; index < queue.length; index += 1) {
+    const key = queue[index]!;
+    if (result.has(key)) continue;
+    result.add(key);
+    queue.push(...(outgoing.get(key) ?? []));
+  }
+  return result;
+}
+
+function ticketMutationResult(
+  aggregate: TicketAggregate,
+  command: TicketCommandEnvelope,
+  fingerprint: string,
+  patch: {
+    ticket: TicketSnapshot;
+    tickets: TicketSnapshot[];
+    pendingEvents: TicketEvent[];
+    planning?: TicketPlanningState;
+    workflow?: TicketAggregate["workflow"];
+    blockedOwnerships?: BlockedOwnershipReceipt[];
+    nextAuthority?: TicketSnapshot["activeAuthority"];
+  },
+) {
+  const baseWorkflow = patch.workflow ?? aggregate.workflow;
+  const materialized: MaterializedWorkflowGraph = {
+    workflowId: baseWorkflow.workflowId,
+    plannedGraph: (patch.planning ?? aggregate.planning)!.plannedGraph,
+    graph: baseWorkflow.graph,
+    completionPolicy: baseWorkflow.completionPolicy,
+    ticketIdByKey: (patch.planning ?? aggregate.planning)!.ticketIdByKey,
+    definitionsByKey: (patch.planning ?? aggregate.planning)!.definitionsByKey,
+  };
+  const outcome = evaluateWorkflowOutcome({
+    materialized,
+    ticketStatuses: new Map(patch.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const)),
+  });
+  const workflowVersion = aggregate.workflow.version + 1;
+  const workflowStatus: WorkflowStatus = aggregate.workflow.status === "paused" ? "paused" : outcome;
+  const workflow = {
+    ...baseWorkflow,
+    version: workflowVersion,
+    status: workflowStatus,
+    deferredOutcome: workflowStatus === "paused" ? outcome : undefined,
+  };
+  const pendingEvents = [...patch.pendingEvents];
+  if (workflowStatus !== aggregate.workflow.status) {
+    pendingEvents.push(workflowEvent(command, workflowStatus, workflowVersion));
+  }
+  const result: TicketCommandResult = {
+    accepted: true,
+    commandId: command.commandId,
+    proposalId: command.proposalId,
+    ticketStatus: patch.ticket.status as "blocked" | "completed" | "returned" | "failed",
+    ticketVersion: patch.ticket.version,
+    workflowStatus,
+    workflowVersion,
+    ...(patch.nextAuthority ? { nextAuthority: patch.nextAuthority } : {}),
+  };
+  return {
+    ...aggregate,
+    ...patch,
+    workflow,
+    blockedOwnerships: patch.blockedOwnerships ?? aggregate.blockedOwnerships,
+    commandInputs: [...aggregate.commandInputs, { commandId: command.commandId, fingerprint }],
+    commandResults: [...aggregate.commandResults, result],
+    pendingEvents,
+  };
+}
+
+function ticketRejected(
+  command: TicketCommandEnvelope,
+  code: Extract<TicketCommandResult, { accepted: false }>["code"],
+  reason: string,
+  aggregate?: TicketAggregate,
+): TicketCommandResult {
+  return {
+    accepted: false,
+    commandId: command.commandId,
+    proposalId: command.proposalId,
+    code,
+    reason,
+    ...(aggregate ? {
+      currentTicketVersion: aggregate.tickets.find((ticket) => ticket.ticketId === command.ticketId)?.version,
+      currentWorkflowVersion: aggregate.workflow.version,
+    } : {}),
+  };
 }
 
 function ticketFromNode(
@@ -834,8 +1435,14 @@ function deferredOutcome(status: WorkflowStatus): "active" | "blocked" | "comple
   return status === "blocked" || status === "completed" || status === "failed" ? status : "active";
 }
 
+interface EventCommand {
+  commandId: string;
+  workflowId: WorkflowId;
+  issuedAt: string;
+}
+
 function ticketEvent(
-  command: WorkflowCommandEnvelope,
+  command: EventCommand,
   ticket: Pick<TicketSnapshot, "ticketId" | "workflowId" | "version">,
   payload: Extract<TicketEvent, { aggregateType: "ticket" }>["payload"],
 ): TicketEvent {
@@ -851,7 +1458,7 @@ function ticketEvent(
 }
 
 function workflowEvent(
-  command: WorkflowCommandEnvelope,
+  command: EventCommand,
   status: WorkflowStatus,
   version: number,
 ): TicketEvent {
@@ -933,7 +1540,7 @@ function validateDuration(value: number, label: string): void {
   }
 }
 
-function commandFingerprint(command: WorkflowCommandEnvelope): string {
+function commandFingerprint(command: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(command)).digest("hex")}`;
 }
 
