@@ -5,12 +5,7 @@ import { ProviderRegistry } from "../providers/provider-registry.js";
 
 export function createProviderRouter(registry?: ProviderRegistry) {
   const router = Router();
-  const config = loadConfig();
-  const providerRegistry = registry ?? new ProviderRegistry({
-    homeDir: config.autoAgentHome,
-    retryCount: config.providerRetryCount,
-    env: process.env
-  });
+  const providerRegistry = registry ?? defaultProviderRegistry();
 
   router.get("/status", asyncHandler(async (_req, res) => {
     res.json({ providers: await providerRegistry.status() });
@@ -80,6 +75,15 @@ export function createProviderRouter(registry?: ProviderRegistry) {
   }));
 
   return router;
+}
+
+function defaultProviderRegistry(): ProviderRegistry {
+  const config = loadConfig();
+  return new ProviderRegistry({
+    homeDir: config.autoAgentHome,
+    retryCount: config.providerRetryCount,
+    env: process.env,
+  });
 }
 
 function assertRealProvider(provider: unknown) {

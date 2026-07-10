@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { errorMiddleware } from "./errors.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type AppConfig } from "./config.js";
 import { AgentProfileStore } from "./agents/profile-store.js";
 import { MissionControl } from "./mission/mission-control.js";
 import { ProviderRegistry } from "./providers/provider-registry.js";
@@ -31,9 +31,8 @@ export function resolveClientDir(serverDir = path.dirname(fileURLToPath(import.m
   return clientDir ?? candidates[0];
 }
 
-export function createApp() {
+export function createApp(config: AppConfig = loadConfig()) {
   const app = express();
-  const config = loadConfig();
   const workspaceStore = new WorkspaceStore(config.autoAgentHome);
   const profileStore = new AgentProfileStore(config.autoAgentHome);
   const ledger = new EventLedger();

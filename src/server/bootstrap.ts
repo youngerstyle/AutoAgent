@@ -11,7 +11,7 @@ import { WorkflowPolicyStore } from "./tickets/workflow-policy-store.js";
 export async function bootstrapServer(config: AppConfig = loadConfig()): Promise<Express> {
   const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
   await seedMinimalTeamWorkflowPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-  return createApp();
+  return createApp(config);
 }
 
 export async function startServer(config: AppConfig = loadConfig()): Promise<Server> {
