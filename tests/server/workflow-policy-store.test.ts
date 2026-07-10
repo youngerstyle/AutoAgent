@@ -10,6 +10,7 @@ import {
   WorkflowPolicyNotFoundError,
   WorkflowPolicyStore,
   createWorkflowPolicy,
+  fsyncPolicyDirectory,
 } from "../../src/server/tickets/workflow-policy-store.js";
 
 describe("WorkflowPolicyStore", () => {
@@ -239,6 +240,42 @@ describe("WorkflowPolicyStore", () => {
 
     const restarted = new WorkflowPolicyStore(root);
     await expect(restarted.requirePolicy(policy.ref)).resolves.toEqual(policy);
+  });
+
+  it("fsyncs a policy directory where supported", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-policy-sync-"));
+
+    await expect(fsyncPolicyDirectory(root)).resolves.toBeUndefined();
+  });
+
+  it("does not swallow unexpected directory fsync errors", async () => {
+    const denied = Object.assign(new Error("denied"), { code: "EACCES" });
+
+    await expect(fsyncPolicyDirectory("unused", async () => {
+      throw denied;
+    })).rejects.toBe(denied);
+  });
+
+  it("only tolerates an unsupported directory fsync error on Windows", async () => {
+    const unsupported = Object.assign(new Error("directory sync unsupported"), { code: "EPERM" });
+    const operation = fsyncPolicyDirectory("unused", async () => ({
+      sync: async () => { throw unsupported; },
+      close: async () => undefined,
+    }));
+
+    if (process.platform === "win32") {
+      await expect(operation).resolves.toBeUndefined();
+    } else {
+      await expect(operation).rejects.toBe(unsupported);
+    }
+  });
+
+  it("does not mistake a directory open permission failure for unsupported fsync", async () => {
+    const denied = Object.assign(new Error("directory open denied"), { code: "EPERM" });
+
+    await expect(fsyncPolicyDirectory("unused", async () => {
+      throw denied;
+    })).rejects.toBe(denied);
   });
 });
 

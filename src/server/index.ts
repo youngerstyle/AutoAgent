@@ -1,9 +1,7 @@
-import { createApp } from "./app.js";
+import { startServer } from "./bootstrap.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
-const app = createApp();
+await startServer(config);
 
-app.listen(config.port, () => {
-  console.log(`AutoAgent listening on http://127.0.0.1:${config.port}`);
-});
+console.log(`AutoAgent listening on http://127.0.0.1:${config.port}`);

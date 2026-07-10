@@ -9,11 +9,13 @@ export interface MinimalTeamWorkflowPolicyConfig {
   teamBindingId: string;
 }
 
-export async function seedMinimalTeamWorkflowPolicy(
-  store: Pick<WorkflowPolicyStore, "seedPolicy">,
-  config: MinimalTeamWorkflowPolicyConfig,
-): Promise<WorkflowPolicyRef> {
-  const policy = createWorkflowPolicy({
+export const DEFAULT_MINIMAL_TEAM_POLICY_CONFIG: Readonly<MinimalTeamWorkflowPolicyConfig> = Object.freeze({
+  plannerPrincipalId: "minimal-team-planner",
+  teamBindingId: "minimal-team",
+});
+
+export function createMinimalTeamWorkflowPolicy(config: MinimalTeamWorkflowPolicyConfig) {
+  return createWorkflowPolicy({
     policyId: "minimal-team",
     policyVersion: 1,
     grants: [
@@ -31,5 +33,12 @@ export async function seedMinimalTeamWorkflowPolicy(
       },
     ],
   });
+}
+
+export async function seedMinimalTeamWorkflowPolicy(
+  store: Pick<WorkflowPolicyStore, "seedPolicy">,
+  config: MinimalTeamWorkflowPolicyConfig,
+): Promise<WorkflowPolicyRef> {
+  const policy = createMinimalTeamWorkflowPolicy(config);
   return (await store.seedPolicy(policy)).ref;
 }

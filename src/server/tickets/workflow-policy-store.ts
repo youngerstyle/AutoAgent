@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, rm } from "node:fs/promises";
+import { link, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type {
   WorkflowAuthorizationGrant,
@@ -228,6 +228,7 @@ async function createJsonFileIfAbsent(filePath: string, value: unknown): Promise
     await handle.close();
     try {
       await link(tempPath, filePath);
+      await fsyncPolicyDirectory(path.dirname(filePath));
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
@@ -237,6 +238,35 @@ async function createJsonFileIfAbsent(filePath: string, value: unknown): Promise
     await handle.close().catch(() => undefined);
     await rm(tempPath, { force: true }).catch(() => undefined);
   }
+}
+
+type PolicyDirectoryOpener = (
+  directory: string,
+  flags: "r",
+) => Promise<Pick<FileHandle, "sync" | "close">>;
+
+export async function fsyncPolicyDirectory(
+  directory: string,
+  openDirectory: PolicyDirectoryOpener = open,
+): Promise<void> {
+  const handle = await openDirectory(directory, "r");
+  try {
+    await handle.sync();
+  } catch (error) {
+    if (!isUnsupportedWindowsDirectorySync(error)) throw error;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+function isUnsupportedWindowsDirectorySync(error: unknown): boolean {
+  if (process.platform !== "win32") return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPERM"
+    || code === "EISDIR"
+    || code === "EINVAL"
+    || code === "ENOTSUP"
+    || code === "ENOSYS";
 }
 
 function isContainedPath(parent: string, candidate: string): boolean {
