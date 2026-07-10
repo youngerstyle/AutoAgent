@@ -27,6 +27,11 @@ export type TicketStoredCommandResult =
   | WorkflowCommandResult
   | ClaimCommandResult;
 
+export interface TicketStoredCommandInput {
+  commandId: string;
+  fingerprint: string;
+}
+
 export interface TicketOutboxEntry {
   position: number;
   event: TicketEvent;
@@ -38,14 +43,21 @@ export interface TicketStorageIdentity {
   workflowId: WorkflowId;
 }
 
+export type TicketPlanningState = Pick<
+  MaterializedWorkflowGraph,
+  "plannedGraph" | "ticketIdByKey" | "definitionsByKey"
+>;
+
 export interface TicketAggregate {
   schemaVersion: 2;
   storageIdentity: TicketStorageIdentity;
   aggregateVersion: number;
   workflow: WorkflowSnapshot;
+  planning?: TicketPlanningState;
   tickets: TicketSnapshot[];
   claims: ClaimReceipt[];
   blockedOwnerships: BlockedOwnershipReceipt[];
+  commandInputs: TicketStoredCommandInput[];
   commandResults: TicketStoredCommandResult[];
   outbox: TicketOutboxEntry[];
 }
@@ -53,9 +65,11 @@ export interface TicketAggregate {
 export interface TicketAggregateSeed {
   schemaVersion: 2;
   workflow: WorkflowSnapshot;
+  planning?: TicketPlanningState;
   tickets: TicketSnapshot[];
   claims: ClaimReceipt[];
   blockedOwnerships: BlockedOwnershipReceipt[];
+  commandInputs?: TicketStoredCommandInput[];
   commandResults: TicketStoredCommandResult[];
   pendingEvents?: TicketEvent[];
 }
@@ -145,6 +159,7 @@ export class TicketStore {
         schemaVersion: 2,
         storageIdentity: this.storageIdentity(seed.workflow.workflowId),
         aggregateVersion: 1,
+        commandInputs: persistedSeed.commandInputs ?? [],
         outbox: pendingEvents.map((event, index) => ({ position: index + 1, event })),
       };
       this.validateAggregate(aggregate, seed.workflow.workflowId);
@@ -196,9 +211,11 @@ export class TicketStore {
         storageIdentity: this.storageIdentity(workflowId),
         aggregateVersion: current.aggregateVersion + 1,
         workflow: structuredClone(proposed.workflow),
+        planning: structuredClone(proposed.planning),
         tickets: structuredClone(proposed.tickets),
         claims: structuredClone(proposed.claims),
         blockedOwnerships: structuredClone(proposed.blockedOwnerships),
+        commandInputs: structuredClone(proposed.commandInputs),
         commandResults: structuredClone(proposed.commandResults),
         outbox: nextOutbox,
       };
@@ -214,6 +231,41 @@ export class TicketStore {
   ): Promise<TicketStoredCommandResult | undefined> {
     const aggregate = await this.readFromDisk(workflowId);
     return structuredClone(aggregate?.commandResults.find((result) => result.commandId === commandId));
+  }
+
+  async getCommandInput(
+    workflowId: WorkflowId,
+    commandId: string,
+  ): Promise<TicketStoredCommandInput | undefined> {
+    const aggregate = await this.readFromDisk(workflowId);
+    return structuredClone(aggregate?.commandInputs.find((input) => input.commandId === commandId));
+  }
+
+  async recordCommandResult(
+    workflowId: WorkflowId,
+    input: TicketStoredCommandInput,
+    result: TicketStoredCommandResult,
+  ): Promise<TicketAggregate> {
+    return this.enqueue(workflowId, async () => {
+      const current = await this.requireAggregate(workflowId);
+      const existingInput = current.commandInputs.find((item) => item.commandId === input.commandId);
+      const existingResult = current.commandResults.find((item) => item.commandId === input.commandId);
+      if (existingInput || existingResult) {
+        if (existingInput?.fingerprint !== input.fingerprint || !existingResult) {
+          throw new TicketStoreConflictError(`Command ${input.commandId} idempotency conflict`);
+        }
+        return structuredClone(current);
+      }
+      const next: TicketAggregate = {
+        ...structuredClone(current),
+        aggregateVersion: current.aggregateVersion + 1,
+        commandInputs: [...current.commandInputs, structuredClone(input)],
+        commandResults: [...current.commandResults, structuredClone(result)],
+      };
+      this.validateAggregate(next, workflowId);
+      await writeDurableJson(this.file(workflowId), next);
+      return structuredClone(next);
+    });
   }
 
   async readEvents<TWorkflowId extends WorkflowId>(
@@ -277,9 +329,11 @@ export class TicketStore {
       "storageIdentity",
       "aggregateVersion",
       "workflow",
+      "planning",
       "tickets",
       "claims",
       "blockedOwnerships",
+      "commandInputs",
       "commandResults",
       "outbox",
     ], "aggregate");
@@ -413,6 +467,15 @@ export class TicketStore {
     requirePositiveVersion(policyRef.policyVersion, "workflow.policyRef.policyVersion");
     requireNonEmptyString(policyRef.contentHash, "workflow.policyRef.contentHash");
 
+    if (aggregate.planning !== undefined) {
+      validatePlanningState(
+        aggregate.planning,
+        graphNodeRecords,
+        dependencyPairs,
+        "planning",
+      );
+    }
+
     const tickets = requireArray(aggregate.tickets, "tickets");
     const ticketIds = new Set<string>();
     const ticketRecords: Record<string, unknown>[] = [];
@@ -526,6 +589,16 @@ export class TicketStore {
       ticketRecords,
     );
 
+    const commandInputIds = new Set<string>();
+    for (const [index, rawInput] of requireArray(aggregate.commandInputs, "commandInputs").entries()) {
+      const input = requireRecord(rawInput, `commandInputs[${index}]`);
+      assertOnlyKeys(input, ["commandId", "fingerprint"], `commandInputs[${index}]`);
+      const commandId = requireNonEmptyString(input.commandId, `commandInputs[${index}].commandId`);
+      requireNonEmptyString(input.fingerprint, `commandInputs[${index}].fingerprint`);
+      if (commandInputIds.has(commandId)) this.corrupt(`duplicate command input ${commandId}`);
+      commandInputIds.add(commandId);
+    }
+
     const commandIds = new Set<string>();
     for (const [index, rawResult] of requireArray(aggregate.commandResults, "commandResults").entries()) {
       const result = requireRecord(rawResult, `commandResults[${index}]`);
@@ -533,6 +606,12 @@ export class TicketStore {
       if (commandIds.has(commandId)) this.corrupt(`duplicate commandId ${commandId}`);
       commandIds.add(commandId);
       validateCommandResult(result, workflowId, ticketIds, `commandResults[${index}]`);
+    }
+    if (
+      commandIds.size !== commandInputIds.size
+      || [...commandIds].some((commandId) => !commandInputIds.has(commandId))
+    ) {
+      this.corrupt("command inputs and results are inconsistent");
     }
 
     const eventIds = new Set<string>();
@@ -765,6 +844,7 @@ const TICKET_REJECTION_CODES = new Set([
   "idempotency_conflict",
 ]);
 const WORKFLOW_REJECTION_CODES = new Set([
+  "invalid_command",
   "invalid_definition",
   "policy_violation",
   "version_conflict",
@@ -994,6 +1074,116 @@ function validateCommandResult(
   }
   requireOptionalPositiveVersion(result.currentTicketVersion, `${label}.currentTicketVersion`);
   requireOptionalPositiveVersion(result.currentWorkflowVersion, `${label}.currentWorkflowVersion`);
+}
+
+function validatePlanningState(
+  value: unknown,
+  runtimeNodes: Record<string, unknown>[],
+  runtimeEdges: Array<[string, string]>,
+  label: string,
+): void {
+  const planning = requireRecord(value, label);
+  assertOnlyKeys(planning, ["plannedGraph", "ticketIdByKey", "definitionsByKey"], label);
+  const ticketIdByKey = requireRecord(planning.ticketIdByKey, `${label}.ticketIdByKey`);
+  const definitionsByKey = requireRecord(planning.definitionsByKey, `${label}.definitionsByKey`);
+  const runtimeByKey = new Map(runtimeNodes.map((node) => [String(node.nodeKey), node] as const));
+  for (const [nodeKey, runtimeNode] of runtimeByKey) {
+    if (!Object.hasOwn(ticketIdByKey, nodeKey) || ticketIdByKey[nodeKey] !== runtimeNode.ticketId) {
+      throw new TicketStoreCorruptionError(`${label}.ticketIdByKey is inconsistent for ${nodeKey}`);
+    }
+    if (!Object.hasOwn(definitionsByKey, nodeKey)) {
+      throw new TicketStoreCorruptionError(`${label}.definitionsByKey is missing ${nodeKey}`);
+    }
+    validatePlannedNode(definitionsByKey[nodeKey], nodeKey, `${label}.definitionsByKey.${nodeKey}`);
+  }
+  if (
+    Object.keys(ticketIdByKey).length !== runtimeByKey.size
+    || Object.keys(definitionsByKey).length !== runtimeByKey.size
+  ) {
+    throw new TicketStoreCorruptionError(`${label} contains unknown ticket keys`);
+  }
+
+  const plannedGraph = requireRecord(planning.plannedGraph, `${label}.plannedGraph`);
+  assertOnlyKeys(plannedGraph, ["schemaVersion", "nodes", "dependencyEdges"], `${label}.plannedGraph`);
+  if (plannedGraph.schemaVersion !== 2) {
+    throw new TicketStoreCorruptionError(`${label}.plannedGraph.schemaVersion is invalid`);
+  }
+  const activeKeys = new Set(
+    runtimeNodes.filter((node) => node.active === true).map((node) => String(node.nodeKey)),
+  );
+  const plannedKeys = new Set<string>();
+  for (const [index, rawNode] of requireArray(plannedGraph.nodes, `${label}.plannedGraph.nodes`).entries()) {
+    const node = requireRecord(rawNode, `${label}.plannedGraph.nodes[${index}]`);
+    const nodeKey = requireNonEmptyString(node.key, `${label}.plannedGraph.nodes[${index}].key`);
+    validatePlannedNode(node, nodeKey, `${label}.plannedGraph.nodes[${index}]`);
+    if (!activeKeys.has(nodeKey) || plannedKeys.has(nodeKey)) {
+      throw new TicketStoreCorruptionError(`${label}.plannedGraph contains invalid key ${nodeKey}`);
+    }
+    plannedKeys.add(nodeKey);
+  }
+  if (plannedKeys.size !== activeKeys.size) {
+    throw new TicketStoreCorruptionError(`${label}.plannedGraph does not match active runtime nodes`);
+  }
+
+  const runtimeEdgeKeys = new Set(runtimeEdges.map(([from, to]) => `${from}\u0000${to}`));
+  const plannedEdgeKeys = new Set<string>();
+  for (const [index, rawEdge] of requireArray(
+    plannedGraph.dependencyEdges,
+    `${label}.plannedGraph.dependencyEdges`,
+  ).entries()) {
+    const edge = requireRecord(rawEdge, `${label}.plannedGraph.dependencyEdges[${index}]`);
+    assertOnlyKeys(edge, ["fromKey", "toKey"], `${label}.plannedGraph.dependencyEdges[${index}]`);
+    const fromKey = requireNonEmptyString(edge.fromKey, `${label}.plannedGraph.dependencyEdges[${index}].fromKey`);
+    const toKey = requireNonEmptyString(edge.toKey, `${label}.plannedGraph.dependencyEdges[${index}].toKey`);
+    const fromId = ticketIdByKey[fromKey];
+    const toId = ticketIdByKey[toKey];
+    if (typeof fromId !== "string" || typeof toId !== "string") {
+      throw new TicketStoreCorruptionError(`${label}.plannedGraph edge references an unknown key`);
+    }
+    plannedEdgeKeys.add(`${fromId}\u0000${toId}`);
+  }
+  if (
+    plannedEdgeKeys.size !== runtimeEdgeKeys.size
+    || [...runtimeEdgeKeys].some((edge) => !plannedEdgeKeys.has(edge))
+  ) {
+    throw new TicketStoreCorruptionError(`${label}.plannedGraph edges do not match runtime graph`);
+  }
+}
+
+function validatePlannedNode(value: unknown, expectedKey: string, label: string): void {
+  const node = requireRecord(value, label);
+  assertOnlyKeys(node, [
+    "key",
+    "parentKey",
+    "revisionOfKey",
+    "title",
+    "objective",
+    "successCriteria",
+    "assignment",
+    "outputContract",
+  ], label);
+  if (node.key !== expectedKey) throw new TicketStoreCorruptionError(`${label}.key is invalid`);
+  requireOptionalNonEmptyString(node.parentKey, `${label}.parentKey`);
+  requireOptionalNonEmptyString(node.revisionOfKey, `${label}.revisionOfKey`);
+  requireNonEmptyString(node.title, `${label}.title`);
+  requireNonEmptyString(node.objective, `${label}.objective`);
+  for (const [index, criterion] of requireArray(node.successCriteria, `${label}.successCriteria`).entries()) {
+    requireNonEmptyString(criterion, `${label}.successCriteria[${index}]`);
+  }
+  const assignment = requireRecord(node.assignment, `${label}.assignment`);
+  assertOnlyKeys(assignment, ["principalId", "requiredCapabilities"], `${label}.assignment`);
+  requireOptionalNonEmptyString(assignment.principalId, `${label}.assignment.principalId`);
+  if (assignment.requiredCapabilities !== undefined) {
+    for (const [index, capability] of requireArray(
+      assignment.requiredCapabilities,
+      `${label}.assignment.requiredCapabilities`,
+    ).entries()) {
+      requireNonEmptyString(capability, `${label}.assignment.requiredCapabilities[${index}]`);
+    }
+  }
+  const outputContract = requireRecord(node.outputContract, `${label}.outputContract`);
+  assertOnlyKeys(outputContract, ["schemaRef"], `${label}.outputContract`);
+  requireNonEmptyString(outputContract.schemaRef, `${label}.outputContract.schemaRef`);
 }
 
 function validateClaimReceipt(

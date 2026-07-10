@@ -299,6 +299,7 @@ export type WorkflowCommandResult =
       accepted: false;
       commandId: string;
       code:
+        | "invalid_command"
         | "invalid_definition"
         | "policy_violation"
         | "version_conflict"

@@ -24,6 +24,7 @@ export function createMinimalTeamWorkflowPolicy(config: MinimalTeamWorkflowPolic
         capabilities: [
           "blocked_ownership:transfer",
           "ticket_graph:create",
+          "ticket_graph:amend",
           "workflow:control",
         ],
       },

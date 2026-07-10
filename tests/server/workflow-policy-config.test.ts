@@ -22,6 +22,7 @@ describe("workflow policy product configuration", () => {
     })).resolves.toEqual([
       "blocked_ownership:transfer",
       "ticket:claim",
+      "ticket_graph:amend",
       "ticket_graph:create",
       "workflow:control",
     ]);

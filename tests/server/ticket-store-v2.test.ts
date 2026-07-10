@@ -39,6 +39,7 @@ describe("TicketStore", () => {
     expect(persisted.tickets).toHaveLength(1);
     expect(persisted.claims).toEqual([]);
     expect(persisted.blockedOwnerships).toEqual([]);
+    expect(persisted.commandInputs).toEqual([]);
     expect(persisted.commandResults).toEqual([]);
     expect(persisted.outbox).toEqual([]);
   });
@@ -193,12 +194,17 @@ describe("TicketStore", () => {
       (current) => ({
         ...current,
         workflow: { ...current.workflow, version: 2 },
+        commandInputs: [{ commandId: "command-1", fingerprint: "sha256:test" }],
         commandResults: [...current.commandResults, result],
       }),
     );
 
     const restarted = new TicketStore(fixture.root, fixture.taskId, fixture.taskRunId);
     await expect(restarted.getCommandResult(fixture.workflowId, "command-1")).resolves.toEqual(result);
+    await expect(restarted.getCommandInput(fixture.workflowId, "command-1")).resolves.toEqual({
+      commandId: "command-1",
+      fingerprint: "sha256:test",
+    });
   });
 
   it("pages outbox events in stable ascending order after restart", async () => {
