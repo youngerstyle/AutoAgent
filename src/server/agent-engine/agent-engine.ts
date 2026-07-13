@@ -249,13 +249,16 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     return structuredClone((await this.store.read()).goals.find((item) => item.spec.id === goalId));
   }
 
-  async getProjection(scopeId: string, goalId?: string): Promise<{
+  async getProjection(scopeId: string, goalId?: string, itemLimit?: number): Promise<{
     thread?: AgentThreadSnapshot;
     goal?: AgentGoal;
     payloads: Map<string, unknown>;
   }> {
     const aggregate = await this.store.read();
-    const thread = aggregate.threads.find((item) => item.scopeId === scopeId);
+    const storedThread = aggregate.threads.find((item) => item.scopeId === scopeId);
+    const thread = storedThread && itemLimit !== undefined
+      ? { ...storedThread, items: storedThread.items.slice(-Math.max(0, itemLimit)) }
+      : storedThread;
     const wanted = new Set(thread?.items.map((item) => item.payloadRef) ?? []);
     return {
       thread: thread ? structuredClone(thread) : undefined,

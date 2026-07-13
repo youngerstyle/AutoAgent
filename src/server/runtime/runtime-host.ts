@@ -373,7 +373,7 @@ export class RuntimeHost {
     for (const agent of agents) {
       const engine = context.engines.get(agent.id);
       const link = mission.links.find((item) => item.agentId === agent.id && new Set(["running", "blocked", "resolving", "paused"]).has(item.status));
-      const projection = await engine?.getProjection(record.missionId, link?.agentGoalId);
+      const projection = await engine?.getProjection(record.missionId, link?.agentGoalId, 200);
       const thread = projection?.thread;
       const goal = projection?.goal;
       const events = thread ? projectThread(thread, projection.payloads, record) : [];
@@ -426,7 +426,7 @@ export class RuntimeHost {
       tickets,
       agentThreads,
       agentMessages: {},
-      recentEvents: recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+      recentEvents: recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-500),
       phase: presentationPhase(workflow.status, tickets),
       status,
       currentStep: tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
@@ -573,6 +573,7 @@ function projectThread(
     const payload = payloads.get(item.payloadRef);
     const messagePayload = payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
     const isHuman = item.kind === "message" && messagePayload?.senderPrincipalId === "human";
+    const projectedPayload = projectEventPayload(payload, item.payloadRef);
     events.push({
       id: item.itemId,
       taskId: record.taskId,
@@ -583,7 +584,7 @@ function projectThread(
       source: item.kind === "message" ? (isHuman ? "human" : "system") : item.kind === "model" ? "agent" : item.kind === "observation" ? "tool" : "system",
       kind: item.kind === "message" ? (isHuman ? "human_message" : "system_note") : item.kind === "model" ? "agent_message" : item.kind === "observation" ? "tool_observation" : "system_note",
       visibility: item.kind === "control" ? "timeline" : "chat",
-      payload: (payload && typeof payload === "object" ? payload : { content: payload }) as Record<string, unknown>,
+      payload: projectedPayload,
     });
   }
   return events;
@@ -640,7 +641,31 @@ function presentationPhase(status: string, tickets: Ticket[]): MissionPhase {
 
 function threadEventText(event: AgentThreadEvent): string {
   const payload = event.payload as Record<string, unknown>;
-  return String(payload.content ?? payload.status ?? event.kind);
+  const text = String(payload.content ?? payload.status ?? event.kind);
+  return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+}
+
+function projectEventPayload(payload: unknown, payloadRef: string): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { content: truncateDisplayString(String(payload ?? "")), rawPayloadRef: payloadRef };
+  }
+  const record = { ...(payload as Record<string, unknown>) };
+  let truncated = false;
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value !== "string" || value.length <= 8_000) continue;
+    record[key] = truncateDisplayString(value);
+    truncated = true;
+    if (key === "content") record.originalChars = value.length;
+  }
+  if (truncated) {
+    record.truncated = true;
+    record.rawPayloadRef = payloadRef;
+  }
+  return record;
+}
+
+function truncateDisplayString(value: string): string {
+  return value.length > 8_000 ? `${value.slice(0, 8_000)}\n\n[显示已截断，原始内容仍保存在 Agent Thread]` : value;
 }
 
 function stableId(prefix: string, ...parts: string[]): string {

@@ -132,13 +132,18 @@ export function App() {
     const status = snapshot?.status;
     if (!selectedId || !snapshot?.activeTask || status === "completed" || status === "failed" || status === "interrupted") return;
     let disposed = false;
+    let polling = false;
     const timer = window.setInterval(() => {
+      if (polling) return;
+      polling = true;
       void getSnapshot(selectedId).then((result) => {
         if (disposed) return;
         setSnapshot(result.snapshot);
         setEvents(result.snapshot.recentEvents);
       }).catch((err: Error) => {
         if (!disposed) setError(err.message);
+      }).finally(() => {
+        polling = false;
       });
     }, 1_000);
     return () => {

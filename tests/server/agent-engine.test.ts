@@ -71,6 +71,20 @@ describe("AgentEngine", () => {
     expect(projection.payloads.size).toBeGreaterThan(0);
   });
 
+  it("projects only the newest requested thread window without deleting history", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({ agentId: "dev", scopeId: "window", idempotencyKey: "window" });
+    for (let index = 1; index <= 5; index += 1) {
+      await fixture.engine.appendModelItem({ itemId: `model-${index}`, threadId: thread.threadId, content: String(index), createdAt: T1 });
+    }
+
+    const projection = await fixture.engine.getProjection("window", undefined, 2);
+
+    expect(projection.thread?.items.map((item) => item.itemId)).toEqual(["model-4", "model-5"]);
+    expect((await fixture.engine.getThread(thread.threadId)).items).toHaveLength(5);
+    expect(projection.payloads.size).toBe(2);
+  });
+
   it("makes duplicate appends no-ops and rejects conflicting reuse", async () => {
     const fixture = await createFixture();
     const thread = await fixture.engine.ensureThread({

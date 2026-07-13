@@ -165,6 +165,28 @@ describe("RuntimeHost", () => {
     expect(snapshotResult).toBe("running");
   });
 
+  it("truncates oversized UI event payloads without changing the stored Agent thread", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-large-observation", title: "演示", objective: "构建演示" });
+    const engine = fixture.host.context("task-large-observation")!.engines.get("wa_boss")!;
+    const thread = (await engine.getThreadForAgent("wa_boss", "task-large-observation"))!;
+    const content = "x".repeat(100_000);
+    await engine.appendToolItem({
+      itemId: "large-observation",
+      threadId: thread.threadId,
+      kind: "observation",
+      value: { tool: "readFile", ok: true, content },
+      createdAt: "2026-07-10T00:03:00.000Z",
+    });
+
+    const snapshot = await fixture.host.snapshot();
+    const event = snapshot.agentThreads!.wa_boss.find((item) => item.id === "large-observation")!;
+
+    expect(String(event.payload.content).length).toBeLessThan(10_000);
+    expect(event.payload).toMatchObject({ truncated: true, originalChars: 100_000 });
+    expect(await engine.getPayload("observation:large-observation")).toMatchObject({ content });
+  });
+
   it("starts and stops an unrefed production timer", async () => {
     const fixture = await createFixture();
     await fixture.host.start();
