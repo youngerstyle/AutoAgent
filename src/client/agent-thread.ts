@@ -15,6 +15,11 @@ export interface ChatComposerKeyInput {
   isComposing: boolean;
 }
 
+export function beginChatSubmission(draft: string): { message: string; nextDraft: string } {
+  const message = draft.trim();
+  return { message, nextDraft: message ? "" : draft };
+}
+
 export function chatComposerKeyAction(input: ChatComposerKeyInput): "submit" | "newline" | "ignore" {
   if (input.key !== "Enter" || input.isComposing) return "ignore";
   return input.shiftKey ? "newline" : "submit";

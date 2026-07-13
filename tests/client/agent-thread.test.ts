@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendCurrentAgentPrompt,
   buildAgentThreadBubbles,
+  beginChatSubmission,
   chatComposerKeyAction,
   scrollChatThreadToLatest,
 } from "../../src/client/agent-thread";
@@ -74,6 +75,14 @@ describe("agent thread view", () => {
     expect(chatComposerKeyAction({ key: "Enter", shiftKey: true, isComposing: false })).toBe("newline");
     expect(chatComposerKeyAction({ key: "Enter", shiftKey: false, isComposing: true })).toBe("ignore");
     expect(chatComposerKeyAction({ key: "a", shiftKey: false, isComposing: false })).toBe("ignore");
+  });
+
+  it("clears a non-empty chat draft as soon as submission begins", () => {
+    expect(beginChatSubmission("  继续处理  ")).toEqual({
+      message: "继续处理",
+      nextDraft: "",
+    });
+    expect(beginChatSubmission("   ")).toEqual({ message: "", nextDraft: "   " });
   });
 
   it("positions a chat thread at its latest message", () => {

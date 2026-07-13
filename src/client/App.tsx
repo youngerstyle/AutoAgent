@@ -31,6 +31,7 @@ import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineE
 import { buildAgentMessageView } from "./agent-message";
 import {
   appendCurrentAgentPrompt,
+  beginChatSubmission,
   buildAgentThreadBubbles,
   chatComposerKeyAction,
   scrollChatThreadToLatest,
@@ -99,6 +100,10 @@ export function App() {
   const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
   const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
   const rightPanelRef = useRef<HTMLElement | null>(null);
+  const selectedWorkspaceIdRef = useRef(selectedId);
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedWorkspaceIdRef.current = selectedId;
+  selectedAgentIdRef.current = selectedAgentId;
   const nodes = useMemo(() => buildAgentNodes(snapshot), [snapshot]);
   const profiles = useMemo(() => buildAgentProfiles(snapshot, agentProfiles), [snapshot, agentProfiles]);
   const catalogProfiles = useMemo(() => buildAgentCatalogProfiles(agentProfiles), [agentProfiles]);
@@ -394,16 +399,21 @@ export function App() {
   async function sendSelectedAgentMessage(message = agentMessage) {
     const taskId = snapshot?.activeTask?.id;
     const agentId = selectedAgentId || snapshot?.agents[0]?.id;
-    const text = message.trim();
+    const submission = beginChatSubmission(message);
+    const text = submission.message;
     if (!selectedId || !taskId || !agentId || !text || agentMessageSubmitting) return;
     if (snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted") return;
+    setAgentMessage(submission.nextDraft);
     setAgentMessageSubmitting(true);
     try {
       const result = await sendAgentMessage(selectedId, taskId, agentId, text);
       setSnapshot(result.snapshot);
-      setAgentMessage("");
       setError("");
     } catch (err) {
+      if (selectedWorkspaceIdRef.current === selectedId
+        && (selectedAgentIdRef.current || snapshot?.agents[0]?.id) === agentId) {
+        setAgentMessage((current) => current || message);
+      }
       setError((err as Error).message);
     } finally {
       setAgentMessageSubmitting(false);
