@@ -96,19 +96,30 @@ describe("TicketEngine workflow commands", () => {
     expect((await fixture.store.read(fixture.workflowId))?.workflow.deferredOutcome).toBeUndefined();
   });
 
-  it("persists stale-version rejection without changing workflow version", async () => {
+  it("does not persist a retriable workflow version conflict", async () => {
     const fixture = await createStartedFixture();
-    const result = await fixture.engine.applyWorkflow(workflowCommand(
+    const stale = workflowCommand(
       fixture.workflowId,
       "stale-command",
       { type: "pause", expectedWorkflowVersion: 99 },
-    ));
+    );
+    const result = await fixture.engine.applyWorkflow(stale);
 
     expect(result).toMatchObject({ accepted: false, code: "version_conflict", currentWorkflowVersion: 1 });
     const aggregate = await fixture.store.read(fixture.workflowId);
     expect(aggregate?.workflow.version).toBe(1);
-    expect(aggregate?.aggregateVersion).toBe(2);
-    expect(await fixture.store.getCommandResult(fixture.workflowId, "stale-command")).toEqual(result);
+    expect(aggregate?.aggregateVersion).toBe(1);
+    expect(await fixture.store.getCommandResult(fixture.workflowId, "stale-command")).toBeUndefined();
+
+    const refreshed = workflowCommand(
+      fixture.workflowId,
+      "stale-command",
+      { type: "pause", expectedWorkflowVersion: 1 },
+    );
+    await expect(fixture.engine.applyWorkflow(refreshed)).resolves.toMatchObject({
+      accepted: true,
+      workflowStatus: "paused",
+    });
   });
 
   it("returns the first result for identical replay and rejects different content with the same commandId", async () => {
@@ -516,6 +527,32 @@ describe("TicketEngine workflow commands", () => {
       { type: "complete", result: {}, evidence: [] },
     ));
     expect(conflict).toMatchObject({ accepted: false, code: "idempotency_conflict" });
+  });
+
+  it("does not let a retriable ticket version conflict consume its proposal", async () => {
+    const fixture = await createStartedFixture();
+    const claim = await claimFirstReady(fixture, "claim-retriable-version");
+    const command = ticketCommand(
+      fixture.workflowId,
+      "retry-version-command",
+      "retry-version-proposal",
+      claim,
+      { type: "complete", result: {}, evidence: [] },
+    );
+    command.expectedTicketVersion -= 1;
+
+    await expect(fixture.engine.applyTicket(command)).resolves.toMatchObject({
+      accepted: false,
+      code: "version_conflict",
+      currentTicketVersion: claim.ticketVersion,
+    });
+    expect(await fixture.store.getCommandResult(fixture.workflowId, command.commandId)).toBeUndefined();
+
+    command.expectedTicketVersion = claim.ticketVersion;
+    await expect(fixture.engine.applyTicket(command)).resolves.toMatchObject({
+      accepted: true,
+      ticketStatus: "completed",
+    });
   });
 
   it("returns a child to a new parent revision without running the old downstream branch", async () => {

@@ -80,10 +80,23 @@ describe("Ticket Agent resolution adapter", () => {
   it.each([
     [{ accepted: false, commandId: "c", proposalId: "p", code: "stale_authority", reason: "stale" }, "stale_claim"],
     [{ accepted: false, commandId: "c", proposalId: "p", code: "workflow_terminal", reason: "done" }, "workflow_terminal"],
-    [{ accepted: false, commandId: "c", proposalId: "p", code: "version_conflict", reason: "retry" }, "correctable"],
+    [{ accepted: false, commandId: "c", proposalId: "p", code: "invalid_command", reason: "fix output" }, "correctable"],
+    [{ accepted: false, commandId: "c", proposalId: "p", code: "policy_violation", reason: "denied" }, "host_error"],
+    [{ accepted: false, commandId: "c", proposalId: "p", code: "idempotency_conflict", reason: "collision" }, "host_error"],
   ] as Array<[TicketCommandResult, string]>)("maps Ticket rejection to a normative decision", (result, disposition) => {
     expect(ticketResultToGoalDecision(proposal("completed", { ok: true }), result))
       .toMatchObject({ accepted: false, disposition });
+  });
+
+  it("keeps Ticket version conflict pending for Mission-local retry", () => {
+    const result: TicketCommandResult = {
+      accepted: false,
+      commandId: "c",
+      proposalId: "p",
+      code: "version_conflict",
+      reason: "retry",
+    };
+    expect(ticketResultToGoalDecision(proposal("completed", { ok: true }), result)).toBeUndefined();
   });
 });
 

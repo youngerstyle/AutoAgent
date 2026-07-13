@@ -153,9 +153,22 @@ describe("RuntimeHost", () => {
 
     const context = fixture.host.context("task-provider-blocked")!;
     const bossLink = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    const boss = context.engines.get("wa_boss")!;
     expect(modelTurns).toBe(1);
-    expect(await context.engines.get("wa_boss")!.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect(await boss.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "paused" });
     expect((await context.tickets.getWorkflow((await context.manager.current()).record.workflowId)).status).toBe("active");
+    const thread = await boss.getThreadForAgent("wa_boss", "task-provider-blocked");
+    await boss.appendToolItem({
+      itemId: "stale-running-after-pause",
+      threadId: thread!.threadId,
+      goalId: bossLink.agentGoalId,
+      kind: "control",
+      value: { status: "running" },
+      createdAt: "2026-07-10T00:05:00.000Z",
+    });
+
+    const snapshot = await fixture.host.snapshot();
+    expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("paused");
   });
 
   it("resumes a provider-paused Agent when human sends a new private message", async () => {

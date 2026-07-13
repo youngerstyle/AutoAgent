@@ -124,6 +124,90 @@ describe("MissionProcessManager", () => {
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
   });
 
+  it("retries a Ticket version conflict with the same proposal and refreshed versions", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    if (link.authority?.kind !== "claim") throw new Error("Expected a claimed mission link");
+    await fixture.tickets.renewClaim({
+      requestId: "external-renewal-before-settlement",
+      claimId: link.authority.claimId,
+      fencingToken: link.authority.fencingToken,
+      extendByMs: 30 * 60_000,
+    });
+    await boss.proposeGoalResolution({
+      proposalId: "proposal-after-ticket-version-change",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      domainOutcome: { accepted: true },
+      createdAt: NOW,
+    });
+
+    const conflicted = await fixture.manager.tick();
+    expect(conflicted.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "resolving" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "resolving" });
+
+    const settled = await fixture.manager.tick();
+    expect(settled.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "settled" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
+  });
+
+  it("reconciles a resolving link after an Agent goal version conflict without restart or another turn", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    const originalSettle = boss.settleProposal.bind(boss);
+    let allowSettlement = false;
+    boss.settleProposal = async (input) => allowSettlement
+      ? originalSettle(input)
+      : { applied: false, code: "version_conflict", goal: (await boss.getGoal(goal.spec.id))! };
+    await boss.proposeGoalResolution({
+      proposalId: "proposal-agent-version-conflict",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      domainOutcome: { accepted: true },
+      createdAt: NOW,
+    });
+
+    const conflicted = await fixture.manager.tick();
+    expect(conflicted.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "resolving" });
+    allowSettlement = true;
+
+    const settled = await fixture.manager.tick();
+    expect(settled.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "settled" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
+  });
+
   it("renews a running claim before expiry without creating a second dispatch", async () => {
     const clock = { now: new Date(NOW) };
     const fixture = await createFixture(clock);

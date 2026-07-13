@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import type {
   AgentEventCursor,
   AgentPort,
+  GoalResolutionDecision,
   GoalResolutionStatus,
+  SettleProposalResult,
 } from "../../shared/contracts/agent-engine.js";
 import type {
   ActiveMissionLink,
@@ -84,6 +86,7 @@ export class MissionProcessManager {
     let aggregate = await this.requireAggregate();
     if (aggregate.record.status !== "linked") return aggregate;
     aggregate = await this.renewActiveClaims(aggregate);
+    aggregate = await this.reconcileResolvingLinks(aggregate);
     aggregate = await this.pumpTicketEvents(aggregate);
     aggregate = await this.pumpAgentEvents(aggregate);
     return aggregate;
@@ -365,12 +368,13 @@ export class MissionProcessManager {
     const correctionReason = validation.valid ? assignmentError : validation.reason;
     if (correctionReason) {
       const decisionId = stableId("invalid_goal_decision", proposalId);
-      const settled = await agent.settleProposal({
-        decisionId,
+      const settled = await this.settleAgentProposal(
+        agent,
+        link.agentGoalId,
         proposalId,
-        expectedGoalVersion: (await agent.getGoal(link.agentGoalId))!.version,
-        decision: { accepted: false, disposition: "correctable", reason: correctionReason },
-      });
+        decisionId,
+        { accepted: false, disposition: "correctable", reason: correctionReason },
+      );
       if (!settled.applied) return aggregate;
       return this.updateLink(aggregate, dispatchId, {
         ...active,
@@ -382,12 +386,22 @@ export class MissionProcessManager {
     const result = await this.tickets.getTicketCommandResult(command.commandId) ?? await this.tickets.applyTicket(command);
     const decisionId = stableId("goal_decision", proposalId, command.commandId);
     const decision = ticketResultToGoalDecision(proposal, result);
-    const settled = await agent.settleProposal({
-      decisionId,
+    if (!decision) {
+      if (result.accepted) throw new Error("Accepted Ticket result must produce a Goal decision");
+      return this.updateLink(aggregate, dispatchId, {
+        ...active,
+        ticketVersion: result.currentTicketVersion ?? active.ticketVersion,
+        status: "resolving",
+        lastCommandId: command.commandId,
+      });
+    }
+    const settled = await this.settleAgentProposal(
+      agent,
+      link.agentGoalId,
       proposalId,
-      expectedGoalVersion: (await agent.getGoal(link.agentGoalId))!.version,
+      decisionId,
       decision,
-    });
+    );
     if (!settled.applied && settled.code === "version_conflict") return aggregate;
     let nextLink: MissionLink;
     if (result.accepted && result.ticketStatus === "blocked") {
@@ -414,6 +428,42 @@ export class MissionProcessManager {
       };
     }
     return this.updateLink(aggregate, dispatchId, nextLink);
+  }
+
+  private async reconcileResolvingLinks(aggregate: MissionAggregate): Promise<MissionAggregate> {
+    let current = aggregate;
+    for (const link of current.links) {
+      if (link.status !== "resolving" || !link.lastProposalId) continue;
+      current = await this.continueSettlement(current, link.dispatchId, link.lastProposalId);
+    }
+    return current;
+  }
+
+  private async settleAgentProposal(
+    agent: AgentPort<MissionTicketOutcome>,
+    goalId: string,
+    proposalId: string,
+    decisionId: string,
+    decision: GoalResolutionDecision<GoalResolutionStatus>,
+  ): Promise<SettleProposalResult> {
+    let goal = await agent.getGoal(goalId);
+    if (!goal) throw new Error("Goal is missing");
+    let settled = await agent.settleProposal({
+      decisionId,
+      proposalId,
+      expectedGoalVersion: goal.version,
+      decision,
+    });
+    if (settled.applied || settled.code !== "version_conflict") return settled;
+    goal = await agent.getGoal(goalId);
+    if (!goal || goal.status !== "resolving" || goal.activeProposalId !== proposalId) return settled;
+    settled = await agent.settleProposal({
+      decisionId,
+      proposalId,
+      expectedGoalVersion: goal.version,
+      decision,
+    });
+    return settled;
   }
 
   private async updateLink(aggregate: MissionAggregate, dispatchId: string, next: MissionLink): Promise<MissionAggregate> {

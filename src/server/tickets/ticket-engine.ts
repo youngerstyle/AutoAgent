@@ -444,12 +444,12 @@ export class TicketEngine {
       ));
     }
     if (command.payload.expectedWorkflowVersion !== current.workflow.version) {
-      return this.persistRejected(current, fingerprint, rejected(
+      return rejected(
         command,
         "version_conflict",
         "Workflow version is stale",
         current.workflow.version,
-      ));
+      );
     }
     const capability = command.payload.type === "amend" ? "ticket_graph:amend" : "workflow:control";
     if (!await this.authorized(
@@ -489,12 +489,12 @@ export class TicketEngine {
       if (latest) {
         const racedReplay = this.existingCommand(latest, command, fingerprint);
         if (racedReplay) return racedReplay;
-        return this.persistRejected(latest, fingerprint, rejected(
+        return rejected(
           command,
           "version_conflict",
           error.message,
           latest.workflow.version,
-        ));
+        );
       }
       return rejected(command, "version_conflict", error.message);
     }
@@ -537,23 +537,23 @@ export class TicketEngine {
       ));
     }
     if (ticket.version !== command.expectedTicketVersion) {
-      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+      return ticketRejected(
         command,
         "version_conflict",
         "Ticket version is stale",
         aggregate,
-      ));
+      );
     }
     if (
       (command.payload.type === "complete_with_graph" || command.payload.type === "return_to_parent")
       && command.payload.expectedWorkflowVersion !== aggregate.workflow.version
     ) {
-      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
+      return ticketRejected(
         command,
         "version_conflict",
         "Workflow version is stale",
         aggregate,
-      ));
+      );
     }
     try {
       requireCommandAuthority(aggregate, ticket, command, this.now());
@@ -584,12 +584,12 @@ export class TicketEngine {
         const latest = await this.requireWorkflow(command.workflowId);
         const raced = this.existingTicketCommand(latest, command, fingerprint);
         if (raced) return raced;
-        return this.persistTicketRejected(latest, fingerprint, ticketRejected(
+        return ticketRejected(
           command,
           "version_conflict",
           error.message,
           latest,
-        ));
+        );
       }
       throw error;
     }

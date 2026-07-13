@@ -100,10 +100,19 @@ export function proposalToTicketCommand(
 export function ticketResultToGoalDecision<TStatus extends GoalResolutionStatus>(
   proposal: GoalResolutionProposal<TStatus>,
   result: TicketCommandResult,
-): GoalResolutionDecision<TStatus> {
+): GoalResolutionDecision<TStatus> | undefined {
   if (result.accepted) return { accepted: true, committedState: proposal.status, domainResult: result };
+  if (result.code === "version_conflict") return undefined;
   if (result.code === "stale_authority") return { accepted: false, disposition: "stale_claim", reason: result.reason };
   if (result.code === "workflow_terminal") return { accepted: false, disposition: "workflow_terminal", reason: result.reason };
+  if (result.code === "policy_violation" || result.code === "idempotency_conflict") {
+    return {
+      accepted: false,
+      disposition: "host_error",
+      reason: result.reason,
+      incidentId: stableId("mission_incident", `${result.commandId}:${result.code}`),
+    };
+  }
   return { accepted: false, disposition: "correctable", reason: result.reason };
 }
 

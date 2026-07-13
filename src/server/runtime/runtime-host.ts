@@ -606,14 +606,14 @@ function projectThread(
 
 function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string | undefined, events: AgentThreadEvent[]): EntityStatus {
   if (linkStatus === "blocked" || goalStatus === "blocked" || goalStatus === "usage_limited") return "blocked";
+  if (goalStatus === "paused") return "paused";
+  if (goalStatus === "failed") return "failed";
   if (goalStatus === "completed" || goalStatus === "cancelled") return "idle";
   if (linkStatus === "running" && goalStatus === "active") return "running";
   const latestControl = [...events].reverse().find((event) => event.source === "system");
   const activity = (latestControl?.payload as Record<string, unknown> | undefined)?.status;
   if (linkStatus === "running" && (activity === "running" || activity === "yielded")) return "running";
   if (linkStatus === "running" && activity === "waiting") return "waiting";
-  if (goalStatus === "paused") return "paused";
-  if (goalStatus === "failed") return "failed";
   return linkStatus === "running" ? "waiting" : "idle";
 }
 
