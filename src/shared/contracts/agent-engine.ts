@@ -18,6 +18,7 @@ export type AgentThreadItemKind =
   | "model"
   | "tool"
   | "observation"
+  | "compaction"
   | "control";
 
 export interface AgentThreadItem {

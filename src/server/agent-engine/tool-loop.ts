@@ -6,6 +6,7 @@ import {
   ProviderError,
   type AgentModelHistoryItem,
   type AgentModelOutputItem,
+  type AgentModelTurnResult,
   type AgentToolDefinition,
 } from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
@@ -76,6 +77,8 @@ export class AgentToolLoop {
       value: { turnId, status: "running" },
       createdAt: this.now().toISOString(),
     });
+    const compactionFailure = await this.compactIfNeeded(turnId, input, goal);
+    if (compactionFailure) return compactionFailure;
     const assembled = await this.contextAssembler.assemble({
       profile: input.profile,
       agent: input.agent,
@@ -218,6 +221,74 @@ export class AgentToolLoop {
       });
       return { turnId, status: "waiting", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined };
     }
+  }
+
+  private async compactIfNeeded(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    goal: AgentGoal | undefined,
+  ): Promise<AgentExecutionSliceResult | undefined> {
+    const plan = await this.contextAssembler.planCompaction(await this.engine.getThread(input.threadId));
+    if (!plan) return undefined;
+    let result: AgentModelTurnResult;
+    try {
+      result = await this.provider.run({
+        provider: input.provider,
+        model: input.model,
+        instructions: [
+          "你正在执行 Agent Thread 上下文压缩。",
+          "将历史整理为可供同一个 Agent 后续继续工作的语义摘要。",
+          "必须保留 human 的目标与约束、已经确认的事实和决策、读取过的文件及关键结论、工具执行结果、未完成工作和阻塞原因。",
+          `摘要不得超过 ${plan.maxSummaryChars} 个字符；在预算内优先保留仍会影响后续行动的事实。`,
+          "不要声称完成当前 Goal，不要输出工具调用，只返回摘要正文。",
+        ].join("\n"),
+        history: plan.history,
+        tools: [],
+      });
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error;
+      return this.providerFailure(turnId, input, error, 0);
+    }
+    await this.trace(turnId, input, "provider_response", { phase: "compaction", result });
+    await this.recordUsage(turnId, input, goal, 0, result.usage);
+    const summary = result.items
+      .filter((item): item is Extract<AgentModelOutputItem, { type: "assistant_message" }> => item.type === "assistant_message")
+      .map((item) => item.content.trim())
+      .filter(Boolean)
+      .join("\n");
+    if (!summary || result.items.some((item) => item.type === "tool_call")) {
+      return this.protocolFailure(turnId, input, "上下文压缩没有返回纯文本摘要", 0);
+    }
+    if (summary.length > plan.maxSummaryChars) {
+      return this.protocolFailure(
+        turnId,
+        input,
+        `上下文压缩摘要超过预算（${summary.length}/${plan.maxSummaryChars} 字符）`,
+        0,
+      );
+    }
+    const checkpointItemId = stableId(
+      "compaction",
+      input.threadId,
+      String(plan.replacedThroughSequence),
+      String(plan.threadVersion),
+    );
+    await this.engine.appendCompaction({
+      itemId: checkpointItemId,
+      threadId: input.threadId,
+      replacedThroughSequence: plan.replacedThroughSequence,
+      replacementHistory: [{ type: "user_message", content: `[历史摘要]\n${summary}` }],
+      originalItemCount: plan.originalItemCount,
+      createdAt: this.now().toISOString(),
+    });
+    await this.trace(turnId, input, "context", {
+      phase: "compaction",
+      checkpointItemId,
+      replacedThroughSequence: plan.replacedThroughSequence,
+      originalItemCount: plan.originalItemCount,
+      summaryChars: summary.length,
+    });
+    return undefined;
   }
 
   private async executeTool(item: Extract<AgentModelOutputItem, { type: "tool_call" }>) {

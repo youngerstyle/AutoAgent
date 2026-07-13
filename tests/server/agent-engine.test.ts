@@ -73,6 +73,64 @@ describe("AgentEngine", () => {
     });
   });
 
+  it("rejects compaction boundaries beyond thread facts and stale checkpoint replacement", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({
+      agentId: "dev",
+      scopeId: "workspace-a",
+      idempotencyKey: "compaction-thread",
+    });
+    await fixture.engine.sendMessage({
+      messageId: "message-before-compaction",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "先处理当前事实",
+      createdAt: T0,
+    });
+
+    await expect(fixture.engine.appendCompaction({
+      itemId: "checkpoint-beyond-tail",
+      threadId: thread.threadId,
+      replacedThroughSequence: 2,
+      replacementHistory: [{ type: "user_message", content: "越界摘要" }],
+      originalItemCount: 1,
+      createdAt: T1,
+    })).rejects.toThrow("Compaction boundary exceeds thread facts");
+
+    await fixture.engine.appendCompaction({
+      itemId: "checkpoint-1",
+      threadId: thread.threadId,
+      replacedThroughSequence: 1,
+      replacementHistory: [{ type: "user_message", content: "第一版摘要" }],
+      originalItemCount: 1,
+      createdAt: T1,
+    });
+    await fixture.engine.sendMessage({
+      messageId: "message-after-compaction",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "新的事实",
+      createdAt: "2026-07-10T00:02:00.000Z",
+    });
+    await fixture.engine.appendCompaction({
+      itemId: "checkpoint-2",
+      threadId: thread.threadId,
+      replacedThroughSequence: 3,
+      replacementHistory: [{ type: "user_message", content: "第二版摘要" }],
+      originalItemCount: 2,
+      createdAt: "2026-07-10T00:03:00.000Z",
+    });
+
+    await expect(fixture.engine.appendCompaction({
+      itemId: "checkpoint-stale",
+      threadId: thread.threadId,
+      replacedThroughSequence: 1,
+      replacementHistory: [{ type: "user_message", content: "过期摘要" }],
+      originalItemCount: 1,
+      createdAt: "2026-07-10T00:04:00.000Z",
+    })).rejects.toThrow("Compaction boundary is stale");
+  });
+
   it("reads a complete UI projection from one aggregate snapshot", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     await fixture.engine.appendModelItem({

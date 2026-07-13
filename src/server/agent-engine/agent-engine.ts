@@ -22,6 +22,8 @@ import type {
 import {
   AgentStore,
 } from "./agent-store.js";
+import type { AgentStoreAggregate } from "./agent-store.js";
+import type { AgentModelHistoryItem } from "../providers/types.js";
 import {
   AgentGoalTransitionError,
   beginGoalResolution,
@@ -184,6 +186,44 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       `${input.kind}:${input.itemId}`,
       input.createdAt,
       input.value,
+    );
+  }
+
+  async appendCompaction(input: {
+    itemId: string;
+    threadId: string;
+    replacedThroughSequence: number;
+    replacementHistory: AgentModelHistoryItem[];
+    originalItemCount: number;
+    createdAt: string;
+  }): Promise<void> {
+    if (!Number.isInteger(input.replacedThroughSequence) || input.replacedThroughSequence < 1) {
+      throw new Error("Compaction sequence boundary must be positive");
+    }
+    if (!input.replacementHistory.length) throw new Error("Compaction replacement history is required");
+    await this.appendThreadItem(
+      input.threadId,
+      input.itemId,
+      "compaction",
+      `compaction:${input.itemId}`,
+      input.createdAt,
+      {
+        type: "context_compaction",
+        replacedThroughSequence: input.replacedThroughSequence,
+        replacementHistory: structuredClone(input.replacementHistory),
+        originalItemCount: input.originalItemCount,
+      },
+      undefined,
+      (aggregate, thread) => {
+        const factTail = latestFactSequence(thread);
+        if (input.replacedThroughSequence > factTail) {
+          throw new AgentEngineConflictError("Compaction boundary exceeds thread facts");
+        }
+        const latestBoundary = latestCompactionBoundary(aggregate, thread);
+        if (latestBoundary !== undefined && input.replacedThroughSequence < latestBoundary) {
+          throw new AgentEngineConflictError("Compaction boundary is stale");
+        }
+      },
     );
   }
 
@@ -471,6 +511,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     createdAt: string,
     value: unknown,
     message?: { messageId: string; fingerprint: string },
+    validate?: (aggregate: AgentStoreAggregate, thread: AgentThreadSnapshot) => void,
   ): Promise<void> {
     const current = await this.store.read();
     const existingThread = current.threads.find((item) => item.threadId === threadId);
@@ -496,6 +537,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         }
         return aggregate;
       }
+      validate?.(aggregate, thread);
       const next = appendItem(thread, { itemId, kind, payloadRef, createdAt });
       const event: AgentEvent = kind === "message"
         ? {
@@ -528,6 +570,28 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   private requireAgent(agentId: string): void {
     if (agentId !== this.store.agentId) throw new Error("Agent partition mismatch");
   }
+}
+
+function latestCompactionBoundary(
+  aggregate: AgentStoreAggregate,
+  thread: AgentThreadSnapshot,
+): number | undefined {
+  for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+    const item = thread.items[index];
+    if (item.kind !== "compaction") continue;
+    const payload = aggregate.payloads.find((candidate) => candidate.payloadRef === item.payloadRef)?.value;
+    if (isRecord(payload) && Number.isInteger(payload.replacedThroughSequence)) {
+      return Number(payload.replacedThroughSequence);
+    }
+  }
+  return undefined;
+}
+
+function latestFactSequence(thread: AgentThreadSnapshot): number {
+  for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+    if (thread.items[index].kind !== "compaction") return thread.items[index].sequence;
+  }
+  return 0;
 }
 
 function appendItem(

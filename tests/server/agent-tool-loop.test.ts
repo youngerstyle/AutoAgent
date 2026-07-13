@@ -167,6 +167,83 @@ describe("AgentToolLoop", () => {
     expect(fixture.provider.requests).toHaveLength(1);
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
   });
+
+  it("persists semantic replacement history before running an oversized thread", async () => {
+    const fixture = await createFixture([
+      { items: [{ type: "assistant_message", content: "已读取 config.json，确认开发服务端口为 4321；后续无需重复读取，除非文件发生变化。" }] },
+      { items: [{ type: "assistant_message", content: "我会继续处理当前目标。" }] },
+      { items: [{ type: "assistant_message", content: "继续使用既有事实处理。" }] },
+    ], { maxContextTokens: 220 });
+    for (let index = 0; index < 10; index += 1) {
+      await fixture.engine.sendMessage({
+        messageId: `history-${index}`,
+        threadId: fixture.input.threadId,
+        goalId: fixture.input.goalId,
+        senderPrincipalId: "human",
+        content: `历史消息 ${index} ${"内容".repeat(100)}`,
+        createdAt: `2026-07-13T00:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+    }
+    await fixture.engine.sendMessage({
+      messageId: "latest-human",
+      threadId: fixture.input.threadId,
+      goalId: fixture.input.goalId,
+      senderPrincipalId: "human",
+      content: "最新要求：修复后先运行测试。",
+      createdAt: "2026-07-13T00:10:30.000Z",
+    });
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("waiting");
+    expect(fixture.provider.requests).toHaveLength(2);
+    expect(fixture.provider.requests[0]).toMatchObject({ tools: [] });
+    expect(fixture.provider.requests[0].instructions).toContain("上下文压缩");
+    expect(fixture.provider.requests[1].history).toContainEqual({
+      type: "user_message",
+      content: "[历史摘要]\n已读取 config.json，确认开发服务端口为 4321；后续无需重复读取，除非文件发生变化。",
+    });
+    expect(fixture.provider.requests[1].history).toContainEqual({
+      type: "user_message",
+      content: "最新要求：修复后先运行测试。",
+    });
+    expect(JSON.stringify(fixture.provider.requests[1].history)).not.toContain("历史消息 0");
+    const thread = await fixture.engine.getThread(fixture.input.threadId);
+    expect(thread.items).toContainEqual(expect.objectContaining({ kind: "compaction" }));
+
+    await fixture.loop.runSlice(fixture.input);
+
+    expect(fixture.provider.requests).toHaveLength(3);
+    expect(fixture.provider.requests[2].instructions).not.toContain("上下文压缩");
+    expect(fixture.provider.requests[2].history).toContainEqual({
+      type: "user_message",
+      content: "[历史摘要]\n已读取 config.json，确认开发服务端口为 4321；后续无需重复读取，除非文件发生变化。",
+    });
+  });
+
+  it("rejects an oversized compaction summary instead of persisting a self-expanding checkpoint", async () => {
+    const fixture = await createFixture([
+      { items: [{ type: "assistant_message", content: "过长摘要".repeat(100) }] },
+    ], { maxContextTokens: 220 });
+    for (let index = 0; index < 10; index += 1) {
+      await fixture.engine.sendMessage({
+        messageId: `oversized-history-${index}`,
+        threadId: fixture.input.threadId,
+        senderPrincipalId: "human",
+        content: `历史消息 ${index}：${"需要压缩的事实".repeat(8)}`,
+        createdAt: `2026-07-13T00:2${index}:00.000Z`,
+      });
+    }
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn).toMatchObject({ status: "execution_blocked", blockReason: "provider_protocol" });
+    expect(fixture.provider.requests).toHaveLength(1);
+    expect(fixture.provider.requests[0].instructions).toContain("摘要不得超过");
+    expect((await fixture.engine.getThread(fixture.input.threadId)).items).not.toContainEqual(
+      expect.objectContaining({ kind: "compaction" }),
+    );
+  });
 });
 
 class QueueProvider implements AgentProviderAdapter {
@@ -186,7 +263,7 @@ class QueueProvider implements AgentProviderAdapter {
 
 async function createFixture(
   results: AgentModelTurnResult[],
-  options: { maxTokensPerGoalWindow?: number } = {},
+  options: { maxTokensPerGoalWindow?: number; maxContextTokens?: number } = {},
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-loop-native-"));
   const store = new AgentStore(root, "dev");
@@ -217,7 +294,7 @@ async function createFixture(
   const provider = new QueueProvider(results);
   const loop = new AgentToolLoop(
     engine,
-    new AgentContextAssembler(store),
+    new AgentContextAssembler(store, options.maxContextTokens),
     provider,
     new AgentToolRuntime(policy, [...(policy.enabledTools ?? [])]),
     traces,

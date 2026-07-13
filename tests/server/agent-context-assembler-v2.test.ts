@@ -110,6 +110,70 @@ describe("AgentContextAssembler", () => {
     expect(callIndex).toBeGreaterThanOrEqual(0);
     expect(resultIndex).toBeGreaterThan(callIndex);
   });
+
+  it("reconstructs a restarted thread from persisted replacement history plus the chronological suffix", async () => {
+    const fixture = await contextFixture(220);
+    await fixture.engine.sendMessage({
+      messageId: "old-request",
+      threadId: fixture.thread.threadId,
+      senderPrincipalId: "human",
+      content: "读取 config.json 并记住端口是 4321",
+      createdAt: "2026-07-13T00:00:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "old-call",
+      threadId: fixture.thread.threadId,
+      kind: "tool",
+      value: { type: "tool_call", callId: "old-call", name: "readFile", arguments: { path: "config.json" } },
+      createdAt: "2026-07-13T00:01:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "old-result",
+      threadId: fixture.thread.threadId,
+      kind: "observation",
+      value: { type: "tool_result", callId: "old-call", content: { ok: true, content: "port=4321" }, isError: false },
+      createdAt: "2026-07-13T00:02:00.000Z",
+    });
+    const beforeCompaction = await fixture.engine.getThread(fixture.thread.threadId);
+    await fixture.engine.appendCompaction({
+      itemId: "checkpoint-1",
+      threadId: fixture.thread.threadId,
+      replacedThroughSequence: beforeCompaction.items.at(-1)!.sequence,
+      replacementHistory: [{
+        type: "user_message",
+        content: "[历史摘要] 已读取 config.json，确认端口为 4321。",
+      }],
+      originalItemCount: beforeCompaction.items.length,
+      createdAt: "2026-07-13T00:03:00.000Z",
+    });
+    await fixture.engine.sendMessage({
+      messageId: "new-request",
+      threadId: fixture.thread.threadId,
+      senderPrincipalId: "human",
+      content: "继续处理启动问题",
+      createdAt: "2026-07-13T00:04:00.000Z",
+    });
+
+    const restartedStore = new AgentStore(fixture.root, "dev");
+    const restartedEngine = new AgentEngine(restartedStore);
+    const assembled = await new AgentContextAssembler(restartedStore, 220).assemble({
+      profile,
+      agent,
+      policy,
+      thread: await restartedEngine.getThread(fixture.thread.threadId),
+    });
+
+    expect(assembled.history).toEqual([
+      { type: "user_message", content: "[历史摘要] 已读取 config.json，确认端口为 4321。" },
+      { type: "user_message", content: "继续处理启动问题" },
+    ]);
+    expect(JSON.stringify(assembled.history)).not.toContain("port=4321\"}");
+    expect(assembled.report.compaction).toMatchObject({
+      compacted: true,
+      checkpointItemId: "checkpoint-1",
+      replacedThroughSequence: beforeCompaction.items.at(-1)!.sequence,
+    });
+  });
 });
 
 async function contextFixture(maxTokens = 64_000) {

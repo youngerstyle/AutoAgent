@@ -18,6 +18,13 @@ export interface AgentContextReport {
   compactedThreadItems: number;
   recentThreadItems: number;
   truncated: boolean;
+  compaction: {
+    compacted: boolean;
+    checkpointItemId?: string;
+    replacedThroughSequence?: number;
+    originalItemCount?: number;
+    replacementItems?: number;
+  };
   sections: Array<{ name: string; chars: number }>;
 }
 
@@ -26,6 +33,14 @@ export interface AgentAssembledContext {
   history: AgentModelHistoryItem[];
   prompt: string;
   report: AgentContextReport;
+}
+
+export interface AgentCompactionPlan {
+  history: AgentModelHistoryItem[];
+  replacedThroughSequence: number;
+  originalItemCount: number;
+  threadVersion: number;
+  maxSummaryChars: number;
 }
 
 export class AgentContextAssembler {
@@ -57,7 +72,8 @@ export class AgentContextAssembler {
         threadItems: input.thread.items.length,
         compactedThreadItems: projected.compactedItems,
         recentThreadItems: projected.recentItems,
-        truncated: stable.truncated || goal.truncated || projected.compactedItems > 0,
+        truncated: stable.truncated || goal.truncated || projected.windowTruncated,
+        compaction: projected.compaction,
         sections: [
           { name: "stable", chars: stable.text.length },
           { name: "goal", chars: goal.text.length },
@@ -67,14 +83,82 @@ export class AgentContextAssembler {
     };
   }
 
+  async planCompaction(thread: AgentThreadSnapshot): Promise<AgentCompactionPlan | undefined> {
+    if (thread.agentId !== this.store.agentId) throw new Error("Agent context partition mismatch");
+    const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
+    const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
+    const checkpoint = latestCompaction(items, payloads);
+    const suffix = checkpoint
+      ? items.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
+      : items.filter((item) => item.kind !== "compaction");
+    const entries: SequencedHistoryItem[] = [
+      ...(checkpoint?.replacementHistory ?? []).map((historyItem) => ({
+        historyItem,
+        sequence: checkpoint!.replacedThroughSequence,
+      })),
+      ...suffix.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef)).map((historyItem) => ({
+        historyItem,
+        sequence: item.sequence,
+      }))),
+    ];
+    const history = entries.map((item) => item.historyItem);
+    const maxChars = Math.max(1, Math.floor(this.maxInputTokens * 0.25) * 4);
+    if (JSON.stringify(history).length <= maxChars) return undefined;
+    const groups = sequencedHistoryGroups(entries);
+    const retainedTargetChars = Math.floor(maxChars * 0.35);
+    let retainedChars = 0;
+    let compactedGroupCount = groups.length;
+    for (let index = groups.length - 1; index >= 0; index -= 1) {
+      const groupChars = JSON.stringify(groups[index].history).length;
+      if (retainedChars + groupChars > retainedTargetChars) break;
+      retainedChars += groupChars;
+      compactedGroupCount = index;
+    }
+    const compactedGroups = groups.slice(0, compactedGroupCount);
+    const replacedThroughSequence = compactedGroups.at(-1)?.throughSequence;
+    const compactedHistory = compactedGroups.flatMap((group) => group.history);
+    if (!replacedThroughSequence || !compactedHistory.length) return undefined;
+    return {
+      history: compactedHistory,
+      replacedThroughSequence,
+      originalItemCount: items.filter((item) => item.kind !== "compaction" && item.sequence <= replacedThroughSequence).length,
+      threadVersion: thread.version,
+      maxSummaryChars: Math.max(80, Math.floor(maxChars * 0.45)),
+    };
+  }
+
   private async projectHistory(
     thread: AgentThreadSnapshot,
     maxTokens: number,
-  ): Promise<{ history: AgentModelHistoryItem[]; compactedItems: number; recentItems: number }> {
+  ): Promise<{
+    history: AgentModelHistoryItem[];
+    compactedItems: number;
+    recentItems: number;
+    windowTruncated: boolean;
+    compaction: AgentContextReport["compaction"];
+  }> {
     const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
     const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
-    const projected = items.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef)));
-    if (!projected.length) return { history: [], compactedItems: 0, recentItems: 0 };
+    const checkpoint = latestCompaction(items, payloads);
+    const suffix = checkpoint
+      ? items.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
+      : items.filter((item) => item.kind !== "compaction");
+    const projected = [
+      ...(checkpoint?.replacementHistory ?? []),
+      ...suffix.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef))),
+    ];
+    const compaction = checkpoint
+      ? {
+          compacted: true,
+          checkpointItemId: checkpoint.itemId,
+          replacedThroughSequence: checkpoint.replacedThroughSequence,
+          originalItemCount: checkpoint.originalItemCount,
+          replacementItems: checkpoint.replacementHistory.length,
+        }
+      : { compacted: false };
+    if (!projected.length) {
+      return { history: [], compactedItems: 0, recentItems: 0, windowTruncated: false, compaction };
+    }
 
     const groups = historyGroups(projected);
     const maxChars = Math.max(1, maxTokens * 4);
@@ -93,16 +177,84 @@ export class AgentContextAssembler {
       used += groupChars;
       selectedItems += groups[index].length;
     }
-    const compactedItems = projected.length - selectedItems;
+    const droppedItems = projected.length - selectedItems;
+    const compactedItems = (checkpoint?.originalItemCount ?? 0) + droppedItems;
     const history = recentGroups.flat();
-    if (compactedItems > 0) {
+    if (droppedItems > 0) {
       history.unshift({
         type: "user_message",
         content: `[历史已压缩：${compactedItems} 条较早的 Agent Thread 项未进入本轮上下文，完整记录仍可审计。]`,
       });
     }
-    return { history, compactedItems, recentItems: selectedItems };
+    return { history, compactedItems, recentItems: selectedItems, windowTruncated: droppedItems > 0, compaction };
   }
+}
+
+interface SequencedHistoryItem {
+  historyItem: AgentModelHistoryItem;
+  sequence: number;
+}
+
+interface SequencedHistoryGroup {
+  history: AgentModelHistoryItem[];
+  throughSequence: number;
+}
+
+function sequencedHistoryGroups(entries: SequencedHistoryItem[]): SequencedHistoryGroup[] {
+  const groups: SequencedHistoryGroup[] = [];
+  for (const entry of entries) {
+    const current = groups.at(-1);
+    const item = entry.historyItem;
+    if (item.type === "tool_call" && current && current.history.every((candidate) => candidate.type !== "tool_result")) {
+      current.history.push(item);
+      current.throughSequence = Math.max(current.throughSequence, entry.sequence);
+    } else if (item.type === "tool_result" && current
+      && current.history.some((candidate) => candidate.type === "tool_call" && candidate.callId === item.callId)) {
+      current.history.push(item);
+      current.throughSequence = Math.max(current.throughSequence, entry.sequence);
+    } else {
+      groups.push({ history: [item], throughSequence: entry.sequence });
+    }
+  }
+  return groups;
+}
+
+interface StoredCompaction {
+  itemId: string;
+  replacedThroughSequence: number;
+  replacementHistory: AgentModelHistoryItem[];
+  originalItemCount: number;
+}
+
+function latestCompaction(
+  items: AgentThreadSnapshot["items"],
+  payloads: ReadonlyMap<string, unknown>,
+): StoredCompaction | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "compaction") continue;
+    const value = payloads.get(item.payloadRef);
+    if (!isRecord(value) || value.type !== "context_compaction"
+      || !Number.isInteger(value.replacedThroughSequence)
+      || !Array.isArray(value.replacementHistory)) continue;
+    const replacementHistory = value.replacementHistory.filter(isHistoryItem);
+    if (!replacementHistory.length || replacementHistory.length !== value.replacementHistory.length) continue;
+    return {
+      itemId: item.itemId,
+      replacedThroughSequence: Number(value.replacedThroughSequence),
+      replacementHistory,
+      originalItemCount: Number.isInteger(value.originalItemCount) ? Number(value.originalItemCount) : 0,
+    };
+  }
+  return undefined;
+}
+
+function isHistoryItem(value: unknown): value is AgentModelHistoryItem {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if ((value.type === "user_message" || value.type === "assistant_message")) return typeof value.content === "string";
+  if (value.type === "tool_call") return typeof value.callId === "string" && typeof value.name === "string";
+  return value.type === "tool_result" && typeof value.callId === "string"
+    && typeof value.content === "string" && typeof value.isError === "boolean";
 }
 
 function hasToolInteraction(group: AgentModelHistoryItem[]): boolean {
