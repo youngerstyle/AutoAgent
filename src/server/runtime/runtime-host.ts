@@ -185,9 +185,9 @@ export class RuntimeHost {
       createdAt,
     });
     const link = await this.activeLink(context, agentId);
-    if (link?.status === "blocked") {
+    if (link?.agentGoalId) {
       const goal = await engine.getGoal(link.agentGoalId);
-      if (goal) {
+      if (goal && (goal.status === "paused" || goal.status === "blocked")) {
         await engine.controlGoal({
           requestId: stableId("human_resume", taskId, agentId, goal.spec.id, message),
           goalId: goal.spec.id,
@@ -195,7 +195,7 @@ export class RuntimeHost {
           action: "resume",
           reason: "human sent a new chronological message",
         });
-        await context.manager.resumeBlockedAgent(agentId);
+        if (link.status === "blocked") await context.manager.resumeBlockedAgent(agentId);
       }
     }
   }
@@ -206,7 +206,7 @@ export class RuntimeHost {
     if (!thread) return;
     const resumedLink = await this.activeLink(context, agentId);
     if (resumedLink?.status === "running") {
-      await context.loops.get(agentId)?.runSlice(await this.sliceInput(context, resumedLink));
+      await this.runAgentSlice(context, resumedLink);
     } else if (!resumedLink) {
       await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(context, agentId, thread.threadId));
     }
@@ -372,10 +372,11 @@ export class RuntimeHost {
     const projectedAgents = [] as WorkspaceSnapshot["agents"];
     for (const agent of agents) {
       const engine = context.engines.get(agent.id);
-      const thread = await engine?.getThreadForAgent(agent.id, record.missionId);
       const link = mission.links.find((item) => item.agentId === agent.id && new Set(["running", "blocked", "resolving", "paused"]).has(item.status));
-      const goal = link?.agentGoalId ? await engine?.getGoal(link.agentGoalId) : undefined;
-      const events = thread ? await projectThread(engine!, thread, record) : [];
+      const projection = await engine?.getProjection(record.missionId, link?.agentGoalId);
+      const thread = projection?.thread;
+      const goal = projection?.goal;
+      const events = thread ? projectThread(thread, projection.payloads, record) : [];
       agentThreads[agent.id] = events;
       recentEvents.push(...events.map((event) => ({
         id: event.id,
@@ -448,7 +449,7 @@ export class RuntimeHost {
       if (link.status !== "running") continue;
       const goal = await context.engines.get(link.agentId)?.getGoal(link.agentGoalId);
       if (goal?.status !== "active") continue;
-      await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link));
+      await this.runAgentSlice(context, link);
     }
     mission = await context.manager.tick();
     const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
@@ -460,6 +461,18 @@ export class RuntimeHost {
       context.record = { ...context.record, status, updatedAt: this.now().toISOString() };
       await this.store.save(context.record);
     }
+  }
+
+  private async runAgentSlice(context: RuntimeContext, link: ActiveMissionLink): Promise<void> {
+    const result = await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link));
+    if (result?.status !== "execution_blocked" || !result.goal || result.goal.status !== "active") return;
+    await context.engines.get(link.agentId)?.controlGoal({
+      requestId: stableId("execution_blocked", context.record.taskId, link.agentId, result.turnId),
+      goalId: result.goal.spec.id,
+      expectedGoalVersion: result.goal.version,
+      action: "pause",
+      reason: "provider execution is unavailable; ticket state is unchanged",
+    });
   }
 
   private async compose(record: RuntimeTaskRecord): Promise<RuntimeContext> {
@@ -549,9 +562,12 @@ export class RuntimeHost {
   }
 }
 
-async function projectThread(engine: AgentEngine<any>, thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>, record: RuntimeTaskRecord): Promise<AgentThreadEvent[]> {
+function projectThread(
+  thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>,
+  payloads: Map<string, unknown>,
+  record: RuntimeTaskRecord,
+): AgentThreadEvent[] {
   const events: AgentThreadEvent[] = [];
-  const payloads = await engine.getPayloads(thread.items.map((item) => item.payloadRef));
   for (const item of thread.items) {
     if (item.kind === "goal") continue;
     const payload = payloads.get(item.payloadRef);

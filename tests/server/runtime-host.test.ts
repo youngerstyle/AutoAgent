@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
+import { ProviderError } from "../../src/server/providers/types.js";
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { seedMinimalTeamWorkflowPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/workflow-policy-config.js";
 import { WorkflowPolicyStore } from "../../src/server/tickets/workflow-policy-store.js";
@@ -86,6 +87,50 @@ describe("RuntimeHost", () => {
     expect(second).toBe(first);
     await Promise.all([first, second]);
     expect(modelTurns).toBe(2);
+  });
+
+  it("does not replay an active ticket after a non-retryable provider failure", async () => {
+    const fixture = await createFixture();
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        throw new ProviderError("402 Insufficient Balance", false, "OPENAI_ERROR");
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-provider-blocked", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
+    await fixture.host.tick();
+
+    const context = fixture.host.context("task-provider-blocked")!;
+    const bossLink = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(modelTurns).toBe(1);
+    expect(await context.engines.get("wa_boss")!.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect((await context.tickets.getWorkflow((await context.manager.current()).record.workflowId)).status).toBe("active");
+  });
+
+  it("resumes a provider-paused Agent when human sends a new private message", async () => {
+    const fixture = await createFixture();
+    let providerAvailable = false;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        if (!providerAvailable) throw new ProviderError("402 Insufficient Balance", false, "OPENAI_ERROR");
+        return { text: "继续处理", events: [{ type: "text" as const, text: "继续处理" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-provider-resume", title: "演示", objective: "构建演示" });
+    const context = fixture.host.context("task-provider-resume")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+
+    providerAvailable = true;
+    await fixture.host.sendAgentMessage("task-provider-resume", "wa_boss", "余额已恢复，请继续");
+    await waitFor(async () => (await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!))?.status === "active");
+
+    expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
   });
 
   it("serves a read-only snapshot while a model turn is still running", async () => {

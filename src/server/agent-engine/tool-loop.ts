@@ -3,7 +3,7 @@ import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/a
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
-import type { AgentTurnResult } from "../providers/types.js";
+import { ProviderError, type AgentTurnResult } from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentProviderAdapter } from "./provider-adapter.js";
@@ -22,7 +22,7 @@ export interface AgentExecutionSliceInput {
 
 export interface AgentExecutionSliceResult {
   turnId: string;
-  status: "yielded" | "waiting" | "resolution_proposed";
+  status: "yielded" | "waiting" | "resolution_proposed" | "execution_blocked";
   toolCalls: number;
   goal?: AgentGoal;
 }
@@ -70,17 +70,40 @@ export class AgentToolLoop {
       goal,
     });
     await this.trace(turnId, input, "context", { prompt: assembled.prompt, report: assembled.report });
-    const result = await this.provider.run({
-      provider: input.provider,
-      model: input.model,
-      systemPrompt: [
-        "你是一个通用、自主、可使用工具的 Agent。遵守提供的 Soul、Identity、Agent、Tools 与 Goal。",
-        "每轮必须只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 前后添加文字。",
-        "JSON 的 message 字段用于给 human 展示自然语言进展；机器控制字段只能使用 toolIntents 和 goalResolution。",
-        "存在活动 Goal 时，本轮必须通过非空 toolIntents 继续执行，或通过 goalResolution 明确提交 completed、blocked、failed 之一；不能只回复 message 后停止。",
-      ].join("\n"),
-      prompt: assembled.prompt,
-    });
+    let result: AgentTurnResult;
+    try {
+      result = await this.provider.run({
+        provider: input.provider,
+        model: input.model,
+        systemPrompt: [
+          "你是一个通用、自主、可使用工具的 Agent。遵守提供的 Soul、Identity、Agent、Tools 与 Goal。",
+          "每轮必须只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 前后添加文字。",
+          "JSON 的 message 字段用于给 human 展示自然语言进展；机器控制字段只能使用 toolIntents 和 goalResolution。",
+          "存在活动 Goal 时，本轮必须通过非空 toolIntents 继续执行，或通过 goalResolution 明确提交 completed、blocked、failed 之一；不能只回复 message 后停止。",
+        ].join("\n"),
+        prompt: assembled.prompt,
+      });
+    } catch (error) {
+      if (!(error instanceof ProviderError)) throw error;
+      const failure = {
+        turnId,
+        status: "execution_blocked",
+        reason: "provider_error",
+        retryable: error.retryable,
+        code: error.code,
+        message: error.message,
+      } as const;
+      await this.trace(turnId, input, "error", failure);
+      await this.engine.appendToolItem({
+        itemId: `${turnId}:execution-blocked`,
+        threadId: input.threadId,
+        goalId: input.goalId,
+        kind: "control",
+        value: failure,
+        createdAt: this.now().toISOString(),
+      });
+      return { turnId, status: "execution_blocked", toolCalls: 0, goal };
+    }
     await this.trace(turnId, input, "provider_response", result);
     await this.engine.appendModelItem({
       itemId: `${turnId}:model`,
@@ -151,7 +174,7 @@ export class AgentToolLoop {
   private trace(
     turnId: string,
     input: AgentExecutionSliceInput,
-    kind: "context" | "provider_response" | "tool" | "settlement",
+    kind: "context" | "provider_response" | "tool" | "settlement" | "error",
     data: unknown,
   ): Promise<void> {
     const createdAt = this.now().toISOString();

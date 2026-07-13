@@ -10,6 +10,7 @@ import { AgentToolLoop } from "../../src/server/agent-engine/tool-loop.js";
 import { AgentToolRuntime } from "../../src/server/agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../../src/server/agent-engine/trace-store.js";
 import type { AgentTurnResult } from "../../src/server/providers/types.js";
+import { ProviderError } from "../../src/server/providers/types.js";
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 import type { EffectivePolicy } from "../../src/server/policy/policy.js";
 
@@ -66,11 +67,33 @@ describe("AgentToolLoop", () => {
     const model = [...thread.items].reverse().find((item) => item.kind === "model")!;
     expect(await fixture.engine.getPayload(model.payloadRef)).toMatchObject({ content: "已完成交付。" });
   });
+
+  it("closes the turn and suspends execution when the provider rejects a non-retryable request", async () => {
+    const fixture = await createFixture([]);
+    fixture.provider.error = new ProviderError("402 Insufficient Balance", false, "OPENAI_ERROR");
+
+    const slice = await fixture.loop.runSlice(fixture.input);
+
+    expect(slice).toMatchObject({ status: "execution_blocked", toolCalls: 0 });
+    const thread = await fixture.engine.getThread(fixture.input.threadId);
+    const tail = thread.items.at(-1)!;
+    expect(tail.kind).toBe("control");
+    expect(await fixture.engine.getPayload(tail.payloadRef)).toMatchObject({
+      status: "execution_blocked",
+      reason: "provider_error",
+      retryable: false,
+      code: "OPENAI_ERROR",
+      message: "402 Insufficient Balance",
+    });
+    expect((await fixture.traces.list()).at(-1)).toMatchObject({ kind: "error" });
+  });
 });
 
 class QueueProvider implements AgentProviderAdapter {
+  error?: Error;
   constructor(private readonly results: AgentTurnResult[]) {}
   async run(_input: AgentProviderRequest): Promise<AgentTurnResult> {
+    if (this.error) throw this.error;
     const next = this.results.shift();
     if (!next) throw new Error("No provider result queued");
     return next;
@@ -108,10 +131,11 @@ async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 
     enabledTools: ["readFile", "writeFile", "shell"],
   };
   const traces = new AgentTraceStore(root, "dev");
+  const provider = new QueueProvider(results);
   const loop = new AgentToolLoop(
     engine,
     new AgentContextAssembler(store),
-    new QueueProvider(results),
+    provider,
     new AgentToolRuntime(policy, [...(policy.enabledTools ?? [])]),
     traces,
     { maxToolCallsPerSlice, now: () => new Date("2026-07-10T00:01:00.000Z") },
@@ -120,6 +144,7 @@ async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 
     root,
     engine,
     traces,
+    provider,
     loop,
     input: {
       threadId: thread.threadId,

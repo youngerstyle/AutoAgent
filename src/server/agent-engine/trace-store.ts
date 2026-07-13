@@ -2,7 +2,7 @@ import { mkdir, open, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { agentEngineTraceDir, agentEngineTraceFile } from "../storage/paths.js";
 
-export type AgentTraceKind = "context" | "provider_request" | "provider_response" | "tool" | "settlement";
+export type AgentTraceKind = "context" | "provider_request" | "provider_response" | "tool" | "settlement" | "error";
 
 export interface AgentTraceRecord {
   traceId: string;

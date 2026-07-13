@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   AgentGoal,
   GoalResolutionAttemptResult,
@@ -50,6 +50,25 @@ describe("AgentEngine", () => {
     expect(await new AgentStore(fixture.root, "dev").payload("message:message-1")).toMatchObject({
       content: "继续修复",
     });
+  });
+
+  it("reads a complete UI projection from one aggregate snapshot", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    await fixture.engine.appendModelItem({
+      itemId: "model-projection",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      content: "处理中",
+      createdAt: T1,
+    });
+    const read = vi.spyOn(fixture.store, "read");
+
+    const projection = await fixture.engine.getProjection("a", fixture.goal.spec.id);
+
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(projection.thread?.threadId).toBe(fixture.goal.spec.threadId);
+    expect(projection.goal?.spec.id).toBe(fixture.goal.spec.id);
+    expect(projection.payloads.size).toBeGreaterThan(0);
   });
 
   it("makes duplicate appends no-ops and rejects conflicting reuse", async () => {
