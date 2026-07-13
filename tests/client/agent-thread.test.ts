@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { appendCurrentAgentPrompt, buildAgentThreadBubbles } from "../../src/client/agent-thread";
+import {
+  appendCurrentAgentPrompt,
+  buildAgentThreadBubbles,
+  chatComposerKeyAction,
+  scrollChatThreadToLatest,
+} from "../../src/client/agent-thread";
 import type { AgentThreadEvent } from "../../src/shared/types";
 
 describe("agent thread view", () => {
@@ -62,6 +67,21 @@ describe("agent thread view", () => {
       expect.objectContaining({ id: "hm_1", role: "human", body: "旧私聊" }),
       expect.objectContaining({ id: "hm_1:response", role: "agent", body: "旧回复" })
     ]);
+  });
+
+  it("sends on Enter while preserving Shift+Enter and IME composition", () => {
+    expect(chatComposerKeyAction({ key: "Enter", shiftKey: false, isComposing: false })).toBe("submit");
+    expect(chatComposerKeyAction({ key: "Enter", shiftKey: true, isComposing: false })).toBe("newline");
+    expect(chatComposerKeyAction({ key: "Enter", shiftKey: false, isComposing: true })).toBe("ignore");
+    expect(chatComposerKeyAction({ key: "a", shiftKey: false, isComposing: false })).toBe("ignore");
+  });
+
+  it("positions a chat thread at its latest message", () => {
+    const container = { scrollTop: 0, scrollHeight: 1280 };
+
+    scrollChatThreadToLatest(container);
+
+    expect(container.scrollTop).toBe(1280);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
@@ -29,7 +29,13 @@ import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from 
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentProfileView } from "./view-model";
 import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
-import { appendCurrentAgentPrompt, buildAgentThreadBubbles, type AgentThreadBubble } from "./agent-thread";
+import {
+  appendCurrentAgentPrompt,
+  buildAgentThreadBubbles,
+  chatComposerKeyAction,
+  scrollChatThreadToLatest,
+  type AgentThreadBubble,
+} from "./agent-thread";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
 const AGENT_PANEL_MIN_HEIGHT = 180;
@@ -1137,6 +1143,14 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function useChatThreadAutoScroll(scrollKey: string) {
+  const threadRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (threadRef.current) scrollChatThreadToLatest(threadRef.current);
+  }, [scrollKey]);
+  return threadRef;
+}
+
 function AgentHumanLoopBox(props: {
   agentName: string;
   prompt: NonNullable<ReturnType<typeof buildHumanFlowPrompt>>;
@@ -1153,6 +1167,8 @@ function AgentHumanLoopBox(props: {
   const bubbles = props.prompt.manualTest
     ? props.bubbles
     : appendCurrentAgentPrompt(props.bubbles, messageBody);
+  const latestBubble = bubbles.at(-1);
+  const threadRef = useChatThreadAutoScroll(`${props.agentName}:${bubbles.length}:${latestBubble?.id ?? "empty"}:${latestBubble?.body.length ?? 0}`);
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     props.onSend(props.value);
@@ -1166,7 +1182,7 @@ function AgentHumanLoopBox(props: {
           <small>{props.prompt.title} · {props.prompt.phase}</small>
         </div>
       </header>
-      <div className="chat-thread">
+      <div className="chat-thread" ref={threadRef}>
         {bubbles.map((bubble) => (
           <article key={bubble.id} className={`chat-message ${bubble.role}`}>
             {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
@@ -1191,6 +1207,16 @@ function AgentHumanLoopBox(props: {
           aria-label={props.prompt.inputLabel}
           value={props.value}
           onChange={(event) => props.onChange(event.target.value)}
+          onKeyDown={(event) => {
+            const action = chatComposerKeyAction({
+              key: event.key,
+              shiftKey: event.shiftKey,
+              isComposing: event.nativeEvent.isComposing,
+            });
+            if (action !== "submit") return;
+            event.preventDefault();
+            if (!props.disabled) props.onSend(props.value);
+          }}
           placeholder={props.prompt.placeholder}
         />
         <button type="submit" disabled={props.disabled}>{props.prompt.submitLabel}</button>
@@ -1210,6 +1236,8 @@ function AgentDirectChatBox(props: {
 }) {
   const agentName = roleLabel(props.agent.roleInWorkspace);
   const statusText = props.agent.currentStep ?? capabilityLabels(props.agent.roleInWorkspace, props.agent.capabilities).join("、") ?? statusLabel(props.agent.status);
+  const latestBubble = props.bubbles.at(-1);
+  const threadRef = useChatThreadAutoScroll(`${props.agent.id}:${props.bubbles.length}:${latestBubble?.id ?? "empty"}:${latestBubble?.body.length ?? 0}`);
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     props.onSend(props.value);
@@ -1223,7 +1251,7 @@ function AgentDirectChatBox(props: {
           <small>私聊 · {statusLabel(props.agent.status)}</small>
         </div>
       </header>
-      <div className="chat-thread">
+      <div className="chat-thread" ref={threadRef}>
         {props.bubbles.length > 0 ? props.bubbles.map((bubble) => (
           <article key={bubble.id} className={`chat-message ${bubble.role}`}>
             {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
@@ -1240,6 +1268,16 @@ function AgentDirectChatBox(props: {
           aria-label={`回复${agentName}`}
           value={props.value}
           onChange={(event) => props.onChange(event.target.value)}
+          onKeyDown={(event) => {
+            const action = chatComposerKeyAction({
+              key: event.key,
+              shiftKey: event.shiftKey,
+              isComposing: event.nativeEvent.isComposing,
+            });
+            if (action !== "submit") return;
+            event.preventDefault();
+            if (!props.disabled) props.onSend(props.value);
+          }}
           placeholder={`回复${agentName}`}
         />
         <button type="submit" disabled={props.disabled}>{props.sending ? "发送中" : "发送"}</button>

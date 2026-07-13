@@ -9,6 +9,21 @@ export interface AgentThreadBubble {
   body: string;
 }
 
+export interface ChatComposerKeyInput {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+}
+
+export function chatComposerKeyAction(input: ChatComposerKeyInput): "submit" | "newline" | "ignore" {
+  if (input.key !== "Enter" || input.isComposing) return "ignore";
+  return input.shiftKey ? "newline" : "submit";
+}
+
+export function scrollChatThreadToLatest(container: Pick<HTMLElement, "scrollTop" | "scrollHeight">): void {
+  container.scrollTop = container.scrollHeight;
+}
+
 export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessages: AgentDirectMessage[] = []): AgentThreadBubble[] {
   if (events.length === 0) return legacyMessages.flatMap(legacyMessageToBubbles);
   return [...events]
