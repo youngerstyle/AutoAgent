@@ -23,6 +23,7 @@ export type AgentThreadItemKind =
 
 export interface AgentThreadItem {
   itemId: string;
+  turnId?: string;
   sequence: number;
   kind: AgentThreadItemKind;
   createdAt: string;
@@ -85,6 +86,7 @@ export interface StartAgentGoalRequest {
 
 export interface SendAgentMessageRequest {
   messageId: string;
+  turnId?: string;
   threadId: string;
   goalId?: string;
   senderPrincipalId: string;
@@ -107,6 +109,7 @@ export interface GoalResolutionProposal<
   TDomainOutcome = unknown,
 > {
   proposalId: string;
+  turnId?: string;
   goalId: string;
   expectedGoalVersion: number;
   resolvingGoalVersion: number;
@@ -172,7 +175,7 @@ export type SettleProposalResult =
     };
 
 export type AgentThreadEventPayload =
-  | { type: "MessageAppended"; threadId: string; messageId: string; sequence: number }
+  | { type: "MessageAppended"; threadId: string; messageId: string; turnId?: string; sequence: number }
   | { type: "TurnStatusChanged"; threadId: string; turnId: string; status: string };
 
 export type AgentGoalEventPayload =

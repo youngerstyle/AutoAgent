@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
+import type { AgentGoal, AgentThreadSnapshot, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 import type { AgentProfile, WorkspaceAgent, WorkspaceToolName } from "../../shared/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 import {
@@ -17,6 +17,8 @@ import { AgentToolRuntime, type AgentToolIntent } from "./tool-runtime.js";
 
 export interface AgentExecutionSliceInput {
   threadId: string;
+  turnId?: string;
+  triggerMessageId?: string;
   goalId?: string;
   profile: AgentProfile;
   agent: WorkspaceAgent;
@@ -65,16 +67,19 @@ export class AgentToolLoop {
       throw new Error(`Goal ${goal.spec.id} is not runnable: ${goal.status}`);
     }
     const thread = await this.engine.getThread(input.threadId);
-    const turnId = stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
+    const pendingTurn = pendingMessageTurn(thread);
+    const turnId = input.turnId ?? pendingTurn?.turnId ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
+    const triggerMessageId = input.triggerMessageId ?? (pendingTurn?.turnId === turnId ? pendingTurn.messageId : undefined);
     const usageBlock = await this.usageBlock(goal, turnId, input);
     if (usageBlock) return usageBlock;
 
     await this.engine.appendToolItem({
       itemId: `${turnId}:started`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
-      value: { turnId, status: "running" },
+      value: { turnId, ...(triggerMessageId ? { triggerMessageId } : {}), status: "running" },
       createdAt: this.now().toISOString(),
     });
     const compactionFailure = await this.compactIfNeeded(turnId, input, goal);
@@ -133,6 +138,7 @@ export class AgentToolLoop {
         if (item.type === "assistant_message") {
           await this.engine.appendModelItem({
             itemId: `${turnId}:round:${round}:item:${index + 1}`,
+            turnId,
             threadId: input.threadId,
             goalId: input.goalId,
             content: item.content,
@@ -213,6 +219,7 @@ export class AgentToolLoop {
 
       await this.engine.appendToolItem({
         itemId: `${turnId}:waiting`,
+        turnId,
         threadId: input.threadId,
         goalId: input.goalId,
         kind: "control",
@@ -275,6 +282,7 @@ export class AgentToolLoop {
     );
     await this.engine.appendCompaction({
       itemId: checkpointItemId,
+      turnId,
       threadId: input.threadId,
       replacedThroughSequence: plan.replacedThroughSequence,
       replacementHistory: [{ type: "user_message", content: `[历史摘要]\n${summary}` }],
@@ -306,6 +314,7 @@ export class AgentToolLoop {
   ): Promise<void> {
     return this.engine.appendToolItem({
       itemId: `${turnId}:round:${round}:tool:${index + 1}`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "tool",
@@ -326,6 +335,7 @@ export class AgentToolLoop {
     await this.trace(turnId, input, "tool", { callId: result.callId, observation });
     await this.engine.appendToolItem({
       itemId: `${turnId}:round:${round}:result:${index + 1}`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "observation",
@@ -345,6 +355,7 @@ export class AgentToolLoop {
     if (!goal || totalTokens <= 0) return;
     await this.engine.appendToolItem({
       itemId: `${turnId}:usage:${round}`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
@@ -371,6 +382,7 @@ export class AgentToolLoop {
     await this.trace(turnId, input, "error", failure);
     await this.engine.appendToolItem({
       itemId: `${turnId}:usage-limited`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
@@ -397,6 +409,7 @@ export class AgentToolLoop {
     await this.trace(turnId, input, "error", failure);
     await this.engine.appendToolItem({
       itemId: `${turnId}:execution-blocked`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
@@ -416,6 +429,7 @@ export class AgentToolLoop {
     await this.trace(turnId, input, "error", failure);
     await this.engine.appendToolItem({
       itemId: `${turnId}:protocol-error`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
@@ -433,6 +447,7 @@ export class AgentToolLoop {
   ): Promise<AgentExecutionSliceResult> {
     await this.engine.appendToolItem({
       itemId: `${turnId}:yielded`,
+      turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
@@ -515,6 +530,7 @@ function resolutionProposal(
   if (evidence.length !== value.evidence.length) return undefined;
   return {
     proposalId: stableId("proposal", goal.spec.id, turnId),
+    turnId,
     goalId: goal.spec.id,
     expectedGoalVersion: goal.version,
     resolvingGoalVersion: goal.version + 1,
@@ -543,4 +559,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(JSON.stringify(parts)).digest("base64url")}`;
+}
+
+function pendingMessageTurn(thread: AgentThreadSnapshot): { turnId: string; messageId: string } | undefined {
+  const message = [...thread.items].reverse().find((item) => item.kind === "message" && item.turnId);
+  if (!message?.turnId) return undefined;
+  const started = thread.items.some((item) => item.turnId === message.turnId && item.kind !== "message");
+  return started ? undefined : { turnId: message.turnId, messageId: message.itemId };
 }

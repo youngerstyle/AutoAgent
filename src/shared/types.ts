@@ -207,6 +207,7 @@ export type AgentThreadVisibility = "chat" | "timeline" | "debug";
 
 export interface AgentThreadEvent<TPayload = Record<string, unknown>> {
   id: string;
+  turnId?: string;
   taskId: string;
   taskRunId: string;
   workspaceAgentId: string;

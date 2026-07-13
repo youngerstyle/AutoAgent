@@ -132,6 +132,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   async sendMessage(input: SendAgentMessageRequest): Promise<boolean> {
     const fingerprint = hash({
       messageId: input.messageId,
+      turnId: input.turnId,
       threadId: input.threadId,
       goalId: input.goalId,
       senderPrincipalId: input.senderPrincipalId,
@@ -153,12 +154,15 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       input.createdAt,
       input,
       { messageId: input.messageId, fingerprint },
+      undefined,
+      input.turnId,
     );
     return true;
   }
 
   async appendModelItem(input: {
     itemId: string;
+    turnId?: string;
     threadId: string;
     goalId?: string;
     content: string;
@@ -172,14 +176,19 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       input.createdAt,
       {
         type: "assistant_message",
+        ...(input.turnId ? { turnId: input.turnId } : {}),
         ...(input.goalId ? { goalId: input.goalId } : {}),
         content: input.content,
       },
+      undefined,
+      undefined,
+      input.turnId,
     );
   }
 
   async appendToolItem(input: {
     itemId: string;
+    turnId?: string;
     threadId: string;
     goalId?: string;
     kind: "tool" | "observation" | "control";
@@ -193,11 +202,15 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       `${input.kind}:${input.itemId}`,
       input.createdAt,
       input.value,
+      undefined,
+      undefined,
+      input.turnId,
     );
   }
 
   async appendCompaction(input: {
     itemId: string;
+    turnId?: string;
     threadId: string;
     replacedThroughSequence: number;
     replacementHistory: AgentModelHistoryItem[];
@@ -231,6 +244,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
           throw new AgentEngineConflictError("Compaction boundary is stale");
         }
       },
+      input.turnId,
     );
   }
 
@@ -458,7 +472,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
     if (existing) {
       if (existing.fingerprint !== fingerprint) return { applied: false, code: "idempotency_conflict", goal };
-      await this.recordResolutionDecision(goal, input);
+      await this.recordResolutionDecision(goal, input, proposal.turnId);
       return existing.result;
     }
     let next: AgentGoal;
@@ -482,16 +496,18 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       }],
       pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
     }));
-    await this.recordResolutionDecision(goal, input);
+    await this.recordResolutionDecision(goal, input, proposal.turnId);
     return result;
   }
 
   private async recordResolutionDecision<TStatus extends GoalResolutionStatus>(
     goal: AgentGoal,
     input: SettleProposalRequest<TStatus>,
+    turnId?: string,
   ): Promise<void> {
     await this.appendToolItem({
       itemId: `decision:${input.decisionId}`,
+      turnId,
       threadId: goal.spec.threadId,
       goalId: goal.spec.id,
       kind: "control",
@@ -519,13 +535,14 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     value: unknown,
     message?: { messageId: string; fingerprint: string },
     validate?: (aggregate: AgentStoreAggregate, thread: AgentThreadSnapshot) => void,
+    turnId?: string,
   ): Promise<void> {
     const current = await this.store.read();
     const existingThread = current.threads.find((item) => item.threadId === threadId);
     if (!existingThread) throw new Error("Thread does not exist");
     const existingItem = existingThread.items.find((item) => item.itemId === itemId);
     if (existingItem) {
-      if (existingItem.kind !== kind || existingItem.payloadRef !== payloadRef) {
+      if (existingItem.kind !== kind || existingItem.payloadRef !== payloadRef || existingItem.turnId !== turnId) {
         throw new AgentEngineConflictError("Thread item idempotency conflict");
       }
       const existingPayload = current.payloads.find((item) => item.payloadRef === payloadRef);
@@ -545,7 +562,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         return aggregate;
       }
       validate?.(aggregate, thread);
-      const next = appendItem(thread, { itemId, kind, payloadRef, createdAt });
+      const next = appendItem(thread, { itemId, ...(turnId ? { turnId } : {}), kind, payloadRef, createdAt });
       const event: AgentEvent = kind === "message"
         ? {
             eventId: eventId("message", itemId, next.version),
@@ -553,7 +570,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
             aggregateId: threadId,
             aggregateVersion: next.version,
             occurredAt: createdAt,
-            payload: { type: "MessageAppended", threadId, messageId: itemId, sequence: next.items.length },
+            payload: { type: "MessageAppended", threadId, messageId: itemId, ...(turnId ? { turnId } : {}), sequence: next.items.length },
           }
         : {
             eventId: eventId(kind, itemId, next.version),
@@ -561,7 +578,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
             aggregateId: threadId,
             aggregateVersion: next.version,
             occurredAt: createdAt,
-            payload: { type: "TurnStatusChanged", threadId, turnId: itemId, status: kind },
+            payload: { type: "TurnStatusChanged", threadId, turnId: turnId ?? itemId, status: kind },
           };
       return {
         ...aggregate,

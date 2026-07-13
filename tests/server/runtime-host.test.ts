@@ -234,6 +234,105 @@ describe("RuntimeHost", () => {
     expect(providerTurns).toBe(3);
   });
 
+  it("correlates a human message and every resulting item with one durable turn id", async () => {
+    const fixture = await createFixture();
+    let providerAvailable = false;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        if (!providerAvailable) throw new ProviderError("provider unavailable", false, "OPENAI_ERROR");
+        return { items: [{ type: "assistant_message" as const, content: "收到并继续" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-human-turn", title: "演示", objective: "构建演示" });
+    const context = fixture.host.context("task-human-turn")!;
+    const engine = context.engines.get("wa_boss")!;
+    providerAvailable = true;
+
+    await fixture.host.sendAgentMessage("task-human-turn", "wa_boss", "继续", "human-turn-message");
+    await waitFor(async () => {
+      const thread = await engine.getThreadForAgent("wa_boss", "task-human-turn");
+      return thread?.items.some((item) => item.kind === "model" && item.sequence > 1) === true;
+    });
+
+    const thread = (await engine.getThreadForAgent("wa_boss", "task-human-turn"))!;
+    const humanIndex = thread.items.findIndex((item) => item.itemId === "human-turn-message");
+    const correlated = thread.items.slice(humanIndex);
+    const turnId = (correlated[0] as { turnId?: string }).turnId;
+    expect(turnId).toMatch(/^turn_/);
+    expect(correlated.length).toBeGreaterThan(2);
+    expect(correlated.every((item) => (item as { turnId?: string }).turnId === turnId)).toBe(true);
+
+    const snapshot = await fixture.host.snapshot();
+    const projected = snapshot.agentThreads?.wa_boss?.filter((item) => item.sequence >= correlated[0].sequence) ?? [];
+    expect(projected.length).toBeGreaterThanOrEqual(correlated.length);
+    expect(projected.every((item) => item.turnId === turnId)).toBe(true);
+  });
+
+  it("recovers a persisted human turn before model execution without changing its turn id", async () => {
+    const fixture = await createFixture();
+    let providerAvailable = false;
+    let providerTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        providerTurns += 1;
+        if (!providerAvailable) throw new ProviderError("provider unavailable", false, "OPENAI_ERROR");
+        return { items: [{ type: "assistant_message" as const, content: "恢复后继续" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-recover-human-turn", title: "演示", objective: "构建演示" });
+    const context = fixture.host.context("task-recover-human-turn")!;
+    const engine = context.engines.get("wa_boss")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    const goal = (await engine.getGoal(link.agentGoalId!))!;
+    const thread = (await engine.getThreadForAgent("wa_boss", "task-recover-human-turn"))!;
+    const turnId = "turn_durable_human_message";
+    await engine.sendMessage({
+      messageId: "human-before-runtime-restart",
+      turnId,
+      threadId: thread.threadId,
+      goalId: goal.spec.id,
+      senderPrincipalId: "human",
+      content: "继续",
+      createdAt: "2026-07-10T00:10:00.000Z",
+    });
+    await engine.controlGoal({
+      requestId: "resume-before-runtime-restart",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      action: "resume",
+      reason: "persisted human message",
+    });
+    fixture.host.stop();
+
+    providerAvailable = true;
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    await restarted.recover();
+    await restarted.tick();
+
+    expect(providerTurns).toBe(2);
+    const recoveredEngine = restarted.context("task-recover-human-turn")!.engines.get("wa_boss")!;
+    const recoveredThread = (await recoveredEngine.getThreadForAgent("wa_boss", "task-recover-human-turn"))!;
+    const correlated = recoveredThread.items.filter((item) => item.turnId === turnId);
+    expect(correlated.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
+    expect(correlated.every((item) => item.turnId === turnId)).toBe(true);
+    const started = correlated.find((item) => item.itemId === `${turnId}:started`)!;
+    expect(await recoveredEngine.getPayload(started.payloadRef)).toMatchObject({
+      turnId,
+      triggerMessageId: "human-before-runtime-restart",
+      status: "running",
+    });
+    restarted.stop();
+  });
+
   it("serves a read-only snapshot while a model turn is still running", async () => {
     const fixture = await createFixture();
     let holdModel = false;

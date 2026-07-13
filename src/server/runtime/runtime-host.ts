@@ -82,12 +82,12 @@ export class RuntimeHost {
 
   async sendAgentMessage(taskId: string, agentId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
     const result = await this.exclusive(async () => {
-      const appended = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId);
-      return { appended, snapshot: await this.snapshotUnlocked() };
+      const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId);
+      return { accepted, snapshot: await this.snapshotUnlocked() };
     });
-    if (result.appended) {
-      void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId))
-        .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error)).catch(() => undefined));
+    if (result.accepted.appended) {
+      void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId, result.accepted.turnId, messageId))
+        .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error, result.accepted.turnId)).catch(() => undefined));
     }
     return result.snapshot;
   }
@@ -171,22 +171,24 @@ export class RuntimeHost {
     for (const context of this.contexts.values()) await this.tickTask(context);
   }
 
-  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<boolean> {
+  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<{ appended: boolean; turnId: string }> {
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
     if (!engine) throw new Error("Agent does not belong to this team");
     const thread = await engine.getThreadForAgent(agentId, context.record.missionId)
       ?? await engine.ensureThread({ agentId, scopeId: context.record.missionId, idempotencyKey: stableId("thread", context.record.missionId, agentId) });
+    const turnId = stableId("turn", thread.threadId, messageId);
     const createdAt = this.now().toISOString();
     const appended = await engine.sendMessage({
       messageId,
+      turnId,
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       senderPrincipalId: "human",
       content: message,
       createdAt,
     });
-    if (!appended) return false;
+    if (!appended) return { appended: false, turnId };
     const link = await this.activeLink(context, agentId);
     if (link?.agentGoalId) {
       const goal = await engine.getGoal(link.agentGoalId);
@@ -201,23 +203,23 @@ export class RuntimeHost {
         if (link.status === "blocked") await context.manager.resumeBlockedAgent(agentId);
       }
     }
-    return true;
+    return { appended: true, turnId };
   }
 
-  private async continueAfterAgentMessageUnlocked(taskId: string, agentId: string): Promise<void> {
+  private async continueAfterAgentMessageUnlocked(taskId: string, agentId: string, turnId: string, triggerMessageId: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const thread = await context.engines.get(agentId)?.getThreadForAgent(agentId, context.record.missionId);
     if (!thread) return;
     const resumedLink = await this.activeLink(context, agentId);
     if (resumedLink?.status === "running") {
-      await this.runAgentSlice(context, resumedLink);
+      await this.runAgentSlice(context, resumedLink, turnId, triggerMessageId);
     } else if (!resumedLink) {
-      await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(context, agentId, thread.threadId));
+      await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(context, agentId, thread.threadId, undefined, turnId, triggerMessageId));
     }
     await context.manager.tick();
   }
 
-  private async recordAgentTurnErrorUnlocked(taskId: string, agentId: string, error: unknown): Promise<void> {
+  private async recordAgentTurnErrorUnlocked(taskId: string, agentId: string, error: unknown, turnId?: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
     const thread = await engine?.getThreadForAgent(agentId, context.record.missionId);
@@ -225,6 +227,7 @@ export class RuntimeHost {
     const createdAt = this.now().toISOString();
     await engine.appendToolItem({
       itemId: stableId("agent_turn_error", taskId, agentId, createdAt),
+      turnId,
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       kind: "observation",
@@ -233,6 +236,7 @@ export class RuntimeHost {
     });
     await engine.appendToolItem({
       itemId: stableId("agent_turn_waiting", taskId, agentId, createdAt),
+      turnId,
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       kind: "control",
@@ -479,8 +483,8 @@ export class RuntimeHost {
     }
   }
 
-  private async runAgentSlice(context: RuntimeContext, link: ActiveMissionLink): Promise<void> {
-    const result = await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link));
+  private async runAgentSlice(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string): Promise<void> {
+    const result = await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link, turnId, triggerMessageId));
     if (result?.status !== "execution_blocked" || !result.goal || result.goal.status !== "active") return;
     await context.engines.get(link.agentId)?.controlGoal({
       requestId: stableId("execution_blocked", context.record.taskId, link.agentId, result.turnId),
@@ -557,15 +561,17 @@ export class RuntimeHost {
     return (await context.manager.tick()).links.find((link) => link.agentId === agentId && new Set(["running", "blocked", "resolving"]).has(link.status));
   }
 
-  private async sliceInput(context: RuntimeContext, link: ActiveMissionLink) {
-    return this.sliceInputForAgent(context, link.agentId, link.agentThreadId, link.agentGoalId);
+  private async sliceInput(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string) {
+    return this.sliceInputForAgent(context, link.agentId, link.agentThreadId, link.agentGoalId, turnId, triggerMessageId);
   }
 
-  private async sliceInputForAgent(context: RuntimeContext, agentId: string, threadId: string, goalId?: string) {
+  private async sliceInputForAgent(context: RuntimeContext, agentId: string, threadId: string, goalId?: string, turnId?: string, triggerMessageId?: string) {
     const agent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
     return {
       threadId,
+      turnId,
+      triggerMessageId,
       goalId,
       profile,
       agent,
@@ -594,6 +600,7 @@ function projectThread(
     const projectedPayload = projectEventPayload(payload, item.payloadRef);
     events.push({
       id: item.itemId,
+      ...(item.turnId ? { turnId: item.turnId } : {}),
       taskId: record.taskId,
       taskRunId: record.runId,
       workspaceAgentId: thread.agentId,
