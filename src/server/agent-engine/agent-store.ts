@@ -12,7 +12,11 @@ import type {
   GoalResolutionProposal,
   SettleProposalResult,
 } from "../../shared/contracts/agent-engine.js";
-import { agentEngineLockFile, agentEngineRolloutFile } from "../storage/paths.js";
+import {
+  agentEngineLegacyAggregateFile,
+  agentEngineLockFile,
+  agentEngineRolloutFile,
+} from "../storage/paths.js";
 
 export interface AgentStoredPayload {
   payloadRef: string;
@@ -76,6 +80,15 @@ interface AgentStoreCommit {
   outbox: AgentStoreAggregate["outbox"];
 }
 
+interface AgentStoreSnapshot {
+  schemaVersion: 1;
+  type: "agent_store_snapshot";
+  agentId: string;
+  aggregateVersion: number;
+  occurredAt: string;
+  aggregate: AgentStoreAggregate;
+}
+
 export class AgentStoreCursorError extends Error {}
 export class AgentStoreConflictError extends Error {}
 export class AgentStoreCorruptionError extends Error {}
@@ -102,6 +115,7 @@ const queues = new Map<string, Promise<unknown>>();
 
 export class AgentStore {
   private readonly file: string;
+  private readonly legacyFile: string;
   private readonly lockFile: string;
   private readonly options: ResolvedAgentStoreOptions;
   private cached?: { size: number; mtimeMs: number; aggregate: AgentStoreAggregate };
@@ -113,6 +127,7 @@ export class AgentStore {
   ) {
     if (!agentId.trim()) throw new Error("agentId is required");
     this.file = agentEngineRolloutFile(workspaceRoot, agentId);
+    this.legacyFile = agentEngineLegacyAggregateFile(workspaceRoot, agentId);
     this.lockFile = agentEngineLockFile(workspaceRoot, agentId);
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
@@ -122,7 +137,9 @@ export class AgentStore {
     try {
       info = await stat(this.file);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyAggregate(this.agentId);
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return this.withLock(() => this.loadRolloutFromDisk());
+      }
       throw error;
     }
     if (this.cached?.size === info.size && this.cached.mtimeMs === info.mtimeMs) {
@@ -206,6 +223,8 @@ export class AgentStore {
       return this.loadRollout(info.size, info.mtimeMs);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        const migrated = await this.migrateLegacyAggregate();
+        if (migrated) return migrated;
         const aggregate = emptyAggregate(this.agentId);
         this.cached = { size: 0, mtimeMs: 0, aggregate };
         return aggregate;
@@ -223,6 +242,7 @@ export class AgentStore {
       throw error;
     }
     let aggregate = emptyAggregate(this.agentId);
+    let hasStateRecord = false;
     const lines = content.split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]!.trim();
@@ -235,11 +255,53 @@ export class AgentStore {
         // the valid ordered history around them.
         continue;
       }
-      validateCommit(value, this.agentId, aggregate.aggregateVersion + 1);
-      aggregate = applyCommit(aggregate, value);
+      if ((value as { type?: unknown })?.type === "agent_store_snapshot") {
+        validateSnapshot(value, this.agentId, hasStateRecord);
+        aggregate = structuredClone(value.aggregate);
+      } else {
+        validateCommit(value, this.agentId, aggregate.aggregateVersion + 1);
+        aggregate = applyCommit(aggregate, value);
+      }
+      hasStateRecord = true;
     }
     validateAggregate(aggregate, this.agentId);
     this.cached = { size, mtimeMs, aggregate };
+    return aggregate;
+  }
+
+  private async migrateLegacyAggregate(): Promise<AgentStoreAggregate | undefined> {
+    let content: string;
+    try {
+      content = await readFile(this.legacyFile, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+    let aggregate: unknown;
+    try {
+      aggregate = JSON.parse(content);
+    } catch {
+      throw new AgentStoreCorruptionError("Legacy Agent aggregate is invalid JSON");
+    }
+    validateAggregate(aggregate, this.agentId);
+    const snapshot: AgentStoreSnapshot = {
+      schemaVersion: 1,
+      type: "agent_store_snapshot",
+      agentId: this.agentId,
+      aggregateVersion: aggregate.aggregateVersion,
+      occurredAt: new Date().toISOString(),
+      aggregate,
+    };
+    await mkdir(path.dirname(this.file), { recursive: true });
+    const handle = await open(this.file, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(snapshot)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const info = await stat(this.file);
+    this.cached = { size: info.size, mtimeMs: info.mtimeMs, aggregate };
     return aggregate;
   }
 
@@ -440,6 +502,18 @@ function validateCommit(value: unknown, agentId: string, expectedVersion: number
   for (const field of ["threads", "threadKeys", "messageIds", "payloads", "goals", "goalStartKeys", "proposals", "decisions", "controls", "outbox"] as const) {
     if (!Array.isArray(commit[field])) throw new AgentStoreCorruptionError(`Agent rollout ${field} must be an array`);
   }
+}
+
+function validateSnapshot(value: unknown, agentId: string, hasStateRecord: boolean): asserts value is AgentStoreSnapshot {
+  if (hasStateRecord || !value || typeof value !== "object" || Array.isArray(value)) {
+    throw new AgentStoreCorruptionError("Agent rollout snapshot position is invalid");
+  }
+  const snapshot = value as AgentStoreSnapshot;
+  if (snapshot.schemaVersion !== 1 || snapshot.type !== "agent_store_snapshot" || snapshot.agentId !== agentId
+    || snapshot.aggregateVersion !== snapshot.aggregate?.aggregateVersion) {
+    throw new AgentStoreCorruptionError("Agent rollout snapshot identity is invalid");
+  }
+  validateAggregate(snapshot.aggregate, agentId);
 }
 
 function validateAggregate(value: unknown, agentId: string): asserts value is AgentStoreAggregate {

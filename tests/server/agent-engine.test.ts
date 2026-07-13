@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ import {
   AgentEngineConflictError,
 } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore, AgentStoreCursorError } from "../../src/server/agent-engine/agent-store.js";
-import { agentEngineRolloutFile } from "../../src/server/storage/paths.js";
+import { agentEngineLegacyAggregateFile, agentEngineRolloutFile } from "../../src/server/storage/paths.js";
 
 const T0 = "2026-07-10T00:00:00.000Z";
 const T1 = "2026-07-10T00:01:00.000Z";
@@ -85,6 +85,45 @@ describe("AgentEngine", () => {
     const restarted = new AgentEngine(new AgentStore(fixture.root, "dev"));
     expect((await restarted.getThread(thread.threadId)).items.map((item) => item.itemId))
       .toEqual(["before-malformed", "after-malformed"]);
+  });
+
+  it("migrates a legacy aggregate into a rollout without invalidating durable event cursors", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({
+      agentId: "dev",
+      scopeId: "legacy-migration",
+      idempotencyKey: "legacy-migration",
+    });
+    await fixture.engine.sendMessage({
+      messageId: "legacy-message",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "保留历史与游标",
+      createdAt: T0,
+    });
+    const page = await fixture.engine.readEvents({ agentId: "dev", limit: 100 });
+    const aggregate = await fixture.store.read();
+    const rollout = agentEngineRolloutFile(fixture.root, "dev");
+    const legacyFile = agentEngineLegacyAggregateFile(fixture.root, "dev");
+    await mkdir(path.dirname(legacyFile), { recursive: true });
+    await writeFile(legacyFile, JSON.stringify(aggregate), "utf8");
+    await rm(path.dirname(rollout), { recursive: true, force: true });
+
+    const restartedStore = new AgentStore(fixture.root, "dev");
+    const restartedEngine = new AgentEngine(restartedStore);
+    const afterMigration = await restartedEngine.readEvents({
+      agentId: "dev",
+      after: page.nextCursor,
+      limit: 100,
+    });
+
+    expect(afterMigration.events).toEqual([]);
+    expect((await restartedEngine.getThread(thread.threadId)).items.map((item) => item.itemId))
+      .toEqual(["legacy-message"]);
+    expect(JSON.parse((await readFile(rollout, "utf8")).trim())).toMatchObject({
+      type: "agent_store_snapshot",
+      aggregate: { agentId: "dev", aggregateVersion: aggregate.aggregateVersion },
+    });
   });
 
   it("does not clone the complete Agent projection when appending one rollout item", async () => {

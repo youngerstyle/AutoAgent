@@ -53,6 +53,13 @@ export function agentEngineRolloutFile(workspaceRoot: string, agentId: string): 
   return path.join(agentEngineDir(workspaceRoot, agentId), "rollout.jsonl");
 }
 
+export function agentEngineLegacyAggregateFile(workspaceRoot: string, agentId: string): string {
+  return path.join(
+    path.resolve(workspaceAutoAgentDir(workspaceRoot), "agent-engine"),
+    `${createHash("sha256").update(agentId).digest("base64url")}.json`,
+  );
+}
+
 export function agentEngineLockFile(workspaceRoot: string, agentId: string): string {
   return path.join(agentEngineDir(workspaceRoot, agentId), ".lock");
 }
