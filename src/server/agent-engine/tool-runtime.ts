@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { WorkspaceToolName } from "../../shared/types.js";
+import type { AgentToolDefinition } from "../providers/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 import { assertCommandAllowed } from "../policy/command-policy.js";
 import { resolveToolPath } from "../policy/path-policy.js";
@@ -67,6 +68,10 @@ export class AgentToolRuntime {
     }
   }
 
+  definitions(): AgentToolDefinition[] {
+    return [...this.enabled].map(toolDefinition);
+  }
+
   private async startService(command: string): Promise<AgentToolResult> {
     assertCommandAllowed(this.policy, command);
     const serviceId = `agent_svc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -94,6 +99,49 @@ export class AgentToolRuntime {
     }
     return { tool: "pollProcess", ok: true, serviceId, command: metadata.command, pid: metadata.pid, running };
   }
+}
+
+function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
+  const schemas: Record<WorkspaceToolName, AgentToolDefinition> = {
+    listFiles: {
+      name,
+      description: "列出工作区目录中的文件",
+      inputSchema: objectSchema({ path: { type: "string" } }),
+    },
+    readFile: {
+      name,
+      description: "读取工作区内的 UTF-8 文本文件",
+      inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
+    },
+    writeFile: {
+      name,
+      description: "写入工作区内的 UTF-8 文本文件",
+      inputSchema: objectSchema({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
+    },
+    shell: {
+      name,
+      description: "在工作区执行一条已授权命令并等待结束",
+      inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
+    },
+    startService: {
+      name,
+      description: "在工作区启动一个已授权的后台服务",
+      inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
+    },
+    pollProcess: {
+      name,
+      description: "查询由 startService 启动的服务状态",
+      inputSchema: objectSchema({ serviceId: { type: "string" } }, ["serviceId"]),
+    },
+  };
+  return schemas[name];
+}
+
+function objectSchema(
+  properties: Record<string, Record<string, unknown>>,
+  required: string[] = [],
+): Record<string, unknown> {
+  return { type: "object", properties, required, additionalProperties: false };
 }
 
 function required(value: string | undefined, name: string): string {

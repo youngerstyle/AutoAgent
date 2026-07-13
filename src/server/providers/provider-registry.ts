@@ -4,7 +4,7 @@ import { createId } from "../../shared/ids.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { MockProvider } from "./mock-provider.js";
 import { OpenAIProvider } from "./openai-provider.js";
-import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentModelTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 import type { ModelConfig, ProviderConfig, ProviderName } from "../../shared/types.js";
 
@@ -44,12 +44,12 @@ export class ProviderRegistry {
     };
   }
 
-  async runModelTurnWithRetry(input: AgentModelTurnInput): Promise<AgentTurnResult> {
+  async runModelTurnWithRetry(input: AgentModelTurnInput): Promise<AgentModelTurnResult> {
     const provider = await this.get(input.provider);
     return this.retry(() => provider.runModelTurn(input));
   }
 
-  private async retry(operation: () => Promise<AgentTurnResult>): Promise<AgentTurnResult> {
+  private async retry(operation: () => Promise<AgentModelTurnResult>): Promise<AgentModelTurnResult> {
     const retries = this.options.retryCount ?? 2;
     let attempt = 0;
     while (true) {

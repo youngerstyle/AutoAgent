@@ -6,18 +6,22 @@ import { RegistryAgentProviderAdapter } from "../../src/server/agent-engine/prov
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 
 describe("RegistryAgentProviderAdapter", () => {
-  it("runs a ticket-neutral model turn", async () => {
-    const homeDir = await mkdtemp(path.join(os.tmpdir(), "autoagent-provider-v2-"));
-    const adapter = new RegistryAgentProviderAdapter(new ProviderRegistry({ homeDir }));
+  it("passes a ticket-neutral structured history and native tools to the provider", async () => {
+    const homeDir = await mkdtemp(path.join(os.tmpdir(), "autoagent-provider-native-"));
+    const registry = new ProviderRegistry({ homeDir });
+    const adapter = new RegistryAgentProviderAdapter(registry);
+
     const result = await adapter.run({
       provider: "mock",
       model: "mock",
-      systemPrompt: "通用 Agent",
-      prompt: "继续处理当前目标",
+      instructions: "通用 Agent",
+      history: [{ type: "user_message", content: "继续处理当前目标" }],
+      tools: [{ name: "goal_resolution", description: "提交目标结论", inputSchema: { type: "object" } }],
     });
 
-    expect(result.structured).toMatchObject({ goalResolution: { status: "completed" } });
-    expect(result.structured).not.toHaveProperty("ticketGraph");
-    expect(result.structured).not.toHaveProperty("next");
+    expect(result.items).toEqual([
+      expect.objectContaining({ type: "tool_call", name: "goal_resolution" }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("ticketGraph");
   });
 });

@@ -8,110 +8,117 @@ import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 
 describe("AgentContextAssembler", () => {
-  it("assembles SIA tools, goal and one chronological thread without replaying prompts", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-v2-"));
-    const store = new AgentStore(root, "dev");
-    const engine = new AgentEngine(store);
-    const thread = await engine.ensureThread({ agentId: "dev", scopeId: "ws", idempotencyKey: "thread" });
-    await engine.sendMessage({
+  it("separates stable instructions from one chronological structured history", async () => {
+    const fixture = await contextFixture();
+    await fixture.engine.sendMessage({
       messageId: "human-1",
-      threadId: thread.threadId,
+      threadId: fixture.thread.threadId,
       senderPrincipalId: "human",
       content: "先检查报错",
-      createdAt: "2026-07-10T00:00:00.000Z",
+      createdAt: "2026-07-13T00:00:00.000Z",
     });
-    await engine.appendModelItem({
+    await fixture.engine.appendModelItem({
       itemId: "model-1",
-      threadId: thread.threadId,
+      threadId: fixture.thread.threadId,
       content: "我会读取文件。",
-      createdAt: "2026-07-10T00:01:00.000Z",
+      createdAt: "2026-07-13T00:01:00.000Z",
     });
-    await engine.appendToolItem({
-      itemId: "tool-1",
-      threadId: thread.threadId,
+    await fixture.engine.appendToolItem({
+      itemId: "call-1",
+      threadId: fixture.thread.threadId,
+      kind: "tool",
+      value: { type: "tool_call", callId: "call-1", name: "readFile", arguments: { path: "src/main.ts" } },
+      createdAt: "2026-07-13T00:02:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "result-1",
+      threadId: fixture.thread.threadId,
       kind: "observation",
-      value: { tool: "readFile", ok: true, path: "src/main.ts" },
-      createdAt: "2026-07-10T00:02:00.000Z",
+      value: { type: "tool_result", callId: "call-1", content: { ok: true, content: "source" }, isError: false },
+      createdAt: "2026-07-13T00:03:00.000Z",
     });
-    await engine.appendToolItem({
-      itemId: "usage-1",
-      threadId: thread.threadId,
-      kind: "control",
-      value: { type: "provider_usage", goalId: "goal", totalTokens: 12345 },
-      createdAt: "2026-07-10T00:02:30.000Z",
-    });
-    const goal = await engine.startGoal({
+    const goal = await fixture.engine.startGoal({
       agentId: "dev",
-      threadId: thread.threadId,
+      threadId: fixture.thread.threadId,
       idempotencyKey: "goal",
       spec: {
         id: "goal",
-        threadId: thread.threadId,
+        threadId: fixture.thread.threadId,
         objective: "修复页面",
         successCriteria: ["测试通过"],
         contextRefs: [],
-        createdAt: "2026-07-10T00:03:00.000Z",
+        createdAt: "2026-07-13T00:04:00.000Z",
       },
     });
-    const assembled = await new AgentContextAssembler(store).assemble({
+
+    const assembled = await fixture.assembler.assemble({
       profile,
       agent,
       policy,
-      thread: await engine.getThread(thread.threadId),
+      thread: await fixture.engine.getThread(fixture.thread.threadId),
       goal,
     });
 
-    expect(assembled.prompt.indexOf("## Soul")).toBeLessThan(assembled.prompt.indexOf("## Identity"));
-    expect(assembled.prompt.indexOf("## Identity")).toBeLessThan(assembled.prompt.indexOf("## Agent"));
-    expect(assembled.prompt.indexOf("## Agent")).toBeLessThan(assembled.prompt.indexOf("## Tools"));
-    expect(assembled.prompt).toContain("human 提供的是目标和方向，不负责撰写完整规格");
-    expect(assembled.prompt).toContain("不得把回答作为推进前提");
-    expect(assembled.prompt).toContain("只有缺少不可替代输入时才提交 blocked");
-    expect(assembled.prompt.indexOf("human: 先检查报错")).toBeLessThan(assembled.prompt.indexOf("我会读取文件"));
-    expect(assembled.prompt.indexOf("我会读取文件")).toBeLessThan(assembled.prompt.indexOf("[3] observation"));
-    expect(assembled.prompt).not.toContain("taskRunId");
-    expect(assembled.prompt).not.toContain("ticketGraph");
-    expect(assembled.prompt).not.toContain("provider_usage");
-    expect(assembled.prompt).not.toContain("12345");
-    expect(assembled.report.threadItems).toBe(5);
+    expect(assembled.instructions).toContain("## Soul");
+    expect(assembled.instructions).toContain("只有调用 goal_resolution 工具");
+    expect(assembled.instructions).not.toContain("先检查报错");
+    expect(assembled.history).toEqual([
+      { type: "user_message", content: "先检查报错" },
+      { type: "assistant_message", content: "我会读取文件。" },
+      { type: "tool_call", callId: "call-1", name: "readFile", arguments: { path: "src/main.ts" } },
+      { type: "tool_result", callId: "call-1", content: JSON.stringify({ ok: true, content: "source" }), isError: false },
+    ]);
+    expect(assembled.history.every((item) => JSON.stringify(item).includes("## Soul") === false)).toBe(true);
   });
 
-  it("compacts the oldest thread items while preserving the newest human turn", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-v2-"));
-    const store = new AgentStore(root, "dev");
-    const engine = new AgentEngine(store);
-    const thread = await engine.ensureThread({ agentId: "dev", scopeId: "ws", idempotencyKey: "compact-thread" });
-    for (let index = 0; index < 12; index += 1) {
-      await engine.sendMessage({
-        messageId: `history-${index}`,
-        threadId: thread.threadId,
+  it("compacts by whole interaction groups and never leaves a tool result without its call", async () => {
+    const fixture = await contextFixture(220);
+    for (let index = 0; index < 8; index += 1) {
+      await fixture.engine.sendMessage({
+        messageId: `old-${index}`,
+        threadId: fixture.thread.threadId,
         senderPrincipalId: "human",
-        content: `旧消息 ${index} ${"历史内容".repeat(30)}`,
-        createdAt: `2026-07-10T00:${String(index).padStart(2, "0")}:00.000Z`,
+        content: `旧消息 ${index} ${"历史".repeat(80)}`,
+        createdAt: `2026-07-13T00:${String(index).padStart(2, "0")}:00.000Z`,
       });
     }
-    await engine.sendMessage({
-      messageId: "latest-human",
-      threadId: thread.threadId,
-      senderPrincipalId: "human",
-      content: "这是最新指令，必须进入下一轮上下文",
-      createdAt: "2026-07-10T01:00:00.000Z",
+    await fixture.engine.appendToolItem({
+      itemId: "latest-call",
+      threadId: fixture.thread.threadId,
+      kind: "tool",
+      value: { type: "tool_call", callId: "latest", name: "readFile", arguments: { path: "latest.ts" } },
+      createdAt: "2026-07-13T01:00:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "latest-result",
+      threadId: fixture.thread.threadId,
+      kind: "observation",
+      value: { type: "tool_result", callId: "latest", content: { ok: true }, isError: false },
+      createdAt: "2026-07-13T01:01:00.000Z",
     });
 
-    const assembled = await new AgentContextAssembler(store, 1_000).assemble({
+    const assembled = await fixture.assembler.assemble({
       profile,
       agent,
       policy,
-      thread: await engine.getThread(thread.threadId),
+      thread: await fixture.engine.getThread(fixture.thread.threadId),
     });
 
-    expect(assembled.prompt).toContain("历史已压缩");
-    expect(assembled.prompt).toContain("这是最新指令，必须进入下一轮上下文");
-    expect(assembled.prompt).not.toContain("旧消息 0 历史内容历史内容历史内容");
     expect(assembled.report.compactedThreadItems).toBeGreaterThan(0);
-    expect(assembled.report.recentThreadItems).toBeGreaterThan(0);
+    const resultIndex = assembled.history.findIndex((item) => item.type === "tool_result" && item.callId === "latest");
+    const callIndex = assembled.history.findIndex((item) => item.type === "tool_call" && item.callId === "latest");
+    expect(callIndex).toBeGreaterThanOrEqual(0);
+    expect(resultIndex).toBeGreaterThan(callIndex);
   });
 });
+
+async function contextFixture(maxTokens = 64_000) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-native-"));
+  const store = new AgentStore(root, "dev");
+  const engine = new AgentEngine(store);
+  const thread = await engine.ensureThread({ agentId: "dev", scopeId: "ws", idempotencyKey: "thread" });
+  return { root, store, engine, thread, assembler: new AgentContextAssembler(store, maxTokens) };
+}
 
 const profile: AgentProfile = {
   id: "profile-dev",

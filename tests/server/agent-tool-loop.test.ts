@@ -9,114 +9,174 @@ import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import { AgentToolLoop } from "../../src/server/agent-engine/tool-loop.js";
 import { AgentToolRuntime } from "../../src/server/agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../../src/server/agent-engine/trace-store.js";
-import type { AgentTurnResult } from "../../src/server/providers/types.js";
+import type { AgentModelTurnResult } from "../../src/server/providers/types.js";
 import { ProviderError } from "../../src/server/providers/types.js";
-import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 import type { EffectivePolicy } from "../../src/server/policy/policy.js";
+import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 
 describe("AgentToolLoop", () => {
-  it("keeps normal replies active, yields for tools, then completes only from an explicit proposal", async () => {
+  it("treats JSON-looking assistant text as speech and never as a control command", async () => {
+    const text = JSON.stringify({
+      toolIntents: [{ tool: "writeFile", path: "unsafe.txt", content: "bad" }],
+      goalResolution: { status: "completed", summary: "not real" },
+    });
+    const fixture = await createFixture([{ items: [{ type: "assistant_message", content: text }] }]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("waiting");
+    expect(turn.toolCalls).toBe(0);
+    await expect(readFile(path.join(fixture.root, "unsafe.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
+  });
+
+  it("returns native tool results to the provider inside the same turn before resolving the goal", async () => {
     const fixture = await createFixture([
-      result("我先分析。", { message: "analysis" }),
-      result("写入修复。", { toolIntents: [{ tool: "writeFile", path: "done.txt", content: "ok" }] }),
-      result("目标完成。", { goalResolution: { status: "completed", summary: "已完成", evidence: [{ kind: "file", ref: "done.txt" }] } }),
+      {
+        items: [
+          { type: "assistant_message", content: "我先写入交付物。" },
+          { type: "tool_call", callId: "call-write", name: "writeFile", arguments: { path: "done.txt", content: "ok" } },
+        ],
+      },
+      {
+        items: [{
+          type: "tool_call",
+          callId: "call-resolve",
+          name: "goal_resolution",
+          arguments: {
+            status: "completed",
+            summary: "已完成",
+            evidence: [{ kind: "file", ref: "done.txt" }],
+          },
+        }],
+      },
     ]);
 
-    const first = await fixture.loop.runSlice(fixture.input);
-    expect(first.status).toBe("yielded");
-    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
-    const firstTail = (await fixture.engine.getThread(fixture.input.threadId)).items.at(-1)!;
-    expect(await fixture.engine.getPayload(firstTail.payloadRef)).toMatchObject({
-      status: "yielded",
-      reason: "active_goal_unresolved"
-    });
+    const turn = await fixture.loop.runSlice(fixture.input);
 
-    const second = await fixture.loop.runSlice(fixture.input);
-    expect(second).toMatchObject({ status: "yielded", toolCalls: 1 });
+    expect(turn).toMatchObject({ status: "resolution_proposed", toolCalls: 1 });
     expect(await readFile(path.join(fixture.root, "done.txt"), "utf8")).toBe("ok");
-    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
-
-    const third = await fixture.loop.runSlice(fixture.input);
-    expect(third.status).toBe("resolution_proposed");
+    expect(fixture.provider.requests).toHaveLength(2);
+    expect(fixture.provider.requests[1].history.slice(-2)).toEqual([
+      { type: "tool_call", callId: "call-write", name: "writeFile", arguments: { path: "done.txt", content: "ok" } },
+      expect.objectContaining({ type: "tool_result", callId: "call-write", isError: false }),
+    ]);
+    const thread = await fixture.engine.getThread(fixture.input.threadId);
+    const payloads = await fixture.engine.getPayloads(thread.items.map((item) => item.payloadRef));
+    expect([...payloads.values()]).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "call-resolve",
+      isError: false,
+    }));
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "completed" });
-    expect((await fixture.traces.list()).some((trace) => trace.kind === "context")).toBe(true);
   });
 
-  it("turns a slice budget into yield without failing or completing the goal", async () => {
+  it("returns invalid native tool arguments as a correlated error instead of executing or parsing text", async () => {
     const fixture = await createFixture([
-      result("多个工具", { toolIntents: [
-        { tool: "writeFile", path: "one.txt", content: "1" },
-        { tool: "writeFile", path: "two.txt", content: "2" },
-      ] }),
-    ], 1);
+      { items: [{ type: "tool_call", callId: "bad-write", name: "writeFile", arguments: { content: "missing path" } }] },
+      { items: [{ type: "assistant_message", content: "我需要修正工具参数。" }] },
+    ]);
 
-    expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "yielded", toolCalls: 1 });
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn).toMatchObject({ status: "waiting", toolCalls: 1 });
+    expect(fixture.provider.requests[1].history.at(-1)).toMatchObject({
+      type: "tool_result",
+      callId: "bad-write",
+      isError: true,
+    });
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
   });
 
-  it("stores the structured human-facing message instead of raw protocol JSON", async () => {
-    const structured = {
-      message: "已完成交付。",
-      goalResolution: { status: "completed", summary: "交付完成", evidence: [] }
-    };
-    const fixture = await createFixture([{ text: JSON.stringify(structured), structured, events: [] }]);
+  it("persists assistant, tool call and tool result in strict response order", async () => {
+    const fixture = await createFixture([
+      {
+        items: [
+          { type: "assistant_message", content: "读取前先说明。" },
+          { type: "tool_call", callId: "call-list", name: "listFiles", arguments: { path: "." } },
+          { type: "tool_call", callId: "call-read", name: "readFile", arguments: { path: "missing.txt" } },
+        ],
+      },
+      { items: [{ type: "assistant_message", content: "读取完成。" }] },
+    ]);
 
     await fixture.loop.runSlice(fixture.input);
 
     const thread = await fixture.engine.getThread(fixture.input.threadId);
-    const model = [...thread.items].reverse().find((item) => item.kind === "model")!;
-    expect(await fixture.engine.getPayload(model.payloadRef)).toMatchObject({ content: "已完成交付。" });
+    const payloads = await fixture.engine.getPayloads(thread.items.map((item) => item.payloadRef));
+    const turnPayloads = thread.items
+      .filter((item) => ["model", "tool", "observation"].includes(item.kind))
+      .map((item) => payloads.get(item.payloadRef));
+    expect(turnPayloads).toEqual([
+      expect.objectContaining({ type: "assistant_message", content: "读取前先说明。" }),
+      expect.objectContaining({ type: "tool_call", callId: "call-list" }),
+      expect.objectContaining({ type: "tool_call", callId: "call-read" }),
+      expect.objectContaining({ type: "tool_result", callId: "call-list", isError: false }),
+      expect.objectContaining({ type: "tool_result", callId: "call-read", isError: true }),
+      expect.objectContaining({ type: "assistant_message", content: "读取完成。" }),
+    ]);
   });
 
-  it("closes the turn and suspends execution when the provider rejects a non-retryable request", async () => {
+  it("closes the turn without replaying a provider failure", async () => {
     const fixture = await createFixture([]);
     fixture.provider.error = new ProviderError("402 Insufficient Balance", false, "OPENAI_ERROR");
 
     const slice = await fixture.loop.runSlice(fixture.input);
 
     expect(slice).toMatchObject({ status: "execution_blocked", toolCalls: 0 });
-    const thread = await fixture.engine.getThread(fixture.input.threadId);
-    const tail = thread.items.at(-1)!;
-    expect(tail.kind).toBe("control");
-    expect(await fixture.engine.getPayload(tail.payloadRef)).toMatchObject({
-      status: "execution_blocked",
-      reason: "provider_error",
-      retryable: false,
-      code: "OPENAI_ERROR",
-      message: "402 Insufficient Balance",
-    });
-    expect((await fixture.traces.list()).at(-1)).toMatchObject({ kind: "error" });
+    expect(fixture.provider.requests).toHaveLength(1);
+    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
   });
 
-  it("stops before exceeding the configured token window and lets a new human message reopen it", async () => {
-    const working = result("继续工作", { toolIntents: [{ tool: "writeFile", path: "progress.txt", content: "ok" }] });
-    working.usage = { inputTokens: 25, outputTokens: 10, totalTokens: 35 };
-    const fixture = await createFixture([structuredClone(working), structuredClone(working), structuredClone(working)], 20, 50);
+  it("does not accept goal resolution in the same response as unfinished workspace tools", async () => {
+    const fixture = await createFixture([
+      {
+        items: [
+          { type: "tool_call", callId: "write-first", name: "writeFile", arguments: { path: "mixed.txt", content: "ok" } },
+          { type: "tool_call", callId: "resolve-too-early", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [] } },
+        ],
+      },
+      {
+        items: [{ type: "tool_call", callId: "resolve-after-result", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [{ kind: "file", ref: "mixed.txt" }] } }],
+      },
+    ]);
 
-    await fixture.loop.runSlice(fixture.input);
-    await fixture.loop.runSlice(fixture.input);
-    expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "execution_blocked", toolCalls: 0 });
-    expect(fixture.provider.calls).toBe(2);
+    const turn = await fixture.loop.runSlice(fixture.input);
 
-    await fixture.engine.sendMessage({
-      messageId: "human-reopens-usage-window",
-      threadId: fixture.input.threadId,
-      goalId: fixture.input.goalId,
-      senderPrincipalId: "human",
-      content: "我确认继续",
-      createdAt: "2026-07-10T00:02:00.000Z",
-    });
-    expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "yielded" });
-    expect(fixture.provider.calls).toBe(3);
+    expect(turn.status).toBe("resolution_proposed");
+    expect(fixture.provider.requests).toHaveLength(2);
+    expect(fixture.provider.requests[1].history).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "resolve-too-early",
+      isError: true,
+    }));
+  });
+
+  it("stops before another provider call when the token window is exhausted inside a turn", async () => {
+    const fixture = await createFixture([
+      {
+        items: [{ type: "tool_call", callId: "read-once", name: "listFiles", arguments: { path: "." } }],
+        usage: { inputTokens: 45, outputTokens: 15, totalTokens: 60 },
+      },
+      { items: [{ type: "assistant_message", content: "不应再调用" }] },
+    ], { maxTokensPerGoalWindow: 50 });
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn).toMatchObject({ status: "execution_blocked", blockReason: "usage_limit" });
+    expect(fixture.provider.requests).toHaveLength(1);
+    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
   });
 });
 
 class QueueProvider implements AgentProviderAdapter {
   error?: Error;
-  calls = 0;
-  constructor(private readonly results: AgentTurnResult[]) {}
-  async run(_input: AgentProviderRequest): Promise<AgentTurnResult> {
-    this.calls += 1;
+  requests: AgentProviderRequest[] = [];
+
+  constructor(private readonly results: AgentModelTurnResult[]) {}
+
+  async run(input: AgentProviderRequest): Promise<AgentModelTurnResult> {
+    this.requests.push(structuredClone(input));
     if (this.error) throw this.error;
     const next = this.results.shift();
     if (!next) throw new Error("No provider result queued");
@@ -124,14 +184,13 @@ class QueueProvider implements AgentProviderAdapter {
   }
 }
 
-function result(text: string, structured: Record<string, unknown>): AgentTurnResult {
-  return { text, structured, events: [] };
-}
-
-async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 20, maxTokensPerGoalWindow?: number) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-loop-v2-"));
+async function createFixture(
+  results: AgentModelTurnResult[],
+  options: { maxTokensPerGoalWindow?: number } = {},
+) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-loop-native-"));
   const store = new AgentStore(root, "dev");
-  const engine = new AgentEngine(store, undefined, { now: () => new Date("2026-07-10T00:00:00.000Z") });
+  const engine = new AgentEngine(store, undefined, { now: () => new Date("2026-07-13T00:00:00.000Z") });
   const thread = await engine.ensureThread({ agentId: "dev", scopeId: "ws", idempotencyKey: "thread" });
   await engine.startGoal({
     agentId: "dev",
@@ -143,16 +202,16 @@ async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 
       objective: "交付文件",
       successCriteria: ["文件存在"],
       contextRefs: [],
-      createdAt: "2026-07-10T00:00:00.000Z",
+      createdAt: "2026-07-13T00:00:00.000Z",
     },
   });
   const policy: EffectivePolicy = {
-    profile: "development" as const,
+    profile: "development",
     workspaceRoot: root,
     canReadWorkspace: true,
     canWriteWorkspace: true,
     canExecuteCommands: true,
-    enabledTools: ["readFile", "writeFile", "shell"],
+    enabledTools: ["listFiles", "readFile", "writeFile", "shell"],
   };
   const traces = new AgentTraceStore(root, "dev");
   const provider = new QueueProvider(results);
@@ -162,7 +221,7 @@ async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 
     provider,
     new AgentToolRuntime(policy, [...(policy.enabledTools ?? [])]),
     traces,
-    { maxToolCallsPerSlice, maxTokensPerGoalWindow, now: () => new Date("2026-07-10T00:01:00.000Z") },
+    { maxTokensPerGoalWindow: options.maxTokensPerGoalWindow, now: () => new Date("2026-07-13T00:01:00.000Z") },
   );
   return {
     root,

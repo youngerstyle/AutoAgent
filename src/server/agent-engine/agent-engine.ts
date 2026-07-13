@@ -161,7 +161,11 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       "model",
       `model:${input.itemId}`,
       input.createdAt,
-      input,
+      {
+        type: "assistant_message",
+        ...(input.goalId ? { goalId: input.goalId } : {}),
+        content: input.content,
+      },
     );
   }
 
@@ -255,30 +259,31 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
     if (!thread) throw new Error("Goal thread does not exist");
     const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
-    let lastModelIndex = -1;
+    let lastAgentOutputIndex = -1;
     for (let index = thread.items.length - 1; index >= 0; index -= 1) {
       const item = thread.items[index]!;
-      if (item.kind === "model" && payloadGoalId(payloads, item.payloadRef) === goalId) {
-        lastModelIndex = index;
+      if ((item.kind === "model" || item.kind === "tool")
+        && payloadGoalId(payloads, item.payloadRef) === goalId) {
+        lastAgentOutputIndex = index;
         break;
       }
     }
-    if (lastModelIndex < 0) return { ready: true, reason: "goal_not_started" };
-    const afterModel = thread.items.slice(lastModelIndex + 1);
-    if (afterModel.some((item) => item.kind === "message" || item.kind === "observation")) {
+    if (lastAgentOutputIndex < 0) return { ready: true, reason: "goal_not_started" };
+    const afterOutput = thread.items.slice(lastAgentOutputIndex + 1);
+    if (afterOutput.some((item) => item.kind === "message")) {
       return { ready: true, reason: "new_input" };
     }
-    const latestCorrection = [...afterModel].reverse()
+    const latestCorrection = [...afterOutput].reverse()
       .map((item) => correctionReason(payloads, item.payloadRef))
       .find((reason): reason is string => Boolean(reason));
     if (latestCorrection) {
-      const repeated = thread.items.slice(0, lastModelIndex)
+      const repeated = thread.items.slice(0, lastAgentOutputIndex)
         .some((item) => correctionReason(payloads, item.payloadRef) === latestCorrection);
       return repeated
         ? { ready: false, reason: "repeated_correction_without_new_input" }
         : { ready: true, reason: "host_correction" };
     }
-    return { ready: false, reason: "no_new_input_after_model" };
+    return { ready: false, reason: "no_new_input_after_agent_output" };
   }
 
   async tokenUsageSinceLastHumanMessage(goalId: string): Promise<number> {

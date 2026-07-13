@@ -1,7 +1,6 @@
 import type { AgentGoal, AgentThreadSnapshot } from "../../shared/contracts/agent-engine.js";
+import type { AgentModelHistoryItem } from "../providers/types.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../shared/types.js";
-import { toolProtocolFor } from "../../shared/tool-catalog.js";
-import { estimateTokens, truncateToTokenBudget } from "../context/token-budget.js";
 import type { AgentStore } from "./agent-store.js";
 
 export interface AgentContextAssemblerInput {
@@ -23,6 +22,8 @@ export interface AgentContextReport {
 }
 
 export interface AgentAssembledContext {
+  instructions: string;
+  history: AgentModelHistoryItem[];
   prompt: string;
   report: AgentContextReport;
 }
@@ -40,86 +41,123 @@ export class AgentContextAssembler {
     if (input.goal && input.goal.spec.threadId !== input.thread.threadId) {
       throw new Error("Goal does not belong to thread");
     }
-    const stable = truncateToTokenBudget(stableSection(input), Math.floor(this.maxInputTokens * 0.45), "SIA 与工具配置");
+    const stable = truncateToTokenBudget(stableSection(input), Math.floor(this.maxInputTokens * 0.55), "SIA 与工具配置");
     const goal = truncateToTokenBudget(goalSection(input.goal), Math.floor(this.maxInputTokens * 0.2), "当前 Goal");
-    const history = await this.threadSection(input.thread, Math.max(1, Math.floor(this.maxInputTokens * 0.35)));
-    const prompt = [stable.text, goal.text, history.text].join("\n\n");
+    const instructions = [stable.text, goal.text].join("\n\n");
+    const projected = await this.projectHistory(input.thread, Math.max(1, Math.floor(this.maxInputTokens * 0.25)));
+    const renderedHistory = projected.history.map(renderHistoryItem).join("\n");
+    const prompt = `${instructions}\n\n## Thread（严格时间序）\n${renderedHistory || "无历史消息"}`;
     return {
+      instructions,
+      history: projected.history,
       prompt,
       report: {
-        injectedChars: prompt.length,
-        estimatedTokens: estimateTokens(prompt),
+        injectedChars: instructions.length + renderedHistory.length,
+        estimatedTokens: estimateTokens(instructions) + estimateTokens(renderedHistory),
         threadItems: input.thread.items.length,
-        compactedThreadItems: history.compactedItems,
-        recentThreadItems: history.recentItems,
-        truncated: stable.truncated || goal.truncated || history.compactedItems > 0,
+        compactedThreadItems: projected.compactedItems,
+        recentThreadItems: projected.recentItems,
+        truncated: stable.truncated || goal.truncated || projected.compactedItems > 0,
         sections: [
           { name: "stable", chars: stable.text.length },
           { name: "goal", chars: goal.text.length },
-          { name: "thread", chars: history.text.length },
+          { name: "history", chars: renderedHistory.length },
         ],
       },
     };
   }
 
-  private async threadSection(thread: AgentThreadSnapshot, maxTokens: number): Promise<{ text: string; compactedItems: number; recentItems: number }> {
-    const entries: Array<{ sequence: number; kind: string; line: string }> = [];
+  private async projectHistory(
+    thread: AgentThreadSnapshot,
+    maxTokens: number,
+  ): Promise<{ history: AgentModelHistoryItem[]; compactedItems: number; recentItems: number }> {
     const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
     const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
-    for (const item of items) {
-      if (item.kind === "goal") continue;
-      const payload = payloads.get(item.payloadRef);
-      if (item.kind === "control" && !isGoalResolutionDecision(payload)) continue;
-      entries.push({ sequence: item.sequence, kind: item.kind, line: `[${item.sequence}] ${item.kind}: ${projectPayload(payload)}` });
-    }
-    if (entries.length === 0) return { text: "## Thread（严格时间序）\n无历史消息", compactedItems: 0, recentItems: 0 };
+    const projected = items.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef)));
+    if (!projected.length) return { history: [], compactedItems: 0, recentItems: 0 };
 
+    const groups = historyGroups(projected);
     const maxChars = Math.max(1, maxTokens * 4);
-    const header = "## Thread（严格时间序）";
-    const summaryReserve = Math.min(480, Math.max(120, Math.floor(maxChars * 0.12)));
-    const recent: string[] = [];
-    let used = header.length + 1;
-    let firstRecentIndex = entries.length;
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const available = maxChars - used - (index > 0 ? summaryReserve : 0);
-      if (available <= 0) break;
-      const line = entries[index].line;
-      if (line.length + 1 <= available) {
-        recent.unshift(line);
-        used += line.length + 1;
-        firstRecentIndex = index;
-        continue;
+    const recentGroups: AgentModelHistoryItem[][] = [];
+    let used = 0;
+    let selectedItems = 0;
+    for (let index = groups.length - 1; index >= 0; index -= 1) {
+      const groupChars = JSON.stringify(groups[index]).length;
+      if (recentGroups.length && used + groupChars > maxChars) break;
+      if (!recentGroups.length && groupChars > maxChars) {
+        recentGroups.unshift(hasToolInteraction(groups[index]) ? groups[index] : compactGroup(groups[index], maxChars));
+        selectedItems += groups[index].length;
+        break;
       }
-      if (recent.length === 0) {
-        const compacted = compactSingleItem(line, available);
-        recent.unshift(compacted);
-        used += compacted.length + 1;
-        firstRecentIndex = index;
-      }
-      break;
+      recentGroups.unshift(groups[index]);
+      used += groupChars;
+      selectedItems += groups[index].length;
     }
-    const old = entries.slice(0, firstRecentIndex);
-    const lines = [header];
-    if (old.length > 0) lines.push(compactionSummary(old));
-    lines.push(...recent);
-    return { text: lines.join("\n"), compactedItems: old.length, recentItems: recent.length };
+    const compactedItems = projected.length - selectedItems;
+    const history = recentGroups.flat();
+    if (compactedItems > 0) {
+      history.unshift({
+        type: "user_message",
+        content: `[历史已压缩：${compactedItems} 条较早的 Agent Thread 项未进入本轮上下文，完整记录仍可审计。]`,
+      });
+    }
+    return { history, compactedItems, recentItems: selectedItems };
   }
 }
 
-function compactionSummary(entries: Array<{ sequence: number; kind: string }>): string {
-  const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
-  const kinds = [...counts.entries()].map(([kind, count]) => `${kind} ${count}`).join("、");
-  return `[历史已压缩：序号 ${entries[0].sequence}-${entries.at(-1)?.sequence}，${kinds}。完整原始记录仍保存在 Agent Thread。]`;
+function hasToolInteraction(group: AgentModelHistoryItem[]): boolean {
+  return group.some((item) => item.type === "tool_call" || item.type === "tool_result");
 }
 
-function compactSingleItem(line: string, available: number): string {
-  if (line.length <= available) return line;
+function projectThreadItem(kind: string, value: unknown): AgentModelHistoryItem[] {
+  if (!isRecord(value)) return [];
+  if (kind === "message" && typeof value.content === "string") {
+    return [{ type: "user_message", content: value.content }];
+  }
+  if (kind === "model" && typeof value.content === "string") {
+    return [{ type: "assistant_message", content: value.content }];
+  }
+  if (kind === "tool" && value.type === "tool_call"
+    && typeof value.callId === "string" && typeof value.name === "string") {
+    return [{ type: "tool_call", callId: value.callId, name: value.name, arguments: value.arguments }];
+  }
+  if (kind === "observation" && value.type === "tool_result" && typeof value.callId === "string") {
+    return [{
+      type: "tool_result",
+      callId: value.callId,
+      content: typeof value.content === "string" ? value.content : JSON.stringify(value.content),
+      isError: value.isError === true,
+    }];
+  }
+  if (kind === "control" && value.type === "goal_resolution_decision") {
+    return [{ type: "user_message", content: `Host 对目标结算的决定：${JSON.stringify(value.decision)}` }];
+  }
+  return [];
+}
+
+function historyGroups(history: AgentModelHistoryItem[]): AgentModelHistoryItem[][] {
+  const groups: AgentModelHistoryItem[][] = [];
+  for (const item of history) {
+    const current = groups.at(-1);
+    if (item.type === "tool_call" && current && current.every((entry) => entry.type !== "tool_result")) {
+      current.push(item);
+    } else if (item.type === "tool_result" && current
+      && current.some((entry) => entry.type === "tool_call" && entry.callId === item.callId)) {
+      current.push(item);
+    } else {
+      groups.push([item]);
+    }
+  }
+  return groups;
+}
+
+function compactGroup(group: AgentModelHistoryItem[], maxChars: number): AgentModelHistoryItem[] {
+  const item = group[0];
+  if (item.type !== "user_message" && item.type !== "assistant_message") return [];
   const marker = "\n...[单条消息按上下文预算压缩]...\n";
-  if (available <= marker.length + 16) return line.slice(0, Math.max(0, available));
-  const content = available - marker.length;
-  const head = Math.ceil(content * 0.6);
-  return `${line.slice(0, head)}${marker}${line.slice(-(content - head))}`;
+  const available = Math.max(0, maxChars - marker.length);
+  const head = Math.ceil(available * 0.6);
+  return [{ ...item, content: `${item.content.slice(0, head)}${marker}${item.content.slice(-(available - head))}` }];
 }
 
 function stableSection(input: AgentContextAssemblerInput): string {
@@ -134,10 +172,9 @@ function stableSection(input: AgentContextAssemblerInput): string {
     "## Autonomy",
     "human 提供的是目标和方向，不负责撰写完整规格。优先使用现有项目事实、工具和专业判断补全可操作细节。",
     "对可逆、低风险的不确定项，明确记录合理假设并继续推进；可以提出简短问题用于校准，但不得把回答作为推进前提。",
-    "只有缺少系统无法替代的输入（例如凭证、明确授权、不可逆外部操作确认或真实安全边界）时，才允许阻塞等待 human。偏好、范围细节和实现选择应由团队先给出默认方案。",
+    "只有缺少系统无法替代的输入时，才允许提交 blocked；偏好、范围细节和实现选择应由 Agent 先给出默认方案。",
     "## Tools",
-    toolProtocolFor(input.policy),
-    "只能使用已配置且已授权的工具；不得编造工具结果。",
+    "工具以 Provider 原生函数调用提供。只能调用本轮注册且已授权的工具；不得在助手文本中伪造工具调用或工具结果。",
   ].join("\n");
 }
 
@@ -152,32 +189,30 @@ function goalSection(goal?: AgentGoal): string {
     goal.spec.contextRefs.length
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
-    "普通回复、工具调用或一次执行切片结束都不代表目标完成；只有显式提交 GoalResolutionProposal 才能请求改变目标结果。",
-    "显式提案格式：{\"goalResolution\":{\"status\":\"completed|blocked|failed\",\"summary\":\"...\",\"evidence\":[{\"kind\":\"...\",\"ref\":\"...\"}],\"domainOutcome\":{...}}}。缺少事实时先查项目和工具；可用合理假设解决时继续并标注假设。只有缺少不可替代输入时才提交 blocked。",
+    "普通回复、工具调用或一次 turn 结束都不代表目标完成。只有调用 goal_resolution 工具才能提交 GoalResolutionProposal。",
   ].filter(Boolean).join("\n");
 }
 
-function projectPayload(value: unknown): string {
-  if (typeof value === "string") return sanitize(value);
-  if (!value || typeof value !== "object") return JSON.stringify(value);
-  const record = value as Record<string, unknown>;
-  if (typeof record.content === "string") {
-    const sender = typeof record.senderPrincipalId === "string" ? `${record.senderPrincipalId}: ` : "";
-    return `${sender}${sanitize(record.content)}`;
-  }
-  return sanitize(JSON.stringify(value));
+function renderHistoryItem(item: AgentModelHistoryItem): string {
+  if (item.type === "user_message") return `human: ${item.content}`;
+  if (item.type === "assistant_message") return `assistant: ${item.content}`;
+  if (item.type === "tool_call") return `tool_call(${item.callId}): ${item.name} ${JSON.stringify(item.arguments)}`;
+  return `tool_result(${item.callId}, error=${item.isError}): ${item.content}`;
 }
 
-function isGoalResolutionDecision(value: unknown): boolean {
-  return Boolean(value)
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && (value as Record<string, unknown>).type === "goal_resolution_decision";
+function truncateToTokenBudget(value: string, maxTokens: number, label: string): { text: string; truncated: boolean } {
+  const maxChars = Math.max(1, maxTokens * 4);
+  if (value.length <= maxChars) return { text: value, truncated: false };
+  const marker = `\n...[${label}按上下文预算截断]...\n`;
+  const available = Math.max(0, maxChars - marker.length);
+  const head = Math.ceil(available * 0.7);
+  return { text: `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`, truncated: true };
 }
 
-function sanitize(value: string): string {
-  if (value.includes("## Soul") && value.includes("## Thread（严格时间序）")) {
-    return `[已过滤历史组装提示词，原始长度 ${value.length} 字符]`;
-  }
-  return value;
+function estimateTokens(value: string): number {
+  return Math.ceil(value.length / 4);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

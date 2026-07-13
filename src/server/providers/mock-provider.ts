@@ -1,56 +1,60 @@
-import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "./types.js";
+import type { AgentModelProvider, AgentModelTurnInput, AgentModelTurnResult } from "./types.js";
 
 export class MockProvider implements AgentModelProvider {
   name = "mock" as const;
 
-  async runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult> {
-    const structured = mockGoalOutput(input.prompt);
+  async runModelTurn(input: AgentModelTurnInput): Promise<AgentModelTurnResult> {
+    if (!input.tools.some((tool) => tool.name === "goal_resolution")) {
+      return {
+        items: [{ type: "assistant_message", content: "已收到并处理当前消息。" }],
+        usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
+      };
+    }
     return {
-      text: JSON.stringify(structured),
-      structured,
+      items: [{
+        type: "tool_call",
+        callId: `mock-goal-${input.history.length}`,
+        name: "goal_resolution",
+        arguments: mockGoalResolution(input.instructions),
+      }],
       usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
-      events: [{ type: "text", text: JSON.stringify(structured) }],
     };
   }
 }
 
-function mockGoalOutput(prompt: string): Record<string, unknown> {
-  if (prompt.includes("输出契约：ticket-graph-v2")) {
+function mockGoalResolution(instructions: string): Record<string, unknown> {
+  if (instructions.includes("输出契约：ticket-graph-v2")) {
     return {
-      goalResolution: {
-        status: "completed",
-        summary: "已形成执行工单 DAG",
-        evidence: [],
-        domainOutcome: {
-          result: { plan: "实现、质量检查、验收" },
-          graph: {
-            schemaVersion: 2,
-            nodes: [
-              node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
-              node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "qa-report-v1"),
-              node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
-            ],
-            dependencyEdges: [
-              { fromKey: "implementation", toKey: "qa" },
-              { fromKey: "qa", toKey: "acceptance" },
-            ],
-          },
-          completionPolicy: {
-            requiredTerminalKeys: ["acceptance"],
-            failurePolicy: "require_resolution",
-            blockedPolicy: "wait",
-          },
+      status: "completed",
+      summary: "已形成执行工单 DAG",
+      evidence: [],
+      domainOutcome: {
+        result: { plan: "实现、质量检查、验收" },
+        graph: {
+          schemaVersion: 2,
+          nodes: [
+            node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
+            node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "qa-report-v1"),
+            node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
+          ],
+          dependencyEdges: [
+            { fromKey: "implementation", toKey: "qa" },
+            { fromKey: "qa", toKey: "acceptance" },
+          ],
+        },
+        completionPolicy: {
+          requiredTerminalKeys: ["acceptance"],
+          failurePolicy: "require_resolution",
+          blockedPolicy: "wait",
         },
       },
     };
   }
   return {
-    goalResolution: {
-      status: "completed",
-      summary: "模拟 Agent 已完成当前目标",
-      evidence: [],
-      domainOutcome: { ok: true },
-    },
+    status: "completed",
+    summary: "模拟 Agent 已完成当前目标",
+    evidence: [],
+    domainOutcome: { ok: true },
   };
 }
 

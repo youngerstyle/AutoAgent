@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry";
-import type { AgentModelProvider, AgentModelTurnInput, AgentTurnResult } from "../../src/server/providers/types";
+import type { AgentModelProvider, AgentModelTurnInput, AgentModelTurnResult } from "../../src/server/providers/types";
 import { ProviderError } from "../../src/server/providers/types";
 
 describe("ProviderRegistry", () => {
@@ -12,7 +12,7 @@ describe("ProviderRegistry", () => {
 
     const result = await registry.runModelTurnWithRetry(input());
 
-    expect(result.structured?.goalResolution).toBeDefined();
+    expect(result.items).toContainEqual(expect.objectContaining({ type: "tool_call", name: "goal_resolution" }));
     expect(result.usage?.totalTokens).toBe(35);
   });
 
@@ -35,7 +35,7 @@ describe("ProviderRegistry", () => {
 
     const result = await registry.runModelTurnWithRetry(input());
 
-    expect(result.text).toBe("ok");
+    expect(result.items).toEqual([{ type: "assistant_message", content: "ok" }]);
     expect(flaky.calls).toBe(2);
   });
 
@@ -105,7 +105,13 @@ describe("ProviderRegistry", () => {
 });
 
 function input(provider: AgentModelTurnInput["provider"] = "mock"): AgentModelTurnInput {
-  return { provider, model: "mock-model", systemPrompt: "You are an Agent", prompt: "Do work" };
+  return {
+    provider,
+    model: "mock-model",
+    instructions: "You are an Agent",
+    history: [{ type: "user_message", content: "Do work" }],
+    tools: [{ name: "goal_resolution", description: "resolve", inputSchema: { type: "object" } }],
+  };
 }
 
 async function tempHome(): Promise<string> {
@@ -119,13 +125,13 @@ class FlakyProvider implements AgentModelProvider {
   async runModelTurn() {
     this.calls += 1;
     if (this.calls === 1) throw new ProviderError("rate limited", true, "RATE_LIMIT");
-    return { text: "ok", events: [{ type: "text" as const, text: "ok" }] };
+    return { items: [{ type: "assistant_message" as const, content: "ok" }] };
   }
 }
 
 class TerminalProvider implements AgentModelProvider {
   name = "mock" as const;
-  async runModelTurn(): Promise<AgentTurnResult> {
+  async runModelTurn(): Promise<AgentModelTurnResult> {
     throw new ProviderError("bad key", false, "BAD_KEY");
   }
 }

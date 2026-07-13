@@ -1,29 +1,36 @@
 import type { ProviderName } from "../../shared/types.js";
 
-export interface AgentProviderEvent {
-  type: "text" | "tool_intent" | "usage" | "status";
-  text?: string;
-  name?: string;
-  input?: Record<string, unknown>;
-  usage?: ProviderUsage;
-}
-
 export interface ProviderUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
 }
 
-export interface AgentTurnResult {
-  events: AgentProviderEvent[];
-  text: string;
-  structured?: Record<string, unknown>;
+export interface AgentToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export type AgentModelHistoryItem =
+  | { type: "user_message"; content: string }
+  | { type: "assistant_message"; content: string }
+  | { type: "tool_call"; callId: string; name: string; arguments: unknown }
+  | { type: "tool_result"; callId: string; content: string; isError: boolean };
+
+export type AgentModelOutputItem =
+  | { type: "assistant_message"; content: string }
+  | { type: "tool_call"; callId: string; name: string; arguments: unknown };
+
+export interface AgentModelTurnResult {
+  items: AgentModelOutputItem[];
   usage?: ProviderUsage;
 }
 
 export interface AgentModelTurnInput {
-  systemPrompt: string;
-  prompt: string;
+  instructions: string;
+  history: AgentModelHistoryItem[];
+  tools: AgentToolDefinition[];
   model: string;
   provider: ProviderName;
 }
@@ -40,5 +47,5 @@ export class ProviderError extends Error {
 
 export interface AgentModelProvider {
   name: ProviderName;
-  runModelTurn(input: AgentModelTurnInput): Promise<AgentTurnResult>;
+  runModelTurn(input: AgentModelTurnInput): Promise<AgentModelTurnResult>;
 }

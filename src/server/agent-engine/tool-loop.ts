@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
-import { isKnownToolName } from "../../shared/tool-catalog.js";
-import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import type { AgentProfile, WorkspaceAgent, WorkspaceToolName } from "../../shared/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
-import { ProviderError, type AgentTurnResult } from "../providers/types.js";
+import {
+  ProviderError,
+  type AgentModelHistoryItem,
+  type AgentModelOutputItem,
+  type AgentToolDefinition,
+} from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentProviderAdapter } from "./provider-adapter.js";
@@ -25,11 +29,11 @@ export interface AgentExecutionSliceResult {
   status: "yielded" | "waiting" | "resolution_proposed" | "execution_blocked";
   toolCalls: number;
   goal?: AgentGoal;
-  blockReason?: "provider_error" | "usage_limit";
+  blockReason?: "provider_error" | "provider_protocol" | "usage_limit";
 }
 
 export class AgentToolLoop {
-  private readonly maxToolCallsPerSlice: number;
+  private readonly maxToolCallsPerTurn: number;
   private readonly maxTokensPerGoalWindow?: number;
   private readonly now: () => Date;
 
@@ -41,8 +45,8 @@ export class AgentToolLoop {
     private readonly traces: AgentTraceStore,
     options: { maxToolCallsPerSlice?: number; maxTokensPerGoalWindow?: number; now?: () => Date } = {},
   ) {
-    this.maxToolCallsPerSlice = options.maxToolCallsPerSlice ?? 20;
-    if (!Number.isInteger(this.maxToolCallsPerSlice) || this.maxToolCallsPerSlice < 1) {
+    this.maxToolCallsPerTurn = options.maxToolCallsPerSlice ?? 20;
+    if (!Number.isInteger(this.maxToolCallsPerTurn) || this.maxToolCallsPerTurn < 1) {
       throw new Error("maxToolCallsPerSlice must be positive");
     }
     this.maxTokensPerGoalWindow = options.maxTokensPerGoalWindow;
@@ -61,28 +65,9 @@ export class AgentToolLoop {
     }
     const thread = await this.engine.getThread(input.threadId);
     const turnId = stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
-    if (goal && this.maxTokensPerGoalWindow !== undefined) {
-      const usedTokens = await this.engine.tokenUsageSinceLastHumanMessage(goal.spec.id);
-      if (usedTokens >= this.maxTokensPerGoalWindow) {
-        const failure = {
-          turnId,
-          status: "execution_blocked",
-          reason: "usage_limit",
-          usedTokens,
-          maxTokens: this.maxTokensPerGoalWindow,
-        } as const;
-        await this.trace(turnId, input, "error", failure);
-        await this.engine.appendToolItem({
-          itemId: `${turnId}:usage-limited`,
-          threadId: input.threadId,
-          goalId: input.goalId,
-          kind: "control",
-          value: failure,
-          createdAt: this.now().toISOString(),
-        });
-        return { turnId, status: "execution_blocked", toolCalls: 0, goal, blockReason: "usage_limit" };
-      }
-    }
+    const usageBlock = await this.usageBlock(goal, turnId, input);
+    if (usageBlock) return usageBlock;
+
     await this.engine.appendToolItem({
       itemId: `${turnId}:started`,
       threadId: input.threadId,
@@ -99,117 +84,291 @@ export class AgentToolLoop {
       goal,
     });
     await this.trace(turnId, input, "context", { prompt: assembled.prompt, report: assembled.report });
-    let result: AgentTurnResult;
-    try {
-      result = await this.provider.run({
-        provider: input.provider,
-        model: input.model,
-        systemPrompt: [
-          "你是一个通用、自主、可使用工具的 Agent。遵守提供的 Soul、Identity、Agent、Tools 与 Goal。",
-          "每轮必须只返回一个 JSON 对象，不要使用 Markdown 代码块，也不要在 JSON 前后添加文字。",
-          "JSON 的 message 字段用于给 human 展示自然语言进展；机器控制字段只能使用 toolIntents 和 goalResolution。",
-          "存在活动 Goal 时，本轮必须通过非空 toolIntents 继续执行，或通过 goalResolution 明确提交 completed、blocked、failed 之一；不能只回复 message 后停止。",
-        ].join("\n"),
-        prompt: assembled.prompt,
-      });
-    } catch (error) {
-      if (!(error instanceof ProviderError)) throw error;
-      const failure = {
-        turnId,
-        status: "execution_blocked",
-        reason: "provider_error",
-        retryable: error.retryable,
-        code: error.code,
-        message: error.message,
-      } as const;
-      await this.trace(turnId, input, "error", failure);
+
+    const history = [...assembled.history];
+    const toolDefinitions = [
+      ...this.tools.definitions(),
+      ...(goal ? [goalResolutionTool()] : []),
+    ];
+    let toolCalls = 0;
+    let modelToolCalls = 0;
+    let round = 0;
+    while (true) {
+      round += 1;
+      let result;
+      try {
+        result = await this.provider.run({
+          provider: input.provider,
+          model: input.model,
+          instructions: assembled.instructions,
+          history,
+          tools: toolDefinitions,
+        });
+      } catch (error) {
+        if (!(error instanceof ProviderError)) throw error;
+        return this.providerFailure(turnId, input, error, toolCalls);
+      }
+      await this.trace(turnId, input, "provider_response", { round, result });
+      await this.recordUsage(turnId, input, goal, round, result.usage);
+      if (!result.items.length) return this.protocolFailure(turnId, input, "Provider returned no response items", toolCalls);
+
+      let needsFollowUp = false;
+      let proposal: {
+        value: GoalResolutionProposal;
+        callId: string;
+        index: number;
+      } | undefined;
+      const followUpItems: AgentModelHistoryItem[] = [];
+      const pendingToolCalls: Array<{
+        index: number;
+        item: Extract<AgentModelOutputItem, { type: "tool_call" }>;
+        overLimit: boolean;
+      }> = [];
+      const hasWorkspaceToolCall = result.items.some((item) => item.type === "tool_call" && item.name !== "goal_resolution");
+      for (const [index, item] of result.items.entries()) {
+        history.push(item);
+        if (item.type === "assistant_message") {
+          await this.engine.appendModelItem({
+            itemId: `${turnId}:round:${round}:item:${index + 1}`,
+            threadId: input.threadId,
+            goalId: input.goalId,
+            content: item.content,
+            createdAt: this.now().toISOString(),
+          });
+          continue;
+        }
+
+        await this.recordToolCall(turnId, input, round, index, item);
+        modelToolCalls += 1;
+        pendingToolCalls.push({ index, item, overLimit: modelToolCalls > this.maxToolCallsPerTurn });
+      }
+
+      let toolLimitTriggered = false;
+      for (const { index, item, overLimit } of pendingToolCalls) {
+        if (overLimit) {
+          const limited = toolError(item.callId, `单个 turn 的工具调用保险丝已触发（${this.maxToolCallsPerTurn}）`);
+          await this.recordToolResult(turnId, input, round, index, limited, { error: limited.content });
+          followUpItems.push(limited);
+          toolLimitTriggered = true;
+          continue;
+        }
+        if (item.name === "goal_resolution") {
+          if (hasWorkspaceToolCall) {
+            const premature = toolError(item.callId, "同一响应仍有待执行的工作区工具；请读取工具结果后再提交 goal_resolution");
+            await this.recordToolResult(turnId, input, round, index, premature, { error: premature.content });
+            followUpItems.push(premature);
+            needsFollowUp = true;
+            continue;
+          }
+          const value = goal ? resolutionProposal(item.arguments, goal, turnId, this.now().toISOString()) : undefined;
+          if (value) proposal = { value, callId: item.callId, index };
+          if (!value) {
+            const invalid = toolError(item.callId, "goal_resolution 参数无效");
+            await this.recordToolResult(turnId, input, round, index, invalid, { error: invalid.content });
+            followUpItems.push(invalid);
+            needsFollowUp = true;
+          }
+          continue;
+        }
+
+        toolCalls += 1;
+        const observation = await this.executeTool(item);
+        const toolResult: AgentModelHistoryItem = {
+          type: "tool_result",
+          callId: item.callId,
+          content: JSON.stringify(observation),
+          isError: observation.ok !== true,
+        };
+        await this.recordToolResult(turnId, input, round, index, toolResult, observation);
+        followUpItems.push(toolResult);
+        needsFollowUp = true;
+      }
+
+      history.push(...followUpItems);
+      if (toolLimitTriggered) return this.yieldForToolLimit(turnId, input, toolCalls, goal);
+
+      if (proposal) {
+        const submitted: AgentModelHistoryItem = {
+          type: "tool_result",
+          callId: proposal.callId,
+          content: JSON.stringify({ proposalSubmitted: true, proposalId: proposal.value.proposalId }),
+          isError: false,
+        };
+        await this.recordToolResult(turnId, input, round, proposal.index, submitted, {
+          proposalSubmitted: true,
+          proposalId: proposal.value.proposalId,
+        });
+        const attempted = await this.engine.proposeGoalResolution(proposal.value);
+        await this.trace(turnId, input, "settlement", attempted);
+        return { turnId, status: "resolution_proposed", toolCalls, goal: attempted.goal };
+      }
+      if (needsFollowUp) {
+        const blocked = await this.usageBlock(goal, turnId, input);
+        if (blocked) return { ...blocked, toolCalls };
+        continue;
+      }
+
       await this.engine.appendToolItem({
-        itemId: `${turnId}:execution-blocked`,
+        itemId: `${turnId}:waiting`,
         threadId: input.threadId,
         goalId: input.goalId,
         kind: "control",
-        value: failure,
+        value: { turnId, status: "waiting" },
         createdAt: this.now().toISOString(),
       });
-      return { turnId, status: "execution_blocked", toolCalls: 0, goal, blockReason: "provider_error" };
+      return { turnId, status: "waiting", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined };
     }
-    await this.trace(turnId, input, "provider_response", result);
-    const totalTokens = result.usage?.totalTokens
-      ?? (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
-    if (goal && totalTokens > 0) {
-      await this.engine.appendToolItem({
-        itemId: `${turnId}:usage`,
-        threadId: input.threadId,
-        goalId: input.goalId,
-        kind: "control",
-        value: { type: "provider_usage", goalId: goal.spec.id, turnId, totalTokens, usage: result.usage },
-        createdAt: this.now().toISOString(),
-      });
-    }
-    await this.engine.appendModelItem({
-      itemId: `${turnId}:model`,
+  }
+
+  private async executeTool(item: Extract<AgentModelOutputItem, { type: "tool_call" }>) {
+    const intent = toolIntent(item.name, item.arguments);
+    if (!intent) return { tool: item.name, ok: false, error: "工具名称或参数无效" };
+    return this.tools.execute(intent);
+  }
+
+  private recordToolCall(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    round: number,
+    index: number,
+    item: Extract<AgentModelOutputItem, { type: "tool_call" }>,
+  ): Promise<void> {
+    return this.engine.appendToolItem({
+      itemId: `${turnId}:round:${round}:tool:${index + 1}`,
       threadId: input.threadId,
       goalId: input.goalId,
-      content: visibleModelMessage(result),
+      kind: "tool",
+      value: { ...item, ...(input.goalId ? { goalId: input.goalId } : {}) },
       createdAt: this.now().toISOString(),
     });
+  }
 
-    const intents = toolIntents(result.structured);
-    let toolCalls = 0;
-    for (const [index, intent] of intents.slice(0, this.maxToolCallsPerSlice).entries()) {
-      const observation = await this.tools.execute(intent);
-      toolCalls += 1;
-      await this.trace(turnId, input, "tool", { intent, observation });
-      await this.engine.appendToolItem({
-        itemId: `${turnId}:tool:${index + 1}`,
-        threadId: input.threadId,
-        goalId: input.goalId,
-        kind: "observation",
-        value: observation,
-        createdAt: this.now().toISOString(),
-      });
-    }
-    if (intents.length) {
-      const exhausted = intents.length > this.maxToolCallsPerSlice;
-      await this.engine.appendToolItem({
-        itemId: `${turnId}:yielded`,
-        threadId: input.threadId,
-        goalId: input.goalId,
-        kind: "control",
-        value: {
-          turnId,
-          status: "yielded",
-          reason: exhausted ? "execution_slice_budget" : "tool_observations_ready",
-          remainingRequestedTools: Math.max(0, intents.length - toolCalls),
-        },
-        createdAt: this.now().toISOString(),
-      });
-      return { turnId, status: "yielded", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined };
-    }
-
-    const proposal = goal ? resolutionProposal(result.structured, goal, turnId, this.now().toISOString()) : undefined;
-    if (proposal) {
-      const attempted = await this.engine.proposeGoalResolution(proposal);
-      await this.trace(turnId, input, "settlement", attempted);
-      return { turnId, status: "resolution_proposed", toolCalls, goal: attempted.goal };
-    }
-    const hasActiveGoal = goal?.status === "active";
+  private async recordToolResult(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    round: number,
+    index: number,
+    result: AgentModelHistoryItem,
+    observation: unknown,
+  ): Promise<void> {
+    if (result.type !== "tool_result") return;
+    await this.trace(turnId, input, "tool", { callId: result.callId, observation });
     await this.engine.appendToolItem({
-      itemId: `${turnId}:${hasActiveGoal ? "yielded" : "waiting"}`,
+      itemId: `${turnId}:round:${round}:result:${index + 1}`,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "observation",
+      value: { type: "tool_result", callId: result.callId, content: observation, isError: result.isError },
+      createdAt: this.now().toISOString(),
+    });
+  }
+
+  private async recordUsage(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    goal: AgentGoal | undefined,
+    round: number,
+    usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined,
+  ): Promise<void> {
+    const totalTokens = usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
+    if (!goal || totalTokens <= 0) return;
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:usage:${round}`,
       threadId: input.threadId,
       goalId: input.goalId,
       kind: "control",
-      value: hasActiveGoal
-        ? {
-            turnId,
-            status: "yielded",
-            reason: "active_goal_unresolved",
-            guidance: "当前 Goal 尚未结算。下一轮继续工作；完成、受阻或失败时必须提交 goalResolution。",
-          }
-        : { turnId, status: "waiting" },
+      value: { type: "provider_usage", goalId: goal.spec.id, turnId, totalTokens, usage },
       createdAt: this.now().toISOString(),
     });
-    return { turnId, status: hasActiveGoal ? "yielded" : "waiting", toolCalls, goal };
+  }
+
+  private async usageBlock(
+    goal: AgentGoal | undefined,
+    turnId: string,
+    input: AgentExecutionSliceInput,
+  ): Promise<AgentExecutionSliceResult | undefined> {
+    if (!goal || this.maxTokensPerGoalWindow === undefined) return undefined;
+    const usedTokens = await this.engine.tokenUsageSinceLastHumanMessage(goal.spec.id);
+    if (usedTokens < this.maxTokensPerGoalWindow) return undefined;
+    const failure = {
+      turnId,
+      status: "execution_blocked",
+      reason: "usage_limit",
+      usedTokens,
+      maxTokens: this.maxTokensPerGoalWindow,
+    } as const;
+    await this.trace(turnId, input, "error", failure);
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:usage-limited`,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "control",
+      value: failure,
+      createdAt: this.now().toISOString(),
+    });
+    return { turnId, status: "execution_blocked", toolCalls: 0, goal, blockReason: "usage_limit" };
+  }
+
+  private async providerFailure(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    error: ProviderError,
+    toolCalls: number,
+  ): Promise<AgentExecutionSliceResult> {
+    const failure = {
+      turnId,
+      status: "execution_blocked",
+      reason: "provider_error",
+      retryable: error.retryable,
+      code: error.code,
+      message: error.message,
+    } as const;
+    await this.trace(turnId, input, "error", failure);
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:execution-blocked`,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "control",
+      value: failure,
+      createdAt: this.now().toISOString(),
+    });
+    return { turnId, status: "execution_blocked", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined, blockReason: "provider_error" };
+  }
+
+  private async protocolFailure(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    message: string,
+    toolCalls: number,
+  ): Promise<AgentExecutionSliceResult> {
+    const failure = { turnId, status: "execution_blocked", reason: "provider_protocol", message } as const;
+    await this.trace(turnId, input, "error", failure);
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:protocol-error`,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "control",
+      value: failure,
+      createdAt: this.now().toISOString(),
+    });
+    return { turnId, status: "execution_blocked", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined, blockReason: "provider_protocol" };
+  }
+
+  private async yieldForToolLimit(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    toolCalls: number,
+    goal: AgentGoal | undefined,
+  ): Promise<AgentExecutionSliceResult> {
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:yielded`,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "control",
+      value: { turnId, status: "yielded", reason: "tool_call_safety_fuse" },
+      createdAt: this.now().toISOString(),
+    });
+    return { turnId, status: "yielded", toolCalls, goal };
   }
 
   private trace(
@@ -232,64 +391,83 @@ export class AgentToolLoop {
   }
 }
 
-function visibleModelMessage(result: AgentTurnResult): string {
-  const message = result.structured?.message;
-  if (typeof message === "string" && message.trim()) return message.trim();
-  const resolution = result.structured?.goalResolution;
-  if (resolution && typeof resolution === "object" && !Array.isArray(resolution)) {
-    const summary = (resolution as Record<string, unknown>).summary;
-    if (typeof summary === "string" && summary.trim()) return summary.trim();
-  }
-  return result.text;
+function goalResolutionTool(): AgentToolDefinition {
+  return {
+    name: "goal_resolution",
+    description: "提交当前 Goal 的完成、受阻或失败结论。普通回复不会改变 Goal 状态。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["completed", "blocked", "failed"] },
+        summary: { type: "string" },
+        evidence: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { kind: { type: "string" }, ref: { type: "string" } },
+            required: ["kind", "ref"],
+            additionalProperties: false,
+          },
+        },
+        domainOutcome: {},
+      },
+      required: ["status", "summary", "evidence"],
+      additionalProperties: false,
+    },
+  };
 }
 
-function toolIntents(value?: Record<string, unknown>): AgentToolIntent[] {
-  if (!Array.isArray(value?.toolIntents)) return [];
-  return value.toolIntents.flatMap((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-    const record = item as Record<string, unknown>;
-    if (typeof record.tool !== "string" || !isKnownToolName(record.tool)) return [];
-    return [{
-      tool: record.tool,
-      path: typeof record.path === "string" ? record.path : undefined,
-      content: typeof record.content === "string" ? record.content : undefined,
-      command: typeof record.command === "string" ? record.command : undefined,
-      serviceId: typeof record.serviceId === "string" ? record.serviceId : undefined,
-    }];
-  });
+function toolIntent(name: string, value: unknown): AgentToolIntent | undefined {
+  if (!isRecord(value) || !isWorkspaceToolName(name)) return undefined;
+  return {
+    tool: name,
+    path: typeof value.path === "string" ? value.path : undefined,
+    content: typeof value.content === "string" ? value.content : undefined,
+    command: typeof value.command === "string" ? value.command : undefined,
+    serviceId: typeof value.serviceId === "string" ? value.serviceId : undefined,
+  };
 }
 
 function resolutionProposal(
-  structured: Record<string, unknown> | undefined,
+  value: unknown,
   goal: AgentGoal,
   turnId: string,
   createdAt: string,
 ): GoalResolutionProposal | undefined {
-  const value = structured?.goalResolution;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (!new Set(["completed", "blocked", "failed"]).has(String(record.status))) return undefined;
-  if (typeof record.summary !== "string" || !record.summary.trim()) return undefined;
-  const evidence = Array.isArray(record.evidence)
-    ? record.evidence.flatMap((item) => {
-        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-        const evidenceRecord = item as Record<string, unknown>;
-        return typeof evidenceRecord.kind === "string" && typeof evidenceRecord.ref === "string"
-          ? [{ kind: evidenceRecord.kind, ref: evidenceRecord.ref }]
-          : [];
-      })
-    : [];
+  if (!isRecord(value)) return undefined;
+  if (!new Set(["completed", "blocked", "failed"]).has(String(value.status))) return undefined;
+  if (typeof value.summary !== "string" || !value.summary.trim() || !Array.isArray(value.evidence)) return undefined;
+  const evidence = value.evidence.flatMap((item) => {
+    if (!isRecord(item) || typeof item.kind !== "string" || typeof item.ref !== "string") return [];
+    return [{ kind: item.kind, ref: item.ref }];
+  });
+  if (evidence.length !== value.evidence.length) return undefined;
   return {
     proposalId: stableId("proposal", goal.spec.id, turnId),
     goalId: goal.spec.id,
     expectedGoalVersion: goal.version,
     resolvingGoalVersion: goal.version + 1,
-    status: record.status as "completed" | "blocked" | "failed",
-    summary: record.summary,
+    status: value.status as "completed" | "blocked" | "failed",
+    summary: value.summary,
     evidence,
-    domainOutcome: record.domainOutcome,
+    domainOutcome: value.domainOutcome,
     createdAt,
   };
+}
+
+function toolError(
+  callId: string,
+  content: string,
+): Extract<AgentModelHistoryItem, { type: "tool_result" }> {
+  return { type: "tool_result", callId, content, isError: true };
+}
+
+function isWorkspaceToolName(value: string): value is WorkspaceToolName {
+  return new Set(["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"]).has(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function stableId(prefix: string, ...parts: string[]): string {

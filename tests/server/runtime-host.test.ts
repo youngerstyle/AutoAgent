@@ -39,7 +39,7 @@ describe("RuntimeHost", () => {
       name: "mock",
       async runModelTurn() {
         modelTurns += 1;
-        return { text: "目标仍在处理中。", events: [{ type: "text" as const, text: "目标仍在处理中。" }] };
+        return { items: [{ type: "assistant_message" as const, content: "目标仍在处理中。" }] };
       },
     });
     await fixture.host.createTask({ taskId: "task-resume-active", title: "演示", objective: "构建演示" });
@@ -72,7 +72,7 @@ describe("RuntimeHost", () => {
       async runModelTurn() {
         modelTurns += 1;
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return { text: "继续处理。", events: [{ type: "text" as const, text: "继续处理。" }] };
+        return { items: [{ type: "assistant_message" as const, content: "继续处理。" }] };
       },
     });
     await fixture.host.createTask({ taskId: "task-single-flight", title: "演示", objective: "构建演示" });
@@ -100,7 +100,7 @@ describe("RuntimeHost", () => {
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
-        const planning = input.prompt.includes("输出契约：ticket-graph-v2");
+        const planning = input.instructions.includes("输出契约：ticket-graph-v2");
         if (planning) planningTurns += 1;
         const structured = planning
           ? {
@@ -120,9 +120,12 @@ describe("RuntimeHost", () => {
               },
             };
         return {
-          text: JSON.stringify(structured),
-          structured,
-          events: [{ type: "text" as const, text: JSON.stringify(structured) }],
+          items: [{
+            type: "tool_call" as const,
+            callId: `resolve-${planningTurns}`,
+            name: "goal_resolution",
+            arguments: structured.goalResolution,
+          }],
         };
       },
     });
@@ -162,7 +165,7 @@ describe("RuntimeHost", () => {
       name: "mock",
       async runModelTurn() {
         if (!providerAvailable) throw new ProviderError("402 Insufficient Balance", false, "OPENAI_ERROR");
-        return { text: "继续处理", events: [{ type: "text" as const, text: "继续处理" }] };
+        return { items: [{ type: "assistant_message" as const, content: "继续处理" }] };
       },
     });
     await fixture.host.createTask({ taskId: "task-provider-resume", title: "演示", objective: "构建演示" });
@@ -191,7 +194,7 @@ describe("RuntimeHost", () => {
           announceModelStart();
           await modelGate;
         }
-        return { text: "继续处理。", events: [{ type: "text" as const, text: "继续处理。" }] };
+        return { items: [{ type: "assistant_message" as const, content: "继续处理。" }] };
       },
     });
     await fixture.host.createTask({ taskId: "task-live-snapshot", title: "演示", objective: "构建演示" });
@@ -272,7 +275,7 @@ describe("RuntimeHost", () => {
     await waitFor(async () => {
       const items = (await architect.getThreadForAgent("wa_architect", "task-a"))?.items ?? [];
       return items.some((item) => item.kind === "model") && items.at(-1)?.kind === "control";
-    });
+    }, 5_000);
     const thread = await architect.getThreadForAgent("wa_architect", "task-a");
 
     expect(thread?.items.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
@@ -289,7 +292,7 @@ describe("RuntimeHost", () => {
       name: "mock",
       async runModelTurn() {
         await modelGate;
-        return { text: "收到", events: [{ type: "text" as const, text: "收到" }] };
+        return { items: [{ type: "assistant_message" as const, content: "收到" }] };
       },
     });
 
