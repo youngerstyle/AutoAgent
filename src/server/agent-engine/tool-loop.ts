@@ -25,10 +25,12 @@ export interface AgentExecutionSliceResult {
   status: "yielded" | "waiting" | "resolution_proposed" | "execution_blocked";
   toolCalls: number;
   goal?: AgentGoal;
+  blockReason?: "provider_error" | "usage_limit";
 }
 
 export class AgentToolLoop {
   private readonly maxToolCallsPerSlice: number;
+  private readonly maxTokensPerGoalWindow?: number;
   private readonly now: () => Date;
 
   constructor(
@@ -37,11 +39,16 @@ export class AgentToolLoop {
     private readonly provider: AgentProviderAdapter,
     private readonly tools: AgentToolRuntime,
     private readonly traces: AgentTraceStore,
-    options: { maxToolCallsPerSlice?: number; now?: () => Date } = {},
+    options: { maxToolCallsPerSlice?: number; maxTokensPerGoalWindow?: number; now?: () => Date } = {},
   ) {
     this.maxToolCallsPerSlice = options.maxToolCallsPerSlice ?? 20;
     if (!Number.isInteger(this.maxToolCallsPerSlice) || this.maxToolCallsPerSlice < 1) {
       throw new Error("maxToolCallsPerSlice must be positive");
+    }
+    this.maxTokensPerGoalWindow = options.maxTokensPerGoalWindow;
+    if (this.maxTokensPerGoalWindow !== undefined
+      && (!Number.isFinite(this.maxTokensPerGoalWindow) || this.maxTokensPerGoalWindow <= 0)) {
+      throw new Error("maxTokensPerGoalWindow must be positive");
     }
     this.now = options.now ?? (() => new Date());
   }
@@ -54,6 +61,28 @@ export class AgentToolLoop {
     }
     const thread = await this.engine.getThread(input.threadId);
     const turnId = stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
+    if (goal && this.maxTokensPerGoalWindow !== undefined) {
+      const usedTokens = await this.engine.tokenUsageSinceLastHumanMessage(goal.spec.id);
+      if (usedTokens >= this.maxTokensPerGoalWindow) {
+        const failure = {
+          turnId,
+          status: "execution_blocked",
+          reason: "usage_limit",
+          usedTokens,
+          maxTokens: this.maxTokensPerGoalWindow,
+        } as const;
+        await this.trace(turnId, input, "error", failure);
+        await this.engine.appendToolItem({
+          itemId: `${turnId}:usage-limited`,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          kind: "control",
+          value: failure,
+          createdAt: this.now().toISOString(),
+        });
+        return { turnId, status: "execution_blocked", toolCalls: 0, goal, blockReason: "usage_limit" };
+      }
+    }
     await this.engine.appendToolItem({
       itemId: `${turnId}:started`,
       threadId: input.threadId,
@@ -102,9 +131,21 @@ export class AgentToolLoop {
         value: failure,
         createdAt: this.now().toISOString(),
       });
-      return { turnId, status: "execution_blocked", toolCalls: 0, goal };
+      return { turnId, status: "execution_blocked", toolCalls: 0, goal, blockReason: "provider_error" };
     }
     await this.trace(turnId, input, "provider_response", result);
+    const totalTokens = result.usage?.totalTokens
+      ?? (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
+    if (goal && totalTokens > 0) {
+      await this.engine.appendToolItem({
+        itemId: `${turnId}:usage`,
+        threadId: input.threadId,
+        goalId: input.goalId,
+        kind: "control",
+        value: { type: "provider_usage", goalId: goal.spec.id, turnId, totalTokens, usage: result.usage },
+        createdAt: this.now().toISOString(),
+      });
+    }
     await this.engine.appendModelItem({
       itemId: `${turnId}:model`,
       threadId: input.threadId,

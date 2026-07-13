@@ -171,9 +171,9 @@ proposal observed
 - Goal paused/blocked/resolving/terminal；
 - 同一 Thread revision 已经执行过 slice。
 
-Agent Engine 为每次 slice 持久化 `inputRevision`。RuntimeHost 只能在 `currentRevision > lastConsumedRevision` 时调度下一 slice。模型主动请求工具后产生的新 observation 会提高 revision，因此长时间工作仍可持续；没有新事实的空转会停止。
+Agent Engine 直接从持久化 AgentThread 的时间序条目计算执行就绪状态：首轮 Goal、新 message、新 tool observation 和首次 host correction 可以触发下一 slice；普通模型回复后没有新事实，或相同 correction 再次出现时，不再调度。模型主动请求工具后产生的新 observation 会继续驱动工作，因此长时间运行不受固定轮数限制；没有新事实的空转会停止。
 
-真实 Provider 还必须有独立的费用熔断：单任务/单 Agent/单时间窗口用量达到配置边界时进入 `usage_limited`，只能由 human 显式恢复。该熔断是最后防线，不代替正确的进度协议。
+真实 Provider 还必须有独立的费用熔断：单 Agent Goal、自最近一次 human 明确消息以来的实际 Provider Token 用量达到配置边界时进入 `usage_limited`，只能由 human 新消息显式恢复。生产默认阈值为 250,000 tokens，可用 `AUTOAGENT_MAX_TOKENS_PER_AGENT_GOAL_WINDOW` 调整。该熔断是最后防线，不代替正确的进度协议。
 
 ## 6. 测试门槛
 

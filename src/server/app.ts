@@ -45,7 +45,14 @@ export function createApp(config: AppConfig = loadConfig()) {
   });
   const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
   const policyRef = createMinimalTeamWorkflowPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
-  const mission = new RuntimeHostRegistry(workspaceStore, profileStore, providerRegistry, policyStore, policyRef);
+  const mission = new RuntimeHostRegistry(
+    workspaceStore,
+    profileStore,
+    providerRegistry,
+    policyStore,
+    policyRef,
+    { maxTokensPerAgentGoalWindow: config.maxTokensPerAgentGoalWindow },
+  );
   app.locals.runtimeHostRegistry = mission;
   app.use(express.json({ limit: "2mb" }));
 

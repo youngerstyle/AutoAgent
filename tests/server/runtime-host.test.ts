@@ -32,7 +32,7 @@ describe("RuntimeHost", () => {
     restarted.stop();
   });
 
-  it("continues an active goal after a legacy waiting tail instead of requiring human input", async () => {
+  it("does not replay an active goal after a waiting tail without new input", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
     fixture.providers.get = async () => ({
@@ -59,13 +59,9 @@ describe("RuntimeHost", () => {
     await fixture.host.tick();
 
     const updated = await boss.getThread(thread!.threadId);
-    const tail = updated.items.at(-1)!;
-    expect(modelTurns).toBe(2);
-    expect(await boss.getPayload(tail.payloadRef)).toMatchObject({
-      status: "yielded",
-      reason: "active_goal_unresolved",
-    });
-    expect((await fixture.host.snapshot()).agents.find((agent) => agent.roleInWorkspace === "boss")?.status).toBe("running");
+    expect(modelTurns).toBe(1);
+    expect(updated.items.at(-1)?.itemId).toBe("legacy-waiting");
+    expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
   });
 
   it("coalesces concurrent timer ticks instead of queueing repeated model turns", async () => {
@@ -80,6 +76,15 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-single-flight", title: "演示", objective: "构建演示" });
+    const singleFlightBoss = fixture.host.context("task-single-flight")!.engines.get("wa_boss")!;
+    const singleFlightThread = (await singleFlightBoss.getThreadForAgent("wa_boss", "task-single-flight"))!;
+    await singleFlightBoss.sendMessage({
+      messageId: "new-input-before-concurrent-ticks",
+      threadId: singleFlightThread.threadId,
+      senderPrincipalId: "human",
+      content: "这是新的事实",
+      createdAt: "2026-07-10T00:04:00.000Z",
+    });
 
     const first = fixture.host.tick();
     const second = fixture.host.tick();
@@ -87,6 +92,45 @@ describe("RuntimeHost", () => {
     expect(second).toBe(first);
     await Promise.all([first, second]);
     expect(modelTurns).toBe(2);
+  });
+
+  it("does not spend another model turn on the same correction without new input", async () => {
+    const fixture = await createFixture();
+    let planningTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        const planning = input.prompt.includes("输出契约：ticket-graph-v2");
+        if (planning) planningTurns += 1;
+        const structured = planning
+          ? {
+              goalResolution: {
+                status: "completed",
+                summary: "仍然缺少 graph",
+                evidence: [],
+                domainOutcome: { result: { plan: "incomplete" } },
+              },
+            }
+          : {
+              goalResolution: {
+                status: "completed",
+                summary: "需求接收完成",
+                evidence: [],
+                domainOutcome: { accepted: true },
+              },
+            };
+        return {
+          text: JSON.stringify(structured),
+          structured,
+          events: [{ type: "text" as const, text: JSON.stringify(structured) }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-no-progress", title: "演示", objective: "构建演示" });
+    for (let index = 0; index < 6; index += 1) await fixture.host.tick();
+
+    expect(planningTurns).toBe(2);
   });
 
   it("does not replay an active ticket after a non-retryable provider failure", async () => {
@@ -151,6 +195,15 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-live-snapshot", title: "演示", objective: "构建演示" });
+    const liveBoss = fixture.host.context("task-live-snapshot")!.engines.get("wa_boss")!;
+    const liveThread = (await liveBoss.getThreadForAgent("wa_boss", "task-live-snapshot"))!;
+    await liveBoss.sendMessage({
+      messageId: "new-input-before-held-model",
+      threadId: liveThread.threadId,
+      senderPrincipalId: "human",
+      content: "继续处理新的事实",
+      createdAt: "2026-07-10T00:04:00.000Z",
+    });
     holdModel = true;
     const runningTick = fixture.host.tick();
     await modelStarted;

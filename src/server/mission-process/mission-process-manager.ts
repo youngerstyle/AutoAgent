@@ -250,10 +250,10 @@ export class MissionProcessManager {
           id: stableId("goal", dispatchId),
           threadId,
           objective: assignmentIssue
-            ? `${assignmentIssue}。评估该分配错误，并将当前工单退回父工单 ${work.ticket.parentTicketId ?? "未定义"}，由 PM 修订 Ticket DAG。`
+            ? `${assignmentIssue}。记录分配阻塞事实，等待具备授权的 workflow 维护者修订 Ticket DAG。`
             : work.definition.objective,
           successCriteria: assignmentIssue
-            ? ["明确记录无法分配的能力", "使用 return_to_parent 退回父工单，不伪装完成原工作"]
+            ? ["明确记录无法分配的能力", "提交 blocked，不伪装完成原工作"]
             : work.definition.successCriteria,
           contextRefs: [
             { kind: "mission", ref: aggregate.missionId },
@@ -272,7 +272,7 @@ export class MissionProcessManager {
         goalId,
         senderPrincipalId: "mission-process",
         content: assignmentIssue
-          ? `${assignmentIssue}。这是工单分配异常，不执行原工作；必须提交 completed + domainOutcome.kind=return_to_parent，并提供 parentTicketId=${work.ticket.parentTicketId ?? ""} 和 reason。`
+          ? `${assignmentIssue}。这是工单分配异常，不执行原工作；请提交 blocked，并在 summary 中记录缺失能力。`
           : missionOutcomeInstruction(
               work.definition.outputContract.schemaRef,
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
@@ -355,22 +355,21 @@ export class MissionProcessManager {
     const proposal = await agent.getProposal(proposalId);
     if (!proposal) throw new Error("Goal proposal is missing");
     const workflow = await this.tickets.getWorkflow(link.workflowId);
-    let command;
-    try {
-      const goal = await agent.getGoal(link.agentGoalId);
-      if (!goal) throw new Error("Goal is missing");
-      const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome);
-      if (!validation.valid) throw new Error(validation.reason);
-      const assignmentError = validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, this.team);
-      if (assignmentError) throw new Error(assignmentError);
-      command = proposalToTicketCommand(proposal as never, active, workflow.version, this.now().toISOString());
-    } catch (error) {
+    const goal = await agent.getGoal(link.agentGoalId);
+    if (!goal) throw new Error("Goal is missing");
+    const schemaRef = goal.spec.outputContract?.schemaRef;
+    const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome);
+    const assignmentError = validation.valid
+      ? validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team)
+      : undefined;
+    const correctionReason = validation.valid ? assignmentError : validation.reason;
+    if (correctionReason) {
       const decisionId = stableId("invalid_goal_decision", proposalId);
       const settled = await agent.settleProposal({
         decisionId,
         proposalId,
         expectedGoalVersion: (await agent.getGoal(link.agentGoalId))!.version,
-        decision: { accepted: false, disposition: "correctable", reason: (error as Error).message },
+        decision: { accepted: false, disposition: "correctable", reason: correctionReason },
       });
       if (!settled.applied) return aggregate;
       return this.updateLink(aggregate, dispatchId, {
@@ -379,6 +378,7 @@ export class MissionProcessManager {
         lastDecisionId: decisionId,
       });
     }
+    const command = proposalToTicketCommand(proposal as never, active, schemaRef, workflow.version, this.now().toISOString());
     const result = await this.tickets.getTicketCommandResult(command.commandId) ?? await this.tickets.applyTicket(command);
     const decisionId = stableId("goal_decision", proposalId, command.commandId);
     const decision = ticketResultToGoalDecision(proposal, result);
@@ -460,9 +460,10 @@ function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefine
   throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
 }
 
-function validateTeamAssignments(outcome: MissionTicketOutcome, team: TeamBinding): string | undefined {
-  if (outcome.kind !== "complete_with_graph") return undefined;
-  for (const node of outcome.graph.nodes) {
+function validateTeamAssignments(outcome: MissionTicketOutcome, schemaRef: string | undefined, team: TeamBinding): string | undefined {
+  if (schemaRef !== "ticket-graph-v2" || !outcome.graph || typeof outcome.graph !== "object" || Array.isArray(outcome.graph)) return undefined;
+  const graph = outcome.graph as unknown as { nodes: Array<{ key: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }> };
+  for (const node of graph.nodes) {
     const candidates = node.assignment.principalId
       ? team.members.filter((member) => member.principalId === node.assignment.principalId)
       : team.members;

@@ -95,7 +95,7 @@ export interface AgentGoalControlRequest {
   requestId: string;
   goalId: string;
   expectedGoalVersion: number;
-  action: "pause" | "resume" | "cancel";
+  action: "pause" | "limit_usage" | "resume" | "cancel";
   reason: string;
 }
 

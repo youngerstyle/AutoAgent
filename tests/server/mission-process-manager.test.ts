@@ -32,7 +32,7 @@ describe("MissionProcessManager", () => {
 
     const boss = fixture.engines.get("boss")!;
     const goal = await boss.getGoal(intakeLink.agentGoalId!);
-    const outcome: MissionTicketOutcome = { kind: "complete", result: { brief: "accepted" } };
+    const outcome: MissionTicketOutcome = { brief: "accepted" };
     await boss.proposeGoalResolution({
       proposalId: "proposal-intake",
       goalId: goal!.spec.id,
@@ -69,6 +69,59 @@ describe("MissionProcessManager", () => {
 
     expect(after.links).toHaveLength(before.links.length);
     expect(after.links[0]?.agentGoalId).toBe(before.links[0]?.agentGoalId);
+  });
+
+  it("finishes settlement from the durable Ticket result after interruption without another Agent turn", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    const originalSettle = boss.settleProposal.bind(boss);
+    let interrupted = false;
+    boss.settleProposal = async (input) => {
+      if (!interrupted) {
+        interrupted = true;
+        const current = (await boss.getGoal(goal.spec.id))!;
+        await boss.controlGoal({
+          requestId: "pause-between-ticket-and-goal",
+          goalId: current.spec.id,
+          expectedGoalVersion: current.version,
+          action: "pause",
+          reason: "simulated process interruption",
+        });
+        throw new Error("simulated process interruption");
+      }
+      return originalSettle(input);
+    };
+
+    await expect(boss.proposeGoalResolution({
+      proposalId: "proposal-interrupted-after-ticket",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      domainOutcome: { accepted: true },
+      createdAt: NOW,
+    })).resolves.toMatchObject({ attempt: { pending: "retry_later" } });
+    await expect(fixture.manager.tick()).rejects.toThrow("simulated process interruption");
+    boss.settleProposal = originalSettle;
+
+    const recovered = await fixture.manager.recover();
+
+    expect(recovered.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "settled" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
   });
 
   it("renews a running claim before expiry without creating a second dispatch", async () => {
@@ -116,10 +169,10 @@ describe("MissionProcessManager", () => {
       goalId: goal.spec.id,
       expectedGoalVersion: goal.version,
       resolvingGoalVersion: goal.version + 1,
-      status: "failed",
+      status: "completed",
       summary: "bad shape",
       evidence: [],
-      domainOutcome: {} as never,
+      domainOutcome: undefined as never,
       createdAt: NOW,
     });
 

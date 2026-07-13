@@ -33,6 +33,13 @@ describe("AgentContextAssembler", () => {
       value: { tool: "readFile", ok: true, path: "src/main.ts" },
       createdAt: "2026-07-10T00:02:00.000Z",
     });
+    await engine.appendToolItem({
+      itemId: "usage-1",
+      threadId: thread.threadId,
+      kind: "control",
+      value: { type: "provider_usage", goalId: "goal", totalTokens: 12345 },
+      createdAt: "2026-07-10T00:02:30.000Z",
+    });
     const goal = await engine.startGoal({
       agentId: "dev",
       threadId: thread.threadId,
@@ -64,7 +71,9 @@ describe("AgentContextAssembler", () => {
     expect(assembled.prompt.indexOf("我会读取文件")).toBeLessThan(assembled.prompt.indexOf("[3] observation"));
     expect(assembled.prompt).not.toContain("taskRunId");
     expect(assembled.prompt).not.toContain("ticketGraph");
-    expect(assembled.report.threadItems).toBe(4);
+    expect(assembled.prompt).not.toContain("provider_usage");
+    expect(assembled.prompt).not.toContain("12345");
+    expect(assembled.report.threadItems).toBe(5);
   });
 
   it("compacts the oldest thread items while preserving the newest human turn", async () => {

@@ -21,7 +21,6 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import {
   AgentStore,
-  type AgentStoreAggregate,
 } from "./agent-store.js";
 import {
   AgentGoalTransitionError,
@@ -247,6 +246,63 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
 
   async getGoal(goalId: string): Promise<AgentGoal | undefined> {
     return structuredClone((await this.store.read()).goals.find((item) => item.spec.id === goalId));
+  }
+
+  async executionReadiness(goalId: string): Promise<{ ready: boolean; reason: string }> {
+    const aggregate = await this.store.read();
+    const goal = aggregate.goals.find((item) => item.spec.id === goalId);
+    if (!goal || goal.status !== "active") return { ready: false, reason: "goal_not_active" };
+    const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
+    if (!thread) throw new Error("Goal thread does not exist");
+    const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    let lastModelIndex = -1;
+    for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+      const item = thread.items[index]!;
+      if (item.kind === "model" && payloadGoalId(payloads, item.payloadRef) === goalId) {
+        lastModelIndex = index;
+        break;
+      }
+    }
+    if (lastModelIndex < 0) return { ready: true, reason: "goal_not_started" };
+    const afterModel = thread.items.slice(lastModelIndex + 1);
+    if (afterModel.some((item) => item.kind === "message" || item.kind === "observation")) {
+      return { ready: true, reason: "new_input" };
+    }
+    const latestCorrection = [...afterModel].reverse()
+      .map((item) => correctionReason(payloads, item.payloadRef))
+      .find((reason): reason is string => Boolean(reason));
+    if (latestCorrection) {
+      const repeated = thread.items.slice(0, lastModelIndex)
+        .some((item) => correctionReason(payloads, item.payloadRef) === latestCorrection);
+      return repeated
+        ? { ready: false, reason: "repeated_correction_without_new_input" }
+        : { ready: true, reason: "host_correction" };
+    }
+    return { ready: false, reason: "no_new_input_after_model" };
+  }
+
+  async tokenUsageSinceLastHumanMessage(goalId: string): Promise<number> {
+    const aggregate = await this.store.read();
+    const goal = aggregate.goals.find((item) => item.spec.id === goalId);
+    if (!goal) throw new Error("Goal does not exist");
+    const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
+    if (!thread) throw new Error("Goal thread does not exist");
+    const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    let windowStart = 0;
+    for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+      const item = thread.items[index]!;
+      if (item.kind !== "message") continue;
+      const value = payloads.get(item.payloadRef);
+      if (isRecord(value) && value.senderPrincipalId === "human") {
+        windowStart = index + 1;
+        break;
+      }
+    }
+    return thread.items.slice(windowStart).reduce((total, item) => {
+      const value = payloads.get(item.payloadRef);
+      if (!isRecord(value) || value.type !== "provider_usage" || value.goalId !== goalId) return total;
+      return total + (typeof value.totalTokens === "number" && Number.isFinite(value.totalTokens) ? value.totalTokens : 0);
+    }, 0);
   }
 
   async getProjection(scopeId: string, goalId?: string, itemLimit?: number): Promise<{
@@ -478,6 +534,28 @@ function appendItem(
     version: thread.version + 1,
     items: [...thread.items, { ...item, sequence: thread.items.length + 1 }],
   };
+}
+
+function payloadGoalId(payloads: ReadonlyMap<string, unknown>, payloadRef: string): string | undefined {
+  const value = payloads.get(payloadRef);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const goalId = (value as Record<string, unknown>).goalId;
+  return typeof goalId === "string" ? goalId : undefined;
+}
+
+function correctionReason(payloads: ReadonlyMap<string, unknown>, payloadRef: string): string | undefined {
+  const value = payloads.get(payloadRef);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "goal_resolution_decision" || record.status !== "correctable") return undefined;
+  const decision = record.decision;
+  if (!decision || typeof decision !== "object" || Array.isArray(decision)) return undefined;
+  const reason = (decision as Record<string, unknown>).reason;
+  return typeof reason === "string" ? reason : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function goalEvent(

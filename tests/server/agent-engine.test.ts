@@ -20,6 +20,27 @@ const T0 = "2026-07-10T00:00:00.000Z";
 const T1 = "2026-07-10T00:01:00.000Z";
 
 describe("AgentEngine", () => {
+  it("marks a goal usage-limited and requires an explicit resume", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const limited = await fixture.engine.controlGoal({
+      requestId: "usage-limit",
+      goalId: fixture.goal.spec.id,
+      expectedGoalVersion: fixture.goal.version,
+      action: "limit_usage" as never,
+      reason: "token window reached",
+    });
+    expect(limited.status).toBe("usage_limited");
+
+    const resumed = await fixture.engine.controlGoal({
+      requestId: "resume-after-usage-limit",
+      goalId: limited.spec.id,
+      expectedGoalVersion: limited.version,
+      action: "resume",
+      reason: "human explicitly continued",
+    });
+    expect(resumed.status).toBe("active");
+  });
+
   it("persists an ordinary chronological conversation across restart", async () => {
     const fixture = await createFixture();
     const thread = await fixture.engine.ensureThread({

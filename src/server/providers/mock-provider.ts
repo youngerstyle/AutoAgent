@@ -22,7 +22,6 @@ function mockGoalOutput(prompt: string): Record<string, unknown> {
         summary: "已形成执行工单 DAG",
         evidence: [],
         domainOutcome: {
-          kind: "complete_with_graph",
           result: { plan: "实现、质量检查、验收" },
           graph: {
             schemaVersion: 2,
@@ -50,7 +49,7 @@ function mockGoalOutput(prompt: string): Record<string, unknown> {
       status: "completed",
       summary: "模拟 Agent 已完成当前目标",
       evidence: [],
-      domainOutcome: { kind: "complete", result: { ok: true } },
+      domainOutcome: { ok: true },
     },
   };
 }

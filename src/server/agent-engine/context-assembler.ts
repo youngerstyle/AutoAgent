@@ -69,6 +69,7 @@ export class AgentContextAssembler {
     for (const item of items) {
       if (item.kind === "goal") continue;
       const payload = payloads.get(item.payloadRef);
+      if (item.kind === "control" && !isGoalResolutionDecision(payload)) continue;
       entries.push({ sequence: item.sequence, kind: item.kind, line: `[${item.sequence}] ${item.kind}: ${projectPayload(payload)}` });
     }
     if (entries.length === 0) return { text: "## Thread（严格时间序）\n无历史消息", compactedItems: 0, recentItems: 0 };
@@ -165,6 +166,13 @@ function projectPayload(value: unknown): string {
     return `${sender}${sanitize(record.content)}`;
   }
   return sanitize(JSON.stringify(value));
+}
+
+function isGoalResolutionDecision(value: unknown): boolean {
+  return Boolean(value)
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).type === "goal_resolution_decision";
 }
 
 function sanitize(value: string): string {

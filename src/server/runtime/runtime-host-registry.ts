@@ -17,6 +17,7 @@ export class RuntimeHostRegistry {
     private readonly providers: ProviderRegistry,
     private readonly policyStore: WorkflowPolicyStore,
     private readonly policyRef: WorkflowPolicyRef,
+    private readonly options: { maxTokensPerAgentGoalWindow?: number } = {},
   ) {}
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
@@ -91,7 +92,7 @@ export class RuntimeHostRegistry {
     if (existing) return existing;
     const workspace = await this.workspaces.get(workspaceId);
     await seedMinimalTeamWorkflowPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-    const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef);
+    const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef, this.options);
     await host.start();
     this.hosts.set(workspaceId, host);
     return host;

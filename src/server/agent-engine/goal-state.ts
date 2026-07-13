@@ -28,9 +28,13 @@ export function controlGoalState(
     if (goal.status === "paused") return goal;
     return { ...goal, version: goal.version + 1, status: "paused", updatedAt };
   }
+  if (input.action === "limit_usage") {
+    if (goal.status === "usage_limited") return goal;
+    return { ...goal, version: goal.version + 1, status: "usage_limited", updatedAt };
+  }
   if (input.action === "resume") {
-    if (goal.status !== "paused" && goal.status !== "blocked") {
-      throw new AgentGoalTransitionError("invalid_transition", "Only paused or blocked goals can resume");
+    if (!new Set(["paused", "blocked", "usage_limited"]).has(goal.status)) {
+      throw new AgentGoalTransitionError("invalid_transition", "Only paused, blocked or usage-limited goals can resume");
     }
     return {
       ...goal,
@@ -77,7 +81,7 @@ export function settleGoalState(
   updatedAt: string,
 ): AgentGoal {
   requireVersion(goal, expectedGoalVersion);
-  if (goal.activeProposalId !== proposal.proposalId || goal.status !== "resolving") {
+  if (goal.activeProposalId !== proposal.proposalId || !new Set(["resolving", "paused"]).has(goal.status)) {
     throw new AgentGoalTransitionError("version_conflict", "Proposal is not active");
   }
   if (decision.accepted) {

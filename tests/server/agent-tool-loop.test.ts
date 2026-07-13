@@ -87,12 +87,36 @@ describe("AgentToolLoop", () => {
     });
     expect((await fixture.traces.list()).at(-1)).toMatchObject({ kind: "error" });
   });
+
+  it("stops before exceeding the configured token window and lets a new human message reopen it", async () => {
+    const working = result("继续工作", { toolIntents: [{ tool: "writeFile", path: "progress.txt", content: "ok" }] });
+    working.usage = { inputTokens: 25, outputTokens: 10, totalTokens: 35 };
+    const fixture = await createFixture([structuredClone(working), structuredClone(working), structuredClone(working)], 20, 50);
+
+    await fixture.loop.runSlice(fixture.input);
+    await fixture.loop.runSlice(fixture.input);
+    expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "execution_blocked", toolCalls: 0 });
+    expect(fixture.provider.calls).toBe(2);
+
+    await fixture.engine.sendMessage({
+      messageId: "human-reopens-usage-window",
+      threadId: fixture.input.threadId,
+      goalId: fixture.input.goalId,
+      senderPrincipalId: "human",
+      content: "我确认继续",
+      createdAt: "2026-07-10T00:02:00.000Z",
+    });
+    expect(await fixture.loop.runSlice(fixture.input)).toMatchObject({ status: "yielded" });
+    expect(fixture.provider.calls).toBe(3);
+  });
 });
 
 class QueueProvider implements AgentProviderAdapter {
   error?: Error;
+  calls = 0;
   constructor(private readonly results: AgentTurnResult[]) {}
   async run(_input: AgentProviderRequest): Promise<AgentTurnResult> {
+    this.calls += 1;
     if (this.error) throw this.error;
     const next = this.results.shift();
     if (!next) throw new Error("No provider result queued");
@@ -104,7 +128,7 @@ function result(text: string, structured: Record<string, unknown>): AgentTurnRes
   return { text, structured, events: [] };
 }
 
-async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 20) {
+async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 20, maxTokensPerGoalWindow?: number) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-loop-v2-"));
   const store = new AgentStore(root, "dev");
   const engine = new AgentEngine(store, undefined, { now: () => new Date("2026-07-10T00:00:00.000Z") });
@@ -138,7 +162,7 @@ async function createFixture(results: AgentTurnResult[], maxToolCallsPerSlice = 
     provider,
     new AgentToolRuntime(policy, [...(policy.enabledTools ?? [])]),
     traces,
-    { maxToolCallsPerSlice, now: () => new Date("2026-07-10T00:01:00.000Z") },
+    { maxToolCallsPerSlice, maxTokensPerGoalWindow, now: () => new Date("2026-07-10T00:01:00.000Z") },
   );
   return {
     root,

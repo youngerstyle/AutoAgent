@@ -3,6 +3,7 @@ import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-en
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { TicketCommandResult, TicketId, WorkflowId } from "../../src/shared/contracts/ticket-engine.js";
 import {
+  missionOutcomeInstruction,
   proposalToTicketCommand,
   ticketResultToGoalDecision,
   validateMissionTicketOutcome,
@@ -10,37 +11,63 @@ import {
 } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
+  it("translates a pure ticket-graph-v2 domain outcome into the internal Ticket command", () => {
+    const domainOutcome = {
+      result: { plan: "implementation then verification" },
+      graph: {
+        schemaVersion: 2 as const,
+        nodes: [],
+        dependencyEdges: [],
+      },
+      completionPolicy: {
+        requiredTerminalKeys: [],
+        failurePolicy: "require_resolution" as const,
+        blockedPolicy: "wait" as const,
+      },
+    };
+
+    const command = proposalToTicketCommand(
+      proposal("completed", domainOutcome as never),
+      link,
+      "ticket-graph-v2",
+      4,
+      NOW,
+    );
+
+    expect(command.payload).toMatchObject({
+      type: "complete_with_graph",
+      result: domainOutcome.result,
+      graph: domainOutcome.graph,
+      completionPolicy: domainOutcome.completionPolicy,
+    });
+  });
+
+  it("describes only the Agent domain output and never exposes Ticket command names", () => {
+    const instruction = missionOutcomeInstruction("ticket-graph-v2", ["implementation", "quality:verify"]);
+
+    expect(instruction).toContain("ticket-graph-v2");
+    expect(instruction).not.toContain("complete_with_graph");
+    expect(instruction).not.toContain("return_to_parent");
+    expect(instruction).not.toContain("cancelTicketIds");
+  });
+
   it.each([
-    ["completed", { kind: "complete", result: { ok: true } }, "complete"],
-    ["blocked", { kind: "block", reason: "need input" }, "block"],
-    ["failed", { kind: "fail", reason: "broken" }, "fail"],
-    ["completed", { kind: "return_to_parent", parentTicketId: "parent" as TicketId, reason: "missing prerequisite" }, "return_to_parent"],
+    ["completed", { ok: true }, "complete"],
+    ["blocked", { requiredInput: "credential" }, "block"],
+    ["failed", { diagnostic: "broken" }, "fail"],
   ] as const)("maps %s and %s without role or phase inference", (status, outcome, commandType) => {
-    const command = proposalToTicketCommand(proposal(status, outcome), link, 4, NOW);
+    const command = proposalToTicketCommand(proposal(status, outcome), link, "delivery-v1", 4, NOW);
     expect(command.payload.type).toBe(commandType);
     expect(command.executionRef).toBe("goal-a");
   });
 
-  it("rejects contradictory combinations", () => {
-    expect(() => proposalToTicketCommand(
-      proposal("completed", { kind: "fail", reason: "bad" }),
-      link,
-      4,
-      NOW,
-    )).toThrow("Contradictory");
-  });
-
   it("rejects incomplete outcomes before they reach Ticket Engine", () => {
-    expect(validateMissionTicketOutcome("boss-intake-v1", "failed", {})).toEqual({
+    expect(validateMissionTicketOutcome("boss-intake-v1", "failed", {})).toEqual({ valid: true });
+    expect(validateMissionTicketOutcome("ticket-graph-v2", "completed", { result: {} })).toEqual({
       valid: false,
-      reason: "domainOutcome.kind 缺失",
-    });
-    expect(validateMissionTicketOutcome("ticket-graph-v2", "completed", { kind: "complete", result: {} })).toEqual({
-      valid: false,
-      reason: "计划工单必须返回 complete_with_graph",
+      reason: "ticket-graph-v2 需要 result、graph 和 completionPolicy",
     });
     expect(validateMissionTicketOutcome("ticket-graph-v2", "completed", {
-      kind: "complete_with_graph",
       result: {},
       graph: { schemaVersion: 2, nodes: [], dependencyEdges: [] },
       completionPolicy: { failurePolicy: "require_resolution", blockedPolicy: "wait" },
@@ -55,7 +82,7 @@ describe("Ticket Agent resolution adapter", () => {
     [{ accepted: false, commandId: "c", proposalId: "p", code: "workflow_terminal", reason: "done" }, "workflow_terminal"],
     [{ accepted: false, commandId: "c", proposalId: "p", code: "version_conflict", reason: "retry" }, "correctable"],
   ] as Array<[TicketCommandResult, string]>)("maps Ticket rejection to a normative decision", (result, disposition) => {
-    expect(ticketResultToGoalDecision(proposal("completed", { kind: "complete", result: {} }), result))
+    expect(ticketResultToGoalDecision(proposal("completed", { ok: true }), result))
       .toMatchObject({ accepted: false, disposition });
   });
 });

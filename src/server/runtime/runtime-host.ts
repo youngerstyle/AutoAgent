@@ -57,7 +57,7 @@ export class RuntimeHost {
     private readonly providers: ProviderRegistry,
     private readonly policyStore: WorkflowPolicyStore,
     private readonly policyRef: WorkflowPolicyRef,
-    private readonly options: { intervalMs?: number; now?: () => Date } = {},
+    private readonly options: { intervalMs?: number; maxTokensPerAgentGoalWindow?: number; now?: () => Date } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
   }
@@ -187,7 +187,7 @@ export class RuntimeHost {
     const link = await this.activeLink(context, agentId);
     if (link?.agentGoalId) {
       const goal = await engine.getGoal(link.agentGoalId);
-      if (goal && (goal.status === "paused" || goal.status === "blocked")) {
+      if (goal && (goal.status === "paused" || goal.status === "blocked" || goal.status === "usage_limited")) {
         await engine.controlGoal({
           requestId: stableId("human_resume", taskId, agentId, goal.spec.id, message),
           goalId: goal.spec.id,
@@ -447,8 +447,20 @@ export class RuntimeHost {
     let mission = await context.manager.tick();
     for (const link of mission.links) {
       if (link.status !== "running") continue;
-      const goal = await context.engines.get(link.agentId)?.getGoal(link.agentGoalId);
+      const engine = context.engines.get(link.agentId);
+      const goal = await engine?.getGoal(link.agentGoalId);
       if (goal?.status !== "active") continue;
+      const readiness = await engine!.executionReadiness(goal.spec.id);
+      if (!readiness.ready) {
+        await engine!.controlGoal({
+          requestId: stableId("no_progress", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
+          goalId: goal.spec.id,
+          expectedGoalVersion: goal.version,
+          action: "pause",
+          reason: readiness.reason,
+        });
+        continue;
+      }
       await this.runAgentSlice(context, link);
     }
     mission = await context.manager.tick();
@@ -470,8 +482,10 @@ export class RuntimeHost {
       requestId: stableId("execution_blocked", context.record.taskId, link.agentId, result.turnId),
       goalId: result.goal.spec.id,
       expectedGoalVersion: result.goal.version,
-      action: "pause",
-      reason: "provider execution is unavailable; ticket state is unchanged",
+      action: result.blockReason === "usage_limit" ? "limit_usage" : "pause",
+      reason: result.blockReason === "usage_limit"
+        ? "configured token window reached; human confirmation is required"
+        : "provider execution is unavailable; ticket state is unchanged",
     });
   }
 
@@ -507,7 +521,7 @@ export class RuntimeHost {
         new RegistryAgentProviderAdapter(this.providers),
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: () => this.now() },
+        { maxTokensPerGoalWindow: this.options.maxTokensPerAgentGoalWindow, now: () => this.now() },
       ));
     }
     const manager = new MissionProcessManager(
@@ -591,7 +605,7 @@ function projectThread(
 }
 
 function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string | undefined, events: AgentThreadEvent[]): EntityStatus {
-  if (linkStatus === "blocked" || goalStatus === "blocked") return "blocked";
+  if (linkStatus === "blocked" || goalStatus === "blocked" || goalStatus === "usage_limited") return "blocked";
   if (goalStatus === "completed" || goalStatus === "cancelled") return "idle";
   if (linkStatus === "running" && goalStatus === "active") return "running";
   const latestControl = [...events].reverse().find((event) => event.source === "system");
