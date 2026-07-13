@@ -52,7 +52,10 @@ export function sendTaskFollowup(workspaceId: string, taskId: string, message: s
 }
 
 export function sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<{ snapshot: WorkspaceSnapshot }> {
-  return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${agentId}/messages`, { method: "POST", body: JSON.stringify({ message }) });
+  return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${agentId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ message, messageId: crypto.randomUUID() }),
+  });
 }
 
 export function stopTask(workspaceId: string, taskId: string): Promise<unknown> {

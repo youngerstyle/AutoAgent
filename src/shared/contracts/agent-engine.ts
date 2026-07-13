@@ -231,7 +231,7 @@ export interface AgentPort<TDomainOutcome = unknown> {
     proposalId: string,
   ): Promise<GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined>;
   getThread(threadId: string): Promise<AgentThreadSnapshot>;
-  sendMessage(input: SendAgentMessageRequest): Promise<void>;
+  sendMessage(input: SendAgentMessageRequest): Promise<boolean>;
   controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal>;
   settleProposal<TStatus extends GoalResolutionStatus>(
     input: SettleProposalRequest<TStatus>,

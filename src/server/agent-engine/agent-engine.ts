@@ -129,15 +129,21 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     return this.store.payloads(payloadRefs);
   }
 
-  async sendMessage(input: SendAgentMessageRequest): Promise<void> {
-    const fingerprint = hash(input);
+  async sendMessage(input: SendAgentMessageRequest): Promise<boolean> {
+    const fingerprint = hash({
+      messageId: input.messageId,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      senderPrincipalId: input.senderPrincipalId,
+      content: input.content,
+    });
     const current = await this.store.read();
     const duplicate = current.messageIds.find((item) => item.messageId === input.messageId);
     if (duplicate) {
       if (duplicate.fingerprint !== fingerprint || duplicate.threadId !== input.threadId) {
         throw new AgentEngineConflictError("Message idempotency conflict");
       }
-      return;
+      return false;
     }
     await this.appendThreadItem(
       input.threadId,
@@ -148,6 +154,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       input,
       { messageId: input.messageId, fingerprint },
     );
+    return true;
   }
 
   async appendModelItem(input: {

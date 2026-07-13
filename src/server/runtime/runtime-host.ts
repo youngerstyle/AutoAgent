@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentProfile,
   AgentThreadEvent,
@@ -80,14 +80,16 @@ export class RuntimeHost {
     return tracked;
   }
 
-  async sendAgentMessage(taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot> {
-    const snapshot = await this.exclusive(async () => {
-      await this.appendAgentMessageUnlocked(taskId, agentId, message);
-      return this.snapshotUnlocked();
+  async sendAgentMessage(taskId: string, agentId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
+    const result = await this.exclusive(async () => {
+      const appended = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId);
+      return { appended, snapshot: await this.snapshotUnlocked() };
     });
-    void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId))
-      .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error)).catch(() => undefined));
-    return snapshot;
+    if (result.appended) {
+      void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId))
+        .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error)).catch(() => undefined));
+    }
+    return result.snapshot;
   }
 
   pauseTask(taskId: string): Promise<void> {
@@ -169,27 +171,28 @@ export class RuntimeHost {
     for (const context of this.contexts.values()) await this.tickTask(context);
   }
 
-  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string): Promise<void> {
+  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<boolean> {
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
     if (!engine) throw new Error("Agent does not belong to this team");
     const thread = await engine.getThreadForAgent(agentId, context.record.missionId)
       ?? await engine.ensureThread({ agentId, scopeId: context.record.missionId, idempotencyKey: stableId("thread", context.record.missionId, agentId) });
     const createdAt = this.now().toISOString();
-    await engine.sendMessage({
-      messageId: stableId("human_message", taskId, agentId, createdAt, message),
+    const appended = await engine.sendMessage({
+      messageId,
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       senderPrincipalId: "human",
       content: message,
       createdAt,
     });
+    if (!appended) return false;
     const link = await this.activeLink(context, agentId);
     if (link?.agentGoalId) {
       const goal = await engine.getGoal(link.agentGoalId);
       if (goal && (goal.status === "paused" || goal.status === "blocked" || goal.status === "usage_limited")) {
         await engine.controlGoal({
-          requestId: stableId("human_resume", taskId, agentId, goal.spec.id, message),
+          requestId: stableId("human_resume", taskId, agentId, goal.spec.id, messageId),
           goalId: goal.spec.id,
           expectedGoalVersion: goal.version,
           action: "resume",
@@ -198,6 +201,7 @@ export class RuntimeHost {
         if (link.status === "blocked") await context.manager.resumeBlockedAgent(agentId);
       }
     }
+    return true;
   }
 
   private async continueAfterAgentMessageUnlocked(taskId: string, agentId: string): Promise<void> {

@@ -61,9 +61,9 @@ export class RuntimeHostRegistry {
     return host.sendAgentMessage(taskId, boss.id, message);
   }
 
-  async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot> {
+  async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId);
-    return host.sendAgentMessage(taskId, agentId, message);
+    return host.sendAgentMessage(taskId, agentId, message, messageId);
   }
 
   async loopDebugLogByWorkspace(workspaceId: string): Promise<LoopDebugLog> {

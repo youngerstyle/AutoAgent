@@ -9,7 +9,7 @@ export interface TaskRuntimeFacade {
   pauseTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
   resumeTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
   followUpTask(workspaceId: string, taskId: string, message: string): Promise<WorkspaceSnapshot>;
-  sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<WorkspaceSnapshot>;
+  sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string): Promise<WorkspaceSnapshot>;
   stopTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
 }
 
@@ -57,7 +57,8 @@ export function createTaskRouter(mission: TaskRuntimeFacade) {
       String(req.params.workspaceId),
       String(req.params.taskId),
       String(req.params.agentId),
-      String(req.body.message ?? "")
+      String(req.body.message ?? ""),
+      typeof req.body.messageId === "string" ? req.body.messageId : undefined,
     );
     res.status(201).json({ snapshot });
   }));

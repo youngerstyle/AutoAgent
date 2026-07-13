@@ -193,6 +193,47 @@ describe("RuntimeHost", () => {
     expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
   });
 
+  it("starts a new turn when the same human message is sent after another pause", async () => {
+    const fixture = await createFixture();
+    let providerAvailable = false;
+    let providerTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        providerTurns += 1;
+        if (!providerAvailable) throw new ProviderError("502 status code (no body)", false, "OPENAI_ERROR");
+        return { items: [{ type: "assistant_message" as const, content: "继续处理" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-repeated-human-message", title: "演示", objective: "构建演示" });
+    const context = fixture.host.context("task-repeated-human-message")!;
+    const engine = context.engines.get("wa_boss")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(await engine.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+
+    providerAvailable = true;
+    await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-1");
+    await waitFor(async () => providerTurns === 2);
+
+    const activeGoal = (await engine.getGoal(link.agentGoalId!))!;
+    await engine.controlGoal({
+      requestId: "pause-between-identical-human-messages",
+      goalId: activeGoal.spec.id,
+      expectedGoalVersion: activeGoal.version,
+      action: "pause",
+      reason: "test another paused boundary",
+    });
+
+    await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-2");
+    await waitFor(async () => providerTurns === 3);
+
+    expect(await engine.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
+
+    await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-2");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(providerTurns).toBe(3);
+  });
+
   it("serves a read-only snapshot while a model turn is still running", async () => {
     const fixture = await createFixture();
     let holdModel = false;
