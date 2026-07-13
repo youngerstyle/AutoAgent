@@ -41,21 +41,24 @@ export function workspaceAgentSessionsDir(workspaceRoot: string, workspaceAgentI
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "sessions");
 }
 
-export function agentEngineFile(workspaceRoot: string, agentId: string): string {
+export function agentEngineDir(workspaceRoot: string, agentId: string): string {
   const root = path.resolve(workspaceAutoAgentDir(workspaceRoot), "agent-engine");
   const key = createHash("sha256").update(agentId).digest("base64url");
-  const file = path.resolve(root, `${key}.json`);
-  if (!file.startsWith(`${root}${path.sep}`)) throw new Error("Agent Engine path escaped its storage root");
-  return file;
+  const directory = path.resolve(root, key);
+  if (!directory.startsWith(`${root}${path.sep}`)) throw new Error("Agent Engine path escaped its storage root");
+  return directory;
+}
+
+export function agentEngineRolloutFile(workspaceRoot: string, agentId: string): string {
+  return path.join(agentEngineDir(workspaceRoot, agentId), "rollout.jsonl");
 }
 
 export function agentEngineLockFile(workspaceRoot: string, agentId: string): string {
-  return `${agentEngineFile(workspaceRoot, agentId)}.lock`;
+  return path.join(agentEngineDir(workspaceRoot, agentId), ".lock");
 }
 
 export function agentEngineTraceDir(workspaceRoot: string, agentId: string): string {
-  const aggregate = agentEngineFile(workspaceRoot, agentId);
-  return path.join(path.dirname(aggregate), "traces", path.basename(aggregate, ".json"));
+  return path.join(agentEngineDir(workspaceRoot, agentId), "traces");
 }
 
 export function agentEngineTraceFile(workspaceRoot: string, agentId: string, traceId: string): string {

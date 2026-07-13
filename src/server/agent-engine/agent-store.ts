@@ -1,13 +1,18 @@
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import path from "node:path";
 import type {
   AgentEvent,
   AgentEventPage,
   AgentEventQuery,
   AgentGoal,
+  AgentThreadItem,
   AgentThreadSnapshot,
   GoalResolutionProposal,
   SettleProposalResult,
 } from "../../shared/contracts/agent-engine.js";
-import { agentEngineFile, agentEngineLockFile } from "../storage/paths.js";
+import { agentEngineLockFile, agentEngineRolloutFile } from "../storage/paths.js";
 
 export interface AgentStoredPayload {
   payloadRef: string;
@@ -45,6 +50,32 @@ export interface AgentStoreAggregate {
 
 export type AgentStoreMutation = AgentStoreAggregate & { pendingEvents?: AgentEvent[] };
 
+interface StoredThreadDelta {
+  threadId: string;
+  create?: Omit<AgentThreadSnapshot, "items">;
+  expectedVersion: number;
+  version: number;
+  appendedItems: AgentThreadItem[];
+}
+
+interface AgentStoreCommit {
+  schemaVersion: 1;
+  type: "agent_store_commit";
+  agentId: string;
+  aggregateVersion: number;
+  occurredAt: string;
+  threads: StoredThreadDelta[];
+  threadKeys: AgentStoreAggregate["threadKeys"];
+  messageIds: AgentStoreAggregate["messageIds"];
+  payloads: AgentStoredPayload[];
+  goals: AgentGoal[];
+  goalStartKeys: AgentStoreAggregate["goalStartKeys"];
+  proposals: GoalResolutionProposal[];
+  decisions: AgentDecisionRecord[];
+  controls: AgentControlRecord[];
+  outbox: AgentStoreAggregate["outbox"];
+}
+
 export class AgentStoreCursorError extends Error {}
 export class AgentStoreConflictError extends Error {}
 export class AgentStoreCorruptionError extends Error {}
@@ -73,6 +104,7 @@ export class AgentStore {
   private readonly file: string;
   private readonly lockFile: string;
   private readonly options: ResolvedAgentStoreOptions;
+  private cached?: { size: number; mtimeMs: number; aggregate: AgentStoreAggregate };
 
   constructor(
     workspaceRoot: string,
@@ -80,27 +112,23 @@ export class AgentStore {
     options: AgentStoreOptions = {},
   ) {
     if (!agentId.trim()) throw new Error("agentId is required");
-    this.file = agentEngineFile(workspaceRoot, agentId);
+    this.file = agentEngineRolloutFile(workspaceRoot, agentId);
     this.lockFile = agentEngineLockFile(workspaceRoot, agentId);
     this.options = { ...DEFAULT_OPTIONS, ...options };
   }
 
   async read(): Promise<AgentStoreAggregate> {
-    let content: string;
+    let info;
     try {
-      content = await readFile(this.file, "utf8");
+      info = await stat(this.file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyAggregate(this.agentId);
       throw error;
     }
-    let value: unknown;
-    try {
-      value = JSON.parse(content);
-    } catch (error) {
-      throw new AgentStoreCorruptionError(`Agent aggregate ${this.agentId} contains invalid JSON`, { cause: error });
+    if (this.cached?.size === info.size && this.cached.mtimeMs === info.mtimeMs) {
+      return this.cached.aggregate;
     }
-    validateAggregate(value, this.agentId);
-    return structuredClone(value as AgentStoreAggregate);
+    return this.loadRollout(info.size, info.mtimeMs);
   }
 
   async transact(
@@ -109,24 +137,27 @@ export class AgentStore {
     const key = this.file.toLowerCase();
     const previous = queues.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.withLock(async () => {
-        const current = await this.read();
-        const proposed = await mutate(structuredClone(current));
-        if (proposed.aggregateVersion === current.aggregateVersion && !proposed.pendingEvents?.length) {
-          return structuredClone(current);
-        }
-        if (proposed.aggregateVersion !== current.aggregateVersion + 1) {
-          throw new AgentStoreConflictError("Agent aggregate version must increase by exactly one");
-        }
-        const pendingEvents = proposed.pendingEvents ?? [];
-        const outbox = [...current.outbox];
-        let position = outbox.at(-1)?.position ?? 0;
-        for (const event of pendingEvents) outbox.push({ position: ++position, event: structuredClone(event) });
-        const { pendingEvents: _pendingEvents, ...persisted } = proposed;
-        const aggregate: AgentStoreAggregate = { ...persisted, outbox };
-        validateAggregate(aggregate, this.agentId);
-        await writeDurableJson(this.file, aggregate);
-        return structuredClone(aggregate);
-      }));
+      const current = await this.loadRolloutFromDisk();
+      const proposed = await mutate(current);
+      if (proposed.aggregateVersion === current.aggregateVersion && !proposed.pendingEvents?.length) {
+        return current;
+      }
+      if (proposed.aggregateVersion !== current.aggregateVersion + 1) {
+        throw new AgentStoreConflictError("Agent aggregate version must increase by exactly one");
+      }
+      const pendingEvents = proposed.pendingEvents ?? [];
+      const outbox = [...current.outbox];
+      let position = outbox.at(-1)?.position ?? 0;
+      for (const event of pendingEvents) outbox.push({ position: ++position, event: structuredClone(event) });
+      const { pendingEvents: _pendingEvents, ...persisted } = proposed;
+      const aggregate: AgentStoreAggregate = { ...persisted, outbox };
+      validateAggregate(aggregate, this.agentId);
+      const commit = createCommit(current, aggregate);
+      await this.appendCommit(commit);
+      const info = await stat(this.file);
+      this.cached = { size: info.size, mtimeMs: info.mtimeMs, aggregate };
+      return aggregate;
+    }));
     queues.set(key, next);
     try {
       return await next;
@@ -167,6 +198,60 @@ export class AgentStore {
         .filter((item) => wanted.has(item.payloadRef))
         .map((item) => [item.payloadRef, structuredClone(item.value)]),
     );
+  }
+
+  private async loadRolloutFromDisk(): Promise<AgentStoreAggregate> {
+    try {
+      const info = await stat(this.file);
+      return this.loadRollout(info.size, info.mtimeMs);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        const aggregate = emptyAggregate(this.agentId);
+        this.cached = { size: 0, mtimeMs: 0, aggregate };
+        return aggregate;
+      }
+      throw error;
+    }
+  }
+
+  private async loadRollout(size: number, mtimeMs: number): Promise<AgentStoreAggregate> {
+    let content: string;
+    try {
+      content = await readFile(this.file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyAggregate(this.agentId);
+      throw error;
+    }
+    let aggregate = emptyAggregate(this.agentId);
+    const lines = content.split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index]!.trim();
+      if (!line) continue;
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        // Match Codex rollout recovery: malformed JSONL records do not discard
+        // the valid ordered history around them.
+        continue;
+      }
+      validateCommit(value, this.agentId, aggregate.aggregateVersion + 1);
+      aggregate = applyCommit(aggregate, value);
+    }
+    validateAggregate(aggregate, this.agentId);
+    this.cached = { size, mtimeMs, aggregate };
+    return aggregate;
+  }
+
+  private async appendCommit(commit: AgentStoreCommit): Promise<void> {
+    await mkdir(path.dirname(this.file), { recursive: true });
+    const handle = await open(this.file, "a", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(commit)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -224,6 +309,109 @@ export class AgentStore {
   }
 }
 
+function createCommit(current: AgentStoreAggregate, next: AgentStoreAggregate): AgentStoreCommit {
+  return {
+    schemaVersion: 1,
+    type: "agent_store_commit",
+    agentId: next.agentId,
+    aggregateVersion: next.aggregateVersion,
+    occurredAt: new Date().toISOString(),
+    threads: threadDeltas(current.threads, next.threads),
+    threadKeys: appended(current.threadKeys, next.threadKeys, "thread keys"),
+    messageIds: appended(current.messageIds, next.messageIds, "message ids"),
+    payloads: appended(current.payloads, next.payloads, "payloads"),
+    goals: changedByKey(current.goals, next.goals, (item) => item.spec.id, "goals"),
+    goalStartKeys: appended(current.goalStartKeys, next.goalStartKeys, "goal start keys"),
+    proposals: appended(current.proposals, next.proposals, "proposals"),
+    decisions: appended(current.decisions, next.decisions, "decisions"),
+    controls: appended(current.controls, next.controls, "controls"),
+    outbox: appended(current.outbox, next.outbox, "outbox"),
+  };
+}
+
+function threadDeltas(current: AgentThreadSnapshot[], next: AgentThreadSnapshot[]): StoredThreadDelta[] {
+  const currentById = new Map(current.map((thread) => [thread.threadId, thread]));
+  if (next.length < current.length) throw new AgentStoreConflictError("Threads cannot be removed");
+  const deltas: StoredThreadDelta[] = [];
+  for (const thread of next) {
+    const previous = currentById.get(thread.threadId);
+    if (!previous) {
+      deltas.push({
+        threadId: thread.threadId,
+        create: {
+          threadId: thread.threadId,
+          agentId: thread.agentId,
+          scopeId: thread.scopeId,
+          version: thread.version,
+        },
+        expectedVersion: 0,
+        version: thread.version,
+        appendedItems: structuredClone(thread.items),
+      });
+      continue;
+    }
+    if (previous.agentId !== thread.agentId || previous.scopeId !== thread.scopeId || thread.items.length < previous.items.length) {
+      throw new AgentStoreConflictError("Thread identity or history cannot be rewritten");
+    }
+    for (let index = 0; index < previous.items.length; index += 1) {
+      if (!same(previous.items[index], thread.items[index])) {
+        throw new AgentStoreConflictError("Thread history must remain an unchanged prefix");
+      }
+    }
+    const appendedItems = thread.items.slice(previous.items.length);
+    if (appendedItems.length || thread.version !== previous.version) {
+      deltas.push({
+        threadId: thread.threadId,
+        expectedVersion: previous.version,
+        version: thread.version,
+        appendedItems: structuredClone(appendedItems),
+      });
+    }
+    currentById.delete(thread.threadId);
+  }
+  if (currentById.size) throw new AgentStoreConflictError("Threads cannot be removed");
+  return deltas;
+}
+
+function applyCommit(current: AgentStoreAggregate, commit: AgentStoreCommit): AgentStoreAggregate {
+  const threads = structuredClone(current.threads);
+  for (const delta of commit.threads) {
+    let thread = threads.find((item) => item.threadId === delta.threadId);
+    if (!thread) {
+      if (!delta.create || delta.expectedVersion !== 0) throw new AgentStoreCorruptionError("Thread creation delta is invalid");
+      thread = { ...delta.create, items: [] };
+      threads.push(thread);
+    } else if (delta.create || thread.version !== delta.expectedVersion) {
+      throw new AgentStoreCorruptionError("Thread delta version is invalid");
+    }
+    thread.items.push(...structuredClone(delta.appendedItems));
+    thread.version = delta.version;
+  }
+  const goals = structuredClone(current.goals);
+  for (const goal of commit.goals) {
+    const index = goals.findIndex((item) => item.spec.id === goal.spec.id);
+    if (index < 0) goals.push(structuredClone(goal));
+    else goals[index] = structuredClone(goal);
+  }
+  const next: AgentStoreAggregate = {
+    schemaVersion: 2,
+    agentId: current.agentId,
+    aggregateVersion: commit.aggregateVersion,
+    threads,
+    threadKeys: [...current.threadKeys, ...structuredClone(commit.threadKeys)],
+    messageIds: [...current.messageIds, ...structuredClone(commit.messageIds)],
+    payloads: [...current.payloads, ...structuredClone(commit.payloads)],
+    goals,
+    goalStartKeys: [...current.goalStartKeys, ...structuredClone(commit.goalStartKeys)],
+    proposals: [...current.proposals, ...structuredClone(commit.proposals)],
+    decisions: [...current.decisions, ...structuredClone(commit.decisions)],
+    controls: [...current.controls, ...structuredClone(commit.controls)],
+    outbox: [...current.outbox, ...structuredClone(commit.outbox)],
+  };
+  validateAggregate(next, current.agentId);
+  return next;
+}
+
 function emptyAggregate(agentId: string): AgentStoreAggregate {
   return {
     schemaVersion: 2,
@@ -242,11 +430,23 @@ function emptyAggregate(agentId: string): AgentStoreAggregate {
   };
 }
 
+function validateCommit(value: unknown, agentId: string, expectedVersion: number): asserts value is AgentStoreCommit {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new AgentStoreCorruptionError("Agent rollout item must be an object");
+  const commit = value as AgentStoreCommit;
+  if (commit.schemaVersion !== 1 || commit.type !== "agent_store_commit" || commit.agentId !== agentId
+    || commit.aggregateVersion !== expectedVersion) {
+    throw new AgentStoreCorruptionError("Agent rollout sequence or identity is invalid");
+  }
+  for (const field of ["threads", "threadKeys", "messageIds", "payloads", "goals", "goalStartKeys", "proposals", "decisions", "controls", "outbox"] as const) {
+    if (!Array.isArray(commit[field])) throw new AgentStoreCorruptionError(`Agent rollout ${field} must be an array`);
+  }
+}
+
 function validateAggregate(value: unknown, agentId: string): asserts value is AgentStoreAggregate {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new AgentStoreCorruptionError("Agent aggregate must be an object");
   const aggregate = value as AgentStoreAggregate;
   if (aggregate.schemaVersion !== 2 || aggregate.agentId !== agentId || !Number.isInteger(aggregate.aggregateVersion)) {
-    throw new Error("Agent aggregate identity is invalid");
+    throw new AgentStoreCorruptionError("Agent aggregate identity is invalid");
   }
   for (const field of ["threads", "threadKeys", "messageIds", "payloads", "goals", "goalStartKeys", "proposals", "decisions", "controls", "outbox"] as const) {
     if (!Array.isArray(aggregate[field])) throw new AgentStoreCorruptionError(`Agent aggregate ${field} must be an array`);
@@ -261,25 +461,44 @@ function validateAggregate(value: unknown, agentId: string): asserts value is Ag
   unique(aggregate.decisions.map((item) => item.decisionId), "decisionId");
   unique(aggregate.controls.map((item) => item.requestId), "control requestId");
   for (const thread of aggregate.threads) {
-    if (thread.agentId !== agentId || !threadIds.has(thread.threadId)) throw new Error("Thread identity is invalid");
+    if (thread.agentId !== agentId || !threadIds.has(thread.threadId)) throw new AgentStoreCorruptionError("Thread identity is invalid");
     let expected = 1;
     for (const item of thread.items) {
-      if (item.sequence !== expected++) throw new Error("Thread sequence is invalid");
+      if (item.sequence !== expected++) throw new AgentStoreCorruptionError("Thread sequence is invalid");
     }
   }
   for (const goal of aggregate.goals) {
-    if (!threadIds.has(goal.spec.threadId)) throw new Error("Goal thread is invalid");
-    if (goal.activeProposalId && !proposalIds.has(goal.activeProposalId)) throw new Error("Goal proposal is invalid");
+    if (!threadIds.has(goal.spec.threadId)) throw new AgentStoreCorruptionError("Goal thread is invalid");
+    if (goal.activeProposalId && !proposalIds.has(goal.activeProposalId)) throw new AgentStoreCorruptionError("Goal proposal is invalid");
   }
   for (const proposal of aggregate.proposals) {
-    if (!goalIds.has(proposal.goalId)) throw new Error("Proposal goal is invalid");
+    if (!goalIds.has(proposal.goalId)) throw new AgentStoreCorruptionError("Proposal goal is invalid");
   }
   let position = 0;
   const eventIds = new Set<string>();
   for (const entry of aggregate.outbox) {
-    if (entry.position !== ++position || eventIds.has(entry.event.eventId)) throw new Error("Agent outbox is invalid");
+    if (entry.position !== ++position || eventIds.has(entry.event.eventId)) throw new AgentStoreCorruptionError("Agent outbox is invalid");
     eventIds.add(entry.event.eventId);
   }
+}
+
+function appended<T>(current: T[], next: T[], label: string): T[] {
+  if (next.length < current.length) throw new AgentStoreConflictError(`${label} cannot be removed`);
+  for (let index = 0; index < current.length; index += 1) {
+    if (!same(current[index], next[index])) throw new AgentStoreConflictError(`${label} must remain an unchanged prefix`);
+  }
+  return structuredClone(next.slice(current.length));
+}
+
+function changedByKey<T>(current: T[], next: T[], key: (value: T) => string, label: string): T[] {
+  const nextKeys = new Set(next.map(key));
+  if (current.some((item) => !nextKeys.has(key(item)))) throw new AgentStoreConflictError(`${label} cannot be removed`);
+  const currentByKey = new Map(current.map((item) => [key(item), item]));
+  return structuredClone(next.filter((item) => !same(currentByKey.get(key(item)), item)));
+}
+
+function same(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function parseLock(content: string): { token: string; pid: number; hostname: string } | undefined {
@@ -301,36 +520,13 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function writeDurableJson(file: string, value: unknown): Promise<void> {
-  const directory = path.dirname(file);
-  await mkdir(directory, { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(temporary, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await rename(temporary, file);
-    if (process.platform !== "win32") {
-      const directoryHandle = await open(directory, "r");
-      try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
-    }
-  } catch (error) {
-    await handle?.close().catch(() => undefined);
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function unique(values: string[], label: string): Set<string> {
   const set = new Set(values);
-  if (set.size !== values.length) throw new Error(`Duplicate ${label}`);
+  if (set.size !== values.length) throw new AgentStoreCorruptionError(`Duplicate ${label}`);
   return set;
 }
 
@@ -352,7 +548,3 @@ function decodeCursor(cursor: { source: "agent"; partitionId: string; position: 
   }
   return Number(record.position);
 }
-import { randomUUID } from "node:crypto";
-import os from "node:os";
-import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import path from "node:path";

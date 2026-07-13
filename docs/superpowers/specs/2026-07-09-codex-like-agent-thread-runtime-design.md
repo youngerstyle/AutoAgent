@@ -52,6 +52,10 @@ Relevant local reference:
 - `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/AGENTS.md`
 - `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/protocol/src/protocol.rs`
 - `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/core/src/session/mod.rs`
+- `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/core/src/session/rollout_reconstruction.rs`
+- `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/thread-store/src/local/live_writer.rs`
+- `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/rollout/src/recorder.rs`
+- `C:/Users/xieyizhi/Documents/Codex/2026-07-07/co-d/work/codex-src/codex-rs/state/src/extract.rs`
 
 Key lessons for AutoAgent:
 
@@ -60,6 +64,25 @@ Key lessons for AutoAgent:
 - Full prompts and raw evidence are auditable, but bounded projections feed the model.
 - Compaction creates a replacement history rather than recursively replaying all old raw content.
 - Codex source guidance says model-visible context must be incremental, bounded, and cache-stable.
+
+### Codex source contract to reproduce
+
+The Agent Engine persistence design is constrained by the Codex source, not by a new AutoAgent-specific session format:
+
+1. `Session::persist_rollout_items` delegates to `LiveThread.append_items`; it does not rewrite a session aggregate.
+2. `LocalThreadStore` sends canonical items to `RolloutRecorder`, waits for the JSONL writer to flush, and only then updates metadata. Durable thread history is therefore ordered and append-only.
+3. `RolloutRecorder` opens resumed rollouts with append mode and writes one serialized `RolloutItem` per line.
+4. SQLite is a query projection for thread metadata. `state/extract.rs` explicitly selects which rollout items may mutate that projection. It is not the conversation source of truth.
+5. `ContextManager` is the in-memory model-visible projection. `Prompt` contains three separate inputs: structured conversation items, registered tool specifications, and base instructions.
+6. Compaction replaces `ContextManager` history and appends `RolloutItem::Compacted(CompactedItem)`. It does not delete or rewrite older rollout lines.
+7. Resume scans the rollout for the newest surviving `replacement_history`, then reconstructs exactly `replacement_history + chronological suffix`.
+
+Consequences for AutoAgent:
+
+- Soul, Identity, Agent instructions and tool policy are assembled by the host into `instructions` and registered tool schemas every turn. The model must not read `.autoagent/agents/<id>/agent.json` to discover its own identity or permissions.
+- A tool call and its result are two ordered rollout items. Human messages, assistant messages, controls and compaction checkpoints use the same ordered stream; there is no human-message side channel.
+- The full provider prompt and trace may be audited separately, but neither is replayed into the next model context.
+- An Agent thread has one durable conversation truth. A mutable `sessions/*.json` file and a second mutable `context/*.json` file must not compete with the rollout.
 
 ### OpenHands
 
@@ -428,21 +451,27 @@ This mirrors Codex's `CompactedItem` pattern:
 
 ## Storage Model
 
-Target V1 storage:
+Target V1 storage, following Codex's rollout-plus-projection split:
 
 ```text
 <workspace>/.autoagent/
   agents/<workspaceAgentId>/
     agent.json
     memory.json
-    sessions/<taskRunId>.json        # model-visible projection
-    threads/<taskRunId>.jsonl        # AgentThreadEvent append-only source
-    context/<taskRunId>.json         # summaries/checkpoints/replacement history
+  agent-engine/<agentPartition>/
+    rollout.jsonl                    # ordered Agent rollout source of truth
+    traces/                          # audit-only provider and tool trace
   tasks/<taskId>/runs/<taskRunId>/
     state.json                       # ticket/run state snapshot
     events.jsonl                     # global run event ledger
     loop-trace.jsonl                 # full raw debug trace
 ```
+
+Codex owns one rollout per thread. AutoAgent V1 owns one rollout per workspace Agent partition because Agent-local Goal state, idempotency records and the event outbox must share one durable order with that Agent's thread items. Every conversation item still carries a `threadId`, and `AgentContextAssembler` projects exactly one thread into a model request. This is an explicit domain adaptation, not a second session store.
+
+A rebuildable SQLite metadata projection may be added when cross-thread query volume requires it, matching Codex's metadata database, but it must never contain model history or become a second source of truth.
+
+Compaction checkpoints are ordinary items in the thread JSONL. The active model context is reconstructed in memory and is not persisted as a separately mutable session document.
 
 ## Migration From Current Code
 
@@ -450,8 +479,8 @@ Target V1 storage:
 
 - `TicketRuntime` should mostly stay.
 - `LoopTraceStore` should stay.
-- `ContextAssembler` should stay and become stricter.
-- `SessionStore` should stay as model-visible projection.
+- `AgentContextAssembler` remains the single rollout-to-model projection boundary.
+- `AgentToolLoop` remains responsible for one ordered model/tool turn.
 - `MissionControl.runUntilIdle` can remain the outer loop.
 
 ### Current code to replace or narrow
@@ -512,18 +541,17 @@ The design is implemented correctly when:
 
 ## Recommended Implementation Direction
 
-Implement in small vertical slices:
+Implement in source-grounded vertical slices:
 
-1. Add `AgentThreadStore` and thread event types.
-2. Write thread events for human direct messages while still maintaining existing session behavior.
-3. Project selected Agent UI from thread events.
-4. Write ticket received/claimed/completed/returned/created events into owner and target Agent threads.
-5. Route direct Agent turns from pending thread events instead of `agentDirectMessageQueue`.
-6. Update ContextAssembler to project from thread/session without side channels.
-7. Add compaction replacement history for Agent thread/session projection.
+1. Replace the mutable per-Agent aggregate file with an append-only rollout and an in-memory projection rebuilt by ordered replay.
+2. Keep human, model, tool, observation, control and compaction items in that one ordered thread history.
+3. Project selected Agent UI from thread items without reading loop trace or side-channel arrays.
+4. Route direct Agent turns from pending thread items instead of `agentDirectMessageQueue`.
+5. Keep SIA and tool definitions in host-assembled instructions/tool schemas; do not ask the Agent to read its own profile file.
+6. Persist compaction as a rollout checkpoint carrying replacement history.
+7. Add a rebuildable metadata index only when thread-list query volume requires it.
 8. Remove old `state.context.agentMessages` as a write path.
 
-Do not implement all of this as one large refactor. The first useful milestone is:
+The first useful milestone is:
 
 > human sends message to selected Agent -> event appended to AgentThreadStore -> appears in selected Agent thread -> next Agent turn uses it from session/projection -> no other Agent wakes.
-

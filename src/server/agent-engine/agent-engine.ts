@@ -80,7 +80,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     if (existingKey) {
       const existing = current.threads.find((item) => item.threadId === existingKey.threadId)!;
       if (existing.scopeId !== input.scopeId) throw new AgentEngineConflictError("Thread idempotency conflict");
-      return existing;
+      return structuredClone(existing);
     }
     const threadId = stableId("thread", input.agentId, input.scopeId, input.idempotencyKey);
     const thread: AgentThreadSnapshot = {
@@ -107,7 +107,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         }],
       };
     });
-    return updated.threads.find((item) => item.threadId === threadId)!;
+    return structuredClone(updated.threads.find((item) => item.threadId === threadId)!);
   }
 
   async getThreadForAgent(agentId: string, scopeId: string): Promise<AgentThreadSnapshot | undefined> {
@@ -118,7 +118,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   async getThread(threadId: string): Promise<AgentThreadSnapshot> {
     const thread = (await this.store.read()).threads.find((item) => item.threadId === threadId);
     if (!thread) throw new Error(`Thread ${threadId} does not exist`);
-    return thread;
+    return structuredClone(thread);
   }
 
   async getPayload(payloadRef: string): Promise<unknown> {
@@ -237,7 +237,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const key = current.goalStartKeys.find((item) => item.idempotencyKey === input.idempotencyKey);
     if (key) {
       if (key.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal start conflict");
-      return current.goals.find((item) => item.spec.id === key.goalId)!;
+      return structuredClone(current.goals.find((item) => item.spec.id === key.goalId)!);
     }
     const thread = current.threads.find((item) => item.threadId === input.threadId);
     if (!thread) throw new Error("Goal thread does not exist");
@@ -279,7 +279,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         pendingEvents: [event],
       };
     });
-    return updated.goals.find((item) => item.spec.id === input.spec.id)!;
+    return structuredClone(updated.goals.find((item) => item.spec.id === input.spec.id)!);
   }
 
   async getGoalByStartKey(idempotencyKey: string): Promise<AgentGoal | undefined> {
@@ -381,7 +381,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const replay = current.controls.find((item) => item.requestId === input.requestId);
     if (replay) {
       if (replay.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal control conflict");
-      return replay.goal;
+      return structuredClone(replay.goal);
     }
     const goal = current.goals.find((item) => item.spec.id === input.goalId);
     if (!goal) throw new Error("Goal does not exist");
@@ -400,7 +400,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
       };
     });
-    return updated.goals.find((item) => item.spec.id === input.goalId)!;
+    return structuredClone(updated.goals.find((item) => item.spec.id === input.goalId)!);
   }
 
   async proposeGoalResolution(

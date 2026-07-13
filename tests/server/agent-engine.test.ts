@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -15,11 +15,108 @@ import {
   AgentEngineConflictError,
 } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore, AgentStoreCursorError } from "../../src/server/agent-engine/agent-store.js";
+import { agentEngineRolloutFile } from "../../src/server/storage/paths.js";
 
 const T0 = "2026-07-10T00:00:00.000Z";
 const T1 = "2026-07-10T00:01:00.000Z";
 
 describe("AgentEngine", () => {
+  it("persists thread history as an append-only rollout instead of rewriting an agent aggregate", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({
+      agentId: "dev",
+      scopeId: "append-only",
+      idempotencyKey: "append-only",
+    });
+    await fixture.engine.sendMessage({
+      messageId: "append-1",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "第一条消息",
+      createdAt: T0,
+    });
+    const rollout = agentEngineRolloutFile(fixture.root, "dev");
+    const before = await readFile(rollout, "utf8");
+
+    await fixture.engine.appendModelItem({
+      itemId: "append-2",
+      threadId: thread.threadId,
+      content: "第二条消息",
+      createdAt: T1,
+    });
+    const after = await readFile(rollout, "utf8");
+
+    expect(after.startsWith(before)).toBe(true);
+    expect(after.slice(before.length).trim().split("\n")).toHaveLength(1);
+    expect(after).not.toContain('"schemaVersion":2');
+    expect(after.trim().split("\n").every((line) => JSON.parse(line).type === "agent_store_commit")).toBe(true);
+
+    const restarted = new AgentEngine(new AgentStore(fixture.root, "dev"));
+    expect((await restarted.getThread(thread.threadId)).items.map((item) => item.itemId))
+      .toEqual(["append-1", "append-2"]);
+  });
+
+  it("recovers valid rollout items around a malformed JSONL record", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({
+      agentId: "dev",
+      scopeId: "recover-rollout",
+      idempotencyKey: "recover-rollout",
+    });
+    await fixture.engine.sendMessage({
+      messageId: "before-malformed",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      content: "损坏记录之前",
+      createdAt: T0,
+    });
+
+    await fixture.engine.appendModelItem({
+      itemId: "after-malformed",
+      threadId: thread.threadId,
+      content: "损坏记录之后",
+      createdAt: T1,
+    });
+    const rollout = agentEngineRolloutFile(fixture.root, "dev");
+    const validLines = (await readFile(rollout, "utf8")).trimEnd().split("\n");
+    validLines.splice(validLines.length - 1, 0, "{this is not json}");
+    await writeFile(rollout, `${validLines.join("\n")}\n`, "utf8");
+
+    const restarted = new AgentEngine(new AgentStore(fixture.root, "dev"));
+    expect((await restarted.getThread(thread.threadId)).items.map((item) => item.itemId))
+      .toEqual(["before-malformed", "after-malformed"]);
+  });
+
+  it("does not clone the complete Agent projection when appending one rollout item", async () => {
+    const fixture = await createFixture();
+    const thread = await fixture.engine.ensureThread({
+      agentId: "dev",
+      scopeId: "incremental-memory",
+      idempotencyKey: "incremental-memory",
+    });
+    const nativeStructuredClone = globalThis.structuredClone;
+    let aggregateClones = 0;
+    vi.stubGlobal("structuredClone", (value: unknown, options?: StructuredSerializeOptions) => {
+      if (value && typeof value === "object" && (value as { schemaVersion?: unknown }).schemaVersion === 2
+        && Array.isArray((value as { threads?: unknown }).threads)) {
+        aggregateClones += 1;
+      }
+      return nativeStructuredClone(value, options);
+    });
+    try {
+      await fixture.engine.appendModelItem({
+        itemId: "incremental-item",
+        threadId: thread.threadId,
+        content: "只追加这一条",
+        createdAt: T0,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(aggregateClones).toBe(0);
+  });
+
   it("marks a goal usage-limited and requires an explicit resume", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     const limited = await fixture.engine.controlGoal({
