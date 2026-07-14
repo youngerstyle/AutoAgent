@@ -152,7 +152,16 @@ export function materializeWorkflowGraph(
         `Revision predecessor ${predecessorKey} cannot remain active with successor ${nodeKey}`,
       );
     }
-    if (predecessor.supersededByTicketId || revisionByPredecessor.has(predecessorKey)) {
+    const previousSuccessor = previousSnapshotByKey.get(nodeKey);
+    const retainsExistingRevision = Boolean(
+      predecessor.supersededByTicketId
+      && previousSuccessor?.ticketId === predecessor.supersededByTicketId
+      && previousSuccessor.revisionOfTicketId === predecessor.ticketId,
+    );
+    if (
+      (predecessor.supersededByTicketId && !retainsExistingRevision)
+      || revisionByPredecessor.has(predecessorKey)
+    ) {
       throw new WorkflowGraphError(
         "invalid_revision",
         `Ticket ${predecessorKey} already has an active successor`,

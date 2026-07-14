@@ -420,6 +420,44 @@ describe("workflow graph materialization", () => {
       }),
     ).toThrow(/active successor/i);
   });
+
+  it("retains an existing revision relationship while appending later work", () => {
+    const initial = materializeWorkflowGraph({
+      workflowId,
+      graph: graph([node("planning")]),
+      completionPolicy: policy("planning"),
+    });
+    const revised = materializeWorkflowGraph({
+      workflowId,
+      graph: graph([node("planning-v2", { revisionOfKey: key("planning") })]),
+      completionPolicy: policy("planning-v2"),
+      previous: initial,
+    });
+
+    const extended = materializeWorkflowGraph({
+      workflowId,
+      graph: graph(
+        [
+          node("planning-v2", { revisionOfKey: key("planning") }),
+          node("implementation"),
+        ],
+        [["planning-v2", "implementation"]],
+      ),
+      completionPolicy: policy("implementation"),
+      previous: revised,
+    });
+
+    expect(extended.ticketIdByKey["planning-v2"]).toBe(revised.ticketIdByKey["planning-v2"]);
+    expect(extended.graph.nodes.find((item) => item.nodeKey === key("planning"))).toMatchObject({
+      active: false,
+      supersededByTicketId: revised.ticketIdByKey["planning-v2"],
+    });
+    expect(extended.graph.nodes.find((item) => item.nodeKey === key("planning-v2"))).toMatchObject({
+      active: true,
+      revisionOfTicketId: initial.ticketIdByKey.planning,
+    });
+    expect(extended.graph.nodes.find((item) => item.nodeKey === key("implementation"))?.active).toBe(true);
+  });
 });
 
 describe("workflow completion rules", () => {
