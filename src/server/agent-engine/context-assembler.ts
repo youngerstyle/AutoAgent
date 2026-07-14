@@ -1,6 +1,7 @@
 import type { AgentGoal, AgentThreadSnapshot } from "../../shared/contracts/agent-engine.js";
 import type { AgentModelHistoryItem } from "../providers/types.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, effectiveInputTokenBudget } from "../../shared/model-context.js";
 import type { AgentStore } from "./agent-store.js";
 
 export interface AgentContextAssemblerInput {
@@ -46,20 +47,20 @@ export interface AgentCompactionPlan {
 export class AgentContextAssembler {
   constructor(
     private readonly store: AgentStore,
-    private readonly maxInputTokens = 64_000,
+    private readonly maxInputTokens = effectiveInputTokenBudget(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS),
   ) {}
 
-  async assemble(input: AgentContextAssemblerInput): Promise<AgentAssembledContext> {
+  async assemble(input: AgentContextAssemblerInput, maxInputTokens = this.maxInputTokens): Promise<AgentAssembledContext> {
     if (input.thread.agentId !== input.agent.id || input.agent.id !== this.store.agentId) {
       throw new Error("Agent context partition mismatch");
     }
     if (input.goal && input.goal.spec.threadId !== input.thread.threadId) {
       throw new Error("Goal does not belong to thread");
     }
-    const stable = truncateToTokenBudget(stableSection(input), Math.floor(this.maxInputTokens * 0.55), "SIA 与工具配置");
-    const goal = truncateToTokenBudget(goalSection(input.goal), Math.floor(this.maxInputTokens * 0.2), "当前 Goal");
+    const stable = truncateToTokenBudget(stableSection(input), Math.floor(maxInputTokens * 0.55), "SIA 与工具配置");
+    const goal = truncateToTokenBudget(goalSection(input.goal), Math.floor(maxInputTokens * 0.2), "当前 Goal");
     const instructions = [stable.text, goal.text].join("\n\n");
-    const projected = await this.projectHistory(input.thread, Math.max(1, Math.floor(this.maxInputTokens * 0.25)));
+    const projected = await this.projectHistory(input.thread, Math.max(1, Math.floor(maxInputTokens * 0.25)));
     const renderedHistory = projected.history.map(renderHistoryItem).join("\n");
     const prompt = `${instructions}\n\n## Thread（严格时间序）\n${renderedHistory || "无历史消息"}`;
     return {
@@ -83,7 +84,7 @@ export class AgentContextAssembler {
     };
   }
 
-  async planCompaction(thread: AgentThreadSnapshot): Promise<AgentCompactionPlan | undefined> {
+  async planCompaction(thread: AgentThreadSnapshot, maxInputTokens = this.maxInputTokens): Promise<AgentCompactionPlan | undefined> {
     if (thread.agentId !== this.store.agentId) throw new Error("Agent context partition mismatch");
     const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
     const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
@@ -102,7 +103,7 @@ export class AgentContextAssembler {
       }))),
     ];
     const history = entries.map((item) => item.historyItem);
-    const maxChars = Math.max(1, Math.floor(this.maxInputTokens * 0.25) * 4);
+    const maxChars = Math.max(1, Math.floor(maxInputTokens * 0.25) * 4);
     if (JSON.stringify(history).length <= maxChars) return undefined;
     const groups = sequencedHistoryGroups(entries);
     const retainedTargetChars = Math.floor(maxChars * 0.35);
@@ -114,7 +115,12 @@ export class AgentContextAssembler {
       retainedChars += groupChars;
       compactedGroupCount = index;
     }
-    const compactedGroups = groups.slice(0, compactedGroupCount);
+    const compactionInputMaxChars = Math.max(maxChars, Math.floor(maxInputTokens * 0.85) * 4);
+    const compactedGroups = boundedCompactionPrefix(
+      groups.slice(0, compactedGroupCount),
+      compactionInputMaxChars,
+      checkpoint?.replacedThroughSequence ?? 0,
+    );
     const replacedThroughSequence = compactedGroups.at(-1)?.throughSequence;
     const compactedHistory = compactedGroups.flatMap((group) => group.history);
     if (!replacedThroughSequence || !compactedHistory.length) return undefined;
@@ -310,6 +316,67 @@ function compactGroup(group: AgentModelHistoryItem[], maxChars: number): AgentMo
   const available = Math.max(0, maxChars - marker.length);
   const head = Math.ceil(available * 0.6);
   return [{ ...item, content: `${item.content.slice(0, head)}${marker}${item.content.slice(-(available - head))}` }];
+}
+
+function boundedCompactionPrefix(
+  groups: SequencedHistoryGroup[],
+  maxChars: number,
+  previousBoundary: number,
+): SequencedHistoryGroup[] {
+  const selected: SequencedHistoryGroup[] = [];
+  let usedChars = 2;
+  for (const group of groups) {
+    const fullChars = JSON.stringify(group.history).length;
+    const separatorChars = selected.length ? 1 : 0;
+    if (usedChars + separatorChars + fullChars <= maxChars) {
+      selected.push(group);
+      usedChars += separatorChars + fullChars;
+      continue;
+    }
+    const hasProgress = (selected.at(-1)?.throughSequence ?? previousBoundary) > previousBoundary;
+    if (hasProgress) break;
+    const bounded = boundHistoryGroup(group.history, Math.max(0, maxChars - usedChars - separatorChars));
+    if (!bounded.length || usedChars + separatorChars + JSON.stringify(bounded).length > maxChars) break;
+    selected.push({ ...group, history: bounded });
+    break;
+  }
+  return selected;
+}
+
+function boundHistoryGroup(group: AgentModelHistoryItem[], maxChars: number): AgentModelHistoryItem[] {
+  if (maxChars <= 2) return [];
+  const normalized = group.map((item) => {
+    if (item.type !== "tool_call") return item;
+    const argumentChars = JSON.stringify(item.arguments).length;
+    return argumentChars <= Math.floor(maxChars * 0.35)
+      ? item
+      : { ...item, arguments: { truncated: true, originalChars: argumentChars } };
+  });
+  if (JSON.stringify(normalized).length <= maxChars) return normalized;
+  let low = 0;
+  let high = maxChars;
+  let best: AgentModelHistoryItem[] = [];
+  while (low <= high) {
+    const textBudget = Math.floor((low + high) / 2);
+    const candidate = normalized.map((item) => truncateHistoryText(item, textBudget));
+    if (JSON.stringify(candidate).length <= maxChars) {
+      best = candidate;
+      low = textBudget + 1;
+    } else {
+      high = textBudget - 1;
+    }
+  }
+  return best;
+}
+
+function truncateHistoryText(item: AgentModelHistoryItem, maxChars: number): AgentModelHistoryItem {
+  if (item.type === "tool_call") return item;
+  const marker = "...[原始内容保留在审计记录中]...";
+  if (item.content.length <= maxChars) return item;
+  if (maxChars <= marker.length) return { ...item, content: marker.slice(0, maxChars) };
+  const available = maxChars - marker.length;
+  const head = Math.ceil(available * 0.6);
+  return { ...item, content: `${item.content.slice(0, head)}${marker}${item.content.slice(-(available - head))}` };
 }
 
 function stableSection(input: AgentContextAssemblerInput): string {

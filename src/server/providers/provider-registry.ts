@@ -7,6 +7,7 @@ import { OpenAIProvider } from "./openai-provider.js";
 import type { AgentModelProvider, AgentModelTurnInput, AgentModelTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
 import type { ModelConfig, ProviderConfig, ProviderName } from "../../shared/types.js";
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../../shared/model-context.js";
 
 export interface ProviderRegistryOptions {
   homeDir: string;
@@ -89,6 +90,14 @@ export class ProviderRegistry {
     return stored.map(redactModelConfig);
   }
 
+  async contextWindowTokens(provider: ProviderName, model: string): Promise<number> {
+    if (provider === "mock") return DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
+    const configs = await this.materializeModelConfigs(await this.readConfigFile());
+    const matches = configs.filter((config) => config.provider === provider && config.model === model);
+    return (matches.find((config) => config.isDefault) ?? matches[0])?.contextWindowTokens
+      ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
+  }
+
   async createModelConfig(config: Partial<ModelConfig> & Pick<ModelConfig, "provider">): Promise<ModelConfig> {
     const stored = await this.readConfigFile();
     const configs = await this.ensureStoredModelConfigs(stored);
@@ -99,6 +108,7 @@ export class ProviderRegistry {
       name: config.name?.trim() || `${providerLabel(config.provider)} 配置`,
       provider: config.provider,
       model: config.model?.trim() || defaultModel(config.provider),
+      contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens),
       apiKey: config.apiKey || undefined,
       baseUrl: config.baseUrl || undefined,
       isDefault: shouldBeDefault,
@@ -122,6 +132,9 @@ export class ProviderRegistry {
       name: patch.name !== undefined ? String(patch.name).trim() || existing.name : existing.name,
       provider: patch.provider ?? existing.provider,
       model: patch.model !== undefined ? String(patch.model).trim() || existing.model : existing.model,
+      contextWindowTokens: patch.contextWindowTokens === undefined
+        ? existing.contextWindowTokens
+        : normalizeContextWindowTokens(patch.contextWindowTokens),
       apiKey: patch.apiKey === undefined || patch.apiKey === "" ? existing.apiKey : patch.apiKey,
       baseUrl: patch.baseUrl === undefined ? existing.baseUrl : patch.baseUrl || undefined,
       updatedAt: new Date().toISOString()
@@ -179,7 +192,12 @@ export class ProviderRegistry {
   }
 
   private async materializeModelConfigs(stored: StoredProviderConfigFile): Promise<ModelConfig[]> {
-    if (stored.modelConfigs?.length) return ensureSingleDefault(stored.modelConfigs);
+    if (stored.modelConfigs?.length) {
+      return ensureSingleDefault(stored.modelConfigs.map((config) => ({
+        ...config,
+        contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens, true),
+      })));
+    }
     const now = new Date().toISOString();
     const configs = REAL_PROVIDERS.map((provider) => {
       const legacy = stored[provider];
@@ -188,6 +206,7 @@ export class ProviderRegistry {
         name: `${providerLabel(provider)} 默认`,
         provider,
         model: legacy?.model ?? defaultModel(provider),
+        contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
         apiKey: legacy?.apiKey,
         baseUrl: legacy?.baseUrl,
         isDefault: false,
@@ -242,4 +261,15 @@ function defaultModel(provider: RealProviderName): string {
 
 function providerLabel(provider: RealProviderName): string {
   return provider === "openai" ? "OpenAI" : "Anthropic";
+}
+
+function normalizeContextWindowTokens(value: unknown, allowMissing = false): number {
+  if ((value === undefined || value === null) && allowMissing) return DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
+  const normalized = value === undefined || value === null
+    ? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+    : Number(value);
+  if (!Number.isInteger(normalized) || normalized <= 0) {
+    throw new Error("contextWindowTokens must be a positive integer");
+  }
+  return normalized;
 }

@@ -8,6 +8,7 @@ describe("model selection helpers", () => {
     name: "DeepSeek",
     provider: "openai",
     model: "deepseek-v4-flash",
+    contextWindowTokens: 128_000,
     isDefault: true,
     createdAt: "2026-06-30T00:00:00.000Z",
     updatedAt: "2026-06-30T00:00:00.000Z"

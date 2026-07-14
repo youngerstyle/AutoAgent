@@ -568,6 +568,8 @@ export class RuntimeHost {
   private async sliceInputForAgent(context: RuntimeContext, agentId: string, threadId: string, goalId?: string, turnId?: string, triggerMessageId?: string) {
     const agent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
+    const provider = agent.provider ?? profile.defaultProvider;
+    const model = agent.model ?? profile.defaultModel;
     return {
       threadId,
       turnId,
@@ -576,8 +578,9 @@ export class RuntimeHost {
       profile,
       agent,
       policy: resolvePolicy(this.workspace, agent),
-      provider: agent.provider ?? profile.defaultProvider,
-      model: agent.model ?? profile.defaultModel,
+      provider,
+      model,
+      contextWindowTokens: await this.providers.contextWindowTokens(provider, model),
     };
   }
 

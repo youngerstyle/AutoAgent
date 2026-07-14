@@ -322,6 +322,7 @@ export interface ModelConfig extends ProviderConfig {
   id: string;
   name: string;
   provider: Exclude<ProviderName, "mock">;
+  contextWindowTokens: number;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;

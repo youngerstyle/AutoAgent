@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../shared/model-context";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 import {
@@ -61,6 +62,7 @@ type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
   provider: RealProviderName;
   apiKey: string;
   baseUrl: string;
+  contextWindowTokens: number;
 };
 
 type DeleteWorkspaceDialogState = {
@@ -91,7 +93,8 @@ export function App() {
     provider: "openai",
     model: "",
     apiKey: "",
-    baseUrl: ""
+    baseUrl: "",
+    contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
   });
   const [error, setError] = useState("");
   const [taskSubmitting, setTaskSubmitting] = useState(false);
@@ -427,10 +430,11 @@ export function App() {
         provider: modelConfigDraft.provider,
         model: modelConfigDraft.model,
         apiKey: modelConfigDraft.apiKey,
-        baseUrl: modelConfigDraft.baseUrl
+        baseUrl: modelConfigDraft.baseUrl,
+        contextWindowTokens: modelConfigDraft.contextWindowTokens
       });
       setModelConfigs((current) => [...current, result.config]);
-      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "" });
+      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "", contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS });
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -444,7 +448,8 @@ export function App() {
         provider: config.provider,
         model: config.model,
         apiKey: config.apiKey === "********" ? undefined : config.apiKey,
-        baseUrl: config.baseUrl
+        baseUrl: config.baseUrl,
+        contextWindowTokens: config.contextWindowTokens
       });
       setModelConfigs((current) => current.map((item) => item.id === result.config.id ? result.config : item));
       setError("");
@@ -1732,6 +1737,10 @@ function ModelConfigLibrary(props: {
             <span>模型</span>
             <input value={props.draft.model} onChange={(event) => props.onDraftChange({ ...props.draft, model: event.target.value })} placeholder="例如：gpt-4.1" />
           </label>
+          <label>
+            <span>上下文窗口（tokens）</span>
+            <input type="number" min="1" step="1000" value={props.draft.contextWindowTokens} onChange={(event) => props.onDraftChange({ ...props.draft, contextWindowTokens: Number(event.target.value) })} />
+          </label>
         </div>
         <div className="runtime-fields">
           <label>
@@ -1787,6 +1796,10 @@ function ModelConfigCard(props: {
       <label>
         <span>模型</span>
         <input value={props.config.model} onChange={(event) => props.onChange({ ...props.config, model: event.target.value })} />
+      </label>
+      <label>
+        <span>上下文窗口（tokens）</span>
+        <input type="number" min="1" step="1000" value={props.config.contextWindowTokens} onChange={(event) => props.onChange({ ...props.config, contextWindowTokens: Number(event.target.value) })} />
       </label>
       <label>
         <span>接口密钥</span>

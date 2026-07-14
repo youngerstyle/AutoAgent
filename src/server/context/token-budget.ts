@@ -21,7 +21,7 @@ export interface ContextBudget {
 }
 
 export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
-  maxInputTokens: 64_000,
+  maxInputTokens: effectiveInputTokenBudget(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS),
   reservedOutputTokens: 4_000,
   staticPromptTokens: 12_000,
   ticketTokens: 8_000,
@@ -31,7 +31,7 @@ export const DEFAULT_CONTEXT_BUDGET: ContextBudget = {
   toolObservationTokens: 12_000,
   dynamicContextTokens: 8_000,
   maxRecentSessionGroups: 3,
-  compactionTriggerRatio: 0.75
+  compactionTriggerRatio: MODEL_CONTEXT_INPUT_RATIO
 };
 
 const CHARS_PER_TOKEN = 4;
@@ -64,3 +64,4 @@ export function truncateToTokenBudget(value: string, maxTokens: number, label: s
     truncated: true
   };
 }
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, MODEL_CONTEXT_INPUT_RATIO, effectiveInputTokenBudget } from "../../shared/model-context.js";

@@ -220,7 +220,13 @@ interface ContextBudget {
 
 Initial defaults:
 
-- `maxInputTokens`: 64,000
+- 模型配置必须包含 `contextWindowTokens`，表示该模型可接受的完整上下文窗口。
+- 新建配置与旧配置迁移的默认值均为 `128,000` tokens；用户可在“模型服务”页面修改。
+- Agent Engine 每轮按当前 Agent 的 `provider + model` 解析对应模型配置，不维护写死的模型名称表。
+- 可用输入预算为 `floor(contextWindowTokens * 0.9)`，预留 10% 给模型输出、工具协议和供应商差异。
+- 找不到匹配配置时回退 `128,000`，不得回退到旧的 `64,000`。
+- Provider 返回的实际 token usage 用于历史用量核算；配置值仍是压缩与请求前检查的硬上限。
+- 当前 Agent 实例只保存 `provider + model`，因此同一 provider 下的同名模型配置应使用相同的上下文窗口。后续若 Agent 改为绑定 modelConfigId，再由配置 ID 精确解析。
 - `reservedOutputTokens`: 4,000
 - `staticPromptTokens`: 12,000
 - `ticketTokens`: 8,000

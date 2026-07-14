@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -87,6 +87,7 @@ describe("ProviderRegistry", () => {
       name: "OpenAI 备用网关",
       provider: "openai",
       model: "gpt-4.1",
+      contextWindowTokens: 128_000,
       apiKey: "********",
       isDefault: false
     });
@@ -101,6 +102,50 @@ describe("ProviderRegistry", () => {
     expect(configs.filter((config) => config.isDefault)).toHaveLength(1);
     expect(configs.find((config) => config.id === created.id)).toMatchObject({ name: "OpenAI 主力网关", isDefault: true });
     await expect(registry.status()).resolves.toMatchObject({ openai: { configured: true } });
+  });
+
+  it("persists an explicit context window and resolves it by provider and model", async () => {
+    const home = await tempHome();
+    const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+    const created = await registry.createModelConfig({
+      provider: "openai",
+      model: "custom-model",
+      contextWindowTokens: 200_000,
+    });
+
+    expect(created.contextWindowTokens).toBe(200_000);
+    await expect(registry.contextWindowTokens("openai", "custom-model")).resolves.toBe(200_000);
+
+    const updated = await registry.updateModelConfig(created.id, { contextWindowTokens: 256_000 });
+    expect(updated.contextWindowTokens).toBe(256_000);
+    await expect(registry.contextWindowTokens("openai", "custom-model")).resolves.toBe(256_000);
+  });
+
+  it("materializes old model configs with the 128k default context window", async () => {
+    const home = await tempHome();
+    await mkdir(home, { recursive: true });
+    await writeFile(path.join(home, "providers.json"), JSON.stringify({
+      modelConfigs: [{
+        id: "mc_old",
+        name: "旧配置",
+        provider: "anthropic",
+        model: "old-model",
+        isDefault: true,
+        createdAt: "2026-07-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      }],
+    }), "utf8");
+    const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+
+    await expect(registry.modelConfigs()).resolves.toEqual([
+      expect.objectContaining({ id: "mc_old", contextWindowTokens: 128_000 }),
+    ]);
+  });
+
+  it("rejects invalid context windows", async () => {
+    const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 0 });
+    await expect(registry.createModelConfig({ provider: "openai", contextWindowTokens: 0 }))
+      .rejects.toThrow("contextWindowTokens must be a positive integer");
   });
 });
 

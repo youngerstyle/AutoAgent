@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentGoal, AgentThreadSnapshot, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 import type { AgentProfile, WorkspaceAgent, WorkspaceToolName } from "../../shared/types.js";
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, effectiveInputTokenBudget } from "../../shared/model-context.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 import {
   ProviderError,
@@ -25,6 +26,7 @@ export interface AgentExecutionSliceInput {
   policy: EffectivePolicy;
   provider: AgentProfile["defaultProvider"];
   model: string;
+  contextWindowTokens?: number;
 }
 
 export interface AgentExecutionSliceResult {
@@ -72,6 +74,9 @@ export class AgentToolLoop {
     const triggerMessageId = input.triggerMessageId ?? (pendingTurn?.turnId === turnId ? pendingTurn.messageId : undefined);
     const usageBlock = await this.usageBlock(goal, turnId, input);
     if (usageBlock) return usageBlock;
+    const maxInputTokens = effectiveInputTokenBudget(
+      input.contextWindowTokens ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+    );
 
     await this.engine.appendToolItem({
       itemId: `${turnId}:started`,
@@ -82,7 +87,7 @@ export class AgentToolLoop {
       value: { turnId, ...(triggerMessageId ? { triggerMessageId } : {}), status: "running" },
       createdAt: this.now().toISOString(),
     });
-    const compactionFailure = await this.compactIfNeeded(turnId, input, goal);
+    const compactionFailure = await this.compactIfNeeded(turnId, input, goal, maxInputTokens);
     if (compactionFailure) return compactionFailure;
     const assembled = await this.contextAssembler.assemble({
       profile: input.profile,
@@ -90,7 +95,7 @@ export class AgentToolLoop {
       policy: input.policy,
       thread: await this.engine.getThread(input.threadId),
       goal,
-    });
+    }, maxInputTokens);
     await this.trace(turnId, input, "context", { prompt: assembled.prompt, report: assembled.report });
 
     const history = [...assembled.history];
@@ -234,8 +239,12 @@ export class AgentToolLoop {
     turnId: string,
     input: AgentExecutionSliceInput,
     goal: AgentGoal | undefined,
+    maxInputTokens: number,
   ): Promise<AgentExecutionSliceResult | undefined> {
-    const plan = await this.contextAssembler.planCompaction(await this.engine.getThread(input.threadId));
+    const plan = await this.contextAssembler.planCompaction(
+      await this.engine.getThread(input.threadId),
+      maxInputTokens,
+    );
     if (!plan) return undefined;
     let result: AgentModelTurnResult;
     try {
@@ -257,7 +266,7 @@ export class AgentToolLoop {
       return this.providerFailure(turnId, input, error, 0);
     }
     await this.trace(turnId, input, "provider_response", { phase: "compaction", result });
-    await this.recordUsage(turnId, input, goal, 0, result.usage);
+    await this.recordUsage(turnId, input, goal, "compaction", result.usage);
     const summary = result.items
       .filter((item): item is Extract<AgentModelOutputItem, { type: "assistant_message" }> => item.type === "assistant_message")
       .map((item) => item.content.trim())
@@ -348,13 +357,13 @@ export class AgentToolLoop {
     turnId: string,
     input: AgentExecutionSliceInput,
     goal: AgentGoal | undefined,
-    round: number,
+    usageKey: number | string,
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined,
   ): Promise<void> {
     const totalTokens = usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
     if (!goal || totalTokens <= 0) return;
     await this.engine.appendToolItem({
-      itemId: `${turnId}:usage:${round}`,
+      itemId: `${turnId}:usage:${usageKey}`,
       turnId,
       threadId: input.threadId,
       goalId: input.goalId,

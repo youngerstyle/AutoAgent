@@ -25,6 +25,9 @@ export function createProviderRouter(registry?: ProviderRegistry) {
       name: req.body.name !== undefined ? String(req.body.name) : undefined,
       provider,
       model: req.body.model !== undefined ? String(req.body.model) : undefined,
+      contextWindowTokens: req.body.contextWindowTokens !== undefined
+        ? assertContextWindowTokens(req.body.contextWindowTokens)
+        : undefined,
       apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
       baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,
       isDefault: Boolean(req.body.isDefault)
@@ -38,6 +41,9 @@ export function createProviderRouter(registry?: ProviderRegistry) {
         name: req.body.name !== undefined ? String(req.body.name) : undefined,
         provider: req.body.provider !== undefined ? assertRealProvider(req.body.provider) : undefined,
         model: req.body.model !== undefined ? String(req.body.model) : undefined,
+        contextWindowTokens: req.body.contextWindowTokens !== undefined
+          ? assertContextWindowTokens(req.body.contextWindowTokens)
+          : undefined,
         apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
         baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,
         isDefault: req.body.isDefault !== undefined ? Boolean(req.body.isDefault) : undefined
@@ -89,4 +95,12 @@ function defaultProviderRegistry(): ProviderRegistry {
 function assertRealProvider(provider: unknown) {
   if (provider === "openai" || provider === "anthropic") return provider;
   throw new HttpError(400, "模型配置只支持 OpenAI 或 Anthropic", "INVALID_PROVIDER");
+}
+
+function assertContextWindowTokens(value: unknown): number {
+  const normalized = Number(value);
+  if (!Number.isInteger(normalized) || normalized <= 0) {
+    throw new HttpError(400, "上下文窗口必须是正整数", "INVALID_CONTEXT_WINDOW");
+  }
+  return normalized;
 }

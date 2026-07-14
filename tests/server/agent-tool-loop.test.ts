@@ -180,7 +180,7 @@ describe("AgentToolLoop", () => {
         threadId: fixture.input.threadId,
         goalId: fixture.input.goalId,
         senderPrincipalId: "human",
-        content: `历史消息 ${index} ${"内容".repeat(100)}`,
+        content: `历史消息 ${index} ${"内容".repeat(8)}`,
         createdAt: `2026-07-13T00:${String(index).padStart(2, "0")}:00.000Z`,
       });
     }
@@ -219,6 +219,30 @@ describe("AgentToolLoop", () => {
       type: "user_message",
       content: "[历史摘要]\n已读取 config.json，确认开发服务端口为 4321；后续无需重复读取，除非文件发生变化。",
     });
+  });
+
+  it("uses 90 percent of the selected model context window as the input budget", async () => {
+    const fixture = await createFixture([
+      { items: [{ type: "assistant_message", content: "保留目标和最新事实。" }] },
+      { items: [{ type: "assistant_message", content: "继续" }] },
+    ]);
+    Object.assign(fixture.input, { contextWindowTokens: 1_000 });
+    for (let index = 0; index < 12; index += 1) {
+      await fixture.engine.sendMessage({
+        messageId: `configured-window-${index}`,
+        threadId: fixture.input.threadId,
+        goalId: fixture.input.goalId,
+        senderPrincipalId: "human",
+        content: `历史消息 ${index} ${"需要保留的事实".repeat(20)}`,
+        createdAt: `2026-07-13T01:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+    }
+
+    await fixture.loop.runSlice(fixture.input);
+
+    const compactionRequest = fixture.provider.requests.find((request) => request.instructions.includes("上下文压缩"));
+    expect(compactionRequest).toBeDefined();
+    expect(JSON.stringify(compactionRequest!.history).length).toBeLessThanOrEqual(Math.floor(1_000 * 0.9 * 0.85) * 4);
   });
 
   it("rejects an oversized compaction summary instead of persisting a self-expanding checkpoint", async () => {
@@ -314,6 +338,9 @@ async function createFixture(
       policy,
       provider: "mock" as const,
       model: "mock",
+      ...(options.maxContextTokens === undefined
+        ? {}
+        : { contextWindowTokens: Math.ceil(options.maxContextTokens / 0.9) }),
     },
   };
 }

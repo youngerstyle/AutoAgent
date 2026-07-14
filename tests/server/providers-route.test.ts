@@ -20,9 +20,9 @@ describe("providers route", () => {
 
     const created = await request(app)
       .post("/api/providers/model-configs")
-      .send({ name: "Claude 主力", provider: "anthropic", model: "claude-sonnet-test", apiKey: "secret" })
+      .send({ name: "Claude 主力", provider: "anthropic", model: "claude-sonnet-test", contextWindowTokens: 200000, apiKey: "secret" })
       .expect(201);
-    expect(created.body.config).toMatchObject({ name: "Claude 主力", provider: "anthropic", apiKey: "********" });
+    expect(created.body.config).toMatchObject({ name: "Claude 主力", provider: "anthropic", contextWindowTokens: 200000, apiKey: "********" });
 
     const renamed = await request(app)
       .patch(`/api/providers/model-configs/${created.body.config.id}`)
@@ -34,5 +34,10 @@ describe("providers route", () => {
     const relisted = await request(app).get("/api/providers/model-configs").expect(200);
     expect(relisted.body.configs.filter((config: { isDefault: boolean }) => config.isDefault)).toHaveLength(1);
     expect(relisted.body.configs.find((config: { id: string }) => config.id === created.body.config.id)).toMatchObject({ isDefault: true });
+
+    await request(app)
+      .post("/api/providers/model-configs")
+      .send({ provider: "openai", contextWindowTokens: 0 })
+      .expect(400);
   });
 });

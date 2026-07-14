@@ -6,6 +6,7 @@ import { AgentContextAssembler } from "../../src/server/agent-engine/context-ass
 import { AgentEngine } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
+import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, effectiveInputTokenBudget } from "../../src/shared/model-context.js";
 
 describe("AgentContextAssembler", () => {
   it("separates stable instructions from one chronological structured history", async () => {
@@ -116,6 +117,29 @@ describe("AgentContextAssembler", () => {
     expect(resultIndex).toBeGreaterThan(callIndex);
   });
 
+  it("bounds every semantic compaction request instead of sending the whole oversized prefix", async () => {
+    const maxTokens = 220;
+    const fixture = await contextFixture(maxTokens);
+    for (let index = 0; index < 40; index += 1) {
+      await fixture.engine.sendMessage({
+        messageId: `large-history-${index}`,
+        threadId: fixture.thread.threadId,
+        senderPrincipalId: "human",
+        content: `历史消息 ${index} ${"需要保留的事实".repeat(40)}`,
+        createdAt: `2026-07-13T00:${String(index).padStart(2, "0")}:00.000Z`,
+      });
+    }
+
+    const plan = await fixture.assembler.planCompaction(
+      await fixture.engine.getThread(fixture.thread.threadId),
+    );
+
+    expect(plan).toBeDefined();
+    expect(JSON.stringify(plan!.history).length).toBeLessThanOrEqual(Math.floor(maxTokens * 0.85) * 4);
+    expect(plan!.originalItemCount).toBeGreaterThan(0);
+    expect(plan!.originalItemCount).toBeLessThan(40);
+  });
+
   it("reconstructs a restarted thread from persisted replacement history plus the chronological suffix", async () => {
     const fixture = await contextFixture(220);
     await fixture.engine.sendMessage({
@@ -181,7 +205,7 @@ describe("AgentContextAssembler", () => {
   });
 });
 
-async function contextFixture(maxTokens = 64_000) {
+async function contextFixture(maxTokens = effectiveInputTokenBudget(DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS)) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-context-native-"));
   const store = new AgentStore(root, "dev");
   const engine = new AgentEngine(store);
