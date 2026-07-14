@@ -280,6 +280,65 @@ describe("MissionProcessManager", () => {
       links: [expect.objectContaining({ status: "running" })],
     });
   });
+
+  it("settles one QA attempt, runs correction, then starts a new attempt for the same QA Ticket", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build and verify",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: {
+          definitionId: "correction-flow",
+          definitionVersion: 1,
+          policyRef: fixture.policy.ref,
+          plannerAssignment: { principalId: "principal-pm" },
+          initialChange: {
+            additions: [
+              { clientRef: "dev", title: "开发", objective: "实现功能", successCriteria: ["功能可运行"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" } },
+              { clientRef: "qa", title: "质量检查", objective: "验证功能", successCriteria: ["质量通过"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "result-v1" } },
+            ],
+            dependencyAdditions: [{ from: { clientRef: "dev" }, to: { clientRef: "qa" } }],
+            cancelTicketIds: [],
+            requiredTerminalRefs: [{ clientRef: "qa" }],
+          },
+        },
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+
+    let mission = await fixture.manager.tick();
+    const devLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running")!;
+    const devEngine = fixture.engines.get("dev")!;
+    const devGoal = (await devEngine.getGoal(devLink.agentGoalId!))!;
+    await devEngine.proposeGoalResolution({ proposalId: "dev-complete", goalId: devGoal.spec.id, expectedGoalVersion: devGoal.version, resolvingGoalVersion: devGoal.version + 1, status: "completed", summary: "开发完成", evidence: [], domainOutcome: { result: "artifact" }, createdAt: NOW });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const qaLink = mission.links.find((item) => item.agentId === "qa" && item.status === "running")!;
+    const qaEngine = fixture.engines.get("qa")!;
+    const qaGoal = (await qaEngine.getGoal(qaLink.agentGoalId!))!;
+    await qaEngine.proposeGoalResolution({
+      proposalId: "qa-needs-correction", goalId: qaGoal.spec.id, expectedGoalVersion: qaGoal.version, resolvingGoalVersion: qaGoal.version + 1,
+      status: "completed", summary: "发现缺陷", evidence: [],
+      domainOutcome: { disposition: "correction_required", targetTicketId: devLink.ticketId, reason: "碰撞失效" }, createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+    expect(mission.links.find((item) => item.dispatchId === qaLink.dispatchId)).toMatchObject({ status: "settled" });
+    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "pending" });
+
+    mission = await fixture.manager.tick();
+    const correctionLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running" && item.ticketId !== devLink.ticketId)!;
+    const correctionGoal = (await devEngine.getGoal(correctionLink.agentGoalId!))!;
+    await devEngine.proposeGoalResolution({ proposalId: "correction-complete", goalId: correctionGoal.spec.id, expectedGoalVersion: correctionGoal.version, resolvingGoalVersion: correctionGoal.version + 1, status: "completed", summary: "缺陷已修复", evidence: [], domainOutcome: { result: "fixed" }, createdAt: NOW });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const qaRetry = mission.links.find((item) => item.agentId === "qa" && item.status === "running" && item.ticketId === qaLink.ticketId)!;
+    expect(qaRetry.dispatchId).not.toBe(qaLink.dispatchId);
+    expect(qaRetry.agentGoalId).not.toBe(qaLink.agentGoalId);
+    expect(qaRetry.ticketVersion).toBeGreaterThan(qaLink.ticketVersion);
+  });
 });
 
 const NOW = "2026-07-10T00:00:00.000Z";
@@ -305,6 +364,8 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     members: [
       { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] },
       { agentId: "pm", principalId: "principal-pm", capabilities: ["plan:plan"] },
+      { agentId: "dev", principalId: "principal-dev", capabilities: ["implementation"] },
+      { agentId: "qa", principalId: "principal-qa", capabilities: ["quality:verify"] },
     ],
   };
   const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();

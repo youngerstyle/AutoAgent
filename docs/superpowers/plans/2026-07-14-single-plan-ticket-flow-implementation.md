@@ -57,10 +57,12 @@
 - Test: `tests/server/ticket-engine-standalone.test.ts`
 
 - [x] Add failing tests proving PM completion does not complete Plan and terminal Tickets never re-enter scheduling.
-- [x] Implement `createPlan`, `changePlan`, Ticket completion/block/fail/return and Plan lifecycle commands.
+- [x] Implement `createPlan`, `changePlan`, Ticket completion/block/fail and Plan lifecycle commands.
 - [x] Split Ticket completion from Plan change application while preserving proposal/command idempotency.
 - [x] Remove automatic branch cloning from `return_to_parent`.
-- [x] Emit `PlanAmendmentRequested` and create only the configured planner work request.
+- [x] Separate ordinary `correction_required` from structural `plan_change_required`.
+- [x] Ordinary correction appends one correction Ticket, retries the same current Ticket after correction, and never invokes the planner.
+- [x] Emit `PlanAmendmentRequested` only for explicit structural Plan changes.
 - [x] Remove deterministic semantic Ticket IDs and revision-chain code.
 
 ### Task 5: Adapt product template and Mission Control

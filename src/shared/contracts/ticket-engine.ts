@@ -187,9 +187,15 @@ export interface BlockTicketCommand {
   requiredInput?: string;
 }
 
-export interface ReturnTicketCommand {
-  type: "return";
+export interface RequestCorrectionCommand {
+  type: "request_correction";
   targetTicketId: TicketId;
+  reason: string;
+  evidence: TicketEvidenceRef[];
+}
+
+export interface RequestPlanChangeCommand {
+  type: "request_plan_change";
   reason: string;
   evidence: TicketEvidenceRef[];
 }
@@ -203,7 +209,8 @@ export interface FailTicketCommand {
 export type TicketCommandPayload =
   | CompleteTicketCommand
   | BlockTicketCommand
-  | ReturnTicketCommand
+  | RequestCorrectionCommand
+  | RequestPlanChangeCommand
   | FailTicketCommand;
 
 export interface TicketCommandEnvelope<TPayload extends TicketCommandPayload = TicketCommandPayload> {
@@ -224,7 +231,7 @@ export type TicketCommandResult =
       accepted: true;
       commandId: string;
       proposalId: string;
-      ticketStatus: "blocked" | "completed" | "returned" | "failed";
+      ticketStatus: "pending" | "blocked" | "completed" | "failed";
       ticketVersion: number;
       planStatus: PlanStatus;
       planVersion: number;
@@ -351,6 +358,7 @@ export type TicketAggregateEventPayload =
   | { type: "TicketClaimed"; claimId: string }
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput?: string }
+  | { type: "TicketRetryQueued"; prerequisiteTicketId: TicketId }
   | {
       type: "TicketTerminal";
       status: "completed" | "returned" | "failed" | "cancelled";
@@ -366,7 +374,13 @@ export type PlanAggregateEventPayload = {
 } | {
   type: "PlanAmendmentRequested";
   sourceTicketId: TicketId;
+  reason: string;
+  amendmentTicketId: TicketId;
+} | {
+  type: "TicketCorrectionRequested";
+  sourceTicketId: TicketId;
   targetTicketId: TicketId;
+  correctionTicketId: TicketId;
   reason: string;
 };
 

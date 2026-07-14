@@ -44,6 +44,13 @@ Ticket Engine 不负责：
 - 根据自然语言、关键词或错误类型猜下一张 Ticket；
 - 自动克隆、复活或替换已完成 Ticket。
 
+Ticket Engine 可以执行两类不含业务判断的标准原子操作：
+
+- 根据当前 Ticket 明确提交的 `correction_required`，向同一 Plan 追加一张纠错 Ticket，并让当前 Ticket 等待纠错后重试；
+- 根据当前 Ticket 明确提交的 `plan_change_required`，追加一张计划修订 Ticket，并暂停普通调度直到规划者提交变更。
+
+这两类操作由 Agent 的结构化结论触发。Ticket Engine 只校验引用、权限、状态和 DAG，不通过角色名、关键词或错误文本推断结论。
+
 ### 2.2 Agent Engine
 
 Agent Engine 是通用的 message-interactive Agent loop。它只知道 AgentThread、Goal、Turn、工具和消息，不知道 Mission、Plan、Ticket DAG 或团队角色顺序。
@@ -98,6 +105,8 @@ Ticket 终态为：
 - `returned`
 - `failed`
 - `cancelled`
+
+`returned` 只保留为旧记录的终态值；新调度协议不再生成它。普通返工不会结束当前 Ticket，而是为同一 Ticket 增加一次后续 Agent Goal attempt。
 
 进入终态后：
 
@@ -168,18 +177,64 @@ Mission 创建时，产品模板只创建最小启动链：需求接收 Ticket �
 
 模板可以规定最小质量策略，但 Ticket Engine 不认识角色。策略由 capability、output contract 和 Plan 图表达。
 
-### 5.2 下游打回
+### 5.2 普通纠错闭环
 
-下游 Agent 发现前置工作有问题时：
+测试失败、评审发现实现缺陷、下游发现某项已完成前置工作不满足原成功标准，都属于普通纠错，不属于重新规划。
 
-1. 当前 Ticket 提交 `return`，携带目标上游 Ticket、原因和证据；
-2. 当前 Ticket 进入 `returned`，不解锁正常下游；
-3. Ticket Engine 记录 `PlanAmendmentRequested`，Plan 进入 `blocked`；
-4. 平台根据 Plan 的 `plannerAssignment` 创建一张全新 UUID 的“计划修订”Ticket；
-5. 规划 Agent 决定需要追加哪些返工、复查和后续 Ticket，并提交 `PlanChangeSet`；
-6. 变更集应用后，Plan 恢复 `active`，仅新 Ticket 参与调度。
+当前 Agent 完成本次调查后提交结构化结论：
 
-平台创建“计划修订”工作请求，不代表平台替 PM 规划实际业务 Ticket。不存在自动 `QA -> Dev`、`老板 -> Dev` 或角色跳转。
+```ts
+{
+  disposition: "correction_required";
+  targetTicketId: TicketId;
+  reason: string;
+  result?: unknown;
+}
+```
+
+其中 `targetTicketId` 必须是当前 Ticket 在同一 Plan 中已完成的上游 Ticket。Ticket Engine 在一个原子提交中：
+
+1. 结束当前 Agent Goal attempt，但不结束当前 Ticket；
+2. 清除当前 Ticket 的执行权，将其恢复为 `pending`；
+3. 创建一张全新 UUID 的纠错 Ticket；
+4. 纠错 Ticket 继承目标上游 Ticket 的 assignment 和 output contract，不按角色名称选择负责人；
+5. 追加 `target -> correction -> current` 两条依赖；
+6. 纠错 Ticket 进入 `ready`，当前 Ticket 等待纠错完成；
+7. 纠错完成后，原当前 Ticket 重新进入 `ready`，由 Mission Control 创建下一次 Agent Goal attempt；
+8. 原当前 Ticket 的下游始终等待它最终 `completed`，因此不会抢跑。
+
+同一 Ticket 可以经历多次 Agent Goal attempt。Ticket 的成功标准保持不变，每次纠错都追加新的 Ticket 和依赖，历史不删除、不覆盖。
+
+该流程没有 `QA -> Dev` 等角色硬编码。报告者是当前 Ticket，纠正对象是 `targetTicketId`，执行负责人来自目标 Ticket 的 assignment。例如 QA 发现 DEV 交付缺陷时，报告来源是 QA Ticket，纠错对象是 DEV Ticket，纠错工作自然继承原 DEV assignment，PM 不参与。
+
+### 5.3 计划结构变更
+
+只有以下情况进入计划修订：
+
+- 需求、范围或成功标准需要改变；
+- 当前问题无法归属于一张明确的已完成上游 Ticket；
+- 需要新增能力、改变责任边界或重组 DAG；
+- 原 Plan 缺少完成 Mission 所需的业务工作。
+
+当前 Agent 提交：
+
+```ts
+{
+  disposition: "plan_change_required";
+  reason: string;
+  result?: unknown;
+}
+```
+
+Ticket Engine 原子追加计划修订 Ticket，并让当前 Ticket 等待该修订 Ticket。规划 Agent 通过 `PlanChangeSet` 追加实际业务 Ticket；计划修订完成后，原 Ticket 重新就绪。普通缺陷不得用该通道绕行 PM。
+
+计划修订 Ticket 本身不能再次提交 `plan_change_required`，避免修订递归生成修订。它只有三种合法结果：提交可校验的 `PlanChangeSet` 并完成；缺少不可替代输入时 `blocked`；有证据证明无法完成时 `failed`。
+
+### 5.4 与成熟缺陷管理的对应
+
+- Azure Test Plans 将失败测试结果与独立 Bug 关联；测试事实和修复工作不是同一个工作项。
+- Jira 允许重开原工单；本系统为保持终态 Ticket 不可变，将“重开”实现为同一未完成验证 Ticket 的新 Goal attempt，加一张新的纠错 Ticket。
+- ISTQB 的确认测试对应纠错完成后对原验证 Ticket 的下一次执行。
 
 ## 6. 持久化与事件
 
@@ -208,6 +263,9 @@ plan.json
 - `TicketFailed`
 - `TicketCancelled`
 - `PlanAmendmentRequested`
+- `TicketCorrectionRequested`
+
+`TicketReturned` 仅用于读取既有历史；新命令不产生该事件。
 
 状态只在明确命令提交时变化。读取快照、UI 刷新、Mission Control tick 和服务重启都不得改变 Plan/Ticket 状态。
 
@@ -235,12 +293,15 @@ plan.json
 4. Plan 变更只能追加 Ticket/边，不能修改已完成 Ticket。
 5. 完成 Ticket 永不再次产生 `TicketReady`。
 6. 服务重启和重复 tick 不改变 Ticket 状态或重复投递。
-7. 下游 return 不克隆上游、不自动创建开发 Ticket，只产生计划修订请求。
-8. PM 通过修订 Ticket 追加的新返工 Ticket 使用新 UUID，并按新依赖运行。
-9. Plan 仅在完成策略满足时完成；没有必要终点时拒绝提交，而不是提前完成。
-10. Agent Engine 测试不导入 Plan/Ticket 类型；Ticket Engine 测试不调用 Provider。
-11. Mission Control 只消费 `TicketReady` 并按 Ticket ID 幂等创建 Agent Goal。
-12. schema v2 记录被标为只读，绝不进入 v3 调度。
+7. 普通纠错只接受同一 Plan 中已完成的严格上游 Ticket，不能指向自身、下游或无关 Ticket。
+8. 普通纠错原子追加全新 UUID 纠错 Ticket 和 `target -> correction -> current` 依赖；当前 Ticket 回到 pending，原下游不能抢跑。
+9. 纠错 Ticket 完成后，原 Ticket 重新 ready 并产生新的 Agent Goal attempt；已完成目标 Ticket 不复活。
+10. 计划结构变更才创建计划修订 Ticket；普通纠错不得经过 plannerAssignment。
+11. 计划修订 Ticket 不能递归申请另一张计划修订 Ticket。
+12. Plan 仅在完成策略满足时完成；没有必要终点时拒绝提交，而不是提前完成。
+13. Agent Engine 测试不导入 Plan/Ticket 类型；Ticket Engine 测试不调用 Provider。
+13. Mission Control 只消费 `TicketReady` 并按 Ticket ID 和 Ticket version 幂等创建 Agent Goal attempt。
+14. schema v2 记录被标为只读，绝不进入 v3 调度。
 
 ## 9. 上线门槛
 

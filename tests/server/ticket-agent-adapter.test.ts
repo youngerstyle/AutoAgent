@@ -23,8 +23,11 @@ describe("Ticket Agent resolution adapter", () => {
   });
 
   it("never exposes internal command names to the Agent", () => {
-    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["implementation", "quality:verify"]);
+    const targetTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
+    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["implementation", "quality:verify"], [{ ticketId: targetTicketId, title: "开发" }]);
     expect(instruction).toContain("plan-change-set-v3");
+    expect(instruction).toContain(targetTicketId);
+    expect(instruction).toContain("开发");
     expect(instruction).not.toContain("apply_change");
     expect(instruction).not.toContain("return_to_parent");
   });
@@ -32,6 +35,43 @@ describe("Ticket Agent resolution adapter", () => {
   it("validates Plan change shape before invoking Ticket Engine", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", { result: {} })).toMatchObject({ valid: false });
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", { result: {}, change: { additions: [draft("dev")], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "dev" }] } })).toEqual({ valid: true });
+  });
+
+  it("does not let a Plan amendment recursively request another Plan amendment", () => {
+    expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
+      disposition: "plan_change_required",
+      reason: "再次修订",
+    })).toEqual({
+      valid: false,
+      reason: "计划修订工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 change",
+    });
+    expect(missionOutcomeInstruction("plan-change-set-v3")).toContain("不能再次请求计划修订");
+  });
+
+  it("maps an explicit correction disposition without role or keyword inference", () => {
+    const targetTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
+    const outcome = { disposition: "correction_required", targetTicketId, reason: "碰撞测试失败" };
+    expect(validateMissionTicketOutcome("result-v1", "completed", outcome)).toEqual({ valid: true });
+    expect(proposalToTicketCommand(proposal("completed", outcome), link, NOW).payload).toEqual({
+      type: "request_correction",
+      targetTicketId,
+      reason: "碰撞测试失败",
+      evidence: [],
+    });
+  });
+
+  it("maps Plan change separately from ordinary correction", () => {
+    const outcome = { disposition: "plan_change_required", reason: "成功标准相互冲突" };
+    expect(proposalToTicketCommand(proposal("completed", outcome), link, NOW).payload).toEqual({
+      type: "request_plan_change",
+      reason: "成功标准相互冲突",
+      evidence: [],
+    });
+  });
+
+  it("rejects malformed structured dispositions instead of guessing from prose", () => {
+    expect(validateMissionTicketOutcome("result-v1", "completed", { disposition: "correction_required", reason: "缺少目标" })).toMatchObject({ valid: false });
+    expect(validateMissionTicketOutcome("result-v1", "completed", { disposition: "plan_change_required" })).toMatchObject({ valid: false });
   });
 
   it.each([

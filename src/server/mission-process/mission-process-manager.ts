@@ -281,6 +281,7 @@ export class MissionProcessManager {
           : missionOutcomeInstruction(
               work.definition.outputContract.schemaRef,
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
+              await this.listCorrectionTargets(link.planId, link.ticketId),
             ),
         createdAt: this.now().toISOString(),
       });
@@ -450,6 +451,30 @@ export class MissionProcessManager {
       };
     }
     return this.updateLink(aggregate, dispatchId, nextLink);
+  }
+
+  private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string }>> {
+    const plan = await this.tickets.getPlan(planId);
+    const incoming = new Map<string, TicketId[]>();
+    for (const edge of plan.graph.dependencyEdges) {
+      incoming.set(String(edge.toTicketId), [...(incoming.get(String(edge.toTicketId)) ?? []), edge.fromTicketId]);
+    }
+    const ancestorIds: TicketId[] = [];
+    const seen = new Set<string>();
+    const queue = [...(incoming.get(String(ticketId)) ?? [])];
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      if (seen.has(String(current))) continue;
+      seen.add(String(current));
+      ancestorIds.push(current);
+      queue.push(...(incoming.get(String(current)) ?? []));
+    }
+    const targets: Array<{ ticketId: TicketId; title: string }> = [];
+    for (const ancestorId of ancestorIds) {
+      const work = await this.tickets.getWorkItem(ancestorId);
+      if (work?.ticket.status === "completed") targets.push({ ticketId: ancestorId, title: work.definition.title });
+    }
+    return targets;
   }
 
   private async reconcileResolvingLinks(aggregate: MissionAggregate): Promise<MissionAggregate> {
