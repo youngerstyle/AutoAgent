@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentEventCursor,
   AgentPort,
@@ -16,11 +16,12 @@ import type {
 import type {
   TicketEventCursor,
   TicketId,
-  WorkflowId,
+  PlanId,
 } from "../../shared/contracts/ticket-engine.js";
 import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore } from "./mission-store.js";
 import {
+  proposalToPlanChangeCommand,
   proposalToTicketCommand,
   ticketResultToGoalDecision,
   validateMissionTicketOutcome,
@@ -48,24 +49,25 @@ export class MissionProcessManager {
   async startMission(input: MissionStartRequest): Promise<MissionAggregate> {
     if (input.missionId !== this.store.missionId) throw new Error("Mission identity mismatch");
     if (input.resolvedStart.teamBindingId !== this.team.teamBindingId) throw new Error("Team binding mismatch");
-    const workflowId = stableId("workflow", input.missionId) as WorkflowId;
-    const commandId = stableId("workflow_create", input.missionId);
+    const commandId = stableId("plan_create", input.missionId);
     let aggregate = await this.store.read();
     if (!aggregate) {
+      const planId = randomUUID() as PlanId;
       aggregate = await this.store.create({
         missionId: input.missionId,
-        workflowId,
-        workflowCreateCommandId: commandId,
+        planId,
+        planCreateCommandId: commandId,
         status: "starting",
       });
     }
-    const replay = await this.tickets.getWorkflowCommandResult(commandId);
-    const result = replay ?? await this.tickets.createWorkflow({
+    const planId = aggregate.record.planId;
+    const replay = await this.tickets.getPlanCommandResult(planId, commandId);
+    const result = replay ?? await this.tickets.createPlan({
       commandId,
-      workflowId,
+      planId,
       actorPrincipalId: this.plannerPrincipalId,
       issuedAt: this.now().toISOString(),
-      payload: { type: "create_graph", definition: input.resolvedStart.workflowDefinition },
+      payload: { type: "create_plan", missionId: input.missionId, definition: input.resolvedStart.planDefinition },
     });
     if (!result.accepted) {
       return this.store.transact(aggregate.version, (current) => ({
@@ -141,11 +143,11 @@ export class MissionProcessManager {
   }
 
   private async pumpTicketEvents(aggregate: MissionAggregate): Promise<MissionAggregate> {
-    const workflowId = aggregate.record.workflowId;
-    const partition = `ticket:${workflowId}`;
+    const planId = aggregate.record.planId;
+    const partition = `ticket:${planId}`;
     const saved = aggregate.cursors.find((item) => item.partition === partition);
     const page = await this.tickets.readEvents({
-      workflowId,
+      planId,
       after: saved?.cursor as TicketEventCursor | undefined,
       limit: 100,
     });
@@ -164,11 +166,11 @@ export class MissionProcessManager {
     ticketId: TicketId,
     ticketVersion: number,
   ): Promise<MissionAggregate> {
-    const [workflow, ticket] = await Promise.all([
-      this.tickets.getWorkflow(aggregate.record.workflowId),
+    const [plan, ticket] = await Promise.all([
+      this.tickets.getPlan(aggregate.record.planId),
       this.tickets.getTicket(ticketId),
     ]);
-    if (new Set(["completed", "failed", "cancelled"]).has(workflow.status) || ticket?.status !== "ready") {
+    if (new Set(["completed", "failed", "cancelled"]).has(plan.status) || ticket?.status !== "ready") {
       return aggregate;
     }
     const dispatchId = stableId("dispatch", aggregate.missionId, ticketId, String(ticketVersion));
@@ -180,7 +182,7 @@ export class MissionProcessManager {
     const link: MissionLink = {
       dispatchId,
       missionId: aggregate.missionId,
-      workflowId: aggregate.record.workflowId,
+      planId: aggregate.record.planId,
       ticketId,
       ticketVersion,
       agentId: member.agentId,
@@ -205,7 +207,7 @@ export class MissionProcessManager {
     if (link.status === "dispatching") {
       const claim = await this.tickets.getClaimByRequestId(link.claimRequestId) ?? await this.tickets.claimReady({
         requestId: link.claimRequestId,
-        workflowId: link.workflowId,
+        planId: link.planId,
         ticketId: link.ticketId,
         expectedTicketVersion: link.ticketVersion,
         principalId: link.agentPrincipalId,
@@ -253,14 +255,14 @@ export class MissionProcessManager {
           id: stableId("goal", dispatchId),
           threadId,
           objective: assignmentIssue
-            ? `${assignmentIssue}。记录分配阻塞事实，等待具备授权的 workflow 维护者修订 Ticket DAG。`
+            ? `${assignmentIssue}。记录分配阻塞事实，等待具备授权的 plan 维护者修订 Ticket DAG。`
             : work.definition.objective,
           successCriteria: assignmentIssue
             ? ["明确记录无法分配的能力", "提交 blocked，不伪装完成原工作"]
             : work.definition.successCriteria,
           contextRefs: [
             { kind: "mission", ref: aggregate.missionId },
-            { kind: "workflow", ref: link.workflowId },
+            { kind: "plan", ref: link.planId },
             { kind: "ticket", ref: link.ticketId },
           ],
           outputContract: work.definition.outputContract,
@@ -357,7 +359,7 @@ export class MissionProcessManager {
     const agent = this.agents.get(link.agentId);
     const proposal = await agent.getProposal(proposalId);
     if (!proposal) throw new Error("Goal proposal is missing");
-    const workflow = await this.tickets.getWorkflow(link.workflowId);
+    const plan = await this.tickets.getPlan(link.planId);
     const goal = await agent.getGoal(link.agentGoalId);
     if (!goal) throw new Error("Goal is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
@@ -382,8 +384,28 @@ export class MissionProcessManager {
         lastDecisionId: decisionId,
       });
     }
-    const command = proposalToTicketCommand(proposal as never, active, schemaRef, workflow.version, this.now().toISOString());
-    const result = await this.tickets.getTicketCommandResult(command.commandId) ?? await this.tickets.applyTicket(command);
+    const planCommand = schemaRef === "plan-change-set-v3"
+      ? proposalToPlanChangeCommand(proposal as never, active, plan.version, this.now().toISOString())
+      : undefined;
+    if (planCommand) {
+      const planResult = await this.tickets.getPlanCommandResult(link.planId, planCommand.commandId)
+        ?? await this.tickets.applyPlan(planCommand);
+      if (!planResult.accepted) {
+        const decisionId = stableId("plan_change_rejected", proposalId, planCommand.commandId);
+        const rejection: GoalResolutionDecision<GoalResolutionStatus> = planResult.code === "version_conflict"
+          ? { accepted: false, disposition: "correctable", reason: planResult.reason }
+          : { accepted: false, disposition: "host_error", reason: planResult.reason, incidentId: stableId("mission_incident", planCommand.commandId) };
+        const settled = await this.settleAgentProposal(agent, link.agentGoalId, proposalId, decisionId, rejection);
+        if (!settled.applied) return aggregate;
+        return this.updateLink(aggregate, dispatchId, {
+          ...active,
+          status: "running",
+          lastDecisionId: decisionId,
+        });
+      }
+    }
+    const command = proposalToTicketCommand(proposal as never, active, this.now().toISOString());
+    const result = await this.tickets.getTicketCommandResult(link.planId, command.commandId) ?? await this.tickets.applyTicket(command);
     const decisionId = stableId("goal_decision", proposalId, command.commandId);
     const decision = ticketResultToGoalDecision(proposal, result);
     if (!decision) {
@@ -505,22 +527,22 @@ function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefine
     : team.members;
   const member = candidates.find((item) => capabilities.every((capability) => item.capabilities.includes(capability)));
   if (member) return member;
-  const planner = team.members.find((item) => item.capabilities.includes("workflow:plan"));
+  const planner = team.members.find((item) => item.capabilities.includes("plan:plan"));
   if (planner) return planner;
   throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
 }
 
 function validateTeamAssignments(outcome: MissionTicketOutcome, schemaRef: string | undefined, team: TeamBinding): string | undefined {
-  if (schemaRef !== "ticket-graph-v2" || !outcome.graph || typeof outcome.graph !== "object" || Array.isArray(outcome.graph)) return undefined;
-  const graph = outcome.graph as unknown as { nodes: Array<{ key: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }> };
-  for (const node of graph.nodes) {
+  if (schemaRef !== "plan-change-set-v3" || !outcome.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
+  const change = outcome.change as unknown as { additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }> };
+  for (const node of change.additions) {
     const candidates = node.assignment.principalId
       ? team.members.filter((member) => member.principalId === node.assignment.principalId)
       : team.members;
     const required = node.assignment.requiredCapabilities ?? [];
     if (!candidates.some((member) => required.every((capability) => member.capabilities.includes(capability)))) {
       const available = [...new Set(team.members.flatMap((member) => member.capabilities))].join("、");
-      return `节点 ${node.key} 无可分配 Agent；要求能力：${required.join("、") || "未指定"}；团队可用能力：${available}`;
+      return `新增 Ticket ${node.clientRef} 无可分配 Agent；要求能力：${required.join("、") || "未指定"}；团队可用能力：${available}`;
     }
   }
   return undefined;

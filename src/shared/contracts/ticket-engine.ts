@@ -1,18 +1,15 @@
-declare const ticketNodeKeyBrand: unique symbol;
 declare const ticketIdBrand: unique symbol;
-declare const workflowIdBrand: unique symbol;
-
-export type TicketNodeKey<TValue extends string = string> = TValue & {
-  readonly [ticketNodeKeyBrand]: "TicketNodeKey";
-};
+declare const planIdBrand: unique symbol;
 
 export type TicketId<TValue extends string = string> = TValue & {
   readonly [ticketIdBrand]: "TicketId";
 };
 
-export type WorkflowId<TValue extends string = string> = TValue & {
-  readonly [workflowIdBrand]: "WorkflowId";
+export type PlanId<TValue extends string = string> = TValue & {
+  readonly [planIdBrand]: "PlanId";
 };
+
+export type PlanTicketRef = { ticketId: TicketId } | { clientRef: string };
 
 export interface TicketOutputContract {
   schemaRef: string;
@@ -28,10 +25,8 @@ export interface PlannedTicketAssignment {
   requiredCapabilities?: string[];
 }
 
-export interface PlannedTicketNode {
-  key: TicketNodeKey;
-  parentKey?: TicketNodeKey;
-  revisionOfKey?: TicketNodeKey;
+export interface TicketDefinition {
+  parentTicketId?: TicketId;
   title: string;
   objective: string;
   successCriteria: string[];
@@ -39,63 +34,67 @@ export interface PlannedTicketNode {
   outputContract: TicketOutputContract;
 }
 
-export interface PlannedTicketGraph {
-  schemaVersion: 2;
-  nodes: PlannedTicketNode[];
-  dependencyEdges: Array<{
-    fromKey: TicketNodeKey;
-    toKey: TicketNodeKey;
-  }>;
+export interface PlannedTicketNode extends Omit<TicketDefinition, "parentTicketId"> {
+  clientRef: string;
+  parentTicketId?: TicketId;
 }
 
-export interface PlannedWorkflowCompletionPolicy {
-  requiredTerminalKeys: TicketNodeKey[];
+export interface PlanChangeSet {
+  additions: PlannedTicketNode[];
+  dependencyAdditions: Array<{
+    from: PlanTicketRef;
+    to: PlanTicketRef;
+  }>;
+  cancelTicketIds: TicketId[];
+  requiredTerminalRefs: PlanTicketRef[];
+}
+
+export interface PlannedTicketGraph {
+  schemaVersion: 3;
+  nodes: PlannedTicketNode[];
+  dependencyEdges: PlanChangeSet["dependencyAdditions"];
+}
+
+export interface PlannedPlanCompletionPolicy {
+  requiredTerminalRefs: PlanTicketRef[];
   failurePolicy: "fail_fast" | "require_resolution";
   blockedPolicy: "wait";
 }
 
-export interface TicketGraphNodeSnapshot {
-  nodeKey: TicketNodeKey;
-  ticketId: TicketId;
-  active: boolean;
-  revisionOfTicketId?: TicketId;
-  supersededByTicketId?: TicketId;
-}
-
-export interface TicketGraphSnapshot {
-  schemaVersion: 2;
-  nodes: TicketGraphNodeSnapshot[];
+export interface PlanGraphSnapshot {
+  schemaVersion: 3;
+  ticketIds: TicketId[];
   dependencyEdges: Array<{
     fromTicketId: TicketId;
     toTicketId: TicketId;
   }>;
 }
 
-export interface WorkflowCompletionPolicy {
+export interface PlanCompletionPolicy {
   requiredTerminalTicketIds: TicketId[];
   failurePolicy: "fail_fast" | "require_resolution";
   blockedPolicy: "wait";
 }
 
-export interface WorkflowPolicyRef {
+export interface PlanPolicyRef {
   policyId: string;
   policyVersion: number;
   contentHash: string;
 }
 
-export interface WorkflowAuthorizationGrant {
+export interface PlanAuthorizationGrant {
   principalId?: string;
   teamBindingId?: string;
   capabilities: string[];
 }
 
-export interface WorkflowAuthorizationPolicy {
-  ref: WorkflowPolicyRef;
-  grants: WorkflowAuthorizationGrant[];
+export interface PlanAuthorizationPolicy {
+  ref: PlanPolicyRef;
+  grants: PlanAuthorizationGrant[];
 }
 
-export interface WorkflowPolicyPort {
-  getPolicy(ref: WorkflowPolicyRef): Promise<WorkflowAuthorizationPolicy | undefined>;
+export interface PlanPolicyPort {
+  getPolicy(ref: PlanPolicyRef): Promise<PlanAuthorizationPolicy | undefined>;
 }
 
 export const TICKET_STATUSES = [
@@ -111,7 +110,7 @@ export const TICKET_STATUSES = [
 
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
 
-export const WORKFLOW_STATUSES = [
+export const PLAN_STATUSES = [
   "active",
   "paused",
   "blocked",
@@ -120,12 +119,12 @@ export const WORKFLOW_STATUSES = [
   "cancelled",
 ] as const;
 
-export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
+export type PlanStatus = (typeof PLAN_STATUSES)[number];
 
 export interface ClaimReceipt {
   requestId: string;
   claimId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   ticketId: TicketId;
   ticketVersion: number;
   principalId: string;
@@ -135,7 +134,7 @@ export interface ClaimReceipt {
 
 export interface BlockedOwnershipReceipt {
   ownershipId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   ticketId: TicketId;
   ticketVersion: number;
   principalId: string;
@@ -148,7 +147,7 @@ export type TicketExecutionAuthority =
 
 export interface ClaimRequest {
   requestId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   ticketId: TicketId;
   expectedTicketVersion: number;
   principalId: string;
@@ -182,26 +181,15 @@ export interface CompleteTicketCommand {
   evidence: TicketEvidenceRef[];
 }
 
-export interface CompleteWithGraphTicketCommand {
-  type: "complete_with_graph";
-  result: unknown;
-  evidence: TicketEvidenceRef[];
-  expectedWorkflowVersion: number;
-  graph: PlannedTicketGraph;
-  completionPolicy: PlannedWorkflowCompletionPolicy;
-  cancelTicketIds: TicketId[];
-}
-
 export interface BlockTicketCommand {
   type: "block";
   reason: string;
   requiredInput?: string;
 }
 
-export interface ReturnToParentTicketCommand {
-  type: "return_to_parent";
-  parentTicketId: TicketId;
-  expectedWorkflowVersion: number;
+export interface ReturnTicketCommand {
+  type: "return";
+  targetTicketId: TicketId;
   reason: string;
   evidence: TicketEvidenceRef[];
 }
@@ -214,15 +202,14 @@ export interface FailTicketCommand {
 
 export type TicketCommandPayload =
   | CompleteTicketCommand
-  | CompleteWithGraphTicketCommand
   | BlockTicketCommand
-  | ReturnToParentTicketCommand
+  | ReturnTicketCommand
   | FailTicketCommand;
 
 export interface TicketCommandEnvelope<TPayload extends TicketCommandPayload = TicketCommandPayload> {
   commandId: string;
   proposalId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   ticketId: TicketId;
   expectedTicketVersion: number;
   actorPrincipalId: string;
@@ -239,8 +226,8 @@ export type TicketCommandResult =
       proposalId: string;
       ticketStatus: "blocked" | "completed" | "returned" | "failed";
       ticketVersion: number;
-      workflowStatus: WorkflowStatus;
-      workflowVersion: number;
+      planStatus: PlanStatus;
+      planVersion: number;
       nextAuthority?: TicketExecutionAuthority;
     }
   | {
@@ -252,48 +239,48 @@ export type TicketCommandResult =
         | "policy_violation"
         | "version_conflict"
         | "stale_authority"
-        | "workflow_terminal"
+        | "plan_terminal"
         | "idempotency_conflict";
       reason: string;
       currentTicketVersion?: number;
-      currentWorkflowVersion?: number;
+      currentPlanVersion?: number;
     };
 
-export interface WorkflowDefinition {
+export interface PlanDefinition {
   definitionId: string;
   definitionVersion: number;
-  initialGraph: PlannedTicketGraph;
-  completionPolicy: PlannedWorkflowCompletionPolicy;
-  policyRef: WorkflowPolicyRef;
+  initialChange: PlanChangeSet;
+  policyRef: PlanPolicyRef;
+  plannerAssignment: PlannedTicketAssignment;
 }
 
-export type WorkflowCommand =
-  | { type: "create_graph"; definition: WorkflowDefinition }
-  | { type: "pause"; expectedWorkflowVersion: number }
-  | { type: "resume"; expectedWorkflowVersion: number }
-  | { type: "cancel"; expectedWorkflowVersion: number; reason: string }
+export type PlanCommand =
+  | { type: "create_plan"; missionId: string; definition: PlanDefinition }
+  | { type: "pause"; expectedPlanVersion: number }
+  | { type: "resume"; expectedPlanVersion: number }
+  | { type: "cancel"; expectedPlanVersion: number; reason: string }
   | {
-      type: "amend";
-      expectedWorkflowVersion: number;
-      graph: PlannedTicketGraph;
-      completionPolicy: PlannedWorkflowCompletionPolicy;
-      cancelTicketIds: TicketId[];
+      type: "apply_change";
+      expectedPlanVersion: number;
+      sourceTicketId: TicketId;
+      sourceAuthority: TicketExecutionAuthority;
+      change: PlanChangeSet;
     };
 
-export interface WorkflowCommandEnvelope<TCommand extends WorkflowCommand = WorkflowCommand> {
+export interface PlanCommandEnvelope<TCommand extends PlanCommand = PlanCommand> {
   commandId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   actorPrincipalId: string;
   issuedAt: string;
   payload: TCommand;
 }
 
-export type WorkflowCommandResult =
+export type PlanCommandResult =
   | {
       accepted: true;
       commandId: string;
-      workflowStatus: WorkflowStatus;
-      workflowVersion: number;
+      planStatus: PlanStatus;
+      planVersion: number;
     }
   | {
       accepted: false;
@@ -303,18 +290,18 @@ export type WorkflowCommandResult =
         | "invalid_definition"
         | "policy_violation"
         | "version_conflict"
-        | "workflow_terminal"
+        | "plan_terminal"
         | "idempotency_conflict";
       reason: string;
-      currentWorkflowVersion?: number;
+      currentPlanVersion?: number;
     };
 
 export interface ClaimCommandEnvelope {
   commandId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   actorPrincipalId: string;
   issuedAt: string;
-  payload: { type: "claim" } & Omit<ClaimRequest, "workflowId" | "principalId">;
+  payload: { type: "claim" } & Omit<ClaimRequest, "planId" | "principalId">;
 }
 
 export type ClaimCommandResult =
@@ -326,8 +313,8 @@ export type ClaimCommandResult =
         | "not_ready"
         | "policy_violation"
         | "version_conflict"
-        | "workflow_paused"
-        | "workflow_terminal"
+        | "plan_paused"
+        | "plan_terminal"
         | "idempotency_conflict";
       reason: string;
       currentTicketVersion?: number;
@@ -335,7 +322,7 @@ export type ClaimCommandResult =
 
 export interface TicketSnapshot {
   ticketId: TicketId;
-  workflowId: WorkflowId;
+  planId: PlanId;
   version: number;
   status: TicketStatus;
   parentTicketId?: TicketId;
@@ -344,17 +331,19 @@ export interface TicketSnapshot {
 
 export interface TicketWorkItem {
   ticket: TicketSnapshot;
-  definition: PlannedTicketNode;
+  definition: TicketDefinition;
 }
 
-export interface WorkflowSnapshot {
-  workflowId: WorkflowId;
+export interface PlanSnapshot {
+  planId: PlanId;
+  missionId: string;
   version: number;
-  status: WorkflowStatus;
+  status: PlanStatus;
   deferredOutcome?: "active" | "blocked" | "completed" | "failed";
-  graph: TicketGraphSnapshot;
-  completionPolicy: WorkflowCompletionPolicy;
-  policyRef: WorkflowPolicyRef;
+  graph: PlanGraphSnapshot;
+  completionPolicy: PlanCompletionPolicy;
+  policyRef: PlanPolicyRef;
+  plannerAssignment: PlannedTicketAssignment;
 }
 
 export type TicketAggregateEventPayload =
@@ -368,30 +357,38 @@ export type TicketAggregateEventPayload =
     }
   | { type: "AuthorityRevoked"; fencingToken: number };
 
-export type WorkflowAggregateEventPayload = {
-  type: "WorkflowStatusChanged";
-  status: WorkflowStatus;
+export type PlanAggregateEventPayload = {
+  type: "PlanStatusChanged";
+  status: PlanStatus;
+} | {
+  type: "PlanChanged";
+  addedTicketIds: TicketId[];
+} | {
+  type: "PlanAmendmentRequested";
+  sourceTicketId: TicketId;
+  targetTicketId: TicketId;
+  reason: string;
 };
 
 export interface TicketEventPayloadByAggregate {
   ticket: TicketAggregateEventPayload;
-  workflow: WorkflowAggregateEventPayload;
+  plan: PlanAggregateEventPayload;
 }
 
 export type TicketAggregateType = keyof TicketEventPayloadByAggregate;
 
 type TicketAggregateIdByType = {
   ticket: TicketId;
-  workflow: WorkflowId;
+  plan: PlanId;
 };
 
 export type TicketEventEnvelope<
   TAggregate extends TicketAggregateType = TicketAggregateType,
-  TWorkflowId extends WorkflowId = WorkflowId,
+  TPlanId extends PlanId = PlanId,
 > = {
   [TCurrentAggregate in TAggregate]: {
     eventId: string;
-    workflowId: TWorkflowId;
+    planId: TPlanId;
     aggregateType: TCurrentAggregate;
     aggregateId: TicketAggregateIdByType[TCurrentAggregate];
     aggregateVersion: number;
@@ -402,28 +399,28 @@ export type TicketEventEnvelope<
 
 export type TicketEvent<
   TAggregate extends TicketAggregateType = TicketAggregateType,
-  TWorkflowId extends WorkflowId = WorkflowId,
-> = TicketEventEnvelope<TAggregate, TWorkflowId>;
+  TPlanId extends PlanId = PlanId,
+> = TicketEventEnvelope<TAggregate, TPlanId>;
 
-export interface TicketEventCursor<TWorkflowId extends WorkflowId = WorkflowId> {
+export interface TicketEventCursor<TPlanId extends PlanId = PlanId> {
   source: "ticket";
-  partitionId: TWorkflowId;
+  partitionId: TPlanId;
   position: string;
 }
 
-export interface TicketEventQuery<TWorkflowId extends WorkflowId = WorkflowId> {
-  workflowId: TWorkflowId;
-  after?: TicketEventCursor<NoInfer<TWorkflowId>>;
+export interface TicketEventQuery<TPlanId extends PlanId = PlanId> {
+  planId: TPlanId;
+  after?: TicketEventCursor<NoInfer<TPlanId>>;
   limit: number;
 }
 
 export interface TicketEventPage<
-  TWorkflowId extends WorkflowId = WorkflowId,
-  TEvent extends TicketEvent<TicketAggregateType, TWorkflowId> = TicketEvent<
+  TPlanId extends PlanId = PlanId,
+  TEvent extends TicketEvent<TicketAggregateType, TPlanId> = TicketEvent<
     TicketAggregateType,
-    TWorkflowId
+    TPlanId
   >,
 > {
   events: TEvent[];
-  nextCursor: TicketEventCursor<TWorkflowId>;
+  nextCursor: TicketEventCursor<TPlanId>;
 }

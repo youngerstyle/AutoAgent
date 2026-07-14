@@ -3,10 +3,10 @@ import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
-import type { WorkflowPolicyStore } from "../tickets/workflow-policy-store.js";
-import type { WorkflowPolicyRef } from "../../shared/contracts/ticket-engine.js";
+import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
+import type { PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import { RuntimeHost } from "./runtime-host.js";
-import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamWorkflowPolicy } from "../tickets/workflow-policy-config.js";
+import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -15,8 +15,8 @@ export class RuntimeHostRegistry {
     private readonly workspaces: WorkspaceStore,
     private readonly profiles: AgentProfileStore,
     private readonly providers: ProviderRegistry,
-    private readonly policyStore: WorkflowPolicyStore,
-    private readonly policyRef: WorkflowPolicyRef,
+    private readonly policyStore: PlanPolicyStore,
+    private readonly policyRef: PlanPolicyRef,
     private readonly options: { maxTokensPerAgentGoalWindow?: number } = {},
   ) {}
 
@@ -91,7 +91,7 @@ export class RuntimeHostRegistry {
     const existing = this.hosts.get(workspaceId);
     if (existing) return existing;
     const workspace = await this.workspaces.get(workspaceId);
-    await seedMinimalTeamWorkflowPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+    await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
     const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef, this.options);
     await host.start();
     this.hosts.set(workspaceId, host);

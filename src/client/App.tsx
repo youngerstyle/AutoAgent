@@ -619,6 +619,7 @@ export function App() {
               <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"}>继续</button>
               <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"}>停止</button>
             </div>
+            {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
             {error ? <p className="error-text">{error}</p> : null}
             </section>
 

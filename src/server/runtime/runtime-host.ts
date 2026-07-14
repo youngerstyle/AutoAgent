@@ -12,7 +12,7 @@ import type {
   WorkspaceToolName,
 } from "../../shared/types.js";
 import type { ActiveMissionLink } from "../../shared/contracts/mission-control.js";
-import type { WorkflowId, WorkflowPolicyRef } from "../../shared/contracts/ticket-engine.js";
+import type { PlanId, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { AgentContextAssembler } from "../agent-engine/context-assembler.js";
@@ -24,16 +24,16 @@ import { ensureCoreTeam, listWorkspaceAgents } from "../agents/roster.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import { MissionGoalResolutionPort } from "../mission-process/mission-goal-resolution-port.js";
 import { MissionProcessManager } from "../mission-process/mission-process-manager.js";
-import { MissionStore } from "../mission-process/mission-store.js";
+import { LegacyMissionPlanError, MissionStore } from "../mission-process/mission-store.js";
 import type { MissionTicketOutcome } from "../mission-process/ticket-agent-adapter.js";
-import { createMinimalTeamWorkflowDefinition } from "../product/workflow-template.js";
+import { createMinimalTeamPlanDefinition } from "../product/plan-template.js";
 import { createTeamBinding } from "../product/team-binding.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { resolvePolicy } from "../policy/policy.js";
 import { toolsForPolicy } from "../../shared/tool-catalog.js";
 import { TicketEngine } from "../tickets/ticket-engine.js";
 import { TicketStore } from "../tickets/ticket-store.js";
-import type { WorkflowPolicyStore } from "../tickets/workflow-policy-store.js";
+import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import { RuntimeHostStore, type RuntimeTaskRecord } from "./runtime-host-store.js";
 
 interface RuntimeContext {
@@ -47,6 +47,7 @@ interface RuntimeContext {
 export class RuntimeHost {
   private readonly store: RuntimeHostStore;
   private readonly contexts = new Map<string, RuntimeContext>();
+  private readonly readOnlyTasks = new Map<string, string>();
   private timer?: NodeJS.Timeout;
   private tickPromise?: Promise<void>;
   private operationTail: Promise<unknown> = Promise.resolve();
@@ -55,8 +56,8 @@ export class RuntimeHost {
     private readonly workspace: Workspace,
     private readonly profiles: AgentProfileStore,
     private readonly providers: ProviderRegistry,
-    private readonly policyStore: WorkflowPolicyStore,
-    private readonly policyRef: WorkflowPolicyRef,
+    private readonly policyStore: PlanPolicyStore,
+    private readonly policyRef: PlanPolicyRef,
     private readonly options: { intervalMs?: number; maxTokensPerAgentGoalWindow?: number; now?: () => Date } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
@@ -141,7 +142,7 @@ export class RuntimeHost {
       objective: record.objective,
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(this.policyRef, record.objective),
+        planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
         teamBindingId: "minimal-team",
       },
     });
@@ -152,18 +153,24 @@ export class RuntimeHost {
   private async recoverUnlocked(): Promise<void> {
     for (const record of await this.store.list()) {
       if (new Set(["completed", "failed", "cancelled"]).has(record.status)) continue;
-      const context = await this.compose(record);
-      this.contexts.set(record.taskId, context);
-      await context.manager.startMission({
-        missionId: record.missionId,
-        objective: record.objective,
-        requestedByPrincipalId: "runtime-recovery",
-        resolvedStart: {
-          workflowDefinition: createMinimalTeamWorkflowDefinition(this.policyRef, record.objective),
-          teamBindingId: "minimal-team",
-        },
-      });
-      await context.manager.recover();
+      try {
+        const context = await this.compose(record);
+        this.contexts.set(record.taskId, context);
+        await context.manager.startMission({
+          missionId: record.missionId,
+          objective: record.objective,
+          requestedByPrincipalId: "runtime-recovery",
+          resolvedStart: {
+            planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
+            teamBindingId: "minimal-team",
+          },
+        });
+        await context.manager.recover();
+      } catch (error) {
+        this.contexts.delete(record.taskId);
+        if (!(error instanceof LegacyMissionPlanError)) throw error;
+        this.readOnlyTasks.set(record.taskId, "这是旧版任务，只能查看历史，不能继续调度。请重新描述目标以创建新的 Mission 和 Plan。");
+      }
     }
   }
 
@@ -252,13 +259,13 @@ export class RuntimeHost {
   private async pauseTaskUnlocked(taskId: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
-    const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
-    const result = await context.tickets.applyWorkflow({
-      commandId: stableId("pause", taskId, String(workflow.version)),
-      workflowId: workflow.workflowId,
+    const plan = await context.tickets.getPlan(mission.record.planId);
+    const result = await context.tickets.applyPlan({
+      commandId: stableId("pause", taskId, String(plan.version)),
+      planId: plan.planId,
       actorPrincipalId: "minimal-team-planner",
       issuedAt: this.now().toISOString(),
-      payload: { type: "pause", expectedWorkflowVersion: workflow.version },
+      payload: { type: "pause", expectedPlanVersion: plan.version },
     });
     if (!result.accepted) throw new Error(result.reason);
     for (const link of mission.links.filter((item) => item.status === "running")) {
@@ -269,7 +276,7 @@ export class RuntimeHost {
         goalId: goal.spec.id,
         expectedGoalVersion: goal.version,
         action: "pause",
-        reason: "workflow paused",
+        reason: "plan paused",
       });
     }
     context.record = { ...context.record, status: "paused", updatedAt: this.now().toISOString() };
@@ -279,13 +286,13 @@ export class RuntimeHost {
   private async resumeTaskUnlocked(taskId: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
-    const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
-    const result = await context.tickets.applyWorkflow({
-      commandId: stableId("resume", taskId, String(workflow.version)),
-      workflowId: workflow.workflowId,
+    const plan = await context.tickets.getPlan(mission.record.planId);
+    const result = await context.tickets.applyPlan({
+      commandId: stableId("resume", taskId, String(plan.version)),
+      planId: plan.planId,
       actorPrincipalId: "minimal-team-planner",
       issuedAt: this.now().toISOString(),
-      payload: { type: "resume", expectedWorkflowVersion: workflow.version },
+      payload: { type: "resume", expectedPlanVersion: plan.version },
     });
     if (!result.accepted) throw new Error(result.reason);
     for (const link of mission.links.filter((item) => item.status === "running" || item.status === "paused")) {
@@ -296,7 +303,7 @@ export class RuntimeHost {
         goalId: goal.spec.id,
         expectedGoalVersion: goal.version,
         action: "resume",
-        reason: "workflow resumed",
+        reason: "plan resumed",
       });
     }
     context.record = { ...context.record, status: "active", updatedAt: this.now().toISOString() };
@@ -307,13 +314,13 @@ export class RuntimeHost {
   private async cancelTaskUnlocked(taskId: string, reason: string): Promise<void> {
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
-    const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
-    const result = await context.tickets.applyWorkflow({
-      commandId: stableId("cancel", taskId, String(workflow.version)),
-      workflowId: workflow.workflowId,
+    const plan = await context.tickets.getPlan(mission.record.planId);
+    const result = await context.tickets.applyPlan({
+      commandId: stableId("cancel", taskId, String(plan.version)),
+      planId: plan.planId,
       actorPrincipalId: "minimal-team-planner",
       issuedAt: this.now().toISOString(),
-      payload: { type: "cancel", expectedWorkflowVersion: workflow.version, reason },
+      payload: { type: "cancel", expectedPlanVersion: plan.version, reason },
     });
     if (!result.accepted) throw new Error(result.reason);
     for (const link of mission.links.filter((item) => new Set(["running", "blocked", "resolving", "paused"]).has(item.status))) {
@@ -346,17 +353,48 @@ export class RuntimeHost {
       phase: "idle",
       status: "idle",
     };
+    const readOnlyReason = this.readOnlyTasks.get(record.taskId);
+    if (readOnlyReason) return {
+      workspace: this.workspace,
+      activeTask: {
+        id: record.taskId,
+        workspaceId: this.workspace.id,
+        title: record.title,
+        goal: record.objective,
+        status: "interrupted",
+        createdBy: "user",
+        activeTaskRunId: record.runId,
+      },
+      activeTaskRun: {
+        id: record.runId,
+        taskId: record.taskId,
+        workspaceId: this.workspace.id,
+        status: "interrupted",
+        phase: "interrupted",
+        startedAt: record.createdAt,
+        endedAt: record.updatedAt,
+      },
+      agents: agents.map((agent) => ({ ...agent, status: "idle" as const })),
+      assignments: [],
+      tickets: [],
+      agentThreads: {},
+      recentEvents: [],
+      phase: "interrupted",
+      status: "interrupted",
+      currentStep: readOnlyReason,
+      readOnlyReason,
+    };
     const context = await this.requireContext(record.taskId);
     const mission = await context.manager.current();
-    const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
+    const plan = await context.tickets.getPlan(mission.record.planId);
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
     const tickets: Ticket[] = [];
-    for (const node of workflow.graph.nodes) {
-      const work = await context.tickets.getWorkItem(node.ticketId);
+    for (const ticketId of plan.graph.ticketIds) {
+      const work = await context.tickets.getWorkItem(ticketId);
       if (!work) continue;
-      const link = linksByTicket.get(String(node.ticketId));
+      const link = linksByTicket.get(String(ticketId));
       tickets.push({
-        id: String(node.ticketId),
+        id: String(ticketId),
         workspaceId: this.workspace.id,
         taskId: record.taskId,
         taskRunId: record.runId,
@@ -369,7 +407,7 @@ export class RuntimeHost {
         priority: 0,
         attempt: 1,
         parentTicketId: work.ticket.parentTicketId,
-        dependsOnTicketIds: workflow.graph.dependencyEdges.filter((edge) => edge.toTicketId === node.ticketId).map((edge) => String(edge.fromTicketId)),
+        dependsOnTicketIds: plan.graph.dependencyEdges.filter((edge) => edge.toTicketId === ticketId).map((edge) => String(edge.fromTicketId)),
         createdAt: record.createdAt,
         updatedAt: link?.updatedAt ?? record.updatedAt,
       });
@@ -411,6 +449,12 @@ export class RuntimeHost {
     const status = runtimeStatus(record.status);
     return {
       workspace: this.workspace,
+      mission: {
+        missionId: mission.missionId,
+        planId: String(plan.planId),
+        planStatus: plan.status,
+        planVersion: plan.version,
+      },
       activeTask: {
         id: record.taskId,
         workspaceId: this.workspace.id,
@@ -425,7 +469,7 @@ export class RuntimeHost {
         taskId: record.taskId,
         workspaceId: this.workspace.id,
         status,
-        phase: presentationPhase(workflow.status, tickets),
+        phase: presentationPhase(plan.status, tickets),
         startedAt: record.createdAt,
         endedAt: new Set(["completed", "failed", "cancelled"]).has(record.status) ? record.updatedAt : undefined,
       },
@@ -435,7 +479,7 @@ export class RuntimeHost {
       agentThreads,
       agentMessages: {},
       recentEvents: recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-500),
-      phase: presentationPhase(workflow.status, tickets),
+      phase: presentationPhase(plan.status, tickets),
       status,
       currentStep: tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
     };
@@ -472,11 +516,11 @@ export class RuntimeHost {
       await this.runAgentSlice(context, link);
     }
     mission = await context.manager.tick();
-    const workflow = await context.tickets.getWorkflow(mission.record.workflowId);
-    const status = workflow.status === "completed" ? "completed"
-      : workflow.status === "failed" ? "failed"
-        : workflow.status === "cancelled" ? "cancelled"
-          : workflow.status === "paused" ? "paused" : "active";
+    const plan = await context.tickets.getPlan(mission.record.planId);
+    const status = plan.status === "completed" ? "completed"
+      : plan.status === "failed" ? "failed"
+        : plan.status === "cancelled" ? "cancelled"
+          : plan.status === "paused" ? "paused" : "active";
     if (status !== context.record.status) {
       context.record = { ...context.record, status, updatedAt: this.now().toISOString() };
       await this.store.save(context.record);
@@ -644,7 +688,7 @@ function runtimeStatus(status: RuntimeTaskRecord["status"]): EntityStatus {
 
 function presentationTicketType(schemaRef: string): Ticket["type"] {
   if (schemaRef === "boss-intake-v1") return "boss_intake";
-  if (schemaRef === "ticket-graph-v2") return "pm_plan";
+  if (schemaRef === "plan-change-set-v3") return "pm_plan";
   if (schemaRef === "delivery-v1") return "implementation";
   if (schemaRef === "qa-report-v1") return "qa";
   if (schemaRef === "acceptance-v1") return "boss_acceptance";

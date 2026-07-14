@@ -4,16 +4,16 @@ import { createApp } from "./app.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import {
   DEFAULT_MINIMAL_TEAM_POLICY_CONFIG,
-  seedMinimalTeamWorkflowPolicy,
-} from "./tickets/workflow-policy-config.js";
-import { WorkflowPolicyStore } from "./tickets/workflow-policy-store.js";
+  seedMinimalTeamPlanPolicy,
+} from "./tickets/plan-policy-config.js";
+import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
 
 export type AutoAgentServer = Server & { stopRuntimeHosts(): void };
 
 export async function bootstrapServer(config: AppConfig = loadConfig()): Promise<Express> {
-  const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
-  await seedMinimalTeamWorkflowPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+  const policyStore = new PlanPolicyStore(config.autoAgentHome);
+  await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
   return createApp(config);
 }
 

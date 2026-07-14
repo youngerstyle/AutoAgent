@@ -133,7 +133,7 @@ export type GoalResolutionDecision<TStatus extends GoalResolutionStatus = GoalRe
     }
   | {
       accepted: false;
-      disposition: "stale_claim" | "workflow_terminal";
+      disposition: "stale_claim" | "plan_terminal";
       reason: string;
     }
   | {

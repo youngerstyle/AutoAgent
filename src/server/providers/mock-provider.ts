@@ -23,29 +23,25 @@ export class MockProvider implements AgentModelProvider {
 }
 
 function mockGoalResolution(instructions: string): Record<string, unknown> {
-  if (instructions.includes("输出契约：ticket-graph-v2")) {
+  if (instructions.includes("plan-change-set-v3")) {
     return {
       status: "completed",
       summary: "已形成执行工单 DAG",
       evidence: [],
       domainOutcome: {
         result: { plan: "实现、质量检查、验收" },
-        graph: {
-          schemaVersion: 2,
-          nodes: [
+        change: {
+          additions: [
             node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
             node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "qa-report-v1"),
             node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
           ],
-          dependencyEdges: [
-            { fromKey: "implementation", toKey: "qa" },
-            { fromKey: "qa", toKey: "acceptance" },
+          dependencyAdditions: [
+            { from: { clientRef: "implementation" }, to: { clientRef: "qa" } },
+            { from: { clientRef: "qa" }, to: { clientRef: "acceptance" } },
           ],
-        },
-        completionPolicy: {
-          requiredTerminalKeys: ["acceptance"],
-          failurePolicy: "require_resolution",
-          blockedPolicy: "wait",
+          cancelTicketIds: [],
+          requiredTerminalRefs: [{ clientRef: "acceptance" }],
         },
       },
     };
@@ -58,9 +54,9 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
   };
 }
 
-function node(key: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
+function node(clientRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
   return {
-    key,
+    clientRef,
     title,
     objective,
     successCriteria: [`${title}达到验收标准`],

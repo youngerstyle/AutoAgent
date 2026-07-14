@@ -1,752 +1,142 @@
-import { mkdtemp } from "node:fs/promises";
+﻿import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type {
-  PlannedTicketGraph,
-  PlannedWorkflowCompletionPolicy,
-  TicketNodeKey,
-  TicketCommandEnvelope,
-  TicketCommandPayload,
-  WorkflowCommandEnvelope,
-  WorkflowId,
-  WorkflowPolicyRef,
-} from "../../src/shared/contracts/ticket-engine.js";
-import {
-  TicketEngine,
-  TicketEngineOperationError,
-} from "../../src/server/tickets/ticket-engine.js";
+import type { PlanCommandEnvelope, PlanId, PlanPolicyPort, TicketCommandEnvelope, TicketId } from "../../src/shared/contracts/ticket-engine.js";
+import { createPlanPolicy } from "../../src/server/tickets/plan-policy-store.js";
+import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
-import {
-  createWorkflowPolicy,
-  WorkflowPolicyStore,
-} from "../../src/server/tickets/workflow-policy-store.js";
 
-describe("TicketEngine workflow commands", () => {
-  it("creates a materialized workflow and emits ready facts atomically", async () => {
+describe("TicketEngine single Plan flow", () => {
+  it("keeps Plan active after planning and schedules only newly appended UUID Tickets", async () => {
     const fixture = await createFixture();
-    const result = await fixture.engine.createWorkflow(createCommand(fixture.workflowId, fixture.policyRef));
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-plan", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    expect(claim).toBeDefined();
 
-    expect(result).toMatchObject({ accepted: true, workflowStatus: "active", workflowVersion: 1 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.planning?.plannedGraph.nodes.map((node) => node.key)).toEqual(["dev", "qa"]);
-    expect(aggregate?.tickets.map((ticket) => ticket.status)).toEqual(["ready", "pending"]);
-    expect(aggregate?.outbox.map((entry) => entry.event.payload.type)).toEqual([
-      "TicketReady",
-      "WorkflowStatusChanged",
-    ]);
-    expect(aggregate?.commandInputs).toHaveLength(1);
-  });
-
-  it("exposes the immutable work definition required to start an Agent Goal", async () => {
-    const fixture = await createFixture();
-    await fixture.engine.createWorkflow(createCommand(fixture.workflowId, fixture.policyRef));
-    const ticketId = (await fixture.store.read(fixture.workflowId))!.tickets[0]!.ticketId;
-
-    await expect(fixture.engine.getWorkItem(ticketId)).resolves.toMatchObject({
-      ticket: { ticketId, status: "ready" },
-      definition: {
-        key: "dev",
-        title: "dev",
-        objective: "complete dev",
-        successCriteria: ["dev done"],
-        outputContract: { schemaRef: "schema:dev" },
-      },
-    });
-  });
-
-  it("rejects invalid definitions without creating a partial workflow", async () => {
-    const fixture = await createFixture();
-    const command = createCommand(fixture.workflowId, fixture.policyRef);
-    if (command.payload.type !== "create_graph") throw new Error("invalid test command");
-    command.payload.definition.completionPolicy.requiredTerminalKeys = [];
-
-    await expect(fixture.engine.createWorkflow(command)).resolves.toMatchObject({
-      accepted: false,
-      code: "invalid_definition",
-    });
-    await expect(fixture.store.read(fixture.workflowId)).resolves.toBeUndefined();
-  });
-
-  it("enforces capability policy without role-name branches", async () => {
-    const fixture = await createFixture();
-    const command = createCommand(fixture.workflowId, fixture.policyRef, "untrusted-principal");
-
-    await expect(fixture.engine.createWorkflow(command)).resolves.toMatchObject({
-      accepted: false,
-      code: "policy_violation",
-    });
-  });
-
-  it("pauses and resumes with workflow CAS while preserving the deferred outcome", async () => {
-    const fixture = await createStartedFixture();
-    const paused = await fixture.engine.applyWorkflow(workflowCommand(
-      fixture.workflowId,
-      "pause-command",
-      { type: "pause", expectedWorkflowVersion: 1 },
-    ));
-    const resumed = await fixture.engine.applyWorkflow(workflowCommand(
-      fixture.workflowId,
-      "resume-command",
-      { type: "resume", expectedWorkflowVersion: 2 },
-    ));
-
-    expect(paused).toMatchObject({ accepted: true, workflowStatus: "paused", workflowVersion: 2 });
-    expect(resumed).toMatchObject({ accepted: true, workflowStatus: "active", workflowVersion: 3 });
-    expect((await fixture.store.read(fixture.workflowId))?.workflow.deferredOutcome).toBeUndefined();
-  });
-
-  it("does not persist a retriable workflow version conflict", async () => {
-    const fixture = await createStartedFixture();
-    const stale = workflowCommand(
-      fixture.workflowId,
-      "stale-command",
-      { type: "pause", expectedWorkflowVersion: 99 },
-    );
-    const result = await fixture.engine.applyWorkflow(stale);
-
-    expect(result).toMatchObject({ accepted: false, code: "version_conflict", currentWorkflowVersion: 1 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.workflow.version).toBe(1);
-    expect(aggregate?.aggregateVersion).toBe(1);
-    expect(await fixture.store.getCommandResult(fixture.workflowId, "stale-command")).toBeUndefined();
-
-    const refreshed = workflowCommand(
-      fixture.workflowId,
-      "stale-command",
-      { type: "pause", expectedWorkflowVersion: 1 },
-    );
-    await expect(fixture.engine.applyWorkflow(refreshed)).resolves.toMatchObject({
-      accepted: true,
-      workflowStatus: "paused",
-    });
-  });
-
-  it("returns the first result for identical replay and rejects different content with the same commandId", async () => {
-    const fixture = await createStartedFixture();
-    const pause = workflowCommand(
-      fixture.workflowId,
-      "stable-command",
-      { type: "pause", expectedWorkflowVersion: 1 },
-    );
-    const first = await fixture.engine.applyWorkflow(pause);
-    const replay = await fixture.engine.applyWorkflow(structuredClone(pause));
-    const conflict = await fixture.engine.applyWorkflow(workflowCommand(
-      fixture.workflowId,
-      "stable-command",
-      { type: "resume", expectedWorkflowVersion: 2 },
-    ));
-
-    expect(replay).toEqual(first);
-    expect(conflict).toMatchObject({ accepted: false, code: "idempotency_conflict" });
-    expect((await fixture.store.read(fixture.workflowId))?.workflow.version).toBe(2);
-  });
-
-  it("cancels every nonterminal ticket and emits terminal and authority facts", async () => {
-    const fixture = await createStartedFixture();
-    const result = await fixture.engine.applyWorkflow(workflowCommand(
-      fixture.workflowId,
-      "cancel-command",
-      { type: "cancel", expectedWorkflowVersion: 1, reason: "operator cancelled" },
-    ));
-
-    expect(result).toMatchObject({ accepted: true, workflowStatus: "cancelled", workflowVersion: 2 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.tickets.every((ticket) => ticket.status === "cancelled")).toBe(true);
-    expect(aggregate?.outbox.filter((entry) => entry.event.payload.type === "TicketTerminal")).toHaveLength(2);
-    expect(aggregate?.outbox.at(-1)?.event.payload).toEqual({
-      type: "WorkflowStatusChanged",
-      status: "cancelled",
-    });
-  });
-
-  it("amends an active graph, materializes new IDs, and emits ready facts for new roots", async () => {
-    const fixture = await createStartedFixture();
-    const graph = plannedGraph();
-    graph.nodes.push(node("docs"));
-    const completionPolicy: PlannedWorkflowCompletionPolicy = {
-      requiredTerminalKeys: ["qa" as TicketNodeKey, "docs" as TicketNodeKey],
-      failurePolicy: "require_resolution",
-      blockedPolicy: "wait",
-    };
-    const result = await fixture.engine.applyWorkflow(workflowCommand(
-      fixture.workflowId,
-      "amend-command",
-      {
-        type: "amend",
-        expectedWorkflowVersion: 1,
-        graph,
-        completionPolicy,
-        cancelTicketIds: [],
-      },
-    ));
-
-    expect(result).toMatchObject({ accepted: true, workflowVersion: 2 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.tickets).toHaveLength(3);
-    expect(aggregate?.tickets.find((ticket) => (
-      aggregate.planning?.ticketIdByKey.docs === ticket.ticketId
-    ))?.status).toBe("ready");
-    expect(aggregate?.outbox.filter((entry) => entry.event.payload.type === "TicketReady")).toHaveLength(2);
-  });
-
-  it("claims a ready ticket once and recovers the receipt by request id", async () => {
-    const fixture = await createStartedFixture();
-    const ticket = (await fixture.store.read(fixture.workflowId))!.tickets[0]!;
-    const request = {
-      requestId: "claim-request",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "planner-1",
-      leaseDurationMs: 60_000,
-    };
-
-    const claimed = await fixture.engine.claimReady(request);
-    const replay = await fixture.engine.claimReady(structuredClone(request));
-
-    expect(claimed).toMatchObject({ ticketVersion: 2, fencingToken: 1 });
-    expect(replay).toEqual(claimed);
-    expect(await fixture.engine.getClaimByRequestId("claim-request")).toEqual(claimed);
-    expect((await fixture.store.read(fixture.workflowId))?.tickets[0]).toMatchObject({
-      status: "running",
-      activeAuthority: { kind: "claim", claimId: claimed?.claimId },
-    });
-    await expect(fixture.engine.claimReady({ ...request, leaseDurationMs: 30_000 })).rejects.toMatchObject({
-      code: "idempotency_conflict",
-    });
-  });
-
-  it("denies unauthorized claims and never creates two active claims for one ticket", async () => {
-    const fixture = await createStartedFixture();
-    const ticket = (await fixture.store.read(fixture.workflowId))!.tickets[0]!;
-    await expect(fixture.engine.claimReady({
-      requestId: "unauthorized-claim",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "unknown-principal",
-      leaseDurationMs: 60_000,
-    })).rejects.toMatchObject({ code: "policy_violation" });
-    const claim = await fixture.engine.claimReady({
-      requestId: "first-active-claim",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "planner-1",
-      leaseDurationMs: 60_000,
-    });
-    await expect(fixture.engine.claimReady({
-      requestId: "second-active-claim",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "planner-1",
-      leaseDurationMs: 60_000,
-    })).resolves.toBeUndefined();
-    expect((await fixture.store.read(fixture.workflowId))?.claims).toHaveLength(1);
-  });
-
-  it("renews and releases a claim while rejecting the stale fencing token", async () => {
-    const fixture = await createStartedFixture();
-    const ticket = (await fixture.store.read(fixture.workflowId))!.tickets[0]!;
-    const claim = await fixture.engine.claimReady({
-      requestId: "claim-for-release",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "planner-1",
-      leaseDurationMs: 10_000,
-    });
-    const renewed = await fixture.engine.renewClaim({
-      requestId: "renew-request",
-      claimId: claim!.claimId,
-      fencingToken: claim!.fencingToken,
-      extendByMs: 5_000,
-    });
-    const released = await fixture.engine.releaseClaim({
-      requestId: "release-request",
-      claimId: claim!.claimId,
-      fencingToken: claim!.fencingToken,
-      reason: "operator_release",
-    });
-
-    expect(renewed.ticketVersion).toBe(3);
-    expect(released).toMatchObject({ status: "ready", version: 4, activeAuthority: undefined });
-    await expect(fixture.engine.renewClaim({
-      requestId: "late-renew",
-      claimId: claim!.claimId,
-      fencingToken: claim!.fencingToken,
-      extendByMs: 5_000,
-    })).rejects.toBeInstanceOf(TicketEngineOperationError);
-    await expect(fixture.engine.releaseClaim({
-      requestId: "release-request",
-      claimId: claim!.claimId,
-      fencingToken: claim!.fencingToken,
-      reason: "operator_release",
-    })).resolves.toEqual(released);
-  });
-
-  it("expires leases idempotently and makes the ticket ready again", async () => {
-    let now = new Date("2026-07-10T00:00:00.000Z");
-    const fixture = await createStartedFixture(() => now);
-    const ticket = (await fixture.store.read(fixture.workflowId))!.tickets[0]!;
-    const claim = await fixture.engine.claimReady({
-      requestId: "expiring-claim",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      expectedTicketVersion: ticket.version,
-      principalId: "planner-1",
-      leaseDurationMs: 1_000,
-    });
-    now = new Date("2026-07-10T00:00:02.000Z");
-
-    await expect(fixture.engine.applyTicket({
-      ...ticketCommand(
-        fixture.workflowId,
-        "expired-complete",
-        "proposal-expired",
-        claim!,
-        { type: "complete", result: {}, evidence: [] },
-      ),
-      issuedAt: "2026-07-10T00:00:00.500Z",
-    })).resolves.toMatchObject({ accepted: false, code: "stale_authority" });
-
-    const first = await fixture.engine.scanExpiredClaims();
-    const second = await fixture.engine.scanExpiredClaims();
-
-    expect(first).toHaveLength(1);
-    expect(first[0]).toMatchObject({ status: "ready", version: 3 });
-    expect(second).toEqual([]);
-    const events = await fixture.store.readEvents({ workflowId: fixture.workflowId, limit: 50 });
-    expect(events.events.some((event) => event.payload.type === "ClaimExpired")).toBe(true);
-  });
-
-  it("transfers blocked ownership with a monotonically increasing fencing token", async () => {
-    const fixture = await createStartedFixture();
-    const aggregate = (await fixture.store.read(fixture.workflowId))!;
-    const ticket = aggregate.tickets[0]!;
-    const ownership = {
-      ownershipId: "ownership-1",
-      workflowId: fixture.workflowId,
-      ticketId: ticket.ticketId,
-      ticketVersion: 2,
-      principalId: "planner-1",
-      fencingToken: 1,
-    };
-    await fixture.store.transact(
-      fixture.workflowId,
-      { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-      (current) => ({
-        ...current,
-        workflow: { ...current.workflow, version: current.workflow.version + 1, status: "blocked" },
-        tickets: current.tickets.map((item) => item.ticketId === ticket.ticketId ? {
-          ...item,
-          version: 2,
-          status: "blocked" as const,
-          activeAuthority: { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: 1 },
-        } : item),
-        blockedOwnerships: [...current.blockedOwnerships, ownership],
-      }),
-    );
-
-    const transferred = await fixture.engine.transferBlockedOwnership({
-      requestId: "transfer-request",
-      ownershipId: ownership.ownershipId,
-      fencingToken: ownership.fencingToken,
-      toPrincipalId: "developer-1",
-    });
-
-    expect(transferred).toMatchObject({ principalId: "developer-1", fencingToken: 2, ticketVersion: 3 });
-    await expect(fixture.engine.transferBlockedOwnership({
-      requestId: "late-transfer",
-      ownershipId: ownership.ownershipId,
-      fencingToken: ownership.fencingToken,
-      toPrincipalId: "developer-2",
-    })).rejects.toMatchObject({ code: "stale_authority" });
-  });
-
-  it("completes a ticket and unlocks its dependency in the same durable write", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-dev");
-    const result = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "complete-dev",
-      "proposal-dev",
-      claim,
-      { type: "complete", result: { summary: "done" }, evidence: [] },
-    ));
-
-    expect(result).toMatchObject({ accepted: true, ticketStatus: "completed", ticketVersion: 3 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.tickets.map((ticket) => ticket.status)).toEqual(["completed", "ready"]);
-    expect(aggregate?.outbox.slice(-3).map((entry) => entry.event.payload.type)).toEqual([
-      "AuthorityRevoked",
-      "TicketTerminal",
-      "TicketReady",
-    ]);
-    const restarted = new TicketEngine(
-      new TicketStore(fixture.root, "task-1", "run-1"),
-      fixture.policyStore,
-    );
-    await expect(restarted.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "complete-dev",
-      "proposal-dev",
-      claim,
-      { type: "complete", result: { summary: "done" }, evidence: [] },
-    ))).resolves.toEqual(result);
-  });
-
-  it("converts a running claim into blocked ownership and rejects the old claim", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-blocked");
-    const blocked = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "block-dev",
-      "proposal-block",
-      claim,
-      { type: "block", reason: "needs input", requiredInput: "decision" },
-    ));
-    expect(blocked).toMatchObject({
-      accepted: true,
-      ticketStatus: "blocked",
-      nextAuthority: { kind: "blocked_owner", fencingToken: 2 },
-    });
-    await expect(fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "late-complete",
-      "proposal-late",
-      { ...claim, ticketVersion: 3 },
-      { type: "complete", result: {}, evidence: [] },
-    ))).resolves.toMatchObject({ accepted: false, code: "stale_authority" });
-    const owner = (blocked as Extract<typeof blocked, { accepted: true }>).nextAuthority!;
-    const completed = await fixture.engine.applyTicket({
-      commandId: "owner-complete",
-      proposalId: "proposal-owner",
-      workflowId: fixture.workflowId,
-      ticketId: claim.ticketId,
-      expectedTicketVersion: 3,
-      actorPrincipalId: "planner-1",
-      executionRef: "goal-owner",
-      authority: owner,
-      issuedAt: "2026-07-10T00:00:01.000Z",
-      payload: { type: "complete", result: {}, evidence: [] },
-    });
-    expect(completed).toMatchObject({ accepted: true, ticketStatus: "completed" });
-  });
-
-  it("applies require-resolution failure policy without inventing a route", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-fail");
-    const result = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "fail-dev",
-      "proposal-fail",
-      claim,
-      { type: "fail", reason: "cannot build", evidence: [] },
-    ));
-    expect(result).toMatchObject({
-      accepted: true,
-      ticketStatus: "failed",
-      workflowStatus: "blocked",
-    });
-    expect((await fixture.store.read(fixture.workflowId))?.workflow.status).toBe("blocked");
-  });
-
-  it("applies fail-fast policy as a workflow fact", async () => {
-    const fixture = await createFixture();
-    const command = createCommand(fixture.workflowId, fixture.policyRef);
-    if (command.payload.type !== "create_graph") throw new Error("invalid test command");
-    command.payload.definition.completionPolicy.failurePolicy = "fail_fast";
-    await fixture.engine.createWorkflow(command);
-    const claim = await claimFirstReady(fixture, "claim-fail-fast");
-    const result = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "fail-fast-dev",
-      "proposal-fail-fast",
-      claim,
-      { type: "fail", reason: "fatal", evidence: [] },
-    ));
-    expect(result).toMatchObject({ accepted: true, workflowStatus: "failed" });
-  });
-
-  it("completes a planning ticket with a graph update atomically", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-plan");
-    const graph: PlannedTicketGraph = {
-      schemaVersion: 2,
-      nodes: [node("docs")],
-      dependencyEdges: [],
-    };
-    const result = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "complete-with-graph",
-      "proposal-graph",
-      claim,
-      {
-        type: "complete_with_graph",
-        result: { plan: "expanded" },
-        evidence: [],
-        expectedWorkflowVersion: 2,
-        graph,
-        completionPolicy: {
-          requiredTerminalKeys: ["docs" as TicketNodeKey],
-          failurePolicy: "require_resolution",
-          blockedPolicy: "wait",
+    const changed = await fixture.engine.applyPlan({
+      commandId: "change-1", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning, sourceAuthority: { kind: "claim", claimId: claim!.claimId, fencingToken: claim!.fencingToken },
+        change: {
+          additions: [draft("dev", "同名实现")],
+          dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "dev" } }],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "dev" }],
         },
-        cancelTicketIds: [],
       },
-    ));
-    expect(result).toMatchObject({ accepted: true, ticketStatus: "completed", workflowVersion: 3 });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.tickets).toHaveLength(3);
-    expect(aggregate?.tickets.filter((ticket) => ticket.status === "ready")).toHaveLength(2);
-    expect(aggregate?.planning?.plannedGraph.nodes.map((item) => item.key)).toEqual(["dev", "docs", "qa"]);
-    expect(aggregate?.planning?.plannedGraph.dependencyEdges).toContainEqual({
-      fromKey: "dev",
-      toKey: "docs",
     });
+    expect(changed).toMatchObject({ accepted: true, planStatus: "active" });
+    const afterChange = await fixture.engine.getPlan(fixture.planId);
+    const dev = afterChange.graph.ticketIds[1]!;
+    expect(dev).not.toBe(planning);
+
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, claim!, "complete-plan", { type: "complete", result: {}, evidence: [] }));
+    const afterPlanning = await fixture.engine.getPlan(fixture.planId);
+    expect(afterPlanning.status).toBe("active");
+    expect((await fixture.engine.getTicket(planning))?.status).toBe("completed");
+    expect((await fixture.engine.getTicket(dev))?.status).toBe("ready");
   });
 
-  it("deduplicates proposal ids across different ticket command ids", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-proposal");
-    await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "first-proposal-command",
-      "single-proposal",
-      claim,
-      { type: "complete", result: {}, evidence: [] },
-    ));
-    const conflict = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "second-proposal-command",
-      "single-proposal",
-      { ...claim, ticketVersion: 3 },
-      { type: "complete", result: {}, evidence: [] },
-    ));
-    expect(conflict).toMatchObject({ accepted: false, code: "idempotency_conflict" });
-  });
-
-  it("does not let a retriable ticket version conflict consume its proposal", async () => {
-    const fixture = await createStartedFixture();
-    const claim = await claimFirstReady(fixture, "claim-retriable-version");
-    const command = ticketCommand(
-      fixture.workflowId,
-      "retry-version-command",
-      "retry-version-proposal",
-      claim,
-      { type: "complete", result: {}, evidence: [] },
-    );
-    command.expectedTicketVersion -= 1;
-
-    await expect(fixture.engine.applyTicket(command)).resolves.toMatchObject({
-      accepted: false,
-      code: "version_conflict",
-      currentTicketVersion: claim.ticketVersion,
-    });
-    expect(await fixture.store.getCommandResult(fixture.workflowId, command.commandId)).toBeUndefined();
-
-    command.expectedTicketVersion = claim.ticketVersion;
-    await expect(fixture.engine.applyTicket(command)).resolves.toMatchObject({
-      accepted: true,
-      ticketStatus: "completed",
-    });
-  });
-
-  it("returns a child to a new parent revision without running the old downstream branch", async () => {
+  it("never reactivates a completed Ticket when another same-title Ticket is appended", async () => {
     const fixture = await createFixture();
-    const command = createCommand(fixture.workflowId, fixture.policyRef);
-    if (command.payload.type !== "create_graph") throw new Error("invalid test command");
-    command.payload.definition.initialGraph = {
-      schemaVersion: 2,
-      nodes: [
-        node("pm"),
-        { ...node("dev"), parentKey: "pm" as TicketNodeKey },
-        node("qa"),
-      ],
-      dependencyEdges: [
-        { fromKey: "pm" as TicketNodeKey, toKey: "dev" as TicketNodeKey },
-        { fromKey: "dev" as TicketNodeKey, toKey: "qa" as TicketNodeKey },
-      ],
-    };
-    command.payload.definition.completionPolicy = {
-      requiredTerminalKeys: ["qa" as TicketNodeKey],
-      failurePolicy: "require_resolution",
-      blockedPolicy: "wait",
-    };
-    await fixture.engine.createWorkflow(command);
-    const pmClaim = await claimFirstReady(fixture, "claim-pm");
-    await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "complete-pm",
-      "proposal-pm",
-      pmClaim,
-      { type: "complete", result: {}, evidence: [] },
-    ));
-    const devClaim = await claimFirstReady(fixture, "claim-dev-return");
-    const aggregateBefore = (await fixture.store.read(fixture.workflowId))!;
-    const parentTicketId = aggregateBefore.tickets.find((ticket) => ticket.ticketId === devClaim.ticketId)!.parentTicketId!;
-    const result = await fixture.engine.applyTicket(ticketCommand(
-      fixture.workflowId,
-      "return-dev",
-      "proposal-return",
-      devClaim,
-      {
-        type: "return_to_parent",
-        parentTicketId,
-        expectedWorkflowVersion: aggregateBefore.workflow.version,
-        reason: "requirements incomplete",
-        evidence: [],
-      },
-    ));
+    const first = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-first", planId: fixture.planId, ticketId: first, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    await fixture.engine.applyPlan({ commandId: "append-same", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "apply_change", expectedPlanVersion: 2, sourceTicketId: first, sourceAuthority: { kind: "claim", claimId: claim!.claimId, fencingToken: claim!.fencingToken }, change: { additions: [draft("next", "计划拆解")], dependencyAdditions: [{ from: { ticketId: first }, to: { clientRef: "next" } }], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "next" }] } } });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, first, claim!, "complete-first", { type: "complete", result: {}, evidence: [] }));
+    const plan = await fixture.engine.getPlan(fixture.planId);
+    expect(plan.graph.ticketIds).toHaveLength(2);
+    expect(new Set(plan.graph.ticketIds).size).toBe(2);
+    expect((await fixture.engine.getTicket(first))?.status).toBe("completed");
+  });
 
-    expect(result).toMatchObject({ accepted: true, ticketStatus: "returned" });
-    const aggregate = await fixture.store.read(fixture.workflowId);
-    expect(aggregate?.tickets.find((ticket) => ticket.ticketId === devClaim.ticketId)?.status).toBe("returned");
-    expect(aggregate?.tickets.find((ticket) => ticket.ticketId === parentTicketId)?.status).toBe("completed");
-    expect(aggregate?.tickets.some((ticket) => ticket.status === "ready")).toBe(true);
-    expect(aggregate?.planning?.plannedGraph.nodes.some((item) => item.key === "qa")).toBe(false);
-    expect(aggregate?.planning?.plannedGraph.nodes.some((item) => item.revisionOfKey === "pm")).toBe(true);
+  it("appends one planner amendment Ticket after return without cloning or replacing upstream Tickets", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-return", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    const result = await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "return-1", { type: "return", targetTicketId: ticketId, reason: "前置事实错误", evidence: [] }));
+    expect(result).toMatchObject({ accepted: true, ticketStatus: "returned", planStatus: "blocked" });
+    const blockedPlan = await fixture.engine.getPlan(fixture.planId);
+    expect(blockedPlan.graph.ticketIds).toHaveLength(2);
+    expect(blockedPlan.graph.ticketIds[0]).toBe(ticketId);
+    const amendmentId = blockedPlan.graph.ticketIds[1]!;
+    expect(amendmentId).not.toBe(ticketId);
+    expect(await fixture.engine.getWorkItem(amendmentId)).toMatchObject({
+      ticket: { status: "ready" },
+      definition: {
+        title: "计划修订",
+        assignment: fixture.plan.plannerAssignment,
+        outputContract: { schemaRef: "plan-change-set-v3" },
+      },
+    });
+    const amendmentClaim = await fixture.engine.claimReady({
+      requestId: "claim-amendment",
+      planId: fixture.planId,
+      ticketId: amendmentId,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    expect(amendmentClaim).toBeDefined();
+    const events = await fixture.engine.readEvents({ planId: fixture.planId, limit: 100 });
+    expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "PlanAmendmentRequested")).toBe(true);
+  });
+
+  it("returns one durable claim when the same request races concurrently", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const request = { requestId: "same-claim", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 };
+    const [first, second] = await Promise.all([
+      fixture.engine.claimReady(request),
+      fixture.engine.claimReady(request),
+    ]);
+    expect(first).toBeDefined();
+    expect(second).toEqual(first);
+  });
+
+  it("moves blocked ownership and the Ticket authority together", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-block", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    const blocked = await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block", { type: "block", reason: "需要输入" }));
+    if (!blocked.accepted || blocked.nextAuthority?.kind !== "blocked_owner") throw new Error("Expected blocked ownership");
+    const moved = await fixture.engine.transferBlockedOwnership({
+      requestId: "move-owner",
+      ownershipId: blocked.nextAuthority.ownershipId,
+      fencingToken: blocked.nextAuthority.fencingToken,
+      toPrincipalId: "planner-2",
+    });
+    expect(moved.principalId).toBe("planner-2");
+    expect(await fixture.engine.getTicket(ticketId)).toMatchObject({
+      version: moved.ticketVersion,
+      activeAuthority: { kind: "blocked_owner", ownershipId: moved.ownershipId, fencingToken: moved.fencingToken },
+    });
+  });
+
+  it("restores a blocked Plan to blocked after an operator pause and resume", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-pause", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block-pause", { type: "block", reason: "等待输入" }));
+    expect(await fixture.engine.applyPlan({ commandId: "pause", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "pause", expectedPlanVersion: 3 } }))
+      .toMatchObject({ accepted: true, planStatus: "paused" });
+    expect(await fixture.engine.applyPlan({ commandId: "resume", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "resume", expectedPlanVersion: 4 } }))
+      .toMatchObject({ accepted: true, planStatus: "blocked" });
   });
 });
 
-async function createFixture(now?: () => Date) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-ticket-engine-"));
-  const workflowId = "workflow-1" as WorkflowId;
-  const store = new TicketStore(root, "task-1", "run-1");
-  const policyStore = new WorkflowPolicyStore(root);
-  const policy = createWorkflowPolicy({
-    policyId: "test-policy",
-    policyVersion: 1,
-    grants: [{
-      principalId: "planner-1",
-      capabilities: [
-        "blocked_ownership:transfer",
-        "ticket:claim",
-        "ticket_graph:create",
-        "ticket_graph:amend",
-        "workflow:control",
-      ],
-    }],
-  });
-  const policyRef = (await policyStore.seedPolicy(policy)).ref;
-  return {
-    root,
-    workflowId,
-    policyRef,
-    store,
-    policyStore,
-    engine: new TicketEngine(store, policyStore, { now }),
-  };
+const now = "2026-07-14T00:00:00.000Z";
+function draft(clientRef: string, title: string) { return { clientRef, title, objective: `完成 ${title}`, successCriteria: [`${title} 完成`], assignment: { principalId: "planner" }, outputContract: { schemaRef: "result-v1" } }; }
+async function createFixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plan-"));
+  const policy = createPlanPolicy({ policyId: "test", policyVersion: 1, grants: [{ principalId: "planner", capabilities: ["plan:create", "plan:amend", "plan:control", "ticket:claim", "blocked_ownership:transfer"] }] });
+  const policyPort: PlanPolicyPort = { getPolicy: async (ref) => ref.contentHash === policy.ref.contentHash ? policy : undefined };
+  const store = new TicketStore(root, "task", "run");
+  const engine = new TicketEngine(store, policyPort);
+  const planId = "f6f66a47-0c29-4c30-9461-f3de7525ad76" as PlanId;
+  const command: PlanCommandEnvelope = { commandId: "create", planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "test", definitionVersion: 1, policyRef: policy.ref, plannerAssignment: { principalId: "planner" }, initialChange: { additions: [draft("planning", "计划拆解")], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "planning" }] } } } };
+  expect(await engine.createPlan(command)).toMatchObject({ accepted: true });
+  return { root, store, engine, planId, plan: await engine.getPlan(planId) };
 }
-
-async function claimFirstReady(
-  fixture: Awaited<ReturnType<typeof createFixture>>,
-  requestId: string,
-) {
-  const ticket = (await fixture.store.read(fixture.workflowId))!.tickets.find((item) => item.status === "ready")!;
-  const claim = await fixture.engine.claimReady({
-    requestId,
-    workflowId: fixture.workflowId,
-    ticketId: ticket.ticketId,
-    expectedTicketVersion: ticket.version,
-    principalId: "planner-1",
-    leaseDurationMs: 60_000,
-  });
-  if (!claim) throw new Error("ticket was not claimed");
-  return claim;
-}
-
-function ticketCommand(
-  workflowId: WorkflowId,
-  commandId: string,
-  proposalId: string,
-  claim: Awaited<ReturnType<typeof claimFirstReady>>,
-  payload: TicketCommandPayload,
-): TicketCommandEnvelope {
-  return {
-    commandId,
-    proposalId,
-    workflowId,
-    ticketId: claim.ticketId,
-    expectedTicketVersion: claim.ticketVersion,
-    actorPrincipalId: claim.principalId,
-    executionRef: `goal-${proposalId}`,
-    authority: { kind: "claim", claimId: claim.claimId, fencingToken: claim.fencingToken },
-    issuedAt: "2026-07-10T00:00:01.000Z",
-    payload,
-  };
-}
-
-async function createStartedFixture(now?: () => Date) {
-  const fixture = await createFixture(now);
-  const result = await fixture.engine.createWorkflow(createCommand(fixture.workflowId, fixture.policyRef));
-  if (!result.accepted) throw new Error(result.reason);
-  return fixture;
-}
-
-function createCommand(
-  workflowId: WorkflowId,
-  policyRef: WorkflowPolicyRef,
-  actorPrincipalId = "planner-1",
-): WorkflowCommandEnvelope {
-  return {
-    commandId: "create-command",
-    workflowId,
-    actorPrincipalId,
-    issuedAt: "2026-07-10T00:00:00.000Z",
-    payload: {
-      type: "create_graph",
-      definition: {
-        definitionId: "definition-1",
-        definitionVersion: 1,
-        initialGraph: plannedGraph(),
-        completionPolicy: completionPolicy(),
-        policyRef,
-      },
-    },
-  };
-}
-
-function workflowCommand(
-  workflowId: WorkflowId,
-  commandId: string,
-  payload: WorkflowCommandEnvelope["payload"],
-): WorkflowCommandEnvelope {
-  return {
-    commandId,
-    workflowId,
-    actorPrincipalId: "planner-1",
-    issuedAt: "2026-07-10T00:00:00.000Z",
-    payload,
-  };
-}
-
-function plannedGraph(): PlannedTicketGraph {
-  return {
-    schemaVersion: 2,
-    nodes: [node("dev"), node("qa")],
-    dependencyEdges: [{ fromKey: "dev" as TicketNodeKey, toKey: "qa" as TicketNodeKey }],
-  };
-}
-
-function node(key: string) {
-  return {
-    key: key as TicketNodeKey,
-    title: key,
-    objective: `complete ${key}`,
-    successCriteria: [`${key} done`],
-    assignment: { requiredCapabilities: [`work:${key}`] },
-    outputContract: { schemaRef: `schema:${key}` },
-  };
-}
-
-function completionPolicy(): PlannedWorkflowCompletionPolicy {
-  return {
-    requiredTerminalKeys: ["qa" as TicketNodeKey],
-    failurePolicy: "require_resolution",
-    blockedPolicy: "wait",
-  };
+function ticketCommand(planId: PlanId, ticketId: TicketId, claim: NonNullable<Awaited<ReturnType<TicketEngine["claimReady"]>>>, commandId: string, payload: TicketCommandEnvelope["payload"]): TicketCommandEnvelope {
+  return { commandId, proposalId: `proposal-${commandId}`, planId, ticketId, expectedTicketVersion: claim.ticketVersion, actorPrincipalId: claim.principalId, executionRef: "goal", authority: { kind: "claim", claimId: claim.claimId, fencingToken: claim.fencingToken }, issuedAt: now, payload };
 }

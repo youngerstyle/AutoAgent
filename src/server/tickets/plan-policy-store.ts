@@ -2,49 +2,49 @@ import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, rm, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type {
-  WorkflowAuthorizationGrant,
-  WorkflowAuthorizationPolicy,
-  WorkflowPolicyPort,
-  WorkflowPolicyRef,
+  PlanAuthorizationGrant,
+  PlanAuthorizationPolicy,
+  PlanPolicyPort,
+  PlanPolicyRef,
 } from "../../shared/contracts/ticket-engine.js";
 import { readJson } from "../storage/json.js";
 
-export interface WorkflowPolicySeed {
+export interface PlanPolicySeed {
   policyId: string;
   policyVersion: number;
-  grants: WorkflowAuthorizationGrant[];
+  grants: PlanAuthorizationGrant[];
 }
 
-export interface WorkflowCapabilitySubject {
+export interface PlanCapabilitySubject {
   principalId: string;
   teamBindingIds: string[];
 }
 
-export class WorkflowPolicyIntegrityError extends Error {
+export class PlanPolicyIntegrityError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "WorkflowPolicyIntegrityError";
+    this.name = "PlanPolicyIntegrityError";
   }
 }
 
-export class WorkflowPolicyConflictError extends Error {
+export class PlanPolicyConflictError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "WorkflowPolicyConflictError";
+    this.name = "PlanPolicyConflictError";
   }
 }
 
-export class WorkflowPolicyNotFoundError extends Error {
-  constructor(ref: WorkflowPolicyRef) {
-    super(`Workflow policy not found: ${policyIdentity(ref)}`);
-    this.name = "WorkflowPolicyNotFoundError";
+export class PlanPolicyNotFoundError extends Error {
+  constructor(ref: PlanPolicyRef) {
+    super(`Plan policy not found: ${policyIdentity(ref)}`);
+    this.name = "PlanPolicyNotFoundError";
   }
 }
 
-export class WorkflowPolicyStore implements WorkflowPolicyPort {
+export class PlanPolicyStore implements PlanPolicyPort {
   constructor(private readonly rootDir: string) {}
 
-  async seedPolicy(policy: WorkflowAuthorizationPolicy): Promise<WorkflowAuthorizationPolicy> {
+  async seedPolicy(policy: PlanAuthorizationPolicy): Promise<PlanAuthorizationPolicy> {
     validateRef(policy.ref);
     const normalized = normalizePolicy(policy);
     assertContentHash(normalized);
@@ -52,54 +52,54 @@ export class WorkflowPolicyStore implements WorkflowPolicyPort {
 
     if (await createJsonFileIfAbsent(filePath, normalized)) return normalized;
 
-    const existing = await readJson<WorkflowAuthorizationPolicy | undefined>(filePath, undefined);
+    const existing = await readJson<PlanAuthorizationPolicy | undefined>(filePath, undefined);
     if (!existing) {
-      throw new WorkflowPolicyIntegrityError(
-        `Workflow policy disappeared after create conflict: ${policyIdentity(normalized.ref)}`,
+      throw new PlanPolicyIntegrityError(
+        `Plan policy disappeared after create conflict: ${policyIdentity(normalized.ref)}`,
       );
     }
     const normalizedExisting = normalizePolicy(existing);
     assertContentHash(normalizedExisting);
     if (normalizedExisting.ref.contentHash !== normalized.ref.contentHash) {
-      throw new WorkflowPolicyConflictError(
-        `Workflow policy version is immutable: ${policyIdentity(normalized.ref)}`,
+      throw new PlanPolicyConflictError(
+        `Plan policy version is immutable: ${policyIdentity(normalized.ref)}`,
       );
     }
     return normalizedExisting;
   }
 
-  async getPolicy(ref: WorkflowPolicyRef): Promise<WorkflowAuthorizationPolicy | undefined> {
+  async getPolicy(ref: PlanPolicyRef): Promise<PlanAuthorizationPolicy | undefined> {
     validateRef(ref);
-    const stored = await readJson<WorkflowAuthorizationPolicy | undefined>(this.policyFile(ref), undefined);
+    const stored = await readJson<PlanAuthorizationPolicy | undefined>(this.policyFile(ref), undefined);
     if (!stored) return undefined;
 
     const normalized = normalizePolicy(stored);
     assertContentHash(normalized);
     if (normalized.ref.contentHash !== ref.contentHash) {
-      throw new WorkflowPolicyIntegrityError(
-        `Workflow policy contentHash does not match requested ref: ${policyIdentity(ref)}`,
+      throw new PlanPolicyIntegrityError(
+        `Plan policy contentHash does not match requested ref: ${policyIdentity(ref)}`,
       );
     }
     return normalized;
   }
 
-  async requirePolicy(ref: WorkflowPolicyRef): Promise<WorkflowAuthorizationPolicy> {
+  async requirePolicy(ref: PlanPolicyRef): Promise<PlanAuthorizationPolicy> {
     const policy = await this.getPolicy(ref);
-    if (!policy) throw new WorkflowPolicyNotFoundError(ref);
+    if (!policy) throw new PlanPolicyNotFoundError(ref);
     return policy;
   }
 
   async hasCapability(
-    ref: WorkflowPolicyRef,
-    subject: WorkflowCapabilitySubject,
+    ref: PlanPolicyRef,
+    subject: PlanCapabilitySubject,
     capability: string,
   ): Promise<boolean> {
     return (await this.capabilitiesFor(ref, subject)).includes(capability);
   }
 
   async capabilitiesFor(
-    ref: WorkflowPolicyRef,
-    subject: WorkflowCapabilitySubject,
+    ref: PlanPolicyRef,
+    subject: PlanCapabilitySubject,
   ): Promise<string[]> {
     const policy = await this.requirePolicy(ref);
     const teamBindingIds = new Set(subject.teamBindingIds);
@@ -111,17 +111,17 @@ export class WorkflowPolicyStore implements WorkflowPolicyPort {
     )))].sort();
   }
 
-  private policyFile(ref: Pick<WorkflowPolicyRef, "policyId" | "policyVersion">): string {
-    const policyRoot = path.resolve(this.rootDir, "workflow-policies");
+  private policyFile(ref: Pick<PlanPolicyRef, "policyId" | "policyVersion">): string {
+    const policyRoot = path.resolve(this.rootDir, "plan-policies");
     const policyDirectory = path.resolve(policyRoot, ref.policyId);
     if (!isContainedPath(policyRoot, policyDirectory)) {
-      throw new WorkflowPolicyIntegrityError(`Workflow policy path escapes policy root: ${ref.policyId}`);
+      throw new PlanPolicyIntegrityError(`Plan policy path escapes policy root: ${ref.policyId}`);
     }
     return path.resolve(policyDirectory, `${ref.policyVersion}.json`);
   }
 }
 
-export function createWorkflowPolicy(seed: WorkflowPolicySeed): WorkflowAuthorizationPolicy {
+export function createPlanPolicy(seed: PlanPolicySeed): PlanAuthorizationPolicy {
   validatePolicyIdentity(seed.policyId, seed.policyVersion);
   const grants = normalizeGrants(seed.grants);
   return {
@@ -134,7 +134,7 @@ export function createWorkflowPolicy(seed: WorkflowPolicySeed): WorkflowAuthoriz
   };
 }
 
-function normalizePolicy(policy: WorkflowAuthorizationPolicy): WorkflowAuthorizationPolicy {
+function normalizePolicy(policy: PlanAuthorizationPolicy): PlanAuthorizationPolicy {
   validateRef(policy.ref);
   return {
     ref: {
@@ -146,20 +146,20 @@ function normalizePolicy(policy: WorkflowAuthorizationPolicy): WorkflowAuthoriza
   };
 }
 
-function normalizeGrants(grants: WorkflowAuthorizationGrant[]): WorkflowAuthorizationGrant[] {
-  const bySubject = new Map<string, { grant: WorkflowAuthorizationGrant; capabilities: Set<string> }>();
+function normalizeGrants(grants: PlanAuthorizationGrant[]): PlanAuthorizationGrant[] {
+  const bySubject = new Map<string, { grant: PlanAuthorizationGrant; capabilities: Set<string> }>();
   for (const grant of grants) {
     const hasPrincipal = typeof grant.principalId === "string" && grant.principalId.length > 0;
     const hasTeamBinding = typeof grant.teamBindingId === "string" && grant.teamBindingId.length > 0;
     if (hasPrincipal === hasTeamBinding) {
-      throw new WorkflowPolicyIntegrityError(
-        "Each workflow policy grant must identify exactly one principal or team binding",
+      throw new PlanPolicyIntegrityError(
+        "Each plan policy grant must identify exactly one principal or team binding",
       );
     }
     if (grant.capabilities.length === 0 || grant.capabilities.some((value) => !value)) {
-      throw new WorkflowPolicyIntegrityError("Workflow policy grants require non-empty capabilities");
+      throw new PlanPolicyIntegrityError("Plan policy grants require non-empty capabilities");
     }
-    const normalizedGrant: WorkflowAuthorizationGrant = {
+    const normalizedGrant: PlanAuthorizationGrant = {
       ...(hasPrincipal ? { principalId: grant.principalId } : { teamBindingId: grant.teamBindingId }),
       capabilities: [],
     };
@@ -173,11 +173,11 @@ function normalizeGrants(grants: WorkflowAuthorizationGrant[]): WorkflowAuthoriz
     .map(([, entry]) => ({ ...entry.grant, capabilities: [...entry.capabilities].sort() }));
 }
 
-function assertContentHash(policy: WorkflowAuthorizationPolicy): void {
+function assertContentHash(policy: PlanAuthorizationPolicy): void {
   const expected = computeContentHash(policy.ref.policyId, policy.ref.policyVersion, policy.grants);
   if (policy.ref.contentHash !== expected) {
-    throw new WorkflowPolicyIntegrityError(
-      `Workflow policy contentHash mismatch: ${policyIdentity(policy.ref)}`,
+    throw new PlanPolicyIntegrityError(
+      `Plan policy contentHash mismatch: ${policyIdentity(policy.ref)}`,
     );
   }
 }
@@ -185,7 +185,7 @@ function assertContentHash(policy: WorkflowAuthorizationPolicy): void {
 function computeContentHash(
   policyId: string,
   policyVersion: number,
-  grants: WorkflowAuthorizationGrant[],
+  grants: PlanAuthorizationGrant[],
 ): string {
   const content = JSON.stringify({
     ref: { policyId, policyVersion },
@@ -194,27 +194,27 @@ function computeContentHash(
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
-function validateRef(ref: WorkflowPolicyRef): void {
+function validateRef(ref: PlanPolicyRef): void {
   validatePolicyIdentity(ref.policyId, ref.policyVersion);
   if (!/^sha256:[a-f0-9]{64}$/.test(ref.contentHash)) {
-    throw new WorkflowPolicyIntegrityError(`Invalid workflow policy contentHash: ${ref.contentHash}`);
+    throw new PlanPolicyIntegrityError(`Invalid plan policy contentHash: ${ref.contentHash}`);
   }
 }
 
 function validatePolicyIdentity(policyId: string, policyVersion: number): void {
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(policyId)) {
-    throw new WorkflowPolicyIntegrityError(`Invalid workflow policy id: ${policyId}`);
+    throw new PlanPolicyIntegrityError(`Invalid plan policy id: ${policyId}`);
   }
   if (!Number.isSafeInteger(policyVersion) || policyVersion < 1) {
-    throw new WorkflowPolicyIntegrityError(`Invalid workflow policy version: ${policyVersion}`);
+    throw new PlanPolicyIntegrityError(`Invalid plan policy version: ${policyVersion}`);
   }
 }
 
-function grantSortKey(grant: WorkflowAuthorizationGrant): string {
+function grantSortKey(grant: PlanAuthorizationGrant): string {
   return `${grant.principalId ? "principal" : "team"}:${grant.principalId ?? grant.teamBindingId}`;
 }
 
-function policyIdentity(ref: Pick<WorkflowPolicyRef, "policyId" | "policyVersion">): string {
+function policyIdentity(ref: Pick<PlanPolicyRef, "policyId" | "policyVersion">): string {
   return `${ref.policyId}@${ref.policyVersion}`;
 }
 

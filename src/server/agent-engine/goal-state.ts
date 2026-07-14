@@ -99,7 +99,7 @@ export function settleGoalState(
   if (decision.disposition === "host_error") {
     return { ...goal, version: goal.version + 1, status: "paused", updatedAt };
   }
-  if (decision.disposition === "stale_claim" || decision.disposition === "workflow_terminal") {
+  if (decision.disposition === "stale_claim" || decision.disposition === "plan_terminal") {
     return {
       ...goal,
       version: goal.version + 1,

@@ -7,13 +7,13 @@ import { bootstrapServer, startServer } from "../../src/server/bootstrap.js";
 import type { AppConfig } from "../../src/server/config.js";
 import {
   DEFAULT_MINIMAL_TEAM_POLICY_CONFIG,
-  createMinimalTeamWorkflowPolicy,
-} from "../../src/server/tickets/workflow-policy-config.js";
+  createMinimalTeamPlanPolicy,
+} from "../../src/server/tickets/plan-policy-config.js";
 import {
-  WorkflowPolicyConflictError,
-  WorkflowPolicyStore,
-  createWorkflowPolicy,
-} from "../../src/server/tickets/workflow-policy-store.js";
+  PlanPolicyConflictError,
+  PlanPolicyStore,
+  createPlanPolicy,
+} from "../../src/server/tickets/plan-policy-store.js";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 
 describe("server bootstrap", () => {
@@ -22,8 +22,8 @@ describe("server bootstrap", () => {
 
     const server = await startServer({ ...config(home), port: 0 });
     try {
-      const ref = createMinimalTeamWorkflowPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
-      await expect(new WorkflowPolicyStore(home).requirePolicy(ref)).resolves.toBeDefined();
+      const ref = createMinimalTeamPlanPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
+      await expect(new PlanPolicyStore(home).requirePolicy(ref)).resolves.toBeDefined();
       await request(server).get("/api/health").expect(200);
     } finally {
       server.close();
@@ -32,14 +32,14 @@ describe("server bootstrap", () => {
 
   it("fails startup when the immutable product policy conflicts", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-"));
-    const conflicting = createWorkflowPolicy({
+    const conflicting = createPlanPolicy({
       policyId: "minimal-team",
-      policyVersion: 2,
-      grants: [{ principalId: "different-principal", capabilities: ["workflow:control"] }],
+      policyVersion: 3,
+      grants: [{ principalId: "different-principal", capabilities: ["plan:control"] }],
     });
-    await new WorkflowPolicyStore(home).seedPolicy(conflicting);
+    await new PlanPolicyStore(home).seedPolicy(conflicting);
 
-    await expect(startServer({ ...config(home), port: 0 })).rejects.toBeInstanceOf(WorkflowPolicyConflictError);
+    await expect(startServer({ ...config(home), port: 0 })).rejects.toBeInstanceOf(PlanPolicyConflictError);
   });
 
   it("uses the explicit bootstrap config for both policy and API storage", async () => {
@@ -60,9 +60,9 @@ describe("server bootstrap", () => {
 
       await expect(new WorkspaceStore(homeA).list()).resolves.toHaveLength(1);
       await expect(new WorkspaceStore(homeB).list()).resolves.toEqual([]);
-      const policyRef = createMinimalTeamWorkflowPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
-      await expect(new WorkflowPolicyStore(homeA).requirePolicy(policyRef)).resolves.toBeDefined();
-      await expect(new WorkflowPolicyStore(homeB).getPolicy(policyRef)).resolves.toBeUndefined();
+      const policyRef = createMinimalTeamPlanPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
+      await expect(new PlanPolicyStore(homeA).requirePolicy(policyRef)).resolves.toBeDefined();
+      await expect(new PlanPolicyStore(homeB).getPolicy(policyRef)).resolves.toBeUndefined();
     } finally {
       if (previousHome === undefined) delete process.env.AUTOAGENT_HOME;
       else process.env.AUTOAGENT_HOME = previousHome;

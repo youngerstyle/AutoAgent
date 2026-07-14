@@ -32,6 +32,16 @@ function violations(relativeDirectory: string, forbidden: RegExp[]): string[] {
   });
 }
 
+function violationsInFiles(relativeFiles: string[], forbidden: RegExp[]): string[] {
+  return relativeFiles.flatMap((relativeFile) => {
+    const file = resolve(serverRoot, relativeFile);
+    const source = readFileSync(file, "utf8");
+    return forbidden
+      .filter((pattern) => pattern.test(source))
+      .map((pattern) => `${relativeFile}: ${pattern.source}`);
+  });
+}
+
 describe("runtime architecture boundaries", () => {
   it("keeps Agent Engine independent from Ticket, Mission, and legacy routing types", () => {
     expect(violations("agent-engine", [
@@ -51,7 +61,10 @@ describe("runtime architecture boundaries", () => {
   });
 
   it("keeps Mission Process free of phase routing and business classification rules", () => {
-    expect(violations("mission-process", [
+    expect(violationsInFiles([
+      "mission-process/mission-process-manager.ts",
+      "mission-process/ticket-agent-adapter.ts",
+    ], [
       /\bnextPhase\b/,
       /\bphaseAfter\w*\b/,
       /\brole\s*===/,

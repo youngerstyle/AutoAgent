@@ -1,61 +1,48 @@
-import { createHash } from "node:crypto";
+﻿import { createHash, randomUUID } from "node:crypto";
 import type {
   BlockedOwnershipReceipt,
   ClaimReceipt,
   ClaimRequest,
-  PlannedTicketNode,
+  PlanAuthorizationPolicy,
+  PlanCommandEnvelope,
+  PlanCommandResult,
+  PlanId,
+  PlanPolicyPort,
+  PlanStatus,
   ReleaseClaimRequest,
   RenewClaimRequest,
-  TicketEvent,
-  TicketEventPage,
-  TicketEventQuery,
   TicketCommandEnvelope,
   TicketCommandPayload,
   TicketCommandResult,
+  TicketEvent,
+  TicketEventPage,
+  TicketEventQuery,
+  TicketExecutionAuthority,
   TicketId,
-  TicketNodeKey,
   TicketSnapshot,
+  TicketStatus,
   TicketWorkItem,
   TransferBlockedOwnershipRequest,
-  WorkflowAuthorizationPolicy,
-  WorkflowCommandEnvelope,
-  WorkflowCommandResult,
-  WorkflowId,
-  WorkflowPolicyPort,
-  WorkflowStatus,
 } from "../../shared/contracts/ticket-engine.js";
+import {
+  evaluatePlanOutcome,
+  materializePlanGraph,
+  PlanGraphError,
+  type MaterializedPlanGraph,
+} from "./plan-graph.js";
 import {
   TicketStore,
   TicketStoreConflictError,
   type TicketAggregate,
   type TicketOperationRecord,
-  type TicketPlanningState,
 } from "./ticket-store.js";
-import {
-  evaluateWorkflowOutcome,
-  materializeWorkflowGraph,
-  type MaterializedWorkflowGraph,
-  WorkflowGraphError,
-} from "./workflow-graph.js";
 
-const TERMINAL_WORKFLOW_STATUSES = new Set<WorkflowStatus>(["completed", "failed", "cancelled"]);
-const TERMINAL_TICKET_STATUSES = new Set(["completed", "returned", "failed", "cancelled"]);
+const TERMINAL_PLAN = new Set<PlanStatus>(["completed", "failed", "cancelled"]);
+const TERMINAL_TICKET = new Set<TicketStatus>(["completed", "returned", "failed", "cancelled"]);
 
-class WorkflowCommandValidationError extends Error {}
-
-export interface TicketEngineOptions {
-  teamBindingIds?: string[];
-  now?: () => Date;
-}
-
+export interface TicketEngineOptions { teamBindingIds?: string[]; now?: () => Date }
 export class TicketEngineOperationError extends Error {
-  constructor(
-    public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation",
-    message: string,
-  ) {
-    super(message);
-    this.name = "TicketEngineOperationError";
-  }
+  constructor(public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation", message: string) { super(message); }
 }
 
 export class TicketEngine {
@@ -64,1594 +51,490 @@ export class TicketEngine {
 
   constructor(
     private readonly store: TicketStore,
-    private readonly policyPort: WorkflowPolicyPort,
+    private readonly policyPort: PlanPolicyPort,
     options: TicketEngineOptions = {},
   ) {
-    this.teamBindingIds = [...new Set(options.teamBindingIds ?? [])].sort();
+    this.teamBindingIds = options.teamBindingIds ?? [];
     this.now = options.now ?? (() => new Date());
   }
 
-  async getClaim(claimId: string): Promise<ClaimReceipt | undefined> {
-    return this.store.findClaim(claimId);
-  }
-
-  async getWorkflow(workflowId: WorkflowId) {
-    const aggregate = await this.store.read(workflowId);
-    if (!aggregate) throw new Error(`Workflow ${workflowId} does not exist`);
-    return structuredClone(aggregate.workflow);
+  async getPlan(planId: PlanId) {
+    const aggregate = await this.store.read(planId);
+    if (!aggregate) throw new TicketEngineOperationError("invalid_request", "Plan does not exist");
+    return structuredClone(aggregate.plan);
   }
 
   async getTicket(ticketId: TicketId): Promise<TicketSnapshot | undefined> {
-    for (const workflowId of await this.store.listWorkflowIds()) {
-      const ticket = (await this.store.read(workflowId))?.tickets.find((item) => item.ticketId === ticketId);
+    for (const planId of await this.store.listPlanIds()) {
+      const ticket = (await this.store.read(planId))?.tickets.find((item) => item.ticketId === ticketId);
       if (ticket) return structuredClone(ticket);
     }
     return undefined;
   }
 
   async getWorkItem(ticketId: TicketId): Promise<TicketWorkItem | undefined> {
-    for (const workflowId of await this.store.listWorkflowIds()) {
-      const aggregate = await this.store.read(workflowId);
+    for (const planId of await this.store.listPlanIds()) {
+      const aggregate = await this.store.read(planId);
       const ticket = aggregate?.tickets.find((item) => item.ticketId === ticketId);
-      if (!aggregate || !ticket || !aggregate.planning) continue;
-      const node = aggregate.workflow.graph.nodes.find((item) => item.ticketId === ticketId);
-      const definition = node ? aggregate.planning.definitionsByKey[String(node.nodeKey)] : undefined;
-      if (definition) return { ticket: structuredClone(ticket), definition: structuredClone(definition) };
+      const definition = aggregate?.definitionsByTicketId[String(ticketId)];
+      if (ticket && definition) return { ticket: structuredClone(ticket), definition: structuredClone(definition) };
     }
     return undefined;
   }
 
-  async getWorkflowCommandResult(commandId: string): Promise<WorkflowCommandResult | undefined> {
-    for (const workflowId of await this.store.listWorkflowIds()) {
-      const result = await this.store.getCommandResult(workflowId, commandId);
-      if (result && !('proposalId' in result) && !('receipt' in result)) return result as WorkflowCommandResult;
-    }
-    return undefined;
-  }
-
-  async getTicketCommandResult(commandId: string): Promise<TicketCommandResult | undefined> {
-    for (const workflowId of await this.store.listWorkflowIds()) {
-      const result = await this.store.getCommandResult(workflowId, commandId);
-      if (result && 'proposalId' in result) return result as TicketCommandResult;
-    }
-    return undefined;
-  }
-
-  readEvents<TWorkflowId extends WorkflowId>(
-    input: TicketEventQuery<TWorkflowId>,
-  ): Promise<TicketEventPage<TWorkflowId>> {
-    return this.store.readEvents(input);
-  }
-
+  async getClaim(claimId: string): Promise<ClaimReceipt | undefined> { return this.store.findClaim(claimId); }
   async getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined> {
     const record = await this.store.findOperationRecord(requestId);
-    return record?.kind === "claim" || record?.kind === "renew_claim"
-      ? record.claim
-      : undefined;
+    return record?.kind === "claim" || record?.kind === "renew_claim" ? record.claim : undefined;
   }
 
-  async claimReady(input: ClaimRequest): Promise<ClaimReceipt | undefined> {
-    validateDuration(input.leaseDurationMs, "leaseDurationMs");
-    const fingerprint = requestFingerprint("claim", input);
-    const replay = await this.replayOperation(input.requestId, "claim", fingerprint);
-    if (replay) return replay.claim;
-    const aggregate = await this.store.read(input.workflowId);
-    if (!aggregate || aggregate.workflow.status !== "active") return undefined;
-    if (!await this.authorized(
-      aggregate.workflow.policyRef,
-      input.principalId,
-      "ticket:claim",
-    )) {
-      throw new TicketEngineOperationError("policy_violation", "Principal cannot claim tickets");
-    }
-    const ticket = aggregate.tickets.find((item) => item.ticketId === input.ticketId);
-    if (!ticket || ticket.status !== "ready" || ticket.version !== input.expectedTicketVersion) return undefined;
+  async getPlanCommandResult(planId: PlanId, commandId: string): Promise<PlanCommandResult | undefined> {
+    const value = await this.store.getCommandResult(planId, commandId);
+    return value && "planVersion" in value && !("proposalId" in value) ? value as PlanCommandResult : undefined;
+  }
 
-    const nextVersion = ticket.version + 1;
-    const receipt: ClaimReceipt = {
-      requestId: input.requestId,
-      claimId: stableId("claim", input.workflowId, input.ticketId, input.requestId),
-      workflowId: input.workflowId,
-      ticketId: input.ticketId,
-      ticketVersion: nextVersion,
-      principalId: input.principalId,
-      fencingToken: nextFencingToken(aggregate, input.ticketId),
-      leaseUntil: new Date(this.now().getTime() + input.leaseDurationMs).toISOString(),
-    };
+  async getTicketCommandResult(planId: PlanId, commandId: string): Promise<TicketCommandResult | undefined> {
+    const value = await this.store.getCommandResult(planId, commandId);
+    return value && "proposalId" in value ? value as TicketCommandResult : undefined;
+  }
+
+  async createPlan(command: PlanCommandEnvelope): Promise<PlanCommandResult> {
+    if (command.payload.type !== "create_plan") return this.rejectPlan(command, "invalid_command", "Plan creation requires create_plan");
+    const fingerprint = fingerprintOf(command);
+    const existing = await this.store.read(command.planId);
+    if (existing) return this.replayPlan(existing, command.commandId, fingerprint);
+    const policy = await this.policyPort.getPolicy(command.payload.definition.policyRef);
+    if (!policy || !hasCapability(policy, command.actorPrincipalId, this.teamBindingIds, "plan:create")) {
+      return { accepted: false, commandId: command.commandId, code: "policy_violation", reason: "Principal cannot create Plan" };
+    }
     try {
-      await this.store.transact(
-        input.workflowId,
-        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-        (current) => {
-          const currentTicket = current.tickets.find((item) => item.ticketId === input.ticketId);
-          if (!currentTicket || currentTicket.status !== "ready" || currentTicket.version !== input.expectedTicketVersion) {
-            throw new WorkflowCommandValidationError("Ticket is no longer ready");
-          }
-          return {
-            ...current,
-            workflow: { ...current.workflow, version: current.workflow.version + 1 },
-            tickets: current.tickets.map((item) => item.ticketId === input.ticketId ? {
-              ...item,
-              version: nextVersion,
-              status: "running" as const,
-              activeAuthority: {
-                kind: "claim" as const,
-                claimId: receipt.claimId,
-                fencingToken: receipt.fencingToken,
-              },
-            } : item),
-            claims: [...current.claims, receipt],
-            operationRecords: [...current.operationRecords, {
-              kind: "claim" as const,
-              requestId: input.requestId,
-              fingerprint,
-              claim: receipt,
-            }],
-            pendingEvents: [ticketEventFromValues(
-              input.workflowId,
-              input.ticketId,
-              nextVersion,
-              input.requestId,
-              this.now().toISOString(),
-              { type: "TicketClaimed", claimId: receipt.claimId },
-            )],
-          };
-        },
-      );
-      return receipt;
+      const materialized = materializePlanGraph({ planId: command.planId, change: command.payload.definition.initialChange });
+      const tickets = createTickets(materialized, command.planId);
+      initializeReady(tickets, materialized.graph.dependencyEdges);
+      const plan = {
+        planId: command.planId,
+        missionId: command.payload.missionId,
+        version: 1,
+        status: "active" as const,
+        graph: materialized.graph,
+        completionPolicy: materialized.completionPolicy,
+        policyRef: command.payload.definition.policyRef,
+        plannerAssignment: command.payload.definition.plannerAssignment,
+      };
+      const result: PlanCommandResult = { accepted: true, commandId: command.commandId, planStatus: plan.status, planVersion: plan.version };
+      const events = [
+        planEvent(command.planId, 1, { type: "PlanChanged", addedTicketIds: [...materialized.addedTicketIds] }, command.issuedAt),
+        ...tickets.filter((ticket) => ticket.status === "ready").map((ticket) => ticketEvent(ticket, { type: "TicketReady", ticketVersion: ticket.version }, command.issuedAt)),
+      ];
+      await this.store.create({
+        schemaVersion: 3,
+        plan,
+        definitionsByTicketId: { ...materialized.definitionsByTicketId },
+        tickets,
+        commandInputs: [{ commandId: command.commandId, fingerprint }],
+        commandResults: [result],
+        pendingEvents: events,
+      });
+      return result;
     } catch (error) {
-      if (error instanceof TicketStoreConflictError || error instanceof WorkflowCommandValidationError) {
-        const raced = await this.replayOperation(input.requestId, "claim", fingerprint);
-        return raced?.claim;
+      if (error instanceof PlanGraphError) return { accepted: false, commandId: command.commandId, code: "invalid_definition", reason: error.message };
+      if (error instanceof TicketStoreConflictError) {
+        const raced = await this.store.read(command.planId);
+        return raced
+          ? this.replayPlan(raced, command.commandId, fingerprint)
+          : { accepted: false, commandId: command.commandId, code: "version_conflict", reason: error.message };
       }
       throw error;
     }
   }
 
-  async renewClaim(input: RenewClaimRequest): Promise<ClaimReceipt> {
-    validateDuration(input.extendByMs, "extendByMs");
-    const fingerprint = requestFingerprint("renew_claim", input);
-    const replay = await this.replayOperation(input.requestId, "renew_claim", fingerprint);
-    if (replay) return replay.claim;
-    const claim = await this.requireClaim(input.claimId, input.fencingToken);
-    const aggregate = await this.requireWorkflow(claim.workflowId);
-    const ticket = requireActiveClaimTicket(aggregate, claim);
-    const nextVersion = ticket.version + 1;
-    const leaseBase = Math.max(Date.parse(claim.leaseUntil), this.now().getTime());
-    const renewed: ClaimReceipt = {
-      ...claim,
+  async applyPlan(command: PlanCommandEnvelope): Promise<PlanCommandResult> {
+    if (command.payload.type === "create_plan") return this.createPlan(command);
+    const payload = command.payload;
+    const aggregate = await this.requirePlan(command.planId);
+    const fingerprint = fingerprintOf(command);
+    const replay = replayCommand<PlanCommandResult>(aggregate, command.commandId, fingerprint);
+    if (replay) return replay;
+    if (TERMINAL_PLAN.has(aggregate.plan.status)) return this.persistPlanRejection(aggregate, command, fingerprint, "plan_terminal", "Plan is terminal");
+    if (payload.type === "pause" && aggregate.plan.status === "paused") return this.persistPlanRejection(aggregate, command, fingerprint, "invalid_command", "Plan is already paused");
+    if (payload.type === "resume" && aggregate.plan.status !== "paused") return this.persistPlanRejection(aggregate, command, fingerprint, "invalid_command", "Plan is not paused");
+    const expected = payload.expectedPlanVersion;
+    if (expected !== aggregate.plan.version) return this.persistPlanRejection(aggregate, command, fingerprint, "version_conflict", "Plan version conflict");
+    const capability = payload.type === "apply_change" ? "plan:amend" : "plan:control";
+    const policy = await this.policyPort.getPolicy(aggregate.plan.policyRef);
+    const delegatedChange = payload.type === "apply_change"
+      && canApplyChangeFromTicket(aggregate, payload.sourceTicketId, payload.sourceAuthority, command.actorPrincipalId);
+    if (!delegatedChange && (!policy || !hasCapability(policy, command.actorPrincipalId, this.teamBindingIds, capability))) {
+      return this.persistPlanRejection(aggregate, command, fingerprint, "policy_violation", `Principal lacks ${capability}`);
+    }
+    try {
+      const next = await this.store.transact(command.planId, versions(aggregate), (current) => {
+        let plan = { ...current.plan, version: current.plan.version + 1 };
+        let tickets = structuredClone(current.tickets);
+        let definitions = structuredClone(current.definitionsByTicketId);
+        const pendingEvents: TicketEvent[] = [];
+        if (payload.type === "pause" || payload.type === "resume") {
+          if (payload.type === "pause") {
+            plan = { ...plan, status: "paused", deferredOutcome: current.plan.status === "blocked" ? "blocked" : "active" };
+          } else {
+            const resumed = evaluatePlanOutcome({
+              graph: current.plan.graph,
+              completionPolicy: current.plan.completionPolicy,
+              ticketStatuses: statusMap(current.tickets),
+              deferredOutcome: current.plan.deferredOutcome ?? "active",
+            });
+            plan = { ...plan, status: resumed, deferredOutcome: undefined };
+          }
+          pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
+        } else if (payload.type === "cancel") {
+          plan.status = "cancelled";
+          tickets = tickets.map((ticket) => TERMINAL_TICKET.has(ticket.status) ? ticket : { ...ticket, status: "cancelled", version: ticket.version + 1, activeAuthority: undefined });
+          pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
+        } else {
+          const materialized = materializePlanGraph({
+            planId: command.planId,
+            previous: asMaterialized(current),
+            change: payload.change,
+            ticketStatuses: statusMap(current.tickets),
+          });
+          const added = createTickets(materialized, command.planId).filter((ticket) => materialized.addedTicketIds.includes(ticket.ticketId));
+          const cancellationIds = new Set(payload.change.cancelTicketIds.map(String));
+          const cancelled = tickets
+            .filter((ticket) => cancellationIds.has(String(ticket.ticketId)))
+            .map((ticket) => ({ ...ticket, status: "cancelled" as const, version: ticket.version + 1, activeAuthority: undefined }));
+          const cancelledById = new Map(cancelled.map((ticket) => [String(ticket.ticketId), ticket]));
+          tickets = [...tickets.map((ticket) => cancelledById.get(String(ticket.ticketId)) ?? ticket), ...added];
+          initializeReady(tickets, materialized.graph.dependencyEdges);
+          plan = { ...plan, status: "active", graph: materialized.graph, completionPolicy: materialized.completionPolicy };
+          definitions = { ...materialized.definitionsByTicketId };
+          pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [...materialized.addedTicketIds] }, command.issuedAt));
+          for (const ticket of cancelled) pendingEvents.push(ticketEvent(ticket, { type: "TicketTerminal", status: "cancelled" }, command.issuedAt));
+          for (const ticket of added.filter((item) => item.status === "ready")) pendingEvents.push(ticketEvent(ticket, { type: "TicketReady", ticketVersion: ticket.version }, command.issuedAt));
+          current.claims = current.claims.filter((claim) => !cancellationIds.has(String(claim.ticketId)));
+          current.blockedOwnerships = current.blockedOwnerships.filter((owner) => !cancellationIds.has(String(owner.ticketId)));
+        }
+        const result: PlanCommandResult = { accepted: true, commandId: command.commandId, planStatus: plan.status, planVersion: plan.version };
+        return appendCommand(current, { plan, tickets, definitionsByTicketId: definitions, pendingEvents }, command.commandId, fingerprint, result);
+      });
+      return next.commandResults.find((item) => item.commandId === command.commandId)! as PlanCommandResult;
+    } catch (error) {
+      if (error instanceof PlanGraphError) return this.persistPlanRejection(aggregate, command, fingerprint, "invalid_command", error.message);
+      if (error instanceof TicketStoreConflictError) return this.persistPlanRejection(await this.requirePlan(command.planId), command, fingerprint, "version_conflict", error.message);
+      throw error;
+    }
+  }
+
+  async claimReady(input: ClaimRequest): Promise<ClaimReceipt | undefined> {
+    requirePositiveDuration(input.leaseDurationMs, "leaseDurationMs");
+    const replay = await this.store.findOperationRecord(input.requestId);
+    if (replay) {
+      if (replay.kind !== "claim" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Claim request was reused");
+      return structuredClone(replay.claim);
+    }
+    const aggregate = await this.requirePlan(input.planId);
+    const ticket = aggregate.tickets.find((item) => item.ticketId === input.ticketId);
+    const definition = aggregate.definitionsByTicketId[String(input.ticketId)];
+    const claimablePlan = aggregate.plan.status === "active"
+      || (aggregate.plan.status === "blocked" && definition?.outputContract.schemaRef === "plan-change-set-v3");
+    if (!ticket || ticket.status !== "ready" || ticket.version !== input.expectedTicketVersion || !claimablePlan) return undefined;
+    const policy = await this.policyPort.getPolicy(aggregate.plan.policyRef);
+    if (!policy || !hasCapability(policy, input.principalId, this.teamBindingIds, "ticket:claim")) throw new TicketEngineOperationError("policy_violation", "Principal cannot claim Ticket");
+    const receipt: ClaimReceipt = {
       requestId: input.requestId,
-      ticketVersion: nextVersion,
-      leaseUntil: new Date(leaseBase + input.extendByMs).toISOString(),
+      claimId: randomUUID(),
+      planId: input.planId,
+      ticketId: input.ticketId,
+      ticketVersion: ticket.version + 1,
+      principalId: input.principalId,
+      fencingToken: 1,
+      leaseUntil: new Date(this.now().getTime() + input.leaseDurationMs).toISOString(),
     };
-    await this.store.transact(
-      claim.workflowId,
-      { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-      (current) => ({
-        ...current,
-        workflow: { ...current.workflow, version: current.workflow.version + 1 },
-        tickets: current.tickets.map((item) => item.ticketId === ticket.ticketId
-          ? { ...item, version: nextVersion }
-          : item),
-        claims: current.claims.map((item) => item.claimId === claim.claimId ? renewed : item),
-        operationRecords: [...current.operationRecords, {
-          kind: "renew_claim" as const,
-          requestId: input.requestId,
-          fingerprint,
-          claim: renewed,
-        }],
-      }),
-    );
+    try {
+      await this.store.transact(input.planId, versions(aggregate), (current) => {
+        const tickets = current.tickets.map((item) => item.ticketId === input.ticketId ? { ...item, status: "running" as const, version: receipt.ticketVersion, activeAuthority: { kind: "claim" as const, claimId: receipt.claimId, fencingToken: 1 } } : item);
+        const plan = { ...current.plan, version: current.plan.version + 1 };
+        return { ...current, plan, tickets, claims: [...current.claims, receipt], operationRecords: [...current.operationRecords, { kind: "claim", requestId: input.requestId, fingerprint: fingerprintOf(input), claim: receipt }], pendingEvents: [ticketEvent(tickets.find((item) => item.ticketId === input.ticketId)!, { type: "TicketClaimed", claimId: receipt.claimId }, this.now().toISOString())] };
+      });
+      return receipt;
+    } catch (error) {
+      if (!(error instanceof TicketStoreConflictError)) throw error;
+      const raced = await this.store.findOperationRecord(input.requestId);
+      if (raced?.kind === "claim" && raced.fingerprint === fingerprintOf(input)) return raced.claim;
+      return undefined;
+    }
+  }
+
+  async renewClaim(input: RenewClaimRequest): Promise<ClaimReceipt> {
+    requirePositiveDuration(input.extendByMs, "extendByMs");
+    const replay = await this.store.findOperationRecord(input.requestId);
+    if (replay) {
+      if (replay.kind !== "renew_claim" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Renew request was reused");
+      return structuredClone(replay.claim);
+    }
+    const claim = await this.requireClaim(input.claimId, input.fencingToken);
+    const aggregate = await this.requirePlan(claim.planId);
+    const renewed = { ...claim, requestId: input.requestId, leaseUntil: new Date(Math.max(this.now().getTime(), Date.parse(claim.leaseUntil)) + input.extendByMs).toISOString() };
+    await this.store.transact(claim.planId, versions(aggregate), (current) => ({ ...current, plan: { ...current.plan, version: current.plan.version + 1 }, claims: current.claims.map((item) => item.claimId === claim.claimId ? renewed : item), operationRecords: [...current.operationRecords, { kind: "renew_claim", requestId: input.requestId, fingerprint: fingerprintOf(input), claim: renewed }] }));
     return renewed;
   }
 
   async releaseClaim(input: ReleaseClaimRequest): Promise<TicketSnapshot> {
-    const fingerprint = requestFingerprint("release_claim", input);
-    const replay = await this.replayOperation(input.requestId, "release_claim", fingerprint);
-    if (replay) return replay.ticket;
+    const replay = await this.store.findOperationRecord(input.requestId);
+    if (replay) {
+      if (replay.kind !== "release_claim" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Release request was reused");
+      return structuredClone(replay.ticket);
+    }
     const claim = await this.requireClaim(input.claimId, input.fencingToken);
-    return this.releaseActiveClaim(claim, input.requestId, fingerprint, "released");
+    const aggregate = await this.requirePlan(claim.planId);
+    const next = await this.store.transact(claim.planId, versions(aggregate), (current) => {
+      const tickets = current.tickets.map((ticket) => ticket.ticketId === claim.ticketId && ticket.status === "running" ? { ...ticket, status: "ready" as const, version: ticket.version + 1, activeAuthority: undefined } : ticket);
+      const released = tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
+      return { ...current, plan: { ...current.plan, version: current.plan.version + 1 }, tickets, claims: current.claims.filter((item) => item.claimId !== claim.claimId), operationRecords: [...current.operationRecords, { kind: "release_claim", requestId: input.requestId, fingerprint: fingerprintOf(input), ticket: released }], pendingEvents: [ticketEvent(released, { type: "TicketReady", ticketVersion: released.version }, this.now().toISOString())] };
+    });
+    return next.tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
   }
 
-  async transferBlockedOwnership(
-    input: TransferBlockedOwnershipRequest,
-  ): Promise<BlockedOwnershipReceipt> {
-    const fingerprint = requestFingerprint("transfer_blocked_ownership", input);
-    const replay = await this.replayOperation(
-      input.requestId,
-      "transfer_blocked_ownership",
-      fingerprint,
-    );
-    if (replay) return replay.ownership;
-    const ownership = await this.store.findBlockedOwnership(input.ownershipId);
-    if (!ownership || ownership.fencingToken !== input.fencingToken) {
-      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is stale");
+  async transferBlockedOwnership(input: TransferBlockedOwnershipRequest): Promise<BlockedOwnershipReceipt> {
+    const replay = await this.store.findOperationRecord(input.requestId);
+    if (replay) {
+      if (replay.kind !== "transfer_blocked_ownership" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Transfer request was reused");
+      return structuredClone(replay.ownership);
     }
-    const aggregate = await this.requireWorkflow(ownership.workflowId);
-    if (!await this.authorized(
-      aggregate.workflow.policyRef,
-      ownership.principalId,
-      "blocked_ownership:transfer",
-    )) {
+    const ownership = await this.store.findBlockedOwnership(input.ownershipId);
+    if (!ownership || ownership.fencingToken !== input.fencingToken) throw new TicketEngineOperationError("stale_authority", "Blocked ownership is stale");
+    const aggregate = await this.requirePlan(ownership.planId);
+    const policy = await this.policyPort.getPolicy(aggregate.plan.policyRef);
+    if (!policy || !hasCapability(policy, ownership.principalId, this.teamBindingIds, "blocked_ownership:transfer")) {
       throw new TicketEngineOperationError("policy_violation", "Owner cannot transfer blocked ownership");
     }
     const ticket = aggregate.tickets.find((item) => item.ticketId === ownership.ticketId);
-    if (
-      !ticket
-      || ticket.status !== "blocked"
-      || ticket.activeAuthority?.kind !== "blocked_owner"
-      || ticket.activeAuthority.ownershipId !== ownership.ownershipId
-      || ticket.activeAuthority.fencingToken !== ownership.fencingToken
-    ) {
+    if (!ticket || ticket.status !== "blocked" || !authorityMatches(ticket.activeAuthority, { kind: "blocked_owner", ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken })) {
       throw new TicketEngineOperationError("stale_authority", "Blocked ownership is no longer active");
     }
-    const nextVersion = ticket.version + 1;
-    const transferred: BlockedOwnershipReceipt = {
-      ownershipId: stableId("ownership", ownership.workflowId, ownership.ticketId, input.requestId),
-      workflowId: ownership.workflowId,
-      ticketId: ownership.ticketId,
-      ticketVersion: nextVersion,
-      principalId: input.toPrincipalId,
-      fencingToken: nextFencingToken(aggregate, ownership.ticketId),
-    };
-    await this.store.transact(
-      ownership.workflowId,
-      { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-      (current) => ({
+    const nextOwnership = { ...ownership, ownershipId: randomUUID(), ticketVersion: ticket.version + 1, principalId: input.toPrincipalId, fencingToken: ownership.fencingToken + 1 };
+    await this.store.transact(ownership.planId, versions(aggregate), (current) => {
+      const tickets = current.tickets.map((item) => item.ticketId === ownership.ticketId ? {
+        ...item,
+        version: nextOwnership.ticketVersion,
+        activeAuthority: { kind: "blocked_owner" as const, ownershipId: nextOwnership.ownershipId, fencingToken: nextOwnership.fencingToken },
+      } : item);
+      return {
         ...current,
-        workflow: { ...current.workflow, version: current.workflow.version + 1 },
-        tickets: current.tickets.map((item) => item.ticketId === ownership.ticketId ? {
-          ...item,
-          version: nextVersion,
-          activeAuthority: {
-            kind: "blocked_owner" as const,
-            ownershipId: transferred.ownershipId,
-            fencingToken: transferred.fencingToken,
+        plan: { ...current.plan, version: current.plan.version + 1 },
+        tickets,
+        blockedOwnerships: [...current.blockedOwnerships.filter((item) => item.ownershipId !== ownership.ownershipId), nextOwnership],
+        operationRecords: [...current.operationRecords, { kind: "transfer_blocked_ownership", requestId: input.requestId, fingerprint: fingerprintOf(input), ownership: nextOwnership }],
+        pendingEvents: [ticketEvent(tickets.find((item) => item.ticketId === ownership.ticketId)!, { type: "AuthorityRevoked", fencingToken: ownership.fencingToken }, this.now().toISOString())],
+      };
+    });
+    return nextOwnership;
+  }
+
+  async applyTicket(command: TicketCommandEnvelope<TicketCommandPayload>): Promise<TicketCommandResult> {
+    const aggregate = await this.requirePlan(command.planId);
+    const fingerprint = fingerprintOf(command);
+    const replay = replayCommand<TicketCommandResult>(aggregate, command.commandId, fingerprint);
+    if (replay) return replay;
+    if (TERMINAL_PLAN.has(aggregate.plan.status)) return this.persistTicketRejection(aggregate, command, fingerprint, "plan_terminal", "Plan is terminal");
+    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
+    if (!ticket || ticket.version !== command.expectedTicketVersion) return this.persistTicketRejection(aggregate, command, fingerprint, "version_conflict", "Ticket version conflict");
+    if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
+    if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
+    try {
+      const next = await this.store.transact(command.planId, versions(aggregate), (current) => {
+      const currentTicket = current.tickets.find((item) => item.ticketId === command.ticketId)!;
+      let status: TicketStatus;
+      if (command.payload.type === "complete") status = "completed";
+      else if (command.payload.type === "block") status = "blocked";
+      else if (command.payload.type === "return") status = "returned";
+      else status = "failed";
+      const ownership: BlockedOwnershipReceipt | undefined = status === "blocked" ? {
+        ownershipId: randomUUID(), planId: command.planId, ticketId: command.ticketId,
+        ticketVersion: currentTicket.version + 1, principalId: command.actorPrincipalId,
+        fencingToken: command.authority.fencingToken + 1,
+      } : undefined;
+      let tickets = current.tickets.map((item) => item.ticketId === command.ticketId ? {
+        ...item, status, version: item.version + 1,
+        activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
+      } : item);
+      let graph = current.plan.graph;
+      let completionPolicy = current.plan.completionPolicy;
+      let definitionsByTicketId = current.definitionsByTicketId;
+      let amendmentTicket: TicketSnapshot | undefined;
+      if (command.payload.type === "return") {
+        const amendmentId = randomUUID() as TicketId;
+        amendmentTicket = {
+          ticketId: amendmentId,
+          planId: command.planId,
+          version: 1,
+          status: "ready",
+          parentTicketId: command.payload.targetTicketId,
+        };
+        tickets = [...tickets, amendmentTicket];
+        graph = {
+          ...graph,
+          ticketIds: [...graph.ticketIds, amendmentId],
+        };
+        completionPolicy = {
+          ...completionPolicy,
+          requiredTerminalTicketIds: [amendmentId],
+        };
+        definitionsByTicketId = {
+          ...definitionsByTicketId,
+          [String(amendmentId)]: {
+            parentTicketId: command.payload.targetTicketId,
+            title: "计划修订",
+            objective: `处理工单 ${command.ticketId} 对 ${command.payload.targetTicketId} 的打回：${command.payload.reason}`,
+            successCriteria: [
+              "核对打回原因和证据",
+              "向当前 Plan 追加完成目标所需的新工单和依赖",
+              "提交无环且具有可验证终点的 Plan 变更集",
+            ],
+            assignment: current.plan.plannerAssignment,
+            outputContract: { schemaRef: "plan-change-set-v3" },
           },
-        } : item),
-        blockedOwnerships: [...current.blockedOwnerships, transferred],
-        operationRecords: [...current.operationRecords, {
-          kind: "transfer_blocked_ownership" as const,
-          requestId: input.requestId,
-          fingerprint,
-          ownership: transferred,
-        }],
-        pendingEvents: [ticketEventFromValues(
-          ownership.workflowId,
-          ownership.ticketId,
-          nextVersion,
-          input.requestId,
-          this.now().toISOString(),
-          { type: "AuthorityRevoked", fencingToken: ownership.fencingToken },
-        )],
-      }),
-    );
-    return transferred;
+        };
+      }
+      const changed = unlockReady(tickets, current.plan.graph.dependencyEdges);
+      tickets = changed.tickets;
+      const statuses = statusMap(tickets);
+      let planStatus = evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses });
+      if (status === "returned" || status === "blocked") planStatus = "blocked";
+      const plan = { ...current.plan, version: current.plan.version + 1, status: planStatus, graph, completionPolicy };
+      const settled = tickets.find((item) => item.ticketId === command.ticketId)!;
+      const result: TicketCommandResult = {
+        accepted: true, commandId: command.commandId, proposalId: command.proposalId,
+        ticketStatus: status as "blocked" | "completed" | "returned" | "failed",
+        ticketVersion: settled.version, planStatus: plan.status, planVersion: plan.version,
+        ...(ownership ? { nextAuthority: settled.activeAuthority } : {}),
+      };
+      const pendingEvents: TicketEvent[] = [ticketEvent(settled, status === "blocked" ? { type: "TicketBlocked", requiredInput: command.payload.type === "block" ? command.payload.requiredInput : undefined } : { type: "TicketTerminal", status: status as "completed" | "returned" | "failed" }, command.issuedAt)];
+      for (const ready of changed.ready) pendingEvents.push(ticketEvent(ready, { type: "TicketReady", ticketVersion: ready.version }, command.issuedAt));
+      if (command.payload.type === "return") {
+        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, targetTicketId: command.payload.targetTicketId, reason: command.payload.reason }, command.issuedAt));
+        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [amendmentTicket!.ticketId] }, command.issuedAt));
+        pendingEvents.push(ticketEvent(amendmentTicket!, { type: "TicketReady", ticketVersion: amendmentTicket!.version }, command.issuedAt));
+      }
+      if (plan.status !== current.plan.status) pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
+      return appendCommand(current, { plan, tickets, definitionsByTicketId, claims: current.claims.filter((claim) => claim.ticketId !== command.ticketId), blockedOwnerships: ownership ? [...current.blockedOwnerships, ownership] : current.blockedOwnerships, pendingEvents }, command.commandId, fingerprint, result);
+      });
+      return next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
+    } catch (error) {
+      if (!(error instanceof TicketStoreConflictError)) throw error;
+      const latest = await this.requirePlan(command.planId);
+      const replayAfterRace = replayCommand<TicketCommandResult>(latest, command.commandId, fingerprint);
+      if (replayAfterRace) return replayAfterRace;
+      return this.persistTicketRejection(latest, command, fingerprint, "version_conflict", error.message);
+    }
   }
 
   async scanExpiredClaims(now = this.now()): Promise<TicketSnapshot[]> {
     const released: TicketSnapshot[] = [];
-    for (const workflowId of await this.store.listWorkflowIds()) {
-      const aggregate = await this.store.read(workflowId);
+    for (const planId of await this.store.listPlanIds()) {
+      const aggregate = await this.store.read(planId);
       if (!aggregate) continue;
-      for (const claim of aggregate.claims) {
-        const ticket = aggregate.tickets.find((item) => item.ticketId === claim.ticketId);
-        if (
-          ticket?.activeAuthority?.kind !== "claim"
-          || ticket.activeAuthority.claimId !== claim.claimId
-          || Date.parse(claim.leaseUntil) > now.getTime()
-        ) continue;
-        const requestId = `expire:${claim.claimId}:${claim.leaseUntil}`;
-        const fingerprint = requestFingerprint("release_claim", { requestId, claimId: claim.claimId });
-        const replay = await this.replayOperation(requestId, "release_claim", fingerprint);
-        released.push(replay?.ticket ?? await this.releaseActiveClaim(
-          claim,
-          requestId,
-          fingerprint,
-          "expired",
-          now,
-        ));
+      for (const claim of aggregate.claims.filter((item) => Date.parse(item.leaseUntil) <= now.getTime())) {
+        released.push(await this.releaseClaim({ requestId: `expired:${claim.claimId}`, claimId: claim.claimId, fencingToken: claim.fencingToken, reason: "agent_unavailable" }));
       }
     }
     return released;
   }
 
-  async createWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult> {
-    const fingerprint = commandFingerprint(command);
-    const existing = await this.store.read(command.workflowId);
-    if (existing) return this.replayOrConflict(existing, command, fingerprint);
-    if (command.payload.type !== "create_graph") {
-      return rejected(command, "invalid_command", "Workflow creation requires create_graph");
-    }
-    if (!await this.authorized(
-      command.payload.definition.policyRef,
-      command.actorPrincipalId,
-      "ticket_graph:create",
-    )) {
-      return rejected(command, "policy_violation", "Principal cannot create workflow graphs");
-    }
-
-    let materialized: MaterializedWorkflowGraph;
-    try {
-      materialized = materializeWorkflowGraph({
-        workflowId: command.workflowId,
-        graph: command.payload.definition.initialGraph,
-        completionPolicy: command.payload.definition.completionPolicy,
-      });
-    } catch (error) {
-      return rejected(command, "invalid_definition", errorMessage(error));
-    }
-
-    const tickets = initialTickets(materialized, command.workflowId);
-    const result: WorkflowCommandResult = {
-      accepted: true,
-      commandId: command.commandId,
-      workflowStatus: "active",
-      workflowVersion: 1,
-    };
-    const pendingEvents = [
-      ...tickets
-        .filter((ticket) => ticket.status === "ready")
-        .map((ticket) => ticketEvent(command, ticket, {
-          type: "TicketReady" as const,
-          ticketVersion: ticket.version,
-        })),
-      workflowEvent(command, "active", 1),
-    ];
-    try {
-      await this.store.create({
-        schemaVersion: 2,
-        workflow: {
-          workflowId: command.workflowId,
-          version: 1,
-          status: "active",
-          graph: materialized.graph,
-          completionPolicy: materialized.completionPolicy,
-          policyRef: command.payload.definition.policyRef,
-        },
-        planning: planningState(materialized),
-        tickets,
-        claims: [],
-        blockedOwnerships: [],
-        commandInputs: [{ commandId: command.commandId, fingerprint }],
-        commandResults: [result],
-        pendingEvents,
-      });
-      return result;
-    } catch (error) {
-      if (!(error instanceof TicketStoreConflictError)) throw error;
-      const raced = await this.store.read(command.workflowId);
-      return raced
-        ? this.replayOrConflict(raced, command, fingerprint)
-        : rejected(command, "version_conflict", error.message);
-    }
+  async readEvents<TPlanId extends PlanId>(input: TicketEventQuery<TPlanId>): Promise<TicketEventPage<TPlanId, TicketEvent<"ticket" | "plan", TPlanId>>> {
+    return this.store.readEvents(input) as Promise<TicketEventPage<TPlanId, TicketEvent<"ticket" | "plan", TPlanId>>>;
   }
 
-  async applyWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult> {
-    if (command.payload.type === "create_graph") return this.createWorkflow(command);
-    const fingerprint = commandFingerprint(command);
-    const current = await this.store.read(command.workflowId);
-    if (!current) return rejected(command, "invalid_command", "Workflow does not exist");
-    const replay = this.existingCommand(current, command, fingerprint);
-    if (replay) return replay;
-
-    if (TERMINAL_WORKFLOW_STATUSES.has(current.workflow.status)) {
-      return this.persistRejected(current, fingerprint, rejected(
-        command,
-        "workflow_terminal",
-        `Workflow is ${current.workflow.status}`,
-        current.workflow.version,
-      ));
-    }
-    if (command.payload.expectedWorkflowVersion !== current.workflow.version) {
-      return rejected(
-        command,
-        "version_conflict",
-        "Workflow version is stale",
-        current.workflow.version,
-      );
-    }
-    const capability = command.payload.type === "amend" ? "ticket_graph:amend" : "workflow:control";
-    if (!await this.authorized(
-      current.workflow.policyRef,
-      command.actorPrincipalId,
-      capability,
-    )) {
-      return this.persistRejected(current, fingerprint, rejected(
-        command,
-        "policy_violation",
-        `Principal lacks ${capability}`,
-        current.workflow.version,
-      ));
-    }
-
-    try {
-      const updated = await this.store.transact(
-        command.workflowId,
-        {
-          aggregateVersion: current.aggregateVersion,
-          workflowVersion: current.workflow.version,
-        },
-        (aggregate) => this.applyAcceptedCommand(aggregate, command, fingerprint),
-      );
-      return updated.commandResults.find((result) => result.commandId === command.commandId) as WorkflowCommandResult;
-    } catch (error) {
-      if (error instanceof WorkflowGraphError || error instanceof WorkflowCommandValidationError) {
-        return this.persistRejected(current, fingerprint, rejected(
-          command,
-          error instanceof WorkflowGraphError ? "invalid_definition" : "invalid_command",
-          errorMessage(error),
-          current.workflow.version,
-        ));
-      }
-      if (!(error instanceof TicketStoreConflictError)) throw error;
-      const latest = await this.store.read(command.workflowId);
-      if (latest) {
-        const racedReplay = this.existingCommand(latest, command, fingerprint);
-        if (racedReplay) return racedReplay;
-        return rejected(
-          command,
-          "version_conflict",
-          error.message,
-          latest.workflow.version,
-        );
-      }
-      return rejected(command, "version_conflict", error.message);
-    }
-  }
-
-  async applyTicket(
-    command: TicketCommandEnvelope<TicketCommandPayload>,
-  ): Promise<TicketCommandResult> {
-    const fingerprint = commandFingerprint(command);
-    const aggregate = await this.store.read(command.workflowId);
-    if (!aggregate) return ticketRejected(command, "invalid_command", "Workflow does not exist");
-    const replay = this.existingTicketCommand(aggregate, command, fingerprint);
-    if (replay) return replay;
-    const proposalConflict = aggregate.commandResults.find((result) => (
-      "proposalId" in result && result.proposalId === command.proposalId
-    ));
-    if (proposalConflict) {
-      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
-        command,
-        "idempotency_conflict",
-        `Proposal ${command.proposalId} already has a command`,
-        aggregate,
-      ));
-    }
-    if (TERMINAL_WORKFLOW_STATUSES.has(aggregate.workflow.status)) {
-      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
-        command,
-        "workflow_terminal",
-        `Workflow is ${aggregate.workflow.status}`,
-        aggregate,
-      ));
-    }
-    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
-    if (!ticket) {
-      return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
-        command,
-        "invalid_command",
-        "Ticket does not exist",
-        aggregate,
-      ));
-    }
-    if (ticket.version !== command.expectedTicketVersion) {
-      return ticketRejected(
-        command,
-        "version_conflict",
-        "Ticket version is stale",
-        aggregate,
-      );
-    }
-    if (
-      (command.payload.type === "complete_with_graph" || command.payload.type === "return_to_parent")
-      && command.payload.expectedWorkflowVersion !== aggregate.workflow.version
-    ) {
-      return ticketRejected(
-        command,
-        "version_conflict",
-        "Workflow version is stale",
-        aggregate,
-      );
-    }
-    try {
-      requireCommandAuthority(aggregate, ticket, command, this.now());
-      const updated = await this.store.transact(
-        command.workflowId,
-        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-        (current) => this.applyAcceptedTicketCommand(current, command, fingerprint),
-      );
-      return updated.commandResults.find((result) => result.commandId === command.commandId) as TicketCommandResult;
-    } catch (error) {
-      if (error instanceof TicketEngineOperationError) {
-        return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
-          command,
-          error.code === "stale_authority" ? "stale_authority" : "invalid_command",
-          error.message,
-          aggregate,
-        ));
-      }
-      if (error instanceof WorkflowGraphError || error instanceof WorkflowCommandValidationError) {
-        return this.persistTicketRejected(aggregate, fingerprint, ticketRejected(
-          command,
-          "invalid_command",
-          error.message,
-          aggregate,
-        ));
-      }
-      if (error instanceof TicketStoreConflictError) {
-        const latest = await this.requireWorkflow(command.workflowId);
-        const raced = this.existingTicketCommand(latest, command, fingerprint);
-        if (raced) return raced;
-        return ticketRejected(
-          command,
-          "version_conflict",
-          error.message,
-          latest,
-        );
-      }
-      throw error;
-    }
-  }
-
-  private applyAcceptedCommand(
-    aggregate: TicketAggregate,
-    command: WorkflowCommandEnvelope,
-    fingerprint: string,
-  ) {
-    switch (command.payload.type) {
-      case "pause":
-        if (aggregate.workflow.status === "paused") {
-          throw new WorkflowCommandValidationError("Workflow is already paused");
-        }
-        return withWorkflowResult(aggregate, command, fingerprint, {
-          workflow: {
-            ...aggregate.workflow,
-            version: aggregate.workflow.version + 1,
-            status: "paused",
-            deferredOutcome: deferredOutcome(aggregate.workflow.status),
-          },
-          pendingEvents: [workflowEvent(command, "paused", aggregate.workflow.version + 1)],
-        });
-      case "resume": {
-        if (aggregate.workflow.status !== "paused") {
-          throw new WorkflowCommandValidationError("Only paused workflows can resume");
-        }
-        const status = aggregate.workflow.deferredOutcome ?? "active";
-        return withWorkflowResult(aggregate, command, fingerprint, {
-          workflow: {
-            ...aggregate.workflow,
-            version: aggregate.workflow.version + 1,
-            status,
-            deferredOutcome: undefined,
-          },
-          pendingEvents: [workflowEvent(command, status, aggregate.workflow.version + 1)],
-        });
-      }
-      case "cancel":
-        return this.cancelWorkflow(aggregate, command, command.payload, fingerprint);
-      case "amend":
-        return this.amendWorkflow(aggregate, command, command.payload, fingerprint);
-      default:
-        throw new Error("Unsupported workflow command");
-    }
-  }
-
-  private applyAcceptedTicketCommand(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope<TicketCommandPayload>,
-    fingerprint: string,
-  ) {
-    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
-    if (!ticket || ticket.version !== command.expectedTicketVersion) {
-      throw new WorkflowCommandValidationError("Ticket changed before command commit");
-    }
-    requireCommandAuthority(aggregate, ticket, command, this.now());
-    switch (command.payload.type) {
-      case "complete":
-        return this.finishTicket(aggregate, command, fingerprint, "completed");
-      case "fail":
-        return this.finishTicket(aggregate, command, fingerprint, "failed");
-      case "block":
-        return this.blockTicket(aggregate, command, command.payload, fingerprint);
-      case "complete_with_graph":
-        return this.completeTicketWithGraph(aggregate, command, command.payload, fingerprint);
-      case "return_to_parent":
-        return this.returnTicketToParent(aggregate, command, command.payload, fingerprint);
-    }
-  }
-
-  private finishTicket(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope,
-    fingerprint: string,
-    status: "completed" | "failed",
-  ) {
-    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
-    const version = current.version + 1;
-    const finished: TicketSnapshot = {
-      ...current,
-      version,
-      status,
-      activeAuthority: undefined,
-    };
-    const pendingEvents = authorityRevocationEvents(command, current, version);
-    pendingEvents.push(ticketEvent(command, finished, { type: "TicketTerminal", status }));
-    let tickets = aggregate.tickets.map((item) => item.ticketId === finished.ticketId ? finished : item);
-    tickets = unlockReadyTickets(aggregate.workflow.graph, tickets, command, pendingEvents);
-    return ticketMutationResult(aggregate, command, fingerprint, {
-      tickets,
-      pendingEvents,
-      ticket: finished,
-    });
-  }
-
-  private blockTicket(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope,
-    payload: Extract<TicketCommandPayload, { type: "block" }>,
-    fingerprint: string,
-  ) {
-    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
-    if (current.status !== "running" || current.activeAuthority?.kind !== "claim") {
-      throw new WorkflowCommandValidationError("Only a running claim can block a ticket");
-    }
-    const activeClaim = aggregate.claims.find((item) => (
-      current.activeAuthority?.kind === "claim" && item.claimId === current.activeAuthority.claimId
-    ));
-    if (!activeClaim) throw new TicketEngineOperationError("stale_authority", "Claim is missing");
-    const version = current.version + 1;
-    const ownership: BlockedOwnershipReceipt = {
-      ownershipId: stableId("ownership", command.workflowId, command.ticketId, command.commandId),
-      workflowId: command.workflowId,
-      ticketId: command.ticketId,
-      ticketVersion: version,
-      principalId: activeClaim.principalId,
-      fencingToken: nextFencingToken(aggregate, command.ticketId),
-    };
-    const blocked: TicketSnapshot = {
-      ...current,
-      version,
-      status: "blocked",
-      activeAuthority: {
-        kind: "blocked_owner",
-        ownershipId: ownership.ownershipId,
-        fencingToken: ownership.fencingToken,
-      },
-    };
-    const pendingEvents = authorityRevocationEvents(command, current, version);
-    pendingEvents.push(ticketEvent(command, blocked, {
-      type: "TicketBlocked",
-      requiredInput: payload.requiredInput,
-    }));
-    return ticketMutationResult(aggregate, command, fingerprint, {
-      tickets: aggregate.tickets.map((item) => item.ticketId === blocked.ticketId ? blocked : item),
-      blockedOwnerships: [...aggregate.blockedOwnerships, ownership],
-      pendingEvents,
-      ticket: blocked,
-      nextAuthority: blocked.activeAuthority,
-    });
-  }
-
-  private completeTicketWithGraph(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope,
-    payload: Extract<TicketCommandPayload, { type: "complete_with_graph" }>,
-    fingerprint: string,
-  ) {
-    if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
-    const patch = appendTicketSubgraph(aggregate, command.ticketId, payload.graph, payload.completionPolicy);
-    const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
-    const next = materializeWorkflowGraph({
-      workflowId: command.workflowId,
-      graph: patch.graph,
-      completionPolicy: patch.completionPolicy,
-      previous: materializedFromAggregate(aggregate),
-      cancelTicketIds: payload.cancelTicketIds,
-      ticketStatuses: statuses,
-    });
-    const merged = mergeTicketsForGraph(aggregate, next, command);
-    const current = merged.tickets.find((item) => item.ticketId === command.ticketId);
-    if (!current || !next.graph.nodes.some((node) => node.ticketId === command.ticketId && node.active)) {
-      throw new WorkflowCommandValidationError("Completing planner ticket must remain in the submitted graph");
-    }
-    const completed: TicketSnapshot = {
-      ...current,
-      version: current.version + 1,
-      status: "completed",
-      activeAuthority: undefined,
-    };
-    const pendingEvents = [...merged.pendingEvents, ...authorityRevocationEvents(
-      command,
-      current,
-      completed.version,
-    )];
-    pendingEvents.push(ticketEvent(command, completed, { type: "TicketTerminal", status: "completed" }));
-    let tickets = merged.tickets.map((item) => item.ticketId === completed.ticketId ? completed : item);
-    tickets = unlockReadyTickets(next.graph, tickets, command, pendingEvents);
-    return ticketMutationResult(aggregate, command, fingerprint, {
-      planning: planningState(next),
-      workflow: {
-        ...aggregate.workflow,
-        graph: next.graph,
-        completionPolicy: next.completionPolicy,
-      },
-      tickets,
-      pendingEvents,
-      ticket: completed,
-    });
-  }
-
-  private returnTicketToParent(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope,
-    payload: Extract<TicketCommandPayload, { type: "return_to_parent" }>,
-    fingerprint: string,
-  ) {
-    if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
-    const current = aggregate.tickets.find((item) => item.ticketId === command.ticketId)!;
-    if (current.parentTicketId !== payload.parentTicketId) {
-      throw new WorkflowCommandValidationError("Return target is not the ticket parent");
-    }
-    const parentNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === payload.parentTicketId);
-    if (!parentNode) throw new WorkflowCommandValidationError("Parent ticket is missing from graph");
-    const parentDefinition = aggregate.planning.definitionsByKey[String(parentNode.nodeKey)];
-    if (!parentDefinition) throw new WorkflowCommandValidationError("Parent ticket definition is missing");
-    const currentNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === command.ticketId)!;
-    const affectedKeys = descendantKeys(
-      aggregate.planning.plannedGraph,
-      String(currentNode.nodeKey),
-    );
-    const revisionKey = `revision_${createHash("sha256").update(command.commandId).digest("hex").slice(0, 20)}`;
-    const retainedNodes = aggregate.planning.plannedGraph.nodes.filter((node) => (
-      node.key !== parentNode.nodeKey && !affectedKeys.has(String(node.key))
-    ));
-    const revisionNode: PlannedTicketNode = {
-      ...structuredClone(parentDefinition),
-      key: revisionKey as never,
-      revisionOfKey: parentNode.nodeKey,
-    };
-    const retainedKeys = new Set(retainedNodes.map((node) => String(node.key)));
-    retainedKeys.add(revisionKey);
-    const dependencyEdges = aggregate.planning.plannedGraph.dependencyEdges.flatMap((edge) => {
-      const from = edge.fromKey === parentNode.nodeKey ? revisionKey : String(edge.fromKey);
-      const to = edge.toKey === parentNode.nodeKey ? revisionKey : String(edge.toKey);
-      if (
-        affectedKeys.has(String(edge.fromKey))
-        || affectedKeys.has(String(edge.toKey))
-        || !retainedKeys.has(from)
-        || !retainedKeys.has(to)
-      ) return [];
-      return [{ fromKey: from as never, toKey: to as never }];
-    });
-    const graph = {
-      schemaVersion: 2 as const,
-      nodes: [...retainedNodes, revisionNode],
-      dependencyEdges,
-    };
-    const unrelatedTerminals = aggregate.workflow.completionPolicy.requiredTerminalTicketIds
-      .filter((ticketId) => ticketId !== command.ticketId && ticketId !== payload.parentTicketId)
-      .map((ticketId) => aggregate.workflow.graph.nodes.find((node) => node.ticketId === ticketId))
-      .filter((node): node is NonNullable<typeof node> => (
-        Boolean(node?.active) && !affectedKeys.has(String(node!.nodeKey))
-      ))
-      .map((node) => node.nodeKey);
-    const completionPolicy = {
-      requiredTerminalKeys: [...unrelatedTerminals, revisionKey as never],
-      failurePolicy: aggregate.workflow.completionPolicy.failurePolicy,
-      blockedPolicy: "wait" as const,
-    };
-    const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
-    const cancelTicketIds = aggregate.workflow.graph.nodes
-      .filter((node) => affectedKeys.has(String(node.nodeKey)))
-      .map((node) => node.ticketId)
-      .filter((ticketId) => !TERMINAL_TICKET_STATUSES.has(statuses.get(ticketId) ?? "pending"));
-    const next = materializeWorkflowGraph({
-      workflowId: command.workflowId,
-      graph,
-      completionPolicy,
-      previous: materializedFromAggregate(aggregate),
-      cancelTicketIds,
-      ticketStatuses: statuses,
-    });
-    const merged = mergeTicketsForGraph(aggregate, next, command, new Set([command.ticketId]));
-    const returned: TicketSnapshot = {
-      ...current,
-      version: current.version + 1,
-      status: "returned",
-      activeAuthority: undefined,
-    };
-    let tickets = merged.tickets.map((item) => item.ticketId === returned.ticketId ? returned : item);
-    const pendingEvents = [...merged.pendingEvents, ...authorityRevocationEvents(
-      command,
-      current,
-      returned.version,
-    )];
-    pendingEvents.push(ticketEvent(command, returned, { type: "TicketTerminal", status: "returned" }));
-    tickets = unlockReadyTickets(next.graph, tickets, command, pendingEvents);
-    const revisionTicketId = next.ticketIdByKey[revisionKey];
-    const revisionTicket = tickets.find((ticket) => ticket.ticketId === revisionTicketId)!;
-    return ticketMutationResult(aggregate, command, fingerprint, {
-      planning: planningState(next),
-      workflow: {
-        ...aggregate.workflow,
-        graph: next.graph,
-        completionPolicy: next.completionPolicy,
-      },
-      tickets,
-      pendingEvents,
-      ticket: returned,
-      nextAuthority: revisionTicket.activeAuthority,
-    });
-  }
-
-  private cancelWorkflow(
-    aggregate: TicketAggregate,
-    command: WorkflowCommandEnvelope,
-    _payload: Extract<WorkflowCommandEnvelope["payload"], { type: "cancel" }>,
-    fingerprint: string,
-  ) {
-    const pendingEvents: TicketEvent[] = [];
-    const tickets = aggregate.tickets.map((ticket) => {
-      if (TERMINAL_TICKET_STATUSES.has(ticket.status)) return ticket;
-      const version = ticket.version + 1;
-      if (ticket.activeAuthority) {
-        pendingEvents.push(ticketEvent(command, { ...ticket, version }, {
-          type: "AuthorityRevoked",
-          fencingToken: ticket.activeAuthority.fencingToken,
-        }));
-      }
-      pendingEvents.push(ticketEvent(command, { ...ticket, version }, {
-        type: "TicketTerminal",
-        status: "cancelled",
-      }));
-      return { ...ticket, version, status: "cancelled" as const, activeAuthority: undefined };
-    });
-    const version = aggregate.workflow.version + 1;
-    pendingEvents.push(workflowEvent(command, "cancelled", version));
-    return withWorkflowResult(aggregate, command, fingerprint, {
-      workflow: { ...aggregate.workflow, version, status: "cancelled", deferredOutcome: undefined },
-      tickets,
-      pendingEvents,
-    });
-  }
-
-  private amendWorkflow(
-    aggregate: TicketAggregate,
-    command: WorkflowCommandEnvelope,
-    payload: Extract<WorkflowCommandEnvelope["payload"], { type: "amend" }>,
-    fingerprint: string,
-  ) {
-    if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
-    const previous = materializedFromAggregate(aggregate);
-    const statuses = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
-    const next = materializeWorkflowGraph({
-      workflowId: command.workflowId,
-      graph: payload.graph,
-      completionPolicy: payload.completionPolicy,
-      previous,
-      cancelTicketIds: payload.cancelTicketIds,
-      ticketStatuses: statuses,
-    });
-    const currentById = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket] as const));
-    const activeIds = new Set(next.graph.nodes.filter((node) => node.active).map((node) => node.ticketId));
-    const pendingEvents: TicketEvent[] = [];
-    let tickets = next.graph.nodes.map((node) => {
-      const current = currentById.get(node.ticketId);
-      if (!current) {
-        return ticketFromNode(next, node.ticketId, command.workflowId);
-      }
-      if (!activeIds.has(current.ticketId) && !TERMINAL_TICKET_STATUSES.has(current.status)) {
-        const cancelled = { ...current, version: current.version + 1, status: "cancelled" as const };
-        pendingEvents.push(ticketEvent(command, cancelled, { type: "TicketTerminal", status: "cancelled" }));
-        return cancelled;
-      }
-      return current;
-    });
-    const ticketById = new Map(tickets.map((ticket) => [ticket.ticketId, ticket] as const));
-    const predecessors = new Map<TicketId, TicketId[]>();
-    for (const edge of next.graph.dependencyEdges) {
-      predecessors.set(edge.toTicketId, [...(predecessors.get(edge.toTicketId) ?? []), edge.fromTicketId]);
-    }
-    tickets = tickets.map((ticket) => {
-      if (!activeIds.has(ticket.ticketId) || ticket.status !== "pending") return ticket;
-      const dependencies = predecessors.get(ticket.ticketId) ?? [];
-      if (!dependencies.every((ticketId) => ticketById.get(ticketId)?.status === "completed")) return ticket;
-      const ready = { ...ticket, version: currentById.has(ticket.ticketId) ? ticket.version + 1 : ticket.version, status: "ready" as const };
-      pendingEvents.push(ticketEvent(command, ready, { type: "TicketReady", ticketVersion: ready.version }));
-      return ready;
-    });
-    const statusMap = new Map(tickets.map((ticket) => [ticket.ticketId, ticket.status] as const));
-    const outcome = evaluateWorkflowOutcome({ materialized: next, ticketStatuses: statusMap });
-    const version = aggregate.workflow.version + 1;
-    const status = aggregate.workflow.status === "paused" ? "paused" : outcome;
-    if (status !== aggregate.workflow.status) pendingEvents.push(workflowEvent(command, status, version));
-    return withWorkflowResult(aggregate, command, fingerprint, {
-      planning: planningState(next),
-      workflow: {
-        ...aggregate.workflow,
-        version,
-        status,
-        graph: next.graph,
-        completionPolicy: next.completionPolicy,
-        deferredOutcome: status === "paused" ? outcome : undefined,
-      },
-      tickets,
-      pendingEvents,
-    });
-  }
-
-  private async replayOperation<TKind extends TicketOperationRecord["kind"]>(
-    requestId: string,
-    kind: TKind,
-    fingerprint: string,
-  ): Promise<Extract<TicketOperationRecord, { kind: TKind }> | undefined> {
-    const record = await this.store.findOperationRecord(requestId);
-    if (!record) return undefined;
-    if (record.kind !== kind || record.fingerprint !== fingerprint) {
-      throw new TicketEngineOperationError(
-        "idempotency_conflict",
-        `Request ID ${requestId} was used with different content`,
-      );
-    }
-    return record as Extract<TicketOperationRecord, { kind: TKind }>;
-  }
-
-  private async requireClaim(claimId: string, fencingToken: number): Promise<ClaimReceipt> {
-    const claim = await this.store.findClaim(claimId);
-    if (!claim || claim.fencingToken !== fencingToken) {
-      throw new TicketEngineOperationError("stale_authority", "Claim is stale");
-    }
-    return claim;
-  }
-
-  private async requireWorkflow(workflowId: WorkflowId): Promise<TicketAggregate> {
-    const aggregate = await this.store.read(workflowId);
-    if (!aggregate) throw new TicketEngineOperationError("invalid_request", "Workflow does not exist");
+  private async requirePlan(planId: PlanId): Promise<TicketAggregate> {
+    const aggregate = await this.store.read(planId);
+    if (!aggregate) throw new TicketEngineOperationError("invalid_request", "Plan does not exist");
     return aggregate;
   }
-
-  private async releaseActiveClaim(
-    claim: ClaimReceipt,
-    requestId: string,
-    fingerprint: string,
-    mode: "released" | "expired",
-    occurredAt = this.now(),
-  ): Promise<TicketSnapshot> {
-    const aggregate = await this.requireWorkflow(claim.workflowId);
-    const ticket = requireActiveClaimTicket(aggregate, claim);
-    const next: TicketSnapshot = {
-      ...ticket,
-      version: ticket.version + 1,
-      status: "ready",
-      activeAuthority: undefined,
-    };
-    const pendingEvents: TicketEvent[] = [ticketEventFromValues(
-      claim.workflowId,
-      claim.ticketId,
-      next.version,
-      requestId,
-      occurredAt.toISOString(),
-      { type: "AuthorityRevoked", fencingToken: claim.fencingToken },
-    )];
-    if (mode === "expired") {
-      pendingEvents.push(ticketEventFromValues(
-        claim.workflowId,
-        claim.ticketId,
-        next.version,
-        requestId,
-        occurredAt.toISOString(),
-        { type: "ClaimExpired", claimId: claim.claimId },
-      ));
-    }
-    pendingEvents.push(ticketEventFromValues(
-      claim.workflowId,
-      claim.ticketId,
-      next.version,
-      requestId,
-      occurredAt.toISOString(),
-      { type: "TicketReady", ticketVersion: next.version },
-    ));
-    try {
-      await this.store.transact(
-        claim.workflowId,
-        { aggregateVersion: aggregate.aggregateVersion, workflowVersion: aggregate.workflow.version },
-        (current) => {
-          requireActiveClaimTicket(current, claim);
-          return {
-            ...current,
-            workflow: { ...current.workflow, version: current.workflow.version + 1 },
-            tickets: current.tickets.map((item) => item.ticketId === claim.ticketId ? next : item),
-            operationRecords: [...current.operationRecords, {
-              kind: "release_claim" as const,
-              requestId,
-              fingerprint,
-              ticket: next,
-            }],
-            pendingEvents,
-          };
-        },
-      );
-      return next;
-    } catch (error) {
-      if (error instanceof TicketStoreConflictError || error instanceof TicketEngineOperationError) {
-        const replay = await this.replayOperation(requestId, "release_claim", fingerprint);
-        if (replay) return replay.ticket;
-      }
-      throw error;
-    }
+  private async requireClaim(claimId: string, fencingToken: number): Promise<ClaimReceipt> {
+    const claim = await this.store.findClaim(claimId);
+    if (!claim || claim.fencingToken !== fencingToken) throw new TicketEngineOperationError("stale_authority", "Claim is stale");
+    return claim;
   }
-
-  private async authorized(
-    ref: TicketAggregate["workflow"]["policyRef"],
-    principalId: string,
-    capability: string,
-  ): Promise<boolean> {
-    const policy = await this.policyPort.getPolicy(ref);
-    return policy ? hasCapability(policy, principalId, this.teamBindingIds, capability) : false;
+  private replayPlan(aggregate: TicketAggregate, commandId: string, fingerprint: string): PlanCommandResult {
+    const replay = replayCommand<PlanCommandResult>(aggregate, commandId, fingerprint);
+    if (!replay) return { accepted: false, commandId, code: "idempotency_conflict", reason: "Plan already exists" };
+    return replay;
   }
-
-  private existingCommand(
-    aggregate: TicketAggregate,
-    command: WorkflowCommandEnvelope,
-    fingerprint: string,
-  ): WorkflowCommandResult | undefined {
-    const input = aggregate.commandInputs.find((item) => item.commandId === command.commandId);
-    const result = aggregate.commandResults.find((item) => item.commandId === command.commandId);
-    if (!input && !result) return undefined;
-    if (!input || !result || input.fingerprint !== fingerprint) {
-      return rejected(command, "idempotency_conflict", "Command ID was used with different content", aggregate.workflow.version);
-    }
-    return result as WorkflowCommandResult;
-  }
-
-  private existingTicketCommand(
-    aggregate: TicketAggregate,
-    command: TicketCommandEnvelope,
-    fingerprint: string,
-  ): TicketCommandResult | undefined {
-    const input = aggregate.commandInputs.find((item) => item.commandId === command.commandId);
-    const result = aggregate.commandResults.find((item) => item.commandId === command.commandId);
-    if (!input && !result) return undefined;
-    if (
-      !input
-      || !result
-      || input.fingerprint !== fingerprint
-      || !("proposalId" in result)
-    ) {
-      return ticketRejected(
-        command,
-        "idempotency_conflict",
-        "Command ID was used with different content",
-        aggregate,
-      );
-    }
-    return result as TicketCommandResult;
-  }
-
-  private async persistTicketRejected(
-    aggregate: TicketAggregate,
-    fingerprint: string,
-    result: TicketCommandResult,
-  ): Promise<TicketCommandResult> {
-    await this.store.recordCommandResult(
-      aggregate.workflow.workflowId,
-      { commandId: result.commandId, fingerprint },
-      result,
-    );
+  private rejectPlan(command: PlanCommandEnvelope, code: "invalid_command", reason: string): PlanCommandResult { return { accepted: false, commandId: command.commandId, code, reason }; }
+  private async persistPlanRejection(aggregate: TicketAggregate, command: PlanCommandEnvelope, fingerprint: string, code: Extract<PlanCommandResult, { accepted: false }>["code"], reason: string): Promise<PlanCommandResult> {
+    const result: PlanCommandResult = { accepted: false, commandId: command.commandId, code, reason, currentPlanVersion: aggregate.plan.version };
+    await this.store.recordCommandResult(command.planId, { commandId: command.commandId, fingerprint }, result);
     return result;
   }
-
-  private replayOrConflict(
-    aggregate: TicketAggregate,
-    command: WorkflowCommandEnvelope,
-    fingerprint: string,
-  ): WorkflowCommandResult {
-    return this.existingCommand(aggregate, command, fingerprint)
-      ?? rejected(command, "invalid_command", "Workflow already exists", aggregate.workflow.version);
-  }
-
-  private async persistRejected(
-    aggregate: TicketAggregate,
-    fingerprint: string,
-    result: WorkflowCommandResult,
-  ): Promise<WorkflowCommandResult> {
-    await this.store.recordCommandResult(
-      aggregate.workflow.workflowId,
-      { commandId: result.commandId, fingerprint },
-      result,
-    );
+  private async persistTicketRejection(aggregate: TicketAggregate, command: TicketCommandEnvelope, fingerprint: string, code: Extract<TicketCommandResult, { accepted: false }>["code"], reason: string): Promise<TicketCommandResult> {
+    const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
+    const result: TicketCommandResult = { accepted: false, commandId: command.commandId, proposalId: command.proposalId, code, reason, currentPlanVersion: aggregate.plan.version, ...(ticket ? { currentTicketVersion: ticket.version } : {}) };
+    await this.store.recordCommandResult(command.planId, { commandId: command.commandId, fingerprint }, result);
     return result;
   }
 }
 
-function appendTicketSubgraph(
-  aggregate: TicketAggregate,
-  plannerTicketId: TicketId,
-  addition: Extract<TicketCommandPayload, { type: "complete_with_graph" }>["graph"],
-  additionPolicy: Extract<TicketCommandPayload, { type: "complete_with_graph" }>["completionPolicy"],
-) {
-  if (!aggregate.planning) throw new WorkflowCommandValidationError("Workflow planning state is missing");
-  const existing = aggregate.planning.plannedGraph;
-  const plannerNode = aggregate.workflow.graph.nodes.find((node) => node.ticketId === plannerTicketId && node.active);
-  if (!plannerNode) throw new WorkflowCommandValidationError("Planner ticket is not an active graph node");
-  const existingKeys = new Set(existing.nodes.map((node) => String(node.key)));
-  for (const node of addition.nodes) {
-    if (existingKeys.has(String(node.key))) {
-      throw new WorkflowCommandValidationError(`Added Ticket key already exists: ${node.key}`);
-    }
-  }
-  const incoming = new Set(addition.dependencyEdges.map((edge) => String(edge.toKey)));
-  const roots = addition.nodes.filter((node) => !incoming.has(String(node.key)));
-  const attachedNodes = addition.nodes.map((node) => (
-    roots.some((root) => root.key === node.key) && !node.parentKey
-      ? { ...node, parentKey: plannerNode.nodeKey }
-      : node
-  ));
-  const dependencyEdges = [
-    ...existing.dependencyEdges,
-    ...addition.dependencyEdges,
-    ...roots.map((node) => ({ fromKey: plannerNode.nodeKey, toKey: node.key })),
-  ];
-  const preservedTerminalKeys = aggregate.workflow.completionPolicy.requiredTerminalTicketIds
-    .filter((ticketId) => ticketId !== plannerTicketId)
-    .map((ticketId) => aggregate.workflow.graph.nodes.find((node) => node.ticketId === ticketId && node.active)?.nodeKey)
-    .filter((key): key is TicketNodeKey => Boolean(key));
-  return {
-    graph: {
-      schemaVersion: 2 as const,
-      nodes: [...existing.nodes, ...attachedNodes],
-      dependencyEdges,
-    },
-    completionPolicy: {
-      ...additionPolicy,
-      requiredTerminalKeys: [...new Set([...preservedTerminalKeys, ...additionPolicy.requiredTerminalKeys])],
-    },
-  };
+function asMaterialized(aggregate: TicketAggregate): MaterializedPlanGraph {
+  return { planId: aggregate.plan.planId, graph: aggregate.plan.graph, completionPolicy: aggregate.plan.completionPolicy, definitionsByTicketId: aggregate.definitionsByTicketId, addedTicketIds: [] };
 }
-
-function initialTickets(materialized: MaterializedWorkflowGraph, workflowId: WorkflowId): TicketSnapshot[] {
-  const incoming = new Set(materialized.graph.dependencyEdges.map((edge) => edge.toTicketId));
-  return materialized.graph.nodes.map((node) => ({
-    ticketId: node.ticketId,
-    workflowId,
-    version: 1,
-    status: incoming.has(node.ticketId) ? "pending" : "ready",
-    parentTicketId: parentTicketId(materialized, node.nodeKey),
-  }));
+function createTickets(graph: MaterializedPlanGraph, planId: PlanId): TicketSnapshot[] {
+  return graph.graph.ticketIds.map((ticketId) => ({ ticketId, planId, version: 1, status: "pending", ...(graph.definitionsByTicketId[String(ticketId)]?.parentTicketId ? { parentTicketId: graph.definitionsByTicketId[String(ticketId)].parentTicketId } : {}) }));
 }
-
-function requireCommandAuthority(
-  aggregate: TicketAggregate,
-  ticket: TicketSnapshot,
-  command: TicketCommandEnvelope,
-  now: Date,
-): void {
-  if (!command.executionRef.trim()) {
-    throw new TicketEngineOperationError("invalid_request", "executionRef is required");
-  }
-  const active = ticket.activeAuthority;
-  if (!active || active.kind !== command.authority.kind || active.fencingToken !== command.authority.fencingToken) {
-    throw new TicketEngineOperationError("stale_authority", "Ticket authority is stale");
-  }
-  if (active.kind === "claim" && command.authority.kind === "claim") {
-    if (active.claimId !== command.authority.claimId || ticket.status !== "running") {
-      throw new TicketEngineOperationError("stale_authority", "Claim is stale");
-    }
-    const claim = aggregate.claims.find((item) => item.claimId === active.claimId);
-    if (
-      !claim
-      || claim.ticketId !== ticket.ticketId
-      || claim.ticketVersion !== ticket.version
-      || claim.principalId !== command.actorPrincipalId
-      || Date.parse(claim.leaseUntil) <= now.getTime()
-    ) {
-      throw new TicketEngineOperationError("stale_authority", "Claim is invalid or expired");
-    }
-    return;
-  }
-  if (active.kind === "blocked_owner" && command.authority.kind === "blocked_owner") {
-    if (active.ownershipId !== command.authority.ownershipId || ticket.status !== "blocked") {
-      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is stale");
-    }
-    const ownership = aggregate.blockedOwnerships.find((item) => item.ownershipId === active.ownershipId);
-    if (
-      !ownership
-      || ownership.ticketId !== ticket.ticketId
-      || ownership.ticketVersion !== ticket.version
-      || ownership.principalId !== command.actorPrincipalId
-    ) {
-      throw new TicketEngineOperationError("stale_authority", "Blocked ownership is invalid");
-    }
-    return;
-  }
-  throw new TicketEngineOperationError("stale_authority", "Ticket authority kind is invalid");
+function initializeReady(tickets: TicketSnapshot[], edges: MaterializedPlanGraph["graph"]["dependencyEdges"]): void {
+  const incoming = new Set(edges.map((edge) => String(edge.toTicketId)));
+  for (const ticket of tickets) if (ticket.status === "pending" && !incoming.has(String(ticket.ticketId))) ticket.status = "ready";
 }
-
-function authorityRevocationEvents(
-  command: EventCommand,
-  ticket: TicketSnapshot,
-  nextVersion: number,
-): TicketEvent[] {
-  return ticket.activeAuthority ? [ticketEvent(command, {
-    ...ticket,
-    version: nextVersion,
-  }, {
-    type: "AuthorityRevoked",
-    fencingToken: ticket.activeAuthority.fencingToken,
-  })] : [];
-}
-
-function unlockReadyTickets(
-  graph: TicketAggregate["workflow"]["graph"],
-  tickets: TicketSnapshot[],
-  command: EventCommand,
-  pendingEvents: TicketEvent[],
-  newTicketIds: ReadonlySet<TicketId> = new Set(),
-): TicketSnapshot[] {
-  const active = new Set(graph.nodes.filter((node) => node.active).map((node) => node.ticketId));
-  const predecessors = new Map<TicketId, TicketId[]>();
-  for (const edge of graph.dependencyEdges) {
-    predecessors.set(edge.toTicketId, [...(predecessors.get(edge.toTicketId) ?? []), edge.fromTicketId]);
-  }
-  const byId = new Map(tickets.map((ticket) => [ticket.ticketId, ticket] as const));
-  return tickets.map((ticket) => {
-    if (!active.has(ticket.ticketId) || ticket.status !== "pending") return ticket;
-    const dependencies = predecessors.get(ticket.ticketId) ?? [];
-    if (!dependencies.every((ticketId) => byId.get(ticketId)?.status === "completed")) return ticket;
-    const ready = {
-      ...ticket,
-      version: newTicketIds.has(ticket.ticketId) ? ticket.version : ticket.version + 1,
-      status: "ready" as const,
-    };
-    pendingEvents.push(ticketEvent(command, ready, { type: "TicketReady", ticketVersion: ready.version }));
-    return ready;
+function unlockReady(tickets: TicketSnapshot[], edges: MaterializedPlanGraph["graph"]["dependencyEdges"]): { tickets: TicketSnapshot[]; ready: TicketSnapshot[] } {
+  const byId = new Map(tickets.map((ticket) => [String(ticket.ticketId), ticket]));
+  const incoming = new Map<string, TicketId[]>();
+  for (const edge of edges) incoming.set(String(edge.toTicketId), [...(incoming.get(String(edge.toTicketId)) ?? []), edge.fromTicketId]);
+  const ready: TicketSnapshot[] = [];
+  const next = tickets.map((ticket) => {
+    if (ticket.status !== "pending") return ticket;
+    if ((incoming.get(String(ticket.ticketId)) ?? []).every((id) => byId.get(String(id))?.status === "completed")) {
+      const value = { ...ticket, status: "ready" as const, version: ticket.version + 1 };
+      ready.push(value);
+      return value;
+    }
+    return ticket;
   });
+  return { tickets: next, ready };
 }
-
-function mergeTicketsForGraph(
-  aggregate: TicketAggregate,
-  materialized: MaterializedWorkflowGraph,
-  command: EventCommand,
-  preserveInactiveTicketIds: ReadonlySet<TicketId> = new Set(),
-): { tickets: TicketSnapshot[]; pendingEvents: TicketEvent[] } {
-  const currentById = new Map(aggregate.tickets.map((ticket) => [ticket.ticketId, ticket] as const));
-  const newTicketIds = new Set<TicketId>();
-  const activeIds = new Set(materialized.graph.nodes.filter((node) => node.active).map((node) => node.ticketId));
-  const pendingEvents: TicketEvent[] = [];
-  let tickets = materialized.graph.nodes.map((node) => {
-    const current = currentById.get(node.ticketId);
-    if (!current) {
-      newTicketIds.add(node.ticketId);
-      return ticketFromNode(materialized, node.ticketId, aggregate.workflow.workflowId);
-    }
-    if (
-      !activeIds.has(current.ticketId)
-      && !preserveInactiveTicketIds.has(current.ticketId)
-      && !TERMINAL_TICKET_STATUSES.has(current.status)
-    ) {
-      const cancelled = { ...current, version: current.version + 1, status: "cancelled" as const, activeAuthority: undefined };
-      pendingEvents.push(...authorityRevocationEvents(command, current, cancelled.version));
-      pendingEvents.push(ticketEvent(command, cancelled, { type: "TicketTerminal", status: "cancelled" }));
-      return cancelled;
-    }
-    return current;
-  });
-  tickets = unlockReadyTickets(materialized.graph, tickets, command, pendingEvents, newTicketIds);
-  return { tickets, pendingEvents };
+function statusMap(tickets: TicketSnapshot[]): Map<TicketId, TicketStatus> { return new Map(tickets.map((ticket) => [ticket.ticketId, ticket.status])); }
+function versions(aggregate: TicketAggregate) { return { aggregateVersion: aggregate.aggregateVersion, planVersion: aggregate.plan.version }; }
+function appendCommand(aggregate: TicketAggregate, patch: Partial<TicketAggregate> & Pick<TicketAggregate, "plan" | "tickets"> & { pendingEvents?: TicketEvent[] }, commandId: string, fingerprint: string, result: PlanCommandResult | TicketCommandResult) {
+  return { ...aggregate, ...patch, commandInputs: [...aggregate.commandInputs, { commandId, fingerprint }], commandResults: [...aggregate.commandResults, result] };
 }
-
-function descendantKeys(
-  graph: TicketPlanningState["plannedGraph"],
-  rootKey: string,
-): Set<string> {
-  const outgoing = new Map<string, string[]>();
-  for (const edge of graph.dependencyEdges) {
-    const from = String(edge.fromKey);
-    outgoing.set(from, [...(outgoing.get(from) ?? []), String(edge.toKey)]);
-  }
-  const result = new Set<string>();
-  const queue = [rootKey];
-  for (let index = 0; index < queue.length; index += 1) {
-    const key = queue[index]!;
-    if (result.has(key)) continue;
-    result.add(key);
-    queue.push(...(outgoing.get(key) ?? []));
-  }
-  return result;
+function replayCommand<T>(aggregate: TicketAggregate, commandId: string, fingerprint: string): T | undefined {
+  const input = aggregate.commandInputs.find((item) => item.commandId === commandId);
+  const result = aggregate.commandResults.find((item) => item.commandId === commandId);
+  if (!input && !result) return undefined;
+  if (!input || !result || input.fingerprint !== fingerprint) throw new TicketEngineOperationError("idempotency_conflict", `Command ${commandId} was reused`);
+  return structuredClone(result) as T;
 }
-
-function ticketMutationResult(
-  aggregate: TicketAggregate,
-  command: TicketCommandEnvelope,
-  fingerprint: string,
-  patch: {
-    ticket: TicketSnapshot;
-    tickets: TicketSnapshot[];
-    pendingEvents: TicketEvent[];
-    planning?: TicketPlanningState;
-    workflow?: TicketAggregate["workflow"];
-    blockedOwnerships?: BlockedOwnershipReceipt[];
-    nextAuthority?: TicketSnapshot["activeAuthority"];
-  },
-) {
-  const baseWorkflow = patch.workflow ?? aggregate.workflow;
-  const materialized: MaterializedWorkflowGraph = {
-    workflowId: baseWorkflow.workflowId,
-    plannedGraph: (patch.planning ?? aggregate.planning)!.plannedGraph,
-    graph: baseWorkflow.graph,
-    completionPolicy: baseWorkflow.completionPolicy,
-    ticketIdByKey: (patch.planning ?? aggregate.planning)!.ticketIdByKey,
-    definitionsByKey: (patch.planning ?? aggregate.planning)!.definitionsByKey,
-  };
-  const outcome = evaluateWorkflowOutcome({
-    materialized,
-    ticketStatuses: new Map(patch.tickets.map((ticket) => [ticket.ticketId, ticket.status] as const)),
-  });
-  const workflowVersion = aggregate.workflow.version + 1;
-  const workflowStatus: WorkflowStatus = aggregate.workflow.status === "paused" ? "paused" : outcome;
-  const workflow = {
-    ...baseWorkflow,
-    version: workflowVersion,
-    status: workflowStatus,
-    deferredOutcome: workflowStatus === "paused" ? outcome : undefined,
-  };
-  const pendingEvents = [...patch.pendingEvents];
-  if (workflowStatus !== aggregate.workflow.status) {
-    pendingEvents.push(workflowEvent(command, workflowStatus, workflowVersion));
-  }
-  const result: TicketCommandResult = {
-    accepted: true,
-    commandId: command.commandId,
-    proposalId: command.proposalId,
-    ticketStatus: patch.ticket.status as "blocked" | "completed" | "returned" | "failed",
-    ticketVersion: patch.ticket.version,
-    workflowStatus,
-    workflowVersion,
-    ...(patch.nextAuthority ? { nextAuthority: patch.nextAuthority } : {}),
-  };
-  return {
-    ...aggregate,
-    ...patch,
-    workflow,
-    blockedOwnerships: patch.blockedOwnerships ?? aggregate.blockedOwnerships,
-    commandInputs: [...aggregate.commandInputs, { commandId: command.commandId, fingerprint }],
-    commandResults: [...aggregate.commandResults, result],
-    pendingEvents,
-  };
+function authorityMatches(left: TicketExecutionAuthority | undefined, right: TicketExecutionAuthority): boolean {
+  if (!left || left.kind !== right.kind || left.fencingToken !== right.fencingToken) return false;
+  return left.kind === "claim" ? left.claimId === (right as typeof left).claimId : left.ownershipId === (right as typeof left).ownershipId;
 }
-
-function ticketRejected(
-  command: TicketCommandEnvelope,
-  code: Extract<TicketCommandResult, { accepted: false }>["code"],
-  reason: string,
-  aggregate?: TicketAggregate,
-): TicketCommandResult {
-  return {
-    accepted: false,
-    commandId: command.commandId,
-    proposalId: command.proposalId,
-    code,
-    reason,
-    ...(aggregate ? {
-      currentTicketVersion: aggregate.tickets.find((ticket) => ticket.ticketId === command.ticketId)?.version,
-      currentWorkflowVersion: aggregate.workflow.version,
-    } : {}),
-  };
-}
-
-function ticketFromNode(
-  materialized: MaterializedWorkflowGraph,
-  ticketId: TicketId,
-  workflowId: WorkflowId,
-): TicketSnapshot {
-  const node = materialized.graph.nodes.find((item) => item.ticketId === ticketId)!;
-  return {
-    ticketId,
-    workflowId,
-    version: 1,
-    status: "pending",
-    parentTicketId: parentTicketId(materialized, node.nodeKey),
-  };
-}
-
-function parentTicketId(materialized: MaterializedWorkflowGraph, nodeKey: string): TicketId | undefined {
-  const parentKey = materialized.definitionsByKey[nodeKey]?.parentKey;
-  return parentKey ? materialized.ticketIdByKey[String(parentKey)] : undefined;
-}
-
-function planningState(materialized: MaterializedWorkflowGraph): TicketPlanningState {
-  return {
-    plannedGraph: materialized.plannedGraph,
-    ticketIdByKey: materialized.ticketIdByKey,
-    definitionsByKey: materialized.definitionsByKey,
-  };
-}
-
-function materializedFromAggregate(aggregate: TicketAggregate): MaterializedWorkflowGraph {
-  if (!aggregate.planning) throw new Error("Workflow planning state is missing");
-  return {
-    workflowId: aggregate.workflow.workflowId,
-    plannedGraph: aggregate.planning.plannedGraph,
-    graph: aggregate.workflow.graph,
-    completionPolicy: aggregate.workflow.completionPolicy,
-    ticketIdByKey: aggregate.planning.ticketIdByKey,
-    definitionsByKey: aggregate.planning.definitionsByKey,
-  };
-}
-
-function withWorkflowResult(
-  aggregate: TicketAggregate,
-  command: WorkflowCommandEnvelope,
-  fingerprint: string,
-  patch: Partial<TicketAggregate> & Pick<TicketAggregate, "workflow"> & { pendingEvents: TicketEvent[] },
-) {
-  const result: WorkflowCommandResult = {
-    accepted: true,
-    commandId: command.commandId,
-    workflowStatus: patch.workflow.status,
-    workflowVersion: patch.workflow.version,
-  };
-  return {
-    ...aggregate,
-    ...patch,
-    commandInputs: [...aggregate.commandInputs, { commandId: command.commandId, fingerprint }],
-    commandResults: [...aggregate.commandResults, result],
-  };
-}
-
-function rejected(
-  command: WorkflowCommandEnvelope,
-  code: Extract<WorkflowCommandResult, { accepted: false }>["code"],
-  reason: string,
-  currentWorkflowVersion?: number,
-): WorkflowCommandResult {
-  return {
-    accepted: false,
-    commandId: command.commandId,
-    code,
-    reason,
-    ...(currentWorkflowVersion === undefined ? {} : { currentWorkflowVersion }),
-  };
-}
-
-function hasCapability(
-  policy: WorkflowAuthorizationPolicy,
-  principalId: string,
-  teamBindingIds: string[],
-  capability: string,
-): boolean {
+function hasCapability(policy: PlanAuthorizationPolicy, principalId: string, teamBindingIds: string[], capability: string): boolean {
   const teams = new Set(teamBindingIds);
-  return policy.grants.some((grant) => (
-    grant.capabilities.includes(capability)
-    && (grant.principalId === principalId || (grant.teamBindingId !== undefined && teams.has(grant.teamBindingId)))
-  ));
+  return policy.grants.some((grant) => (grant.principalId === principalId || (grant.teamBindingId && teams.has(grant.teamBindingId))) && grant.capabilities.includes(capability));
 }
-
-function deferredOutcome(status: WorkflowStatus): "active" | "blocked" | "completed" | "failed" {
-  return status === "blocked" || status === "completed" || status === "failed" ? status : "active";
+function canApplyChangeFromTicket(aggregate: TicketAggregate, ticketId: TicketId, authority: TicketExecutionAuthority, principalId: string): boolean {
+  const ticket = aggregate.tickets.find((item) => item.ticketId === ticketId);
+  const definition = aggregate.definitionsByTicketId[String(ticketId)];
+  if (!ticket || !definition || definition.outputContract.schemaRef !== "plan-change-set-v3") return false;
+  if (ticket.status !== "running" && ticket.status !== "blocked") return false;
+  if (!authorityMatches(ticket.activeAuthority, authority)) return false;
+  if (authority.kind === "claim") return aggregate.claims.some((claim) => claim.claimId === authority.claimId && claim.principalId === principalId);
+  return aggregate.blockedOwnerships.some((owner) => owner.ownershipId === authority.ownershipId && owner.principalId === principalId);
 }
-
-interface EventCommand {
-  commandId: string;
-  workflowId: WorkflowId;
-  issuedAt: string;
+function requirePositiveDuration(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new TicketEngineOperationError("invalid_request", `${label} must be a positive integer`);
 }
-
-function ticketEvent(
-  command: EventCommand,
-  ticket: Pick<TicketSnapshot, "ticketId" | "workflowId" | "version">,
-  payload: Extract<TicketEvent, { aggregateType: "ticket" }>["payload"],
-): TicketEvent {
-  return {
-    eventId: eventId(command.commandId, payload.type, ticket.ticketId, ticket.version),
-    workflowId: ticket.workflowId,
-    aggregateType: "ticket",
-    aggregateId: ticket.ticketId,
-    aggregateVersion: ticket.version,
-    occurredAt: command.issuedAt,
-    payload,
-  };
+function fingerprintOf(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+function ticketEvent(ticket: TicketSnapshot, payload: TicketEvent<"ticket">["payload"], occurredAt: string): TicketEvent<"ticket"> {
+  return { eventId: randomUUID(), planId: ticket.planId, aggregateType: "ticket", aggregateId: ticket.ticketId, aggregateVersion: ticket.version, occurredAt, payload };
 }
-
-function workflowEvent(
-  command: EventCommand,
-  status: WorkflowStatus,
-  version: number,
-): TicketEvent {
-  return {
-    eventId: eventId(command.commandId, "WorkflowStatusChanged", command.workflowId, version),
-    workflowId: command.workflowId,
-    aggregateType: "workflow",
-    aggregateId: command.workflowId,
-    aggregateVersion: version,
-    occurredAt: command.issuedAt,
-    payload: { type: "WorkflowStatusChanged", status },
-  };
-}
-
-function eventId(commandId: string, type: string, aggregateId: string, version: number): string {
-  return `te_${createHash("sha256").update(JSON.stringify([commandId, type, aggregateId, version])).digest("base64url")}`;
-}
-
-function ticketEventFromValues(
-  workflowId: WorkflowId,
-  ticketId: TicketId,
-  ticketVersion: number,
-  requestId: string,
-  occurredAt: string,
-  payload: Extract<TicketEvent, { aggregateType: "ticket" }>["payload"],
-): TicketEvent {
-  return {
-    eventId: eventId(requestId, payload.type, ticketId, ticketVersion),
-    workflowId,
-    aggregateType: "ticket",
-    aggregateId: ticketId,
-    aggregateVersion: ticketVersion,
-    occurredAt,
-    payload,
-  };
-}
-
-function requireActiveClaimTicket(aggregate: TicketAggregate, claim: ClaimReceipt): TicketSnapshot {
-  const ticket = aggregate.tickets.find((item) => item.ticketId === claim.ticketId);
-  if (
-    !ticket
-    || ticket.status !== "running"
-    || ticket.activeAuthority?.kind !== "claim"
-    || ticket.activeAuthority.claimId !== claim.claimId
-    || ticket.activeAuthority.fencingToken !== claim.fencingToken
-    || ticket.version !== claim.ticketVersion
-  ) {
-    throw new TicketEngineOperationError("stale_authority", "Claim is no longer active");
-  }
-  return ticket;
-}
-
-function nextFencingToken(aggregate: TicketAggregate, ticketId: TicketId): number {
-  return Math.max(
-    0,
-    ...aggregate.claims.filter((claim) => claim.ticketId === ticketId).map((claim) => claim.fencingToken),
-    ...aggregate.blockedOwnerships
-      .filter((ownership) => ownership.ticketId === ticketId)
-      .map((ownership) => ownership.fencingToken),
-  ) + 1;
-}
-
-function stableId(kind: string, workflowId: WorkflowId, ticketId: TicketId, requestId: string): string {
-  return `${kind}_${createHash("sha256")
-    .update(JSON.stringify([kind, workflowId, ticketId, requestId]))
-    .digest("base64url")}`;
-}
-
-function requestFingerprint(kind: string, input: unknown): string {
-  return `sha256:${createHash("sha256").update(canonicalJson({ kind, input })).digest("hex")}`;
-}
-
-function validateDuration(value: number, label: string): void {
-  if (!Number.isInteger(value) || value < 1 || value > 86_400_000) {
-    throw new TicketEngineOperationError(
-      "invalid_request",
-      `${label} must be an integer between 1 and 86400000`,
-    );
-  }
-}
-
-function commandFingerprint(command: unknown): string {
-  return `sha256:${createHash("sha256").update(canonicalJson(command)).digest("hex")}`;
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => (
-      `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`
-    )).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function planEvent(planId: PlanId, version: number, payload: TicketEvent<"plan">["payload"], occurredAt: string): TicketEvent<"plan"> {
+  return { eventId: randomUUID(), planId, aggregateType: "plan", aggregateId: planId, aggregateVersion: version, occurredAt, payload };
 }

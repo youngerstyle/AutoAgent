@@ -15,8 +15,8 @@ import { createWorkspaceRouter } from "./routes/workspaces.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
 import { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
-import { WorkflowPolicyStore } from "./tickets/workflow-policy-store.js";
-import { createMinimalTeamWorkflowPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "./tickets/workflow-policy-config.js";
+import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
+import { createMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "./tickets/plan-policy-config.js";
 
 function hasClientEntry(dir: string) {
   return existsSync(path.join(dir, "index.html"));
@@ -43,8 +43,8 @@ export function createApp(config: AppConfig = loadConfig()) {
     retryCount: config.providerRetryCount,
     env: process.env
   });
-  const policyStore = new WorkflowPolicyStore(config.autoAgentHome);
-  const policyRef = createMinimalTeamWorkflowPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
+  const policyStore = new PlanPolicyStore(config.autoAgentHome);
+  const policyRef = createMinimalTeamPlanPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
   const mission = new RuntimeHostRegistry(
     workspaceStore,
     profileStore,

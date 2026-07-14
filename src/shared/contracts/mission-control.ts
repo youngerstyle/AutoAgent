@@ -15,12 +15,12 @@ import type {
   TicketSnapshot,
   TicketWorkItem,
   TransferBlockedOwnershipRequest,
-  WorkflowCommandEnvelope,
-  WorkflowCommandResult,
-  WorkflowDefinition,
-  WorkflowId,
-  WorkflowSnapshot,
-  WorkflowStatus,
+  PlanCommandEnvelope,
+  PlanCommandResult,
+  PlanDefinition,
+  PlanId,
+  PlanSnapshot,
+  PlanStatus,
 } from "./ticket-engine.js";
 
 export type { AgentPort, GoalResolutionPort } from "./agent-engine.js";
@@ -39,7 +39,7 @@ export interface TeamBinding {
 }
 
 export interface ResolvedMissionStartBundle {
-  workflowDefinition: WorkflowDefinition;
+  planDefinition: PlanDefinition;
   teamBindingId: string;
 }
 
@@ -50,7 +50,7 @@ export interface MissionStartRequest {
   requestedByPrincipalId: string;
 }
 
-export interface WorkflowDefinitionRegistryPort {
+export interface PlanDefinitionRegistryPort {
   resolve(input: {
     templateId: string;
     templateVersion?: number;
@@ -61,8 +61,8 @@ export interface WorkflowDefinitionRegistryPort {
 
 interface MissionRecordBase {
   missionId: string;
-  workflowId: WorkflowId;
-  workflowCreateCommandId: string;
+  planId: PlanId;
+  planCreateCommandId: string;
 }
 
 export type MissionRecord =
@@ -73,7 +73,7 @@ export type MissionRecord =
 interface MissionLinkBase {
   dispatchId: string;
   missionId: string;
-  workflowId: WorkflowId;
+  planId: PlanId;
   ticketId: TicketId;
   ticketVersion: number;
   agentId: string;
@@ -148,9 +148,9 @@ export type MissionLink =
 
 export interface MissionProjection {
   missionId: string;
-  lifecycle: "starting" | "start_failed" | WorkflowStatus;
+  lifecycle: "starting" | "start_failed" | PlanStatus;
   activity: "idle" | "running" | "waiting_for_human";
-  workflowVersion?: number;
+  planVersion?: number;
 }
 
 export interface LegacyPhaseRuntimeRecordEnvelope {
@@ -161,7 +161,7 @@ export interface LegacyPhaseRuntimeRecordEnvelope {
 
 export interface TicketAgentRuntimeRecordEnvelope {
   engine: "ticket_agent";
-  schemaVersion: 2;
+  schemaVersion: 3;
   record: MissionRecord;
 }
 
@@ -181,6 +181,7 @@ export type RuntimeRecordClassification =
 export type RuntimeRecordVersion =
   | "legacy_phase@1"
   | "ticket_agent@2"
+  | "ticket_agent@3"
   | "undiscriminated_legacy"
   | "unsupported";
 
@@ -197,7 +198,7 @@ export function isTicketAgentRuntimeEnvelope(
     !("engine" in input) ||
     !("schemaVersion" in input) ||
     input.engine !== "ticket_agent" ||
-    input.schemaVersion !== 2 ||
+    input.schemaVersion !== 3 ||
     !("record" in input) ||
     typeof input.record !== "object" ||
     input.record === null
@@ -208,8 +209,8 @@ export function isTicketAgentRuntimeEnvelope(
   const record = input.record;
   if (
     !hasString(record, "missionId") ||
-    !hasString(record, "workflowId") ||
-    !hasString(record, "workflowCreateCommandId") ||
+    !hasString(record, "planId") ||
+    !hasString(record, "planCreateCommandId") ||
     !("status" in record)
   ) {
     return false;
@@ -232,11 +233,14 @@ export function classifyRuntimeRecordVersion(input: unknown): RuntimeRecordVersi
   if (input.engine === "ticket_agent" && input.schemaVersion === 2) {
     return "ticket_agent@2";
   }
+  if (input.engine === "ticket_agent" && input.schemaVersion === 3) {
+    return "ticket_agent@3";
+  }
   return "unsupported";
 }
 
 export function classifyRuntimeRecord(input: unknown): RuntimeRecordClassification {
-  if (classifyRuntimeRecordVersion(input) !== "ticket_agent@2") {
+  if (classifyRuntimeRecordVersion(input) !== "ticket_agent@3") {
     return { kind: "legacy_readonly", schedulable: false };
   }
 
@@ -250,15 +254,15 @@ export function classifyRuntimeRecord(input: unknown): RuntimeRecordClassificati
 }
 
 export interface TicketPort {
-  createWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult>;
-  applyWorkflow(command: WorkflowCommandEnvelope): Promise<WorkflowCommandResult>;
-  getWorkflow(workflowId: WorkflowId): Promise<WorkflowSnapshot>;
+  createPlan(command: PlanCommandEnvelope): Promise<PlanCommandResult>;
+  applyPlan(command: PlanCommandEnvelope): Promise<PlanCommandResult>;
+  getPlan(planId: PlanId): Promise<PlanSnapshot>;
   getTicket(ticketId: TicketId): Promise<TicketSnapshot | undefined>;
   getWorkItem(ticketId: TicketId): Promise<TicketWorkItem | undefined>;
   getClaim(claimId: string): Promise<ClaimReceipt | undefined>;
   getClaimByRequestId(requestId: string): Promise<ClaimReceipt | undefined>;
-  getWorkflowCommandResult(commandId: string): Promise<WorkflowCommandResult | undefined>;
-  getTicketCommandResult(commandId: string): Promise<TicketCommandResult | undefined>;
+  getPlanCommandResult(planId: PlanId, commandId: string): Promise<PlanCommandResult | undefined>;
+  getTicketCommandResult(planId: PlanId, commandId: string): Promise<TicketCommandResult | undefined>;
   claimReady(input: ClaimRequest): Promise<ClaimReceipt | undefined>;
   renewClaim(input: RenewClaimRequest): Promise<ClaimReceipt>;
   releaseClaim(input: ReleaseClaimRequest): Promise<TicketSnapshot>;
@@ -268,7 +272,7 @@ export interface TicketPort {
   applyTicket(
     command: TicketCommandEnvelope<TicketCommandPayload>,
   ): Promise<TicketCommandResult>;
-  readEvents<TWorkflowId extends WorkflowId>(
-    input: TicketEventQuery<TWorkflowId>,
-  ): Promise<TicketEventPage<TWorkflowId, TicketEvent<"ticket" | "workflow", TWorkflowId>>>;
+  readEvents<TPlanId extends PlanId>(
+    input: TicketEventQuery<TPlanId>,
+  ): Promise<TicketEventPage<TPlanId, TicketEvent<"ticket" | "plan", TPlanId>>>;
 }

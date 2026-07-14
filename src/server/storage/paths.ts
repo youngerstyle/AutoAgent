@@ -124,7 +124,7 @@ export function ticketEngineFile(
   workspaceRoot: string,
   taskId: string,
   taskRunId: string,
-  workflowId: string,
+  planId: string,
 ): string {
   const engineRoot = path.resolve(workspaceAutoAgentDir(workspaceRoot), "ticket-engine");
   const file = path.join(
@@ -133,8 +133,8 @@ export function ticketEngineFile(
     ticketEngineStorageKey(taskId),
     "runs",
     ticketEngineStorageKey(taskRunId),
-    "workflows",
-    `${ticketEngineStorageKey(workflowId)}.json`,
+    "plans",
+    `${ticketEngineStorageKey(planId)}.json`,
   );
   const resolved = path.resolve(file);
   if (!resolved.startsWith(`${engineRoot}${path.sep}`)) {
@@ -147,9 +147,9 @@ export function ticketEngineLockFile(
   workspaceRoot: string,
   taskId: string,
   taskRunId: string,
-  workflowId: string,
+  planId: string,
 ): string {
-  return `${ticketEngineFile(workspaceRoot, taskId, taskRunId, workflowId)}.lock`;
+  return `${ticketEngineFile(workspaceRoot, taskId, taskRunId, planId)}.lock`;
 }
 
 function ticketEngineStorageKey(value: string): string {

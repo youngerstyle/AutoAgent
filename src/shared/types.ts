@@ -263,6 +263,12 @@ export type MissionPhase =
 
 export interface WorkspaceSnapshot {
   workspace: Workspace;
+  mission?: {
+    missionId: string;
+    planId: string;
+    planStatus: "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
+    planVersion: number;
+  };
   activeTask?: Task;
   activeTaskRun?: TaskRun;
   agents: Array<WorkspaceAgent & {
@@ -280,6 +286,7 @@ export interface WorkspaceSnapshot {
   phase: MissionPhase;
   status: EntityStatus;
   currentStep?: string;
+  readOnlyReason?: string;
   humanLoop?: {
     latestReply?: {
       agentId?: string;

@@ -10,7 +10,7 @@ describe("mock team loop E2E", () => {
   let registry: RuntimeHostRegistry | undefined;
   afterEach(() => registry?.stopAll());
 
-  it("creates a workspace and completes the V2 Ticket-Agent mission through public routes", async () => {
+  it("creates a workspace and completes one Mission Plan through public routes", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-home-"));
     const app = createApp({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0, maxTokensPerAgentGoalWindow: 250_000 });
     registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
@@ -30,6 +30,12 @@ describe("mock team loop E2E", () => {
     const snapshot = await pollSnapshot(app, workspaceId);
     expect(snapshot.status).toBe("completed");
     expect(snapshot.phase).toBe("completed");
+    expect(snapshot.mission).toMatchObject({
+      missionId: expect.any(String),
+      planId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      planStatus: "completed",
+      planVersion: expect.any(Number),
+    });
     expect(snapshot.agents.map((agent: { roleInWorkspace: string }) => agent.roleInWorkspace)).toEqual(
       expect.arrayContaining(["boss", "pm", "architect", "dev", "qa"])
     );

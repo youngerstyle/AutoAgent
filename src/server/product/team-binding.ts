@@ -3,7 +3,7 @@ import type { TeamBinding } from "../../shared/contracts/mission-control.js";
 
 const PRODUCT_CAPABILITIES: Record<AgentRole, string[]> = {
   boss: ["mission:intake", "delivery:accept"],
-  pm: ["workflow:plan"],
+  pm: ["plan:plan"],
   architect: ["architecture:design"],
   dev: ["delivery:implement"],
   qa: ["delivery:verify"],

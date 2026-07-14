@@ -2,9 +2,9 @@
 
 日期：2026-07-10
 
-状态：已被 2026-07-13 契约修复设计部分取代
+状态：已被 `2026-07-14-single-plan-ticket-flow-design.md` 取代
 
-> 重要：本文中要求 Agent 直接生成 `complete_with_graph`、`return_to_parent` 等 Ticket Command 语义的章节已经废止。Agent/Mission/Ticket 的最新输出与结算协议以 `2026-07-13-agent-mission-ticket-contract-repair-design.md` 为准；Ticket Engine 内部命令本身仍保留。
+> 重要：本文保留为历史决策记录。Workflow 修订链、`complete_with_graph`、`return_to_parent` 和 Ticket Engine 内部保留旧命令的表述均已废止；当前实现只遵循单 Mission 单 Plan 的 schema v3 协议。
 
 ## 1. 文档目的
 

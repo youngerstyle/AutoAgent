@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+﻿import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,14 +7,33 @@ import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import { MissionGoalResolutionPort } from "../../src/server/mission-process/mission-goal-resolution-port.js";
 import { MissionProcessManager } from "../../src/server/mission-process/mission-process-manager.js";
 import { MissionStore } from "../../src/server/mission-process/mission-store.js";
-import { createMinimalTeamWorkflowDefinition } from "../../src/server/product/workflow-template.js";
+import { createMinimalTeamPlanDefinition } from "../../src/server/product/plan-template.js";
 import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
-import { createWorkflowPolicy, WorkflowPolicyStore } from "../../src/server/tickets/workflow-policy-store.js";
+import { createPlanPolicy, PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { TeamBinding } from "../../src/shared/contracts/mission-control.js";
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
+  it("reuses the one durable Plan when the same Mission start is replayed", async () => {
+    const fixture = await createFixture();
+    const request = {
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    } as const;
+
+    const first = await fixture.manager.startMission(request);
+    const second = await fixture.manager.startMission(request);
+
+    expect(second.record.planId).toBe(first.record.planId);
+    expect(await fixture.ticketStore.listPlanIds()).toEqual([first.record.planId]);
+  });
+
   it("links TicketReady to one Agent Goal and explicit Goal proposal back to Ticket", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
@@ -22,7 +41,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -60,7 +79,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -78,7 +97,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -124,14 +143,14 @@ describe("MissionProcessManager", () => {
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
   });
 
-  it("retries a Ticket version conflict with the same proposal and refreshed versions", async () => {
+  it("does not treat a claim lease renewal as a Ticket state-version conflict", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -158,10 +177,6 @@ describe("MissionProcessManager", () => {
       createdAt: NOW,
     });
 
-    const conflicted = await fixture.manager.tick();
-    expect(conflicted.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "resolving" });
-    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "resolving" });
-
     const settled = await fixture.manager.tick();
     expect(settled.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "settled" });
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
@@ -174,7 +189,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -216,7 +231,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -229,7 +244,7 @@ describe("MissionProcessManager", () => {
 
     expect(after.links).toHaveLength(1);
     expect(renewed.dispatchId).toBe(original.dispatchId);
-    expect(renewed.ticketVersion).toBeGreaterThan(original.ticketVersion);
+    expect(renewed.ticketVersion).toBe(original.ticketVersion);
     expect(Date.parse(renewed.claimLeaseUntil!)).toBeGreaterThan(Date.parse(original.claimLeaseUntil!));
   });
 
@@ -240,7 +255,7 @@ describe("MissionProcessManager", () => {
       objective: "build",
       requestedByPrincipalId: "human",
       resolvedStart: {
-        workflowDefinition: createMinimalTeamWorkflowDefinition(fixture.policy.ref, "build"),
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -271,12 +286,12 @@ const NOW = "2026-07-10T00:00:00.000Z";
 
 async function createFixture(clock = { now: new Date(NOW) }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-mission-manager-"));
-  const policyStore = new WorkflowPolicyStore(root);
-  const policy = createWorkflowPolicy({
+  const policyStore = new PlanPolicyStore(root);
+  const policy = createPlanPolicy({
     policyId: "mission-policy",
     policyVersion: 1,
     grants: [
-      { principalId: "planner", capabilities: ["ticket_graph:create", "ticket_graph:amend", "workflow:control"] },
+      { principalId: "planner", capabilities: ["plan:create", "plan:amend", "plan:control"] },
       { teamBindingId: "team-a", capabilities: ["ticket:claim"] },
     ],
   });
@@ -289,7 +304,7 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     contentHash: "team-hash",
     members: [
       { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] },
-      { agentId: "pm", principalId: "principal-pm", capabilities: ["workflow:plan"] },
+      { agentId: "pm", principalId: "principal-pm", capabilities: ["plan:plan"] },
     ],
   };
   const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();
@@ -305,5 +320,5 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     "planner",
     () => new Date(clock.now),
   );
-  return { root, policy, team, tickets, engines, manager };
+  return { root, policy, team, ticketStore, tickets, engines, manager };
 }

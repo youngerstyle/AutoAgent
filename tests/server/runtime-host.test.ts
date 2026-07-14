@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,11 +6,54 @@ import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
-import { seedMinimalTeamWorkflowPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/workflow-policy-config.js";
-import { WorkflowPolicyStore } from "../../src/server/tickets/workflow-policy-store.js";
+import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
+import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
+import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("RuntimeHost", () => {
+  it("exposes an old non-UUID Mission as read-only without scheduling it", async () => {
+    const fixture = await createFixture();
+    const createdAt = new Date().toISOString();
+    const task = {
+      taskId: "legacy-task",
+      runId: "legacy-run",
+      missionId: "legacy-task",
+      title: "旧版任务",
+      objective: "旧版目标",
+      status: "active",
+      createdAt,
+      updatedAt: createdAt,
+    } as const;
+    const missionFile = missionProcessFile(fixture.root, task.missionId);
+    await mkdir(path.dirname(missionFile), { recursive: true });
+    await writeFile(runtimeHostFile(fixture.root), JSON.stringify({ schemaVersion: 2, tasks: [task] }), "utf8");
+    await writeFile(missionFile, JSON.stringify({
+      schemaVersion: 2,
+      missionId: task.missionId,
+      version: 1,
+      record: {
+        missionId: task.missionId,
+        planId: "planning-v1",
+        planCreateCommandId: "legacy-create",
+        status: "linked",
+      },
+      links: [],
+      cursors: [],
+      steps: [],
+    }), "utf8");
+
+    await fixture.host.recover();
+    const snapshot = await fixture.host.snapshot();
+
+    expect(snapshot.status).toBe("interrupted");
+    expect(snapshot.readOnlyReason).toContain("旧版任务");
+    expect(snapshot.mission).toBeUndefined();
+
+    await fixture.host.createTask({ taskId: "fresh-task", title: "新任务", objective: "重新开始" });
+    expect((await fixture.host.snapshot()).mission?.planId).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+
   it("runs a fresh mock mission through ticket DAG and survives host recreation", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-a", title: "演示", objective: "构建演示" });
@@ -100,7 +143,7 @@ describe("RuntimeHost", () => {
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
-        const planning = input.instructions.includes("输出契约：ticket-graph-v2");
+        const planning = input.instructions.includes("plan-change-set-v3");
         if (planning) planningTurns += 1;
         const structured = planning
           ? {
@@ -156,7 +199,7 @@ describe("RuntimeHost", () => {
     const boss = context.engines.get("wa_boss")!;
     expect(modelTurns).toBe(1);
     expect(await boss.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "paused" });
-    expect((await context.tickets.getWorkflow((await context.manager.current()).record.workflowId)).status).toBe("active");
+    expect((await context.tickets.getPlan((await context.manager.current()).record.planId)).status).toBe("active");
     const thread = await boss.getThreadForAgent("wa_boss", "task-provider-blocked");
     await boss.appendToolItem({
       itemId: "stale-running-after-pause",
@@ -487,8 +530,8 @@ async function createFixture() {
   };
   const profiles = new AgentProfileStore(home);
   const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
-  const policyStore = new WorkflowPolicyStore(home);
-  const policyRef = await seedMinimalTeamWorkflowPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+  const policyStore = new PlanPolicyStore(home);
+  const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
   const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, { intervalMs: 60_000 });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
 }

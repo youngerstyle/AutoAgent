@@ -30,6 +30,7 @@ export interface MissionAggregate {
 const queues = new Map<string, Promise<unknown>>();
 
 export class MissionStoreConflictError extends Error {}
+export class LegacyMissionPlanError extends Error {}
 
 export class MissionStore {
   private readonly file: string;
@@ -166,12 +167,15 @@ function validate(value: MissionAggregate, missionId: string): void {
     throw new Error("Mission aggregate identity is invalid");
   }
   if (!Number.isInteger(value.version) || value.version < 1) throw new Error("Mission version is invalid");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value.record.planId))) {
+    throw new LegacyMissionPlanError("Mission uses a legacy non-UUID Plan identity");
+  }
   for (const field of [value.links, value.cursors, value.steps]) if (!Array.isArray(field)) throw new Error("Mission collection is invalid");
   unique(value.links.map((item) => item.dispatchId), "dispatchId");
   unique(value.cursors.map((item) => item.partition), "cursor partition");
   unique(value.steps.map((item) => item.stepId), "stepId");
   for (const link of value.links) {
-    if (link.missionId !== missionId || link.workflowId !== value.record.workflowId) throw new Error("Mission link identity is invalid");
+    if (link.missionId !== missionId || link.planId !== value.record.planId) throw new Error("Mission link identity is invalid");
   }
 }
 

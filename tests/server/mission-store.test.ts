@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MissionStore, MissionStoreConflictError } from "../../src/server/mission-process/mission-store.js";
 import type { MissionRecord } from "../../src/shared/contracts/mission-control.js";
-import type { WorkflowId } from "../../src/shared/contracts/ticket-engine.js";
+import type { PlanId } from "../../src/shared/contracts/ticket-engine.js";
 
 describe("MissionStore", () => {
   it("persists saga links, namespaced cursors and steps across restart", async () => {
@@ -15,13 +15,13 @@ describe("MissionStore", () => {
       ...current,
       version: 2,
       links: [dispatchingLink()],
-      cursors: [{ partition: "ticket:workflow-a", cursor: { position: "1" }, appliedVersions: { "ticket-a": 1 } }],
+      cursors: [{ partition: `ticket:${PLAN_ID}`, cursor: { position: "1" }, appliedVersions: { "ticket-a": 1 } }],
       steps: [{ stepId: "dispatch-a", fingerprint: "hash-a", result: { ok: true } }],
     }));
 
     const restored = await new MissionStore(root, "mission-a").read();
     expect(restored).toMatchObject({ version: 2, links: [{ status: "dispatching" }] });
-    expect(restored?.cursors[0]?.partition).toBe("ticket:workflow-a");
+    expect(restored?.cursors[0]?.partition).toBe(`ticket:${PLAN_ID}`);
   });
 
   it("rejects stale writers", async () => {
@@ -36,16 +36,17 @@ describe("MissionStore", () => {
 
 const record: MissionRecord = {
   missionId: "mission-a",
-  workflowId: "workflow-a" as WorkflowId,
-  workflowCreateCommandId: "create-a",
+  planId: "178f1785-71a8-4a87-b799-8184b86eb227" as PlanId,
+  planCreateCommandId: "create-a",
   status: "starting",
 };
+const PLAN_ID = record.planId;
 
 function dispatchingLink() {
   return {
     dispatchId: "dispatch-a",
     missionId: "mission-a",
-    workflowId: "workflow-a" as WorkflowId,
+    planId: PLAN_ID,
     ticketId: "ticket-a" as never,
     ticketVersion: 1,
     agentId: "dev",
