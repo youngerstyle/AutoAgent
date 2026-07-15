@@ -35,6 +35,14 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).not.toContain("return_to_parent");
   });
 
+  it("requires authorized Agents to bootstrap greenfield deliverables instead of blocking on an empty workspace", () => {
+    const instruction = missionOutcomeInstruction("delivery-v1");
+
+    expect(instruction).toContain("空工作区或尚不存在项目文件不属于 human 输入边界");
+    expect(instruction).toContain("自行创建所需目录、源码、配置、构建入口和测试");
+    expect(instruction).toContain("不可替代的外部事实、凭证、授权或不可逆操作确认");
+  });
+
   it("describes the complete Plan change contract to the planning Agent", () => {
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
       planId: "plan-a",
