@@ -8,6 +8,30 @@ import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
 
 describe("TicketEngine single Plan flow", () => {
+  it("rejects appended work that can run before its source planning Ticket completes", async () => {
+    const fixture = await createFixture();
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-unordered-plan", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+
+    const changed = await fixture.engine.applyPlan({
+      commandId: "unordered-change", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning, sourceAuthority: { kind: "claim", claimId: claim!.claimId, fencingToken: claim!.fencingToken },
+        change: {
+          additions: [draft("dev", "开发执行")],
+          dependencyAdditions: [],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "dev" }],
+        },
+      },
+    });
+
+    expect(changed).toMatchObject({
+      accepted: false,
+      code: "invalid_command",
+      reason: expect.stringContaining("source Ticket"),
+    });
+  });
+
   it("keeps Plan active after planning and schedules only newly appended UUID Tickets", async () => {
     const fixture = await createFixture();
     const planning = fixture.plan.graph.ticketIds[0]!;

@@ -198,6 +198,9 @@ export class TicketEngine {
             change: payload.change,
             ticketStatuses: statusMap(current.tickets),
           });
+          if (materialized.addedTicketIds.some((ticketId) => !isStrictAncestor(materialized.graph, payload.sourceTicketId, ticketId))) {
+            throw new PlanGraphError("Every appended Ticket must have the source Ticket as an ancestor");
+          }
           const added = createTickets(materialized, command.planId).filter((ticket) => materialized.addedTicketIds.includes(ticket.ticketId));
           const cancellationIds = new Set(payload.change.cancelTicketIds.map(String));
           const cancelled = tickets

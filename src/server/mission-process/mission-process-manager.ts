@@ -282,6 +282,7 @@ export class MissionProcessManager {
               work.definition.outputContract.schemaRef,
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
               await this.listCorrectionTargets(link.planId, link.ticketId),
+              link.ticketId,
             ),
         createdAt: this.now().toISOString(),
       });

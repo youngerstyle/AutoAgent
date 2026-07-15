@@ -24,6 +24,7 @@ export class MockProvider implements AgentModelProvider {
 
 function mockGoalResolution(instructions: string): Record<string, unknown> {
   if (instructions.includes("plan-change-set-v3")) {
+    const sourceTicketId = currentTicketId(instructions);
     return {
       status: "completed",
       summary: "已形成执行工单 DAG",
@@ -37,6 +38,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
             node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
           ],
           dependencyAdditions: [
+            { from: { ticketId: sourceTicketId }, to: { clientRef: "implementation" } },
             { from: { clientRef: "implementation" }, to: { clientRef: "qa" } },
             { from: { clientRef: "qa" }, to: { clientRef: "acceptance" } },
           ],
@@ -52,6 +54,12 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     evidence: [],
     domainOutcome: { ok: true },
   };
+}
+
+function currentTicketId(instructions: string): string {
+  const match = instructions.match(/^- ticket:\s*([0-9a-f-]{36})\s*$/im);
+  if (!match) throw new Error("Mock planning turn is missing its current Ticket context");
+  return match[1];
 }
 
 function node(clientRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {

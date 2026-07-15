@@ -30,14 +30,14 @@ export function validateMissionTicketOutcome(schemaRef: string | undefined, stat
   return { valid: true };
 }
 
-export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = []): string {
+export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId): string {
   const targets = correctionTargets.length
     ? `可纠正的已完成上游工单：${correctionTargets.map((item) => `${item.ticketId}（${item.title}）`).join("；")}。correction_required 的 targetTicketId 只能从此列表选择。`
     : "当前没有可纠正的已完成上游工单；不要提交 correction_required。";
   const base = `完成当前 Goal 时必须使用 goalResolution；domainOutcome 只提交输出契约要求的领域交付物，Ticket 和 Plan 状态由平台提交。满足成功标准时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时使用 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 disposition=plan_change_required 与 reason。${targets}不得根据角色名称或自然语言猜测工单流转。`;
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。change 包含 additions、dependencyAdditions、cancelTicketIds、requiredTerminalRefs；additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。change 包含 additions、dependencyAdditions、cancelTicketIds、requiredTerminalRefs；additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
   }
   return `${base} completed 时提交实际交付结果；blocked 时说明缺少的不可替代输入；failed 时说明有证据的失败原因。`;
 }

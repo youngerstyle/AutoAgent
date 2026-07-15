@@ -24,9 +24,12 @@ describe("Ticket Agent resolution adapter", () => {
 
   it("never exposes internal command names to the Agent", () => {
     const targetTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
-    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["implementation", "quality:verify"], [{ ticketId: targetTicketId, title: "开发" }]);
+    const sourceTicketId = "ce699a21-cdbc-4612-91f9-b607970668a6" as TicketId;
+    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["implementation", "quality:verify"], [{ ticketId: targetTicketId, title: "开发" }], sourceTicketId);
     expect(instruction).toContain("plan-change-set-v3");
     expect(instruction).toContain(targetTicketId);
+    expect(instruction).toContain(sourceTicketId);
+    expect(instruction).toContain("新增执行链必须位于当前规划工单");
     expect(instruction).toContain("开发");
     expect(instruction).not.toContain("apply_change");
     expect(instruction).not.toContain("return_to_parent");
