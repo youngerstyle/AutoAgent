@@ -43,6 +43,13 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不可替代的外部事实、凭证、授权或不可逆操作确认");
   });
 
+  it("treats a correctable Host rejection as a proposal retry rather than Goal failure", () => {
+    const instruction = missionOutcomeInstruction("delivery-v1");
+
+    expect(instruction).toContain("Host 返回 correctable 只表示当前提案需要修正并重新提交");
+    expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed 或 blocked");
+  });
+
   it("describes the complete Plan change contract to the planning Agent", () => {
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
       planId: "plan-a",
