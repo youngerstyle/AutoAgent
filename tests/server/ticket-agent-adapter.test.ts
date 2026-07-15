@@ -35,9 +35,35 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).not.toContain("return_to_parent");
   });
 
+  it("describes the complete Plan change contract to the planning Agent", () => {
+    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"]);
+
+    expect(instruction).toContain('"clientRef"');
+    expect(instruction).toContain('"objective"');
+    expect(instruction).toContain('"assignment":{"requiredCapabilities"');
+    expect(instruction).toContain('"outputContract":{"schemaRef"');
+    expect(instruction).toContain('{"clientRef":"dev"}');
+    expect(instruction).toContain('{"ticketId":"');
+  });
+
   it("validates Plan change shape before invoking Ticket Engine", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", { result: {} })).toMatchObject({ valid: false });
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", { result: {}, change: { additions: [draft("dev")], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "dev" }] } })).toEqual({ valid: true });
+  });
+
+  it("returns the exact malformed Plan change field to the planning Agent", () => {
+    const malformed = {
+      clientRef: "dev",
+      title: "开发",
+      requiredCapabilities: ["delivery:implement"],
+      successCriteria: ["完成"],
+      outputContract: "实现结果",
+    };
+
+    expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
+      result: {},
+      change: { additions: [malformed], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [] },
+    })).toEqual({ valid: false, reason: "change.additions[0].objective 必须是非空字符串" });
   });
 
   it("does not let a Plan amendment recursively request another Plan amendment", () => {

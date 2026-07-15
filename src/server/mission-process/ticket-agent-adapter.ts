@@ -37,7 +37,8 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
   const base = `完成当前 Goal 时必须使用 goalResolution；domainOutcome 只提交输出契约要求的领域交付物，Ticket 和 Plan 状态由平台提交。满足成功标准时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时使用 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 disposition=plan_change_required 与 reason。${targets}不得根据角色名称或自然语言猜测工单流转。`;
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。change 包含 additions、dependencyAdditions、cancelTicketIds、requiredTerminalRefs；additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
+    const contract = `change 的完整结构为：{"additions":[{"clientRef":"dev","title":"开发","objective":"实现目标","successCriteria":["可验证的成功标准"],"assignment":{"requiredCapabilities":["delivery:implement"]},"outputContract":{"schemaRef":"delivery-v1"}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"dev"}}],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"dev"}]}。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。`;
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
   }
   return `${base} completed 时提交实际交付结果；blocked 时说明缺少的不可替代输入；failed 时说明有证据的失败原因。`;
 }
@@ -75,11 +76,34 @@ export function ticketResultToGoalDecision<TStatus extends GoalResolutionStatus>
 function validateChangeSet(value: Record<string, unknown>): string | undefined {
   if (!Array.isArray(value.additions) || !Array.isArray(value.dependencyAdditions) || !Array.isArray(value.cancelTicketIds) || !Array.isArray(value.requiredTerminalRefs)) return "change 必须包含 additions、dependencyAdditions、cancelTicketIds、requiredTerminalRefs 数组";
   for (const [index, addition] of value.additions.entries()) {
-    if (!isRecord(addition) || !isNonEmptyString(addition.clientRef) || !isNonEmptyString(addition.title) || !isNonEmptyString(addition.objective) || !isStringArray(addition.successCriteria) || !isRecord(addition.assignment) || !isRecord(addition.outputContract) || !isNonEmptyString(addition.outputContract.schemaRef)) return `change.additions[${index}] 无效`;
+    const path = `change.additions[${index}]`;
+    if (!isRecord(addition)) return `${path} 必须是对象`;
+    if (!isNonEmptyString(addition.clientRef)) return `${path}.clientRef 必须是非空字符串`;
+    if (!isNonEmptyString(addition.title)) return `${path}.title 必须是非空字符串`;
+    if (!isNonEmptyString(addition.objective)) return `${path}.objective 必须是非空字符串`;
+    if (!isStringArray(addition.successCriteria)) return `${path}.successCriteria 必须是非空字符串数组`;
+    if (!isRecord(addition.assignment)) return `${path}.assignment 必须是对象`;
+    if (!isRecord(addition.outputContract)) return `${path}.outputContract 必须是对象，不能写成字符串`;
+    if (!isNonEmptyString(addition.outputContract.schemaRef)) return `${path}.outputContract.schemaRef 必须是非空字符串`;
+  }
+  for (const [index, dependency] of value.dependencyAdditions.entries()) {
+    if (!isRecord(dependency)) return `change.dependencyAdditions[${index}] 必须是对象`;
+    if (!isPlanTicketRef(dependency.from)) return `change.dependencyAdditions[${index}].from 必须是 clientRef 或 ticketId 引用对象`;
+    if (!isPlanTicketRef(dependency.to)) return `change.dependencyAdditions[${index}].to 必须是 clientRef 或 ticketId 引用对象`;
+  }
+  for (const [index, ticketId] of value.cancelTicketIds.entries()) {
+    if (!isNonEmptyString(ticketId)) return `change.cancelTicketIds[${index}] 必须是 Ticket UUID 字符串`;
+  }
+  for (const [index, ref] of value.requiredTerminalRefs.entries()) {
+    if (!isPlanTicketRef(ref)) return `change.requiredTerminalRefs[${index}] 必须是 clientRef 或 ticketId 引用对象`;
   }
   return undefined;
 }
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isNonEmptyString(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()); }
 function isStringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every(isNonEmptyString); }
+function isPlanTicketRef(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.clientRef) !== isNonEmptyString(value.ticketId);
+}
 function stableId(prefix: string, value: string): string { return `${prefix}_${createHash("sha256").update(value).digest("base64url")}`; }
