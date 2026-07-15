@@ -69,7 +69,20 @@ describe("MissionProcessManager", () => {
     expect(await boss.getGoal(goal!.spec.id)).toMatchObject({ status: "completed" });
 
     mission = await fixture.manager.tick();
-    expect(mission.links.find((link) => link.agentId === "pm")).toMatchObject({ status: "running" });
+    const planningLink = mission.links.find((link) => link.agentId === "pm")!;
+    expect(planningLink).toMatchObject({ status: "running" });
+    const pm = fixture.engines.get("pm")!;
+    const planningThread = await pm.getThread(planningLink.agentThreadId!);
+    const planningPayloads = await pm.getPayloads(planningThread.items.map((item) => item.payloadRef));
+    const missionInstruction = [...planningPayloads.values()].find((value) => (
+      typeof value === "object"
+      && value !== null
+      && "senderPrincipalId" in value
+      && value.senderPrincipalId === "mission-process"
+    ));
+    expect(missionInstruction).toMatchObject({
+      content: expect.stringContaining('"result":{"brief":"accepted"}'),
+    });
   });
 
   it("recovers a persisted running link without creating a second claim or goal", async () => {

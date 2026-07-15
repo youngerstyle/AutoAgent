@@ -334,6 +334,13 @@ export interface TicketSnapshot {
   status: TicketStatus;
   parentTicketId?: TicketId;
   activeAuthority?: TicketExecutionAuthority;
+  completion?: {
+    result: unknown;
+    evidence: TicketEvidenceRef[];
+    completedAt: string;
+    actorPrincipalId: string;
+    executionRef: string;
+  };
 }
 
 export interface TicketWorkItem {

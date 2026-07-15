@@ -367,6 +367,15 @@ export class TicketEngine {
       let tickets = current.tickets.map((item) => item.ticketId === command.ticketId ? {
         ...item, status, version: item.version + 1,
         activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
+        ...(command.payload.type === "complete" ? {
+          completion: {
+            result: structuredClone(command.payload.result),
+            evidence: structuredClone(command.payload.evidence),
+            completedAt: command.issuedAt,
+            actorPrincipalId: command.actorPrincipalId,
+            executionRef: command.executionRef,
+          },
+        } : {}),
       } : item);
       let graph = current.plan.graph;
       let completionPolicy = current.plan.completionPolicy;

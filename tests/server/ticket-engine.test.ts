@@ -54,10 +54,21 @@ describe("TicketEngine single Plan flow", () => {
     const dev = afterChange.graph.ticketIds[1]!;
     expect(dev).not.toBe(planning);
 
-    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, claim!, "complete-plan", { type: "complete", result: {}, evidence: [] }));
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, claim!, "complete-plan", {
+      type: "complete",
+      result: { brief: "accepted" },
+      evidence: [{ kind: "document", ref: "brief.md" }],
+    }));
     const afterPlanning = await fixture.engine.getPlan(fixture.planId);
     expect(afterPlanning.status).toBe("active");
-    expect((await fixture.engine.getTicket(planning))?.status).toBe("completed");
+    expect(await fixture.engine.getTicket(planning)).toMatchObject({
+      status: "completed",
+      completion: {
+        result: { brief: "accepted" },
+        evidence: [{ kind: "document", ref: "brief.md" }],
+        actorPrincipalId: "planner",
+      },
+    });
     expect((await fixture.engine.getTicket(dev))?.status).toBe("ready");
   });
 
