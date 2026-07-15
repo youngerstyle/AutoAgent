@@ -38,7 +38,6 @@ export interface AgentExecutionSliceResult {
 }
 
 export class AgentToolLoop {
-  private readonly maxToolCallsPerTurn: number;
   private readonly maxTokensPerGoalWindow?: number;
   private readonly now: () => Date;
 
@@ -48,12 +47,8 @@ export class AgentToolLoop {
     private readonly provider: AgentProviderAdapter,
     private readonly tools: AgentToolRuntime,
     private readonly traces: AgentTraceStore,
-    options: { maxToolCallsPerSlice?: number; maxTokensPerGoalWindow?: number; now?: () => Date } = {},
+    options: { maxTokensPerGoalWindow?: number; now?: () => Date } = {},
   ) {
-    this.maxToolCallsPerTurn = options.maxToolCallsPerSlice ?? 20;
-    if (!Number.isInteger(this.maxToolCallsPerTurn) || this.maxToolCallsPerTurn < 1) {
-      throw new Error("maxToolCallsPerSlice must be positive");
-    }
     this.maxTokensPerGoalWindow = options.maxTokensPerGoalWindow;
     if (this.maxTokensPerGoalWindow !== undefined
       && (!Number.isFinite(this.maxTokensPerGoalWindow) || this.maxTokensPerGoalWindow <= 0)) {
@@ -104,7 +99,6 @@ export class AgentToolLoop {
       ...(goal ? [goalResolutionTool()] : []),
     ];
     let toolCalls = 0;
-    let modelToolCalls = 0;
     let round = 0;
     let previousFailureFingerprint: string | undefined;
     while (true) {
@@ -136,7 +130,6 @@ export class AgentToolLoop {
       const pendingToolCalls: Array<{
         index: number;
         item: Extract<AgentModelOutputItem, { type: "tool_call" }>;
-        overLimit: boolean;
       }> = [];
       let repeatedFailure: { tool: string; message: string; fingerprint: string } | undefined;
       const recordFailure = (tool: string, args: unknown, message: string): void => {
@@ -164,19 +157,10 @@ export class AgentToolLoop {
         }
 
         await this.recordToolCall(turnId, input, round, index, item);
-        modelToolCalls += 1;
-        pendingToolCalls.push({ index, item, overLimit: modelToolCalls > this.maxToolCallsPerTurn });
+        pendingToolCalls.push({ index, item });
       }
 
-      let toolLimitTriggered = false;
-      for (const { index, item, overLimit } of pendingToolCalls) {
-        if (overLimit) {
-          const limited = toolError(item.callId, `单个 turn 的工具调用保险丝已触发（${this.maxToolCallsPerTurn}）`);
-          await this.recordToolResult(turnId, input, round, index, limited, { error: limited.content });
-          followUpItems.push(limited);
-          toolLimitTriggered = true;
-          continue;
-        }
+      for (const { index, item } of pendingToolCalls) {
         if (item.name === "goal_resolution") {
           if (hasWorkspaceToolCall) {
             const message = "同一响应仍有待执行的工作区工具；请读取工具结果后再提交 goal_resolution";
@@ -228,7 +212,6 @@ export class AgentToolLoop {
       }
 
       history.push(...followUpItems);
-      if (toolLimitTriggered) return this.yieldForToolLimit(turnId, input, toolCalls, goal);
       if (repeatedFailure) {
         return this.noProgressFailure(turnId, input, toolCalls, goal, repeatedFailure);
       }
@@ -506,24 +489,6 @@ export class AgentToolLoop {
       createdAt: this.now().toISOString(),
     });
     return { turnId, status: "execution_blocked", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined, blockReason: "provider_protocol" };
-  }
-
-  private async yieldForToolLimit(
-    turnId: string,
-    input: AgentExecutionSliceInput,
-    toolCalls: number,
-    goal: AgentGoal | undefined,
-  ): Promise<AgentExecutionSliceResult> {
-    await this.engine.appendToolItem({
-      itemId: `${turnId}:yielded`,
-      turnId,
-      threadId: input.threadId,
-      goalId: input.goalId,
-      kind: "control",
-      value: { turnId, status: "yielded", reason: "tool_call_safety_fuse" },
-      createdAt: this.now().toISOString(),
-    });
-    return { turnId, status: "yielded", toolCalls, goal };
   }
 
   private trace(

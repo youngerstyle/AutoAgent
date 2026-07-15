@@ -121,8 +121,10 @@ goal_resolution({
 - 工具 follow-up 属于同一个 turn，不依赖 Mission Control 再次“猜测要不要继续”。
 - 一个响应可以包含消息和多个工具调用，按 Provider 返回顺序持久化。
 - 每个工具调用必须有稳定 `callId`，每个结果必须引用该 `callId`。
+- 不设置“单 turn 最多 N 次工具调用”的固定上限；只要工具调用持续成功并产生进展，就继续当前 turn。
+- 防失控依赖可证明的无进展检测、上下文压缩、Goal token 预算、Provider 错误和外部取消，不能用正常工具调用次数代替进展判断。
 - 不再存在 `toolIntents`、`structured`、`parseJsonObject`、`visibleModelMessage` 这条文本控制路径。
-- 工具调用数量限制只作为单 turn 的资源保险丝；触发时应形成明确的 `yielded` 控制事实，不能伪装成完成或失败。
+- `yielded` 只表示调度器主动保存进度并让出执行权，不能由固定工具调用次数触发，更不能伪装成完成或失败。
 
 ## 7. Thread、审计与模型上下文
 

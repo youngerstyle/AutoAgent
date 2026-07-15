@@ -72,6 +72,39 @@ describe("AgentToolLoop", () => {
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "completed" });
   });
 
+  it("continues beyond twenty successful tool calls while the turn is still making progress", async () => {
+    const toolRounds: AgentModelTurnResult[] = Array.from({ length: 25 }, (_, index) => ({
+      items: [{
+        type: "tool_call" as const,
+        callId: `write-${index + 1}`,
+        name: "writeFile",
+        arguments: { path: `progress-${index + 1}.txt`, content: String(index + 1) },
+      }],
+    }));
+    const fixture = await createFixture([
+      ...toolRounds,
+      {
+        items: [{
+          type: "tool_call",
+          callId: "resolve-after-progress",
+          name: "goal_resolution",
+          arguments: {
+            status: "completed",
+            summary: "连续工作完成",
+            evidence: [{ kind: "file", ref: "progress-25.txt" }],
+            domainOutcome: { artifact: "progress-25.txt" },
+          },
+        }],
+      },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn).toMatchObject({ status: "resolution_proposed", toolCalls: 25 });
+    expect(fixture.provider.requests).toHaveLength(26);
+    expect(await readFile(path.join(fixture.root, "progress-25.txt"), "utf8")).toBe("25");
+  });
+
   it("returns invalid native tool arguments as a correlated error instead of executing or parsing text", async () => {
     const fixture = await createFixture([
       { items: [{ type: "tool_call", callId: "bad-write", name: "writeFile", arguments: { content: "missing path" } }] },
