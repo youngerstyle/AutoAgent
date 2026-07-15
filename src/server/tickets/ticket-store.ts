@@ -31,7 +31,7 @@ export interface TicketOutboxEntry { position: number; event: TicketEvent }
 export interface TicketStorageIdentity { taskId: string; taskRunId: string; planId: PlanId }
 
 export interface TicketAggregate {
-  schemaVersion: 3;
+  schemaVersion: 4;
   storageIdentity: TicketStorageIdentity;
   aggregateVersion: number;
   plan: PlanSnapshot;
@@ -46,7 +46,7 @@ export interface TicketAggregate {
 }
 
 export interface TicketAggregateSeed {
-  schemaVersion: 3;
+  schemaVersion: 4;
   plan: PlanSnapshot;
   definitionsByTicketId: Record<string, TicketDefinition>;
   tickets: TicketSnapshot[];
@@ -92,7 +92,7 @@ export class TicketStore {
       if (await this.readFromDisk(seed.plan.planId)) throw new TicketStoreConflictError(`Plan ${seed.plan.planId} already exists`);
       const pendingEvents = seed.pendingEvents ?? [];
       const aggregate: TicketAggregate = {
-        schemaVersion: 3,
+        schemaVersion: 4,
         storageIdentity: this.storageIdentity(seed.plan.planId),
         aggregateVersion: 1,
         plan: structuredClone(seed.plan),
@@ -132,7 +132,7 @@ export class TicketStore {
       }
       let position = current.outbox.at(-1)?.position ?? 0;
       const next: TicketAggregate = {
-        schemaVersion: 3,
+        schemaVersion: 4,
         storageIdentity: this.storageIdentity(planId),
         aggregateVersion: current.aggregateVersion + 1,
         plan: structuredClone(proposed.plan),
@@ -198,7 +198,7 @@ export class TicketStore {
     const ids: PlanId[] = [];
     for (const name of names.filter((item) => item.endsWith(".json")).sort()) {
       const raw = JSON.parse(await readFile(path.join(directory, name), "utf8")) as { schemaVersion?: number; storageIdentity?: { planId?: string } };
-      if (raw.schemaVersion !== 3 || !raw.storageIdentity?.planId) continue;
+      if (raw.schemaVersion !== 4 || !raw.storageIdentity?.planId) continue;
       const planId = raw.storageIdentity.planId as PlanId;
       this.validate(raw, planId);
       ids.push(planId);
@@ -246,7 +246,7 @@ export class TicketStore {
   private validate(value: unknown, planId: PlanId): asserts value is TicketAggregate {
     if (!value || typeof value !== "object") throw new TicketStoreCorruptionError("Ticket aggregate must be an object");
     const aggregate = value as Partial<TicketAggregate>;
-    if (aggregate.schemaVersion !== 3) throw new TicketStoreCorruptionError("Only Ticket aggregate schema v3 is schedulable");
+    if (aggregate.schemaVersion !== 4) throw new TicketStoreCorruptionError("Only Ticket aggregate schema v4 is schedulable");
     if (aggregate.storageIdentity?.planId !== planId || aggregate.plan?.planId !== planId) throw new TicketStoreCorruptionError("Plan identity mismatch");
     if (!Array.isArray(aggregate.tickets) || !aggregate.definitionsByTicketId) throw new TicketStoreCorruptionError("Plan Tickets are missing");
     const ids = new Set<string>();

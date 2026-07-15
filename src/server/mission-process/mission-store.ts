@@ -18,7 +18,7 @@ export interface MissionStepRecord {
 }
 
 export interface MissionAggregate {
-  schemaVersion: 2;
+  schemaVersion: 3;
   missionId: string;
   version: number;
   record: MissionRecord;
@@ -45,7 +45,7 @@ export class MissionStore {
     return this.enqueue(async () => {
       if (await this.read()) throw new MissionStoreConflictError("Mission already exists");
       const aggregate: MissionAggregate = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         missionId: this.missionId,
         version: 1,
         record: structuredClone(record),
@@ -163,12 +163,18 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function validate(value: MissionAggregate, missionId: string): void {
-  if (value.schemaVersion !== 2 || value.missionId !== missionId || value.record.missionId !== missionId) {
+  if (value.schemaVersion !== 3) {
+    throw new LegacyMissionPlanError("Mission uses a legacy aggregate schema");
+  }
+  if (value.missionId !== missionId || value.record.missionId !== missionId) {
     throw new Error("Mission aggregate identity is invalid");
   }
   if (!Number.isInteger(value.version) || value.version < 1) throw new Error("Mission version is invalid");
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value.record.planId))) {
     throw new LegacyMissionPlanError("Mission uses a legacy non-UUID Plan identity");
+  }
+  if (typeof value.record.objective !== "string" || value.record.objective.trim().length === 0) {
+    throw new Error("Mission objective is invalid");
   }
   for (const field of [value.links, value.cursors, value.steps]) if (!Array.isArray(field)) throw new Error("Mission collection is invalid");
   unique(value.links.map((item) => item.dispatchId), "dispatchId");

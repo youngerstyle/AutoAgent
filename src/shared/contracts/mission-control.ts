@@ -61,6 +61,7 @@ export interface PlanDefinitionRegistryPort {
 
 interface MissionRecordBase {
   missionId: string;
+  objective: string;
   planId: PlanId;
   planCreateCommandId: string;
 }
@@ -209,6 +210,7 @@ export function isTicketAgentRuntimeEnvelope(
   const record = input.record;
   if (
     !hasString(record, "missionId") ||
+    !hasString(record, "objective") ||
     !hasString(record, "planId") ||
     !hasString(record, "planCreateCommandId") ||
     !("status" in record)

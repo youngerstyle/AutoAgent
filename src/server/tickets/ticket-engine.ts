@@ -128,7 +128,7 @@ export class TicketEngine {
         ...tickets.filter((ticket) => ticket.status === "ready").map((ticket) => ticketEvent(ticket, { type: "TicketReady", ticketVersion: ticket.version }, command.issuedAt)),
       ];
       await this.store.create({
-        schemaVersion: 3,
+        schemaVersion: 4,
         plan,
         definitionsByTicketId: { ...materialized.definitionsByTicketId },
         tickets,
@@ -369,8 +369,7 @@ export class TicketEngine {
         activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
         ...(command.payload.type === "complete" ? {
           completion: {
-            result: structuredClone(command.payload.result),
-            evidence: structuredClone(command.payload.evidence),
+            handoff: structuredClone(command.payload.handoff),
             completedAt: command.issuedAt,
             actorPrincipalId: command.actorPrincipalId,
             executionRef: command.executionRef,

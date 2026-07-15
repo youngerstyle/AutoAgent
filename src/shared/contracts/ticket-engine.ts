@@ -177,7 +177,13 @@ export interface TransferBlockedOwnershipRequest {
 
 export interface CompleteTicketCommand {
   type: "complete";
-  result: unknown;
+  handoff: TicketHandoff;
+}
+
+export interface TicketHandoff {
+  schemaVersion: 1;
+  summary: string;
+  output: unknown;
   evidence: TicketEvidenceRef[];
 }
 
@@ -335,8 +341,7 @@ export interface TicketSnapshot {
   parentTicketId?: TicketId;
   activeAuthority?: TicketExecutionAuthority;
   completion?: {
-    result: unknown;
-    evidence: TicketEvidenceRef[];
+    handoff: TicketHandoff;
     completedAt: string;
     actorPrincipalId: string;
     executionRef: string;

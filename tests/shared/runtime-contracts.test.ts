@@ -24,7 +24,10 @@ describe("Ticket Engine runtime contracts", () => {
 
   it("keeps Ticket commands closed and role-agnostic", () => {
     const accept = (_payload: TicketCommandPayload) => undefined;
-    accept({ type: "complete", result: {}, evidence: [] });
+    accept({
+      type: "complete",
+      handoff: { schemaVersion: 1, summary: "完成工作", output: {}, evidence: [] },
+    });
     if (false) {
       // @ts-expect-error Ticket Engine never routes directly to a team role.
       accept({ type: "advance_to_role", role: "qa" });
@@ -40,13 +43,14 @@ describe("Ticket Engine runtime contracts", () => {
 
 describe("Mission Control runtime contracts", () => {
   it("stores exactly one Plan identity per Mission in schema v3", () => {
-    const record = { missionId: "mission", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
+    const record = { missionId: "mission", objective: "完成项目目标", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
     expect(record.planId).toBeDefined();
+    expect(record.objective).toBe("完成项目目标");
   });
 
   it("keeps v2 runtime records read-only and schedules only v3", () => {
     const v2 = { engine: "ticket_agent", schemaVersion: 2, record: {} };
-    const v3 = { engine: "ticket_agent", schemaVersion: 3, record: { missionId: "m", planId: "p", planCreateCommandId: "c", status: "starting" } };
+    const v3 = { engine: "ticket_agent", schemaVersion: 3, record: { missionId: "m", objective: "goal", planId: "p", planCreateCommandId: "c", status: "starting" } };
     expect(classifyRuntimeRecordVersion(v2)).toBe("ticket_agent@2");
     expect(classifyRuntimeRecord(v2).schedulable).toBe(false);
     expect(classifyRuntimeRecordVersion(v3)).toBe("ticket_agent@3");

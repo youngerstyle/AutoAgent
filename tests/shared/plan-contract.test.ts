@@ -34,6 +34,7 @@ describe("single Plan runtime contract", () => {
     } satisfies PlanSnapshot;
     const mission = {
       missionId: plan.missionId,
+      objective: "build",
       planId,
       planCreateCommandId: "create-plan-1",
       status: "linked",

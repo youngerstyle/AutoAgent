@@ -55,11 +55,13 @@ export class MissionProcessManager {
       const planId = randomUUID() as PlanId;
       aggregate = await this.store.create({
         missionId: input.missionId,
+        objective: input.objective,
         planId,
         planCreateCommandId: commandId,
         status: "starting",
       });
     }
+    if (aggregate.record.objective !== input.objective) throw new Error("Mission objective mismatch");
     const planId = aggregate.record.planId;
     const replay = await this.tickets.getPlanCommandResult(planId, commandId);
     const result = replay ?? await this.tickets.createPlan({
@@ -287,6 +289,16 @@ export class MissionProcessManager {
                 ? await this.planningContext(link.planId)
                 : undefined,
               await this.listUpstreamDeliveries(link.planId, link.ticketId),
+              {
+                missionObjective: aggregate.record.objective,
+                ticket: {
+                  ticketId: work.ticket.ticketId,
+                  title: work.definition.title,
+                  objective: work.definition.objective,
+                  successCriteria: work.definition.successCriteria,
+                  outputContract: work.definition.outputContract,
+                },
+              },
             ),
         createdAt: this.now().toISOString(),
       });
@@ -337,8 +349,9 @@ export class MissionProcessManager {
     return workItems.flatMap((work) => work?.ticket.status === "completed" && work.ticket.completion ? [{
       ticketId: work.ticket.ticketId,
       title: work.definition.title,
-      result: work.ticket.completion.result,
-      evidence: work.ticket.completion.evidence,
+      objective: work.definition.objective,
+      outputContract: work.definition.outputContract,
+      handoff: work.ticket.completion.handoff,
     }] : []);
   }
 

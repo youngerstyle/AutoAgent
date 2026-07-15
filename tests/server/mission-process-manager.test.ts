@@ -31,6 +31,7 @@ describe("MissionProcessManager", () => {
     const second = await fixture.manager.startMission(request);
 
     expect(second.record.planId).toBe(first.record.planId);
+    expect(second.record.objective).toBe("build");
     expect(await fixture.ticketStore.listPlanIds()).toEqual([first.record.planId]);
   });
 
@@ -81,7 +82,16 @@ describe("MissionProcessManager", () => {
       && value.senderPrincipalId === "mission-process"
     ));
     expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"result":{"brief":"accepted"}'),
+      content: expect.stringContaining('"missionObjective":"build"'),
+    });
+    expect(missionInstruction).toMatchObject({
+      content: expect.stringContaining('"summary":"需求已接收"'),
+    });
+    expect(missionInstruction).toMatchObject({
+      content: expect.stringContaining('"output":{"brief":"accepted"}'),
+    });
+    expect(missionInstruction).toMatchObject({
+      content: expect.not.stringContaining("proposal-intake"),
     });
   });
 

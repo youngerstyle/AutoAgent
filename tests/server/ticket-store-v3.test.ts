@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { PlanId, TicketId } from "../../src/shared/contracts/ticket-engine.js";
 import { TicketStore, TicketStoreCorruptionError } from "../../src/server/tickets/ticket-store.js";
 
-describe("TicketStore v3", () => {
+describe("TicketStore v4", () => {
   it("reloads one Plan and immutable UUID Tickets", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "ticket-store-v3-"));
     const store = new TicketStore(root, "task", "run");
@@ -13,7 +13,7 @@ describe("TicketStore v3", () => {
     const ticketId = "8e7b647f-fd65-4cbc-936c-b6aaf63510ab" as TicketId;
     await store.create(seed(planId, ticketId));
     const reloaded = await new TicketStore(root, "task", "run").read(planId);
-    expect(reloaded?.schemaVersion).toBe(3);
+    expect(reloaded?.schemaVersion).toBe(4);
     expect(reloaded?.plan.graph.ticketIds).toEqual([ticketId]);
     expect(reloaded?.definitionsByTicketId[ticketId].title).toBe("开发");
   });
@@ -30,7 +30,7 @@ describe("TicketStore v3", () => {
 
 function seed(planId: PlanId, ticketId: TicketId) {
   return {
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     plan: { planId, missionId: "mission", version: 1, status: "active" as const, graph: { schemaVersion: 3 as const, ticketIds: [ticketId], dependencyEdges: [] }, completionPolicy: { requiredTerminalTicketIds: [ticketId], failurePolicy: "require_resolution" as const, blockedPolicy: "wait" as const }, policyRef: { policyId: "p", policyVersion: 1, contentHash: "sha256:test" }, plannerAssignment: {} },
     definitionsByTicketId: { [ticketId]: { title: "开发", objective: "实现", successCriteria: ["完成"], assignment: {}, outputContract: { schemaRef: "result-v1" } } },
     tickets: [{ ticketId, planId, version: 1, status: "ready" as const }],

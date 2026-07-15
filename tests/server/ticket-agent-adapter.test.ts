@@ -43,6 +43,44 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不可替代的外部事实、凭证、授权或不可逆操作确认");
   });
 
+  it("renders mission, current Ticket, and upstream handoffs without sharing Agent history", () => {
+    const instruction = missionOutcomeInstruction(
+      "qa-report-v1",
+      [],
+      [],
+      undefined,
+      undefined,
+      [{
+        ticketId: "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId,
+        title: "开发实现",
+        objective: "实现可运行游戏",
+        outputContract: { schemaRef: "delivery-v1" },
+        handoff: {
+          schemaVersion: 1,
+          summary: "实现了核心玩法",
+          output: { artifact: "src/game.ts" },
+          evidence: [{ kind: "file", ref: "src/game.ts" }],
+        },
+      }],
+      {
+        missionObjective: "交付可玩的坦克游戏",
+        ticket: {
+          ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId,
+          title: "质量检查",
+          objective: "验证核心玩法",
+          successCriteria: ["形成可复现结论"],
+          outputContract: { schemaRef: "qa-report-v1" },
+        },
+      },
+    );
+
+    expect(instruction).toContain('"missionObjective":"交付可玩的坦克游戏"');
+    expect(instruction).toContain('"summary":"实现了核心玩法"');
+    expect(instruction).toContain('"artifact":"src/game.ts"');
+    expect(instruction).not.toContain("tool_call");
+    expect(instruction).not.toContain("Thread");
+  });
+
   it("treats a correctable Host rejection as a proposal retry rather than Goal failure", () => {
     const instruction = missionOutcomeInstruction("delivery-v1");
 

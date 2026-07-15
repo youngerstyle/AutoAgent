@@ -36,6 +36,7 @@ describe("MissionStore", () => {
 
 const record: MissionRecord = {
   missionId: "mission-a",
+  objective: "build",
   planId: "178f1785-71a8-4a87-b799-8184b86eb227" as PlanId,
   planCreateCommandId: "create-a",
   status: "starting",
