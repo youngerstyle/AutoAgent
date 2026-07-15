@@ -146,7 +146,6 @@ export class RuntimeHost {
         teamBindingId: "minimal-team",
       },
     });
-    await this.tickTask(context);
     return record;
   }
 

@@ -12,6 +12,32 @@ import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("RuntimeHost", () => {
+  it("acknowledges a newly persisted task before any Agent model turn finishes", async () => {
+    const fixture = await createFixture();
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        return new Promise(() => undefined);
+      },
+    });
+
+    const creating = fixture.host.createTask({
+      taskId: "task-fast-ack",
+      title: "立即确认",
+      objective: "创建后由后台执行",
+    });
+    const acknowledged = await Promise.race([
+      creating.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000)),
+    ]);
+
+    expect(acknowledged).toBe(true);
+    expect(await fixture.host.listTasks()).toContainEqual(expect.objectContaining({
+      taskId: "task-fast-ack",
+      status: "active",
+    }));
+  });
+
   it("exposes an old non-UUID Mission as read-only without scheduling it", async () => {
     const fixture = await createFixture();
     const createdAt = new Date().toISOString();
@@ -78,6 +104,7 @@ describe("RuntimeHost", () => {
   it("projects the original human objective and received Goal before internal Agent instructions", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-thread-origin", title: "坦克98", objective: "1:1复刻 CF 红白机的坦克98 游戏" });
+    await fixture.host.tick();
 
     const snapshot = await fixture.host.snapshot();
     const events = snapshot.agentThreads?.wa_boss ?? [];
@@ -109,6 +136,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-resume-active", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const context = fixture.host.context("task-resume-active")!;
     const boss = context.engines.get("wa_boss")!;
     const thread = await boss.getThreadForAgent("wa_boss", "task-resume-active");
@@ -142,6 +170,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-single-flight", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const singleFlightBoss = fixture.host.context("task-single-flight")!.engines.get("wa_boss")!;
     const singleFlightThread = (await singleFlightBoss.getThreadForAgent("wa_boss", "task-single-flight"))!;
     await singleFlightBoss.sendMessage({
@@ -248,6 +277,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-provider-resume", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const context = fixture.host.context("task-provider-resume")!;
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
     expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
@@ -272,6 +302,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-repeated-human-message", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const context = fixture.host.context("task-repeated-human-message")!;
     const engine = context.engines.get("wa_boss")!;
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
@@ -311,6 +342,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-human-turn", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const context = fixture.host.context("task-human-turn")!;
     const engine = context.engines.get("wa_boss")!;
     providerAvailable = true;
@@ -348,6 +380,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-recover-human-turn", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const context = fixture.host.context("task-recover-human-turn")!;
     const engine = context.engines.get("wa_boss")!;
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
@@ -417,6 +450,7 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-live-snapshot", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const liveBoss = fixture.host.context("task-live-snapshot")!.engines.get("wa_boss")!;
     const liveThread = (await liveBoss.getThreadForAgent("wa_boss", "task-live-snapshot"))!;
     await liveBoss.sendMessage({
@@ -443,6 +477,7 @@ describe("RuntimeHost", () => {
   it("truncates oversized UI event payloads without changing the stored Agent thread", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-large-observation", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
     const engine = fixture.host.context("task-large-observation")!.engines.get("wa_boss")!;
     const thread = (await engine.getThreadForAgent("wa_boss", "task-large-observation"))!;
     const content = "x".repeat(100_000);
