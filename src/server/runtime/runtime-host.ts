@@ -537,7 +537,9 @@ export class RuntimeHost {
       action: result.blockReason === "usage_limit" ? "limit_usage" : "pause",
       reason: result.blockReason === "usage_limit"
         ? "configured token window reached; human confirmation is required"
-        : "provider execution is unavailable; ticket state is unchanged",
+        : result.blockReason === "no_progress"
+          ? "the same tool error repeated without progress; execution is paused and ticket state is unchanged"
+          : "provider execution is unavailable; ticket state is unchanged",
     });
   }
 

@@ -34,7 +34,7 @@ export interface AgentExecutionSliceResult {
   status: "yielded" | "waiting" | "resolution_proposed" | "execution_blocked";
   toolCalls: number;
   goal?: AgentGoal;
-  blockReason?: "provider_error" | "provider_protocol" | "usage_limit";
+  blockReason?: "provider_error" | "provider_protocol" | "usage_limit" | "no_progress";
 }
 
 export class AgentToolLoop {
@@ -106,6 +106,7 @@ export class AgentToolLoop {
     let toolCalls = 0;
     let modelToolCalls = 0;
     let round = 0;
+    let previousFailureFingerprint: string | undefined;
     while (true) {
       round += 1;
       let result;
@@ -137,6 +138,16 @@ export class AgentToolLoop {
         item: Extract<AgentModelOutputItem, { type: "tool_call" }>;
         overLimit: boolean;
       }> = [];
+      let repeatedFailure: { tool: string; message: string; fingerprint: string } | undefined;
+      const recordFailure = (tool: string, args: unknown, message: string): void => {
+        const fingerprint = createHash("sha256")
+          .update(stableStringify({ tool, args, message }))
+          .digest("hex");
+        if (fingerprint === previousFailureFingerprint) {
+          repeatedFailure = { tool, message, fingerprint };
+        }
+        previousFailureFingerprint = fingerprint;
+      };
       const hasWorkspaceToolCall = result.items.some((item) => item.type === "tool_call" && item.name !== "goal_resolution");
       for (const [index, item] of result.items.entries()) {
         history.push(item);
@@ -168,25 +179,31 @@ export class AgentToolLoop {
         }
         if (item.name === "goal_resolution") {
           if (hasWorkspaceToolCall) {
-            const premature = toolError(item.callId, "同一响应仍有待执行的工作区工具；请读取工具结果后再提交 goal_resolution");
+            const message = "同一响应仍有待执行的工作区工具；请读取工具结果后再提交 goal_resolution";
+            const premature = toolError(item.callId, message);
             await this.recordToolResult(turnId, input, round, index, premature, { error: premature.content });
             followUpItems.push(premature);
+            recordFailure(item.name, item.arguments, message);
             needsFollowUp = true;
             continue;
           }
           if (!isRecord(item.arguments) || !("domainOutcome" in item.arguments) || item.arguments.domainOutcome === undefined) {
-            const missingOutcome = toolError(item.callId, "goal_resolution 缺少 domainOutcome；请提交当前 Goal 的结构化领域结果");
+            const message = "goal_resolution 缺少 domainOutcome；请提交当前 Goal 的结构化领域结果";
+            const missingOutcome = toolError(item.callId, message);
             await this.recordToolResult(turnId, input, round, index, missingOutcome, { error: missingOutcome.content });
             followUpItems.push(missingOutcome);
+            recordFailure(item.name, item.arguments, message);
             needsFollowUp = true;
             continue;
           }
-          const value = goal ? resolutionProposal(item.arguments, goal, turnId, this.now().toISOString()) : undefined;
-          if (value) proposal = { value, callId: item.callId, index };
-          if (!value) {
-            const invalid = toolError(item.callId, "goal_resolution 参数无效");
+          const parsed = goal ? parseResolutionProposal(item.arguments, goal, turnId, this.now().toISOString()) : undefined;
+          if (parsed?.ok) proposal = { value: parsed.value, callId: item.callId, index };
+          if (parsed && !parsed.ok) {
+            const message = `goal_resolution 参数无效：${parsed.reason}`;
+            const invalid = toolError(item.callId, message);
             await this.recordToolResult(turnId, input, round, index, invalid, { error: invalid.content });
             followUpItems.push(invalid);
+            recordFailure(item.name, item.arguments, message);
             needsFollowUp = true;
           }
           continue;
@@ -202,11 +219,19 @@ export class AgentToolLoop {
         };
         await this.recordToolResult(turnId, input, round, index, toolResult, observation);
         followUpItems.push(toolResult);
+        if (toolResult.isError) {
+          recordFailure(item.name, item.arguments, toolResult.content);
+        } else {
+          previousFailureFingerprint = undefined;
+        }
         needsFollowUp = true;
       }
 
       history.push(...followUpItems);
       if (toolLimitTriggered) return this.yieldForToolLimit(turnId, input, toolCalls, goal);
+      if (repeatedFailure) {
+        return this.noProgressFailure(turnId, input, toolCalls, goal, repeatedFailure);
+      }
 
       if (proposal) {
         const submitted: AgentModelHistoryItem = {
@@ -435,6 +460,34 @@ export class AgentToolLoop {
     return { turnId, status: "execution_blocked", toolCalls, goal: input.goalId ? await this.engine.getGoal(input.goalId) : undefined, blockReason: "provider_error" };
   }
 
+  private async noProgressFailure(
+    turnId: string,
+    input: AgentExecutionSliceInput,
+    toolCalls: number,
+    goal: AgentGoal | undefined,
+    failure: { tool: string; message: string; fingerprint: string },
+  ): Promise<AgentExecutionSliceResult> {
+    const blocked = {
+      turnId,
+      status: "execution_blocked",
+      reason: "repeated_tool_error",
+      tool: failure.tool,
+      message: failure.message,
+      fingerprint: failure.fingerprint,
+    } as const;
+    await this.trace(turnId, input, "error", blocked);
+    await this.engine.appendToolItem({
+      itemId: `${turnId}:no-progress`,
+      turnId,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      kind: "control",
+      value: blocked,
+      createdAt: this.now().toISOString(),
+    });
+    return { turnId, status: "execution_blocked", toolCalls, goal, blockReason: "no_progress" };
+  }
+
   private async protocolFailure(
     turnId: string,
     input: AgentExecutionSliceInput,
@@ -532,21 +585,30 @@ function toolIntent(name: string, value: unknown): AgentToolIntent | undefined {
   };
 }
 
-function resolutionProposal(
+function parseResolutionProposal(
   value: unknown,
   goal: AgentGoal,
   turnId: string,
   createdAt: string,
-): GoalResolutionProposal | undefined {
-  if (!isRecord(value)) return undefined;
-  if (!new Set(["completed", "blocked", "failed"]).has(String(value.status))) return undefined;
-  if (typeof value.summary !== "string" || !value.summary.trim() || !Array.isArray(value.evidence)) return undefined;
-  const evidence = value.evidence.flatMap((item) => {
-    if (!isRecord(item) || typeof item.kind !== "string" || typeof item.ref !== "string") return [];
-    return [{ kind: item.kind, ref: item.ref }];
-  });
-  if (evidence.length !== value.evidence.length) return undefined;
-  return {
+): { ok: true; value: GoalResolutionProposal } | { ok: false; reason: string } {
+  if (!isRecord(value)) return { ok: false, reason: "顶层参数必须是对象" };
+  if (!new Set(["completed", "blocked", "failed"]).has(String(value.status))) {
+    return { ok: false, reason: "status 必须是 completed、blocked 或 failed" };
+  }
+  if (typeof value.summary !== "string" || !value.summary.trim()) {
+    return { ok: false, reason: "summary 必须是非空字符串" };
+  }
+  if (!Array.isArray(value.evidence)) return { ok: false, reason: "evidence 必须是数组" };
+  for (const [index, item] of value.evidence.entries()) {
+    if (!isRecord(item) || typeof item.kind !== "string" || typeof item.ref !== "string") {
+      return { ok: false, reason: `evidence[${index}] 必须是包含 kind 和 ref 字符串的对象` };
+    }
+  }
+  const evidence = value.evidence.map((item) => ({
+    kind: (item as Record<string, unknown>).kind as string,
+    ref: (item as Record<string, unknown>).ref as string,
+  }));
+  return { ok: true, value: {
     proposalId: stableId("proposal", goal.spec.id, turnId),
     turnId,
     goalId: goal.spec.id,
@@ -557,7 +619,7 @@ function resolutionProposal(
     evidence,
     domainOutcome: value.domainOutcome,
     createdAt,
-  };
+  } };
 }
 
 function toolError(
@@ -577,6 +639,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(JSON.stringify(parts)).digest("base64url")}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? String(value);
 }
 
 function pendingMessageTurn(thread: AgentThreadSnapshot): { turnId: string; messageId: string } | undefined {

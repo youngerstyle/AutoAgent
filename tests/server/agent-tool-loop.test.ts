@@ -107,6 +107,61 @@ describe("AgentToolLoop", () => {
     }));
   });
 
+  it("returns the exact invalid goal resolution field to the model", async () => {
+    const fixture = await createFixture([
+      {
+        items: [{
+          type: "tool_call",
+          callId: "resolve-invalid-evidence",
+          name: "goal_resolution",
+          arguments: {
+            status: "completed",
+            summary: "完成",
+            evidence: ["workspace listing"],
+            domainOutcome: { artifact: "done" },
+          },
+        }],
+      },
+      { items: [{ type: "assistant_message", content: "我会按字段要求修正。" }] },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("waiting");
+    expect(fixture.provider.requests[1].history).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "resolve-invalid-evidence",
+      isError: true,
+      content: expect.stringContaining("evidence[0] 必须是包含 kind 和 ref 字符串的对象"),
+    }));
+  });
+
+  it("pauses after the same failed tool outcome repeats without progress", async () => {
+    const invalidArguments = {
+      status: "completed",
+      summary: "完成",
+      evidence: ["workspace listing"],
+      domainOutcome: { artifact: "done" },
+    };
+    const fixture = await createFixture([
+      { items: [{ type: "tool_call", callId: "invalid-1", name: "goal_resolution", arguments: invalidArguments }] },
+      { items: [{ type: "tool_call", callId: "invalid-2", name: "goal_resolution", arguments: invalidArguments }] },
+      { items: [{ type: "assistant_message", content: "不应继续调用模型" }] },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn).toMatchObject({ status: "execution_blocked", blockReason: "no_progress" });
+    expect(fixture.provider.requests).toHaveLength(2);
+    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
+    const thread = await fixture.engine.getThread(fixture.input.threadId);
+    const payloads = await fixture.engine.getPayloads(thread.items.map((item) => item.payloadRef));
+    expect([...payloads.values()]).toContainEqual(expect.objectContaining({
+      reason: "repeated_tool_error",
+      status: "execution_blocked",
+    }));
+  });
+
   it("persists assistant, tool call and tool result in strict response order", async () => {
     const fixture = await createFixture([
       {
