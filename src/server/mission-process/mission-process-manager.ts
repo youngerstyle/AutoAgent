@@ -319,6 +319,11 @@ export class MissionProcessManager {
         toTicketId: String(edge.toTicketId),
       })),
       requiredTerminalTicketIds: plan.completionPolicy.requiredTerminalTicketIds.map(String),
+      teamMembers: this.team.members.map((member) => ({
+        principalId: member.principalId,
+        name: member.agentId,
+        capabilities: member.capabilities,
+      })),
     };
   }
 
