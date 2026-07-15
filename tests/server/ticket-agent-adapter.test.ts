@@ -36,7 +36,13 @@ describe("Ticket Agent resolution adapter", () => {
   });
 
   it("describes the complete Plan change contract to the planning Agent", () => {
-    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"]);
+    const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
+      planId: "plan-a",
+      version: 3,
+      tickets: [{ ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标" }],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: ["ticket-planning"],
+    });
 
     expect(instruction).toContain('"clientRef"');
     expect(instruction).toContain('"objective"');
@@ -44,6 +50,9 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('"outputContract":{"schemaRef"');
     expect(instruction).toContain('{"clientRef":"dev"}');
     expect(instruction).toContain('{"ticketId":"');
+    expect(instruction).toContain('"ticketId":"ticket-intake"');
+    expect(instruction).toContain('"status":"completed"');
+    expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
   });
 
   it("validates Plan change shape before invoking Ticket Engine", () => {

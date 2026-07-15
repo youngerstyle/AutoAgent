@@ -6,6 +6,13 @@ import type { PlanChangeSet, PlanCommandEnvelope, TicketCommandEnvelope, TicketC
 export type MissionTicketOutcome = Record<string, unknown>;
 export interface PlanChangeSetOutcome extends MissionTicketOutcome { result: unknown; change: PlanChangeSet }
 export interface CorrectionTargetContext { ticketId: TicketId; title: string }
+export interface PlanningContext {
+  planId: string;
+  version: number;
+  tickets: Array<{ ticketId: string; status: string; title: string; objective: string }>;
+  dependencyEdges: Array<{ fromTicketId: string; toTicketId: string }>;
+  requiredTerminalTicketIds: string[];
+}
 
 export function validateMissionTicketOutcome(schemaRef: string | undefined, status: GoalResolutionStatus, value: unknown): { valid: true } | { valid: false; reason: string } {
   if (status !== "completed") return { valid: true };
@@ -30,7 +37,7 @@ export function validateMissionTicketOutcome(schemaRef: string | undefined, stat
   return { valid: true };
 }
 
-export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId): string {
+export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId, planningContext?: PlanningContext): string {
   const targets = correctionTargets.length
     ? `可纠正的已完成上游工单：${correctionTargets.map((item) => `${item.ticketId}（${item.title}）`).join("；")}。correction_required 的 targetTicketId 只能从此列表选择。`
     : "当前没有可纠正的已完成上游工单；不要提交 correction_required。";
@@ -38,7 +45,10 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
     const contract = `change 的完整结构为：{"additions":[{"clientRef":"dev","title":"开发","objective":"实现目标","successCriteria":["可验证的成功标准"],"assignment":{"requiredCapabilities":["delivery:implement"]},"outputContract":{"schemaRef":"delivery-v1"}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"dev"}}],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"dev"}]}。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。`;
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
+    const currentPlan = planningContext
+      ? `当前 Plan 的平台事实快照如下（这是 Ticket Engine 的权威状态）：${JSON.stringify(planningContext)}。无需读取工作区文件来猜测 Plan 或 Ticket 状态；项目文件只用于理解实际交付物。`
+      : "";
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
   }
   return `${base} completed 时提交实际交付结果；blocked 时说明缺少的不可替代输入；failed 时说明有证据的失败原因。`;
 }

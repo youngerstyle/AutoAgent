@@ -283,6 +283,9 @@ export class MissionProcessManager {
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
               await this.listCorrectionTargets(link.planId, link.ticketId),
               link.ticketId,
+              work.definition.outputContract.schemaRef === "plan-change-set-v3"
+                ? await this.planningContext(link.planId)
+                : undefined,
             ),
         createdAt: this.now().toISOString(),
       });
@@ -297,6 +300,26 @@ export class MissionProcessManager {
       updatedAt: this.now().toISOString(),
     };
     return this.updateLink(aggregate, dispatchId, active);
+  }
+
+  private async planningContext(planId: PlanId) {
+    const plan = await this.tickets.getPlan(planId);
+    const workItems = await Promise.all(plan.graph.ticketIds.map((ticketId) => this.tickets.getWorkItem(ticketId)));
+    return {
+      planId: String(plan.planId),
+      version: plan.version,
+      tickets: workItems.flatMap((work) => work ? [{
+        ticketId: String(work.ticket.ticketId),
+        status: work.ticket.status,
+        title: work.definition.title,
+        objective: work.definition.objective,
+      }] : []),
+      dependencyEdges: plan.graph.dependencyEdges.map((edge) => ({
+        fromTicketId: String(edge.fromTicketId),
+        toTicketId: String(edge.toTicketId),
+      })),
+      requiredTerminalTicketIds: plan.completionPolicy.requiredTerminalTicketIds.map(String),
+    };
   }
 
   private async pumpAgentEvents(aggregate: MissionAggregate): Promise<MissionAggregate> {
