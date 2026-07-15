@@ -83,7 +83,7 @@ describe("client view model", () => {
         targetRole: "pm" as const,
         priority: 0,
         attempt: 1,
-        blocker: { type: "external_dependency" as const, reason: "等待 human 补充" },
+        blocker: { type: "human_authorization_required" as const, reason: "请确认是否允许执行不可逆发布操作。" },
         createdAt: "now",
         updatedAt: "now"
       }]
@@ -116,6 +116,38 @@ describe("client view model", () => {
     });
     expect(buildHumanFlowPrompt(waitingPmWithReply)?.transcript).toContain("请确认是否放弃原 MVP");
     expect(buildHumanFlowPrompt(waitingPmWithReply)?.transcript).not.toContain("等待 human 补充");
+  });
+
+  it("does not present an ordinary blocked Ticket objective as a question for human", () => {
+    const blockedPm: WorkspaceSnapshot = {
+      ...snapshot("blocked"),
+      agents: [
+        ...snapshot("blocked").agents,
+        { id: "wa_pm", workspaceId: "ws_1", profileId: "prof_pm", roleInWorkspace: "pm" as const, agentDir: "pm", status: "blocked" as const, name: "PM", currentStep: "把目标拆成可执行 Ticket DAG" }
+      ],
+      tickets: [{
+        id: "tk_pm",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "pm_plan" as const,
+        status: "blocked" as const,
+        brief: "把目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan",
+        expectedArtifact: "plan-change-set-v3",
+        targetAgentId: "wa_pm",
+        targetRole: "pm" as const,
+        priority: 0,
+        attempt: 1,
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(buildHumanFlowPrompt(blockedPm)).toBeUndefined();
+    expect(buildAgentNodes(blockedPm).find((node) => node.id === "wa_pm")).toMatchObject({
+      needsAttention: false,
+      status: "blocked"
+    });
   });
 
   it("does not turn stale implementation evidence failures into human prompts", () => {
