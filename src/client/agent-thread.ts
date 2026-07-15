@@ -76,7 +76,7 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
       id: event.id,
       role: "platform",
       title: "收到工单",
-      body: payloadText(event.payload, "brief", "expectedArtifact", "ticketType")
+      body: ticketReceivedBody(event.payload)
     };
   }
   if (event.kind === "tool_observation") {
@@ -88,9 +88,23 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
     };
   }
   if (event.kind === "system_note") {
-    return { id: event.id, role: "system", body: payloadText(event.payload, "content", "message", "summary") };
+    return { id: event.id, role: "system", title: "系统约束", body: payloadText(event.payload, "content", "message", "summary") };
   }
   return undefined;
+}
+
+function ticketReceivedBody(payload: unknown): string {
+  const objective = readString(payload, "brief") ?? "收到新的工作目标";
+  const expectedArtifact = readString(payload, "expectedArtifact") ?? readString(payload, "ticketType");
+  const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : undefined;
+  const criteria = Array.isArray(record?.successCriteria)
+    ? record.successCriteria.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+  return [
+    objective,
+    criteria.length ? `成功标准：\n${criteria.map((item) => `- ${item}`).join("\n")}` : undefined,
+    expectedArtifact ? `交付格式：${expectedArtifact}` : undefined,
+  ].filter((item): item is string => Boolean(item)).join("\n\n");
 }
 
 function equivalentMessage(left: string, right: string): boolean {

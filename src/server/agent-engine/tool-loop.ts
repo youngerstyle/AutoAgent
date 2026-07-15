@@ -174,6 +174,13 @@ export class AgentToolLoop {
             needsFollowUp = true;
             continue;
           }
+          if (!isRecord(item.arguments) || !("domainOutcome" in item.arguments) || item.arguments.domainOutcome === undefined) {
+            const missingOutcome = toolError(item.callId, "goal_resolution 缺少 domainOutcome；请提交当前 Goal 的结构化领域结果");
+            await this.recordToolResult(turnId, input, round, index, missingOutcome, { error: missingOutcome.content });
+            followUpItems.push(missingOutcome);
+            needsFollowUp = true;
+            continue;
+          }
           const value = goal ? resolutionProposal(item.arguments, goal, turnId, this.now().toISOString()) : undefined;
           if (value) proposal = { value, callId: item.callId, index };
           if (!value) {
@@ -504,9 +511,11 @@ function goalResolutionTool(): AgentToolDefinition {
             additionalProperties: false,
           },
         },
-        domainOutcome: {},
+        domainOutcome: {
+          description: "当前 Goal 的结构化领域结果；完成时提交交付结果，阻塞时提交 requiredInput 等阻塞事实，失败时提交失败事实",
+        },
       },
-      required: ["status", "summary", "evidence"],
+      required: ["status", "summary", "evidence", "domainOutcome"],
       additionalProperties: false,
     },
   };

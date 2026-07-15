@@ -557,8 +557,8 @@ function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefine
   throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
 }
 
-function validateTeamAssignments(outcome: MissionTicketOutcome, schemaRef: string | undefined, team: TeamBinding): string | undefined {
-  if (schemaRef !== "plan-change-set-v3" || !outcome.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
+function validateTeamAssignments(outcome: MissionTicketOutcome | undefined, schemaRef: string | undefined, team: TeamBinding): string | undefined {
+  if (schemaRef !== "plan-change-set-v3" || !outcome?.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
   const change = outcome.change as unknown as { additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }> };
   for (const node of change.additions) {
     const candidates = node.assignment.principalId

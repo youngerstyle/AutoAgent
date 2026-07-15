@@ -638,10 +638,43 @@ function projectThread(
   payloads: Map<string, unknown>,
   record: RuntimeTaskRecord,
 ): AgentThreadEvent[] {
-  const events: AgentThreadEvent[] = [];
+  const events: AgentThreadEvent[] = [{
+    id: `mission-objective:${record.taskId}:${thread.agentId}`,
+    taskId: record.taskId,
+    taskRunId: record.runId,
+    workspaceAgentId: thread.agentId,
+    sequence: 0,
+    timestamp: record.createdAt,
+    source: "human",
+    kind: "human_message",
+    visibility: "chat",
+    payload: { content: record.objective },
+  }];
   for (const item of thread.items) {
-    if (item.kind === "goal") continue;
     const payload = payloads.get(item.payloadRef);
+    if (item.kind === "goal") {
+      const goal = payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
+      const outputContract = goal?.outputContract && typeof goal.outputContract === "object"
+        ? goal.outputContract as Record<string, unknown>
+        : undefined;
+      events.push({
+        id: item.itemId,
+        taskId: record.taskId,
+        taskRunId: record.runId,
+        workspaceAgentId: thread.agentId,
+        sequence: item.sequence,
+        timestamp: item.createdAt,
+        source: "platform",
+        kind: "ticket_received",
+        visibility: "chat",
+        payload: {
+          brief: typeof goal?.objective === "string" ? goal.objective : "收到新的工作目标",
+          successCriteria: Array.isArray(goal?.successCriteria) ? goal.successCriteria : [],
+          expectedArtifact: typeof outputContract?.schemaRef === "string" ? outputContract.schemaRef : undefined,
+        },
+      });
+      continue;
+    }
     const messagePayload = payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
     const isHuman = item.kind === "message" && messagePayload?.senderPrincipalId === "human";
     const projectedPayload = projectEventPayload(payload, item.payloadRef);

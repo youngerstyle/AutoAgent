@@ -13,6 +13,11 @@ describe("versioned plan product data", () => {
       expect.stringContaining("不可替代输入时才阻塞"),
     ]));
     expect(definition.initialChange.additions.map((node) => node.clientRef)).toEqual(["intake", "planning"]);
+    expect(definition.initialChange.additions[1]?.objective).toContain("构建坦克大战");
+    expect(definition.initialChange.additions[1]?.successCriteria).toEqual(expect.arrayContaining([
+      expect.stringContaining("新增实际执行工单"),
+      expect.stringContaining("不能把启动骨架"),
+    ]));
     expect(definition.initialChange.additions.map((node) => node.assignment.requiredCapabilities)).toEqual([
       ["mission:intake"],
       ["plan:plan"],
@@ -23,9 +28,9 @@ describe("versioned plan product data", () => {
 
   it("resolves an immutable version before Mission start", async () => {
     const registry = new PlanDefinitionRegistry(policyRef);
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 3, teamBindingId: "team-a", objective: "构建坦克大战" }))
+      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 3 } });
     await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 2, teamBindingId: "team-a", objective: "构建坦克大战" }))
-      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 2 } });
-    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 1, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .rejects.toThrow("version does not exist");
   });
 });

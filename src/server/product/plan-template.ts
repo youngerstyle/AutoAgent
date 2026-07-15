@@ -1,7 +1,7 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 2;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 3;
 
 export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missionObjective: string): PlanDefinition {
   if (!missionObjective.trim()) throw new Error("Mission objective is required");
@@ -27,8 +27,14 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missio
         {
           clientRef: "planning",
           title: "计划拆解",
-          objective: "把已接收目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan",
-          successCriteria: ["DAG 无环", "每个节点有成功标准和输出契约", "交付链包含必要验证"],
+          objective: `根据需求接收工单的交付，把以下 human 原始目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan：\n${missionObjective.trim()}`,
+          successCriteria: [
+            "新增实际执行工单，形成完成 Mission 所需的真实交付链",
+            "不能把启动骨架（intake → planning）当作完整计划",
+            "每个新增节点都有成功标准、负责人能力要求和输出契约",
+            "新增交付链包含实现、必要验证和最终可验收终点",
+            "DAG 无环，requiredTerminalRefs 指向新增交付链的真实终点",
+          ],
           assignment: { requiredCapabilities: ["plan:plan"] },
           outputContract: { schemaRef: "plan-change-set-v3" },
         },

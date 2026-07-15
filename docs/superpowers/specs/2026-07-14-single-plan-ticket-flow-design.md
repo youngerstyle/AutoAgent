@@ -175,6 +175,8 @@ interface PlanChangeSet {
 
 Mission 创建时，产品模板只创建最小启动链：需求接收 Ticket 和计划拆解 Ticket。计划拆解 Agent 完成后提交 `PlanChangeSet`，向同一个 Plan 追加开发、测试、验收等实际 Ticket。
 
+`需求接收 → 计划拆解` 只是启动骨架，不是完成 Mission 的执行计划。计划拆解 Ticket 的 Goal 必须携带 human 原始目标；它只有在追加了包含真实执行、必要验证和最终验收终点的可执行 DAG 后才能完成。只复述目标或只返回启动骨架不构成有效规划结果。
+
 模板可以规定最小质量策略，但 Ticket Engine 不认识角色。策略由 capability、output contract 和 Plan 图表达。
 
 ### 5.2 普通纠错闭环

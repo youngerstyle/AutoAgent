@@ -47,6 +47,7 @@ describe("AgentToolLoop", () => {
             status: "completed",
             summary: "已完成",
             evidence: [{ kind: "file", ref: "done.txt" }],
+            domainOutcome: { artifact: "done.txt" },
           },
         }],
       },
@@ -86,6 +87,24 @@ describe("AgentToolLoop", () => {
       isError: true,
     });
     expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "active" });
+  });
+
+  it("asks the model to repair a missing domain outcome inside the same turn", async () => {
+    const fixture = await createFixture([
+      { items: [{ type: "tool_call", callId: "resolve-missing-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [] } }] },
+      { items: [{ type: "tool_call", callId: "resolve-with-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], domainOutcome: { artifact: "done" } } }] },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("resolution_proposed");
+    expect(fixture.provider.requests).toHaveLength(2);
+    expect(fixture.provider.requests[1].history).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "resolve-missing-outcome",
+      isError: true,
+      content: expect.stringContaining("domainOutcome"),
+    }));
   });
 
   it("persists assistant, tool call and tool result in strict response order", async () => {
@@ -133,11 +152,11 @@ describe("AgentToolLoop", () => {
       {
         items: [
           { type: "tool_call", callId: "write-first", name: "writeFile", arguments: { path: "mixed.txt", content: "ok" } },
-          { type: "tool_call", callId: "resolve-too-early", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [] } },
+          { type: "tool_call", callId: "resolve-too-early", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], domainOutcome: { artifact: "mixed.txt" } } },
         ],
       },
       {
-        items: [{ type: "tool_call", callId: "resolve-after-result", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [{ kind: "file", ref: "mixed.txt" }] } }],
+        items: [{ type: "tool_call", callId: "resolve-after-result", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [{ kind: "file", ref: "mixed.txt" }], domainOutcome: { artifact: "mixed.txt" } } }],
       },
     ]);
 

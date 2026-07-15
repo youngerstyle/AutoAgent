@@ -281,6 +281,54 @@ describe("MissionProcessManager", () => {
     });
   });
 
+  it("recovers a blocked planning Goal without treating missing change data as a team assignment", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    let mission = await fixture.manager.tick();
+    const intakeLink = mission.links.find((link) => link.agentId === "boss")!;
+    const boss = fixture.engines.get("boss")!;
+    const intakeGoal = (await boss.getGoal(intakeLink.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "complete-intake-before-planning-block",
+      goalId: intakeGoal.spec.id,
+      expectedGoalVersion: intakeGoal.version,
+      resolvingGoalVersion: intakeGoal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      domainOutcome: { accepted: true },
+      createdAt: NOW,
+    });
+    await fixture.manager.tick();
+    mission = await fixture.manager.tick();
+    const planningLink = mission.links.find((link) => link.agentId === "pm" && link.status === "running")!;
+    const pm = fixture.engines.get("pm")!;
+    const planningGoal = (await pm.getGoal(planningLink.agentGoalId!))!;
+    await pm.proposeGoalResolution({
+      proposalId: "blocked-planning-without-change",
+      goalId: planningGoal.spec.id,
+      expectedGoalVersion: planningGoal.version,
+      resolvingGoalVersion: planningGoal.version + 1,
+      status: "blocked",
+      summary: "缺少不可替代输入",
+      evidence: [],
+      domainOutcome: undefined as never,
+      createdAt: NOW,
+    });
+
+    await expect(fixture.manager.recover()).resolves.toMatchObject({
+      links: expect.arrayContaining([expect.objectContaining({ agentId: "pm" })]),
+    });
+  });
+
   it("settles one QA attempt, runs correction, then starts a new attempt for the same QA Ticket", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({

@@ -75,6 +75,29 @@ describe("RuntimeHost", () => {
     restarted.stop();
   });
 
+  it("projects the original human objective and received Goal before internal Agent instructions", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-thread-origin", title: "坦克98", objective: "1:1复刻 CF 红白机的坦克98 游戏" });
+
+    const snapshot = await fixture.host.snapshot();
+    const events = snapshot.agentThreads?.wa_boss ?? [];
+
+    expect(events[0]).toMatchObject({
+      source: "human",
+      kind: "human_message",
+      payload: { content: "1:1复刻 CF 红白机的坦克98 游戏" },
+    });
+    expect(events[1]).toMatchObject({
+      source: "platform",
+      kind: "ticket_received",
+      payload: {
+        brief: expect.stringContaining("1:1复刻 CF 红白机的坦克98 游戏"),
+        expectedArtifact: "boss-intake-v1",
+      },
+    });
+    expect(events.findIndex((event) => event.kind === "system_note")).toBeGreaterThan(1);
+  });
+
   it("does not replay an active goal after a waiting tail without new input", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
