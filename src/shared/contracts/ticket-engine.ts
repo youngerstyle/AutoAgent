@@ -32,6 +32,9 @@ export interface TicketDefinition {
   successCriteria: string[];
   assignment: PlannedTicketAssignment;
   outputContract: TicketOutputContract;
+  permissions?: {
+    amendPlan?: boolean;
+  };
 }
 
 export interface PlannedTicketNode extends Omit<TicketDefinition, "parentTicketId"> {
@@ -127,6 +130,7 @@ export interface ClaimReceipt {
   planId: PlanId;
   ticketId: TicketId;
   ticketVersion: number;
+  attemptId: string;
   principalId: string;
   fencingToken: number;
   leaseUntil: string;
@@ -185,6 +189,35 @@ export interface TicketHandoff {
   summary: string;
   output: unknown;
   evidence: TicketEvidenceRef[];
+  criterionResults: Array<{
+    criterionIndex: number;
+    status: "satisfied" | "not_satisfied" | "not_verified";
+    evidence: TicketEvidenceRef[];
+    note?: string;
+  }>;
+  residualRisks: string[];
+}
+
+export type TicketAttemptStatus =
+  | "running"
+  | "blocked"
+  | "completed"
+  | "returned"
+  | "failed"
+  | "released"
+  | "cancelled";
+
+export interface TicketAttempt {
+  attemptId: string;
+  attemptNumber: number;
+  status: TicketAttemptStatus;
+  principalId: string;
+  executionRef?: string;
+  startedAt: string;
+  endedAt?: string;
+  handoff?: TicketHandoff;
+  reason?: string;
+  evidence?: TicketEvidenceRef[];
 }
 
 export interface BlockTicketCommand {
@@ -265,6 +298,11 @@ export interface PlanDefinition {
   initialChange: PlanChangeSet;
   policyRef: PlanPolicyRef;
   plannerAssignment: PlannedTicketAssignment;
+  amendmentTemplate: {
+    title: string;
+    successCriteria: string[];
+    outputContract: TicketOutputContract;
+  };
 }
 
 export type PlanCommand =
@@ -339,6 +377,8 @@ export interface TicketSnapshot {
   version: number;
   status: TicketStatus;
   parentTicketId?: TicketId;
+  attempts: TicketAttempt[];
+  activeAttemptId?: string;
   activeAuthority?: TicketExecutionAuthority;
   completion?: {
     handoff: TicketHandoff;
@@ -363,14 +403,16 @@ export interface PlanSnapshot {
   completionPolicy: PlanCompletionPolicy;
   policyRef: PlanPolicyRef;
   plannerAssignment: PlannedTicketAssignment;
+  amendmentTemplate: PlanDefinition["amendmentTemplate"];
 }
 
 export type TicketAggregateEventPayload =
   | { type: "TicketReady"; ticketVersion: number }
-  | { type: "TicketClaimed"; claimId: string }
+  | { type: "TicketClaimed"; claimId: string; attemptId: string; attemptNumber: number }
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput?: string }
   | { type: "TicketRetryQueued"; prerequisiteTicketId: TicketId }
+  | { type: "TicketReopened"; returnedByTicketId: TicketId; attemptNumber: number }
   | {
       type: "TicketTerminal";
       status: "completed" | "returned" | "failed" | "cancelled";
@@ -392,7 +434,6 @@ export type PlanAggregateEventPayload = {
   type: "TicketCorrectionRequested";
   sourceTicketId: TicketId;
   targetTicketId: TicketId;
-  correctionTicketId: TicketId;
   reason: string;
 };
 

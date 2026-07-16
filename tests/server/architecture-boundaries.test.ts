@@ -56,7 +56,8 @@ describe("runtime architecture boundaries", () => {
     expect(violations("tickets", [
       /from\s+["'][^"']*\/(?:agents|providers|context|tools)(?:\/|["'])/,
       /\b(?:SessionStore|AgentRole)\b/,
-      /from\s+["'][^"']*shared\/contracts\/(?:agent-engine|mission-control)/
+      /from\s+["'][^"']*shared\/contracts\/(?:agent-engine|mission-control)/,
+      /\b(?:boss-intake-v1|plan-change-set-v3|delivery-v1|qa-report-v1|acceptance-v1)\b/
     ])).toEqual([]);
   });
 
@@ -70,6 +71,7 @@ describe("runtime architecture boundaries", () => {
       /\brole\s*===/,
       /\bboss_acceptance\b/,
       /\bhuman_action\b/,
+      /\b(?:qa-report-v1|acceptance-v1)\b/,
       /\.(?:match|test|search)\s*\(/,
       /new\s+RegExp\s*\(/
     ])).toEqual([]);

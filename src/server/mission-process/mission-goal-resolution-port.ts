@@ -7,6 +7,7 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "./ticket-agent-adapter.js";
 import { validateMissionTicketOutcome } from "./ticket-agent-adapter.js";
+import { validateGoalCriterionResults } from "../agent-engine/agent-engine.js";
 
 export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTicketOutcome> {
   constructor(
@@ -19,6 +20,10 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     goal: AgentGoal,
     proposal: GoalResolutionProposal<TStatus, MissionTicketOutcome>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    const completionError = validateGoalCriterionResults(goal, proposal);
+    if (completionError) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
+    }
     const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome);
     if (!validation.valid) {
       return {

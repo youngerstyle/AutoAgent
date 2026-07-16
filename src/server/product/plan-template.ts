@@ -10,6 +10,11 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missio
     definitionVersion: DEFAULT_PLAN_TEMPLATE_VERSION,
     policyRef,
     plannerAssignment: { requiredCapabilities: ["plan:plan"] },
+    amendmentTemplate: {
+      title: "计划修订",
+      successCriteria: ["核对结构变更原因和证据", "追加完成 Mission 所需的新工单和依赖", "保持 Plan 无环且具有可验证终点"],
+      outputContract: { schemaRef: "plan-change-set-v3" },
+    },
     initialChange: {
       additions: [
         {
@@ -37,6 +42,7 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missio
           ],
           assignment: { requiredCapabilities: ["plan:plan"] },
           outputContract: { schemaRef: "plan-change-set-v3" },
+          permissions: { amendPlan: true },
         },
       ],
       dependencyAdditions: [{ from: { clientRef: "intake" }, to: { clientRef: "planning" } }],

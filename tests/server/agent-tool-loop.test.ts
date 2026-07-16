@@ -47,6 +47,8 @@ describe("AgentToolLoop", () => {
             status: "completed",
             summary: "已完成",
             evidence: [{ kind: "file", ref: "done.txt" }],
+            criterionResults: completedCriteria(),
+            residualRisks: [],
             domainOutcome: { artifact: "done.txt" },
           },
         }],
@@ -92,6 +94,8 @@ describe("AgentToolLoop", () => {
             status: "completed",
             summary: "连续工作完成",
             evidence: [{ kind: "file", ref: "progress-25.txt" }],
+            criterionResults: completedCriteria(),
+            residualRisks: [],
             domainOutcome: { artifact: "progress-25.txt" },
           },
         }],
@@ -124,8 +128,8 @@ describe("AgentToolLoop", () => {
 
   it("asks the model to repair a missing domain outcome inside the same turn", async () => {
     const fixture = await createFixture([
-      { items: [{ type: "tool_call", callId: "resolve-missing-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [] } }] },
-      { items: [{ type: "tool_call", callId: "resolve-with-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], domainOutcome: { artifact: "done" } } }] },
+      { items: [{ type: "tool_call", callId: "resolve-missing-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], criterionResults: completedCriteria(), residualRisks: [] } }] },
+      { items: [{ type: "tool_call", callId: "resolve-with-outcome", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], criterionResults: completedCriteria(), residualRisks: [], domainOutcome: { artifact: "done" } } }] },
     ]);
 
     const turn = await fixture.loop.runSlice(fixture.input);
@@ -140,6 +144,23 @@ describe("AgentToolLoop", () => {
     }));
   });
 
+  it("does not accept completed until every success criterion is reported as satisfied", async () => {
+    const fixture = await createFixture([
+      { items: [{ type: "tool_call", callId: "missing-criteria", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], criterionResults: [], residualRisks: [], domainOutcome: { artifact: "done" } } }] },
+      { items: [{ type: "tool_call", callId: "verified-criteria", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], criterionResults: completedCriteria(), residualRisks: [], domainOutcome: { artifact: "done" } } }] },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("resolution_proposed");
+    expect(fixture.provider.requests[1].history).toContainEqual(expect.objectContaining({
+      type: "tool_result",
+      callId: "missing-criteria",
+      isError: true,
+      content: expect.stringContaining("逐项回应全部成功标准"),
+    }));
+  });
+
   it("returns the exact invalid goal resolution field to the model", async () => {
     const fixture = await createFixture([
       {
@@ -151,6 +172,8 @@ describe("AgentToolLoop", () => {
             status: "completed",
             summary: "完成",
             evidence: ["workspace listing"],
+            criterionResults: completedCriteria(),
+            residualRisks: [],
             domainOutcome: { artifact: "done" },
           },
         }],
@@ -174,6 +197,8 @@ describe("AgentToolLoop", () => {
       status: "completed",
       summary: "完成",
       evidence: ["workspace listing"],
+      criterionResults: completedCriteria(),
+      residualRisks: [],
       domainOutcome: { artifact: "done" },
     };
     const fixture = await createFixture([
@@ -240,11 +265,11 @@ describe("AgentToolLoop", () => {
       {
         items: [
           { type: "tool_call", callId: "write-first", name: "writeFile", arguments: { path: "mixed.txt", content: "ok" } },
-          { type: "tool_call", callId: "resolve-too-early", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], domainOutcome: { artifact: "mixed.txt" } } },
+          { type: "tool_call", callId: "resolve-too-early", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [], criterionResults: completedCriteria(), residualRisks: [], domainOutcome: { artifact: "mixed.txt" } } },
         ],
       },
       {
-        items: [{ type: "tool_call", callId: "resolve-after-result", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [{ kind: "file", ref: "mixed.txt" }], domainOutcome: { artifact: "mixed.txt" } } }],
+        items: [{ type: "tool_call", callId: "resolve-after-result", name: "goal_resolution", arguments: { status: "completed", summary: "完成", evidence: [{ kind: "file", ref: "mixed.txt" }], criterionResults: completedCriteria(), residualRisks: [], domainOutcome: { artifact: "mixed.txt" } } }],
       },
     ]);
 
@@ -376,6 +401,10 @@ describe("AgentToolLoop", () => {
     );
   });
 });
+
+function completedCriteria() {
+  return [{ criterionIndex: 0, status: "satisfied", evidence: [] }];
+}
 
 class QueueProvider implements AgentProviderAdapter {
   error?: Error;

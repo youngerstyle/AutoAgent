@@ -7,6 +7,7 @@ import type {
   PlanCommandEnvelope,
   PlanCommandResult,
   PlanId,
+  PlanGraphSnapshot,
   PlanPolicyPort,
   PlanStatus,
   ReleaseClaimRequest,
@@ -18,6 +19,7 @@ import type {
   TicketEventPage,
   TicketEventQuery,
   TicketExecutionAuthority,
+  TicketHandoff,
   TicketId,
   TicketSnapshot,
   TicketStatus,
@@ -121,6 +123,7 @@ export class TicketEngine {
         completionPolicy: materialized.completionPolicy,
         policyRef: command.payload.definition.policyRef,
         plannerAssignment: command.payload.definition.plannerAssignment,
+        amendmentTemplate: structuredClone(command.payload.definition.amendmentTemplate),
       };
       const result: PlanCommandResult = { accepted: true, commandId: command.commandId, planStatus: plan.status, planVersion: plan.version };
       const events = [
@@ -128,7 +131,7 @@ export class TicketEngine {
         ...tickets.filter((ticket) => ticket.status === "ready").map((ticket) => ticketEvent(ticket, { type: "TicketReady", ticketVersion: ticket.version }, command.issuedAt)),
       ];
       await this.store.create({
-        schemaVersion: 4,
+        schemaVersion: 5,
         plan,
         definitionsByTicketId: { ...materialized.definitionsByTicketId },
         tickets,
@@ -189,7 +192,9 @@ export class TicketEngine {
           pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
         } else if (payload.type === "cancel") {
           plan.status = "cancelled";
-          tickets = tickets.map((ticket) => TERMINAL_TICKET.has(ticket.status) ? ticket : { ...ticket, status: "cancelled", version: ticket.version + 1, activeAuthority: undefined });
+          tickets = tickets.map((ticket) => TERMINAL_TICKET.has(ticket.status) ? ticket : cancelTicket(ticket, command.issuedAt, "Plan cancelled"));
+          current.claims = [];
+          current.blockedOwnerships = [];
           pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
         } else {
           const materialized = materializePlanGraph({
@@ -205,7 +210,7 @@ export class TicketEngine {
           const cancellationIds = new Set(payload.change.cancelTicketIds.map(String));
           const cancelled = tickets
             .filter((ticket) => cancellationIds.has(String(ticket.ticketId)))
-            .map((ticket) => ({ ...ticket, status: "cancelled" as const, version: ticket.version + 1, activeAuthority: undefined }));
+            .map((ticket) => cancelTicket(ticket, command.issuedAt, "Cancelled by Plan change"));
           const cancelledById = new Map(cancelled.map((ticket) => [String(ticket.ticketId), ticket]));
           tickets = [...tickets.map((ticket) => cancelledById.get(String(ticket.ticketId)) ?? ticket), ...added];
           initializeReady(tickets, materialized.graph.dependencyEdges);
@@ -237,27 +242,41 @@ export class TicketEngine {
     }
     const aggregate = await this.requirePlan(input.planId);
     const ticket = aggregate.tickets.find((item) => item.ticketId === input.ticketId);
-    const definition = aggregate.definitionsByTicketId[String(input.ticketId)];
-    const claimablePlan = aggregate.plan.status === "active"
-      || (aggregate.plan.status === "blocked" && definition?.outputContract.schemaRef === "plan-change-set-v3");
+    const claimablePlan = aggregate.plan.status === "active" || aggregate.plan.status === "blocked";
     if (!ticket || ticket.status !== "ready" || ticket.version !== input.expectedTicketVersion || !claimablePlan) return undefined;
     const policy = await this.policyPort.getPolicy(aggregate.plan.policyRef);
     if (!policy || !hasCapability(policy, input.principalId, this.teamBindingIds, "ticket:claim")) throw new TicketEngineOperationError("policy_violation", "Principal cannot claim Ticket");
+    const attemptId = randomUUID();
     const receipt: ClaimReceipt = {
       requestId: input.requestId,
       claimId: randomUUID(),
       planId: input.planId,
       ticketId: input.ticketId,
       ticketVersion: ticket.version + 1,
+      attemptId,
       principalId: input.principalId,
       fencingToken: 1,
       leaseUntil: new Date(this.now().getTime() + input.leaseDurationMs).toISOString(),
     };
     try {
       await this.store.transact(input.planId, versions(aggregate), (current) => {
-        const tickets = current.tickets.map((item) => item.ticketId === input.ticketId ? { ...item, status: "running" as const, version: receipt.ticketVersion, activeAuthority: { kind: "claim" as const, claimId: receipt.claimId, fencingToken: 1 } } : item);
+        const tickets = current.tickets.map((item) => item.ticketId === input.ticketId ? {
+          ...item,
+          status: "running" as const,
+          version: receipt.ticketVersion,
+          activeAuthority: { kind: "claim" as const, claimId: receipt.claimId, fencingToken: 1 },
+          activeAttemptId: attemptId,
+          attempts: [...item.attempts, {
+            attemptId,
+            attemptNumber: item.attempts.length + 1,
+            status: "running" as const,
+            principalId: input.principalId,
+            startedAt: this.now().toISOString(),
+          }],
+        } : item);
         const plan = { ...current.plan, version: current.plan.version + 1 };
-        return { ...current, plan, tickets, claims: [...current.claims, receipt], operationRecords: [...current.operationRecords, { kind: "claim", requestId: input.requestId, fingerprint: fingerprintOf(input), claim: receipt }], pendingEvents: [ticketEvent(tickets.find((item) => item.ticketId === input.ticketId)!, { type: "TicketClaimed", claimId: receipt.claimId }, this.now().toISOString())] };
+        const claimed = tickets.find((item) => item.ticketId === input.ticketId)!;
+        return { ...current, plan, tickets, claims: [...current.claims, receipt], operationRecords: [...current.operationRecords, { kind: "claim", requestId: input.requestId, fingerprint: fingerprintOf(input), claim: receipt }], pendingEvents: [ticketEvent(claimed, { type: "TicketClaimed", claimId: receipt.claimId, attemptId, attemptNumber: claimed.attempts.length }, this.now().toISOString())] };
       });
       return receipt;
     } catch (error) {
@@ -291,7 +310,15 @@ export class TicketEngine {
     const claim = await this.requireClaim(input.claimId, input.fencingToken);
     const aggregate = await this.requirePlan(claim.planId);
     const next = await this.store.transact(claim.planId, versions(aggregate), (current) => {
-      const tickets = current.tickets.map((ticket) => ticket.ticketId === claim.ticketId && ticket.status === "running" ? { ...ticket, status: "ready" as const, version: ticket.version + 1, activeAuthority: undefined } : ticket);
+      const endedAt = this.now().toISOString();
+      const tickets = current.tickets.map((ticket) => ticket.ticketId === claim.ticketId && ticket.status === "running" ? {
+        ...ticket,
+        status: "ready" as const,
+        version: ticket.version + 1,
+        activeAuthority: undefined,
+        activeAttemptId: undefined,
+        attempts: settleAttempt(ticket, claim.attemptId, { status: "released", endedAt, reason: input.reason }),
+      } : ticket);
       const released = tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
       return { ...current, plan: { ...current.plan, version: current.plan.version + 1 }, tickets, claims: current.claims.filter((item) => item.claimId !== claim.claimId), operationRecords: [...current.operationRecords, { kind: "release_claim", requestId: input.requestId, fingerprint: fingerprintOf(input), ticket: released }], pendingEvents: [ticketEvent(released, { type: "TicketReady", ticketVersion: released.version }, this.now().toISOString())] };
     });
@@ -344,6 +371,13 @@ export class TicketEngine {
     if (!ticket || ticket.version !== command.expectedTicketVersion) return this.persistTicketRejection(aggregate, command, fingerprint, "version_conflict", "Ticket version conflict");
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
     if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
+    if (command.payload.type === "complete") {
+      const handoffError = validateCompletionHandoff(
+        command.payload.handoff,
+        aggregate.definitionsByTicketId[String(command.ticketId)]?.successCriteria.length ?? 0,
+      );
+      if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
+    }
     if (command.payload.type === "request_correction") {
       const targetTicketId = command.payload.targetTicketId;
       const target = aggregate.tickets.find((item) => item.ticketId === targetTicketId);
@@ -351,6 +385,7 @@ export class TicketEngine {
         return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Correction target must be a completed strict ancestor in the same Plan");
       }
     }
+    const correctionTargetId = command.payload.type === "request_correction" ? command.payload.targetTicketId : undefined;
     try {
       const next = await this.store.transact(command.planId, versions(aggregate), (current) => {
       const currentTicket = current.tickets.find((item) => item.ticketId === command.ticketId)!;
@@ -364,9 +399,18 @@ export class TicketEngine {
         ticketVersion: currentTicket.version + 1, principalId: command.actorPrincipalId,
         fencingToken: command.authority.fencingToken + 1,
       } : undefined;
+      const attemptUpdate = command.payload.type === "complete"
+        ? { status: "completed" as const, endedAt: command.issuedAt, executionRef: command.executionRef, handoff: structuredClone(command.payload.handoff) }
+        : command.payload.type === "block"
+          ? { status: "blocked" as const, reason: command.payload.reason }
+          : command.payload.type === "fail"
+            ? { status: "failed" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence) }
+            : { status: "returned" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence) };
       let tickets = current.tickets.map((item) => item.ticketId === command.ticketId ? {
         ...item, status, version: item.version + 1,
         activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
+        activeAttemptId: ownership ? item.activeAttemptId : undefined,
+        attempts: settleAttempt(item, item.activeAttemptId, attemptUpdate),
         ...(command.payload.type === "complete" ? {
           completion: {
             handoff: structuredClone(command.payload.handoff),
@@ -374,49 +418,29 @@ export class TicketEngine {
             actorPrincipalId: command.actorPrincipalId,
             executionRef: command.executionRef,
           },
-        } : {}),
+        } : command.payload.type === "request_correction" || command.payload.type === "request_plan_change" || command.payload.type === "fail"
+          ? { completion: undefined }
+          : {}),
       } : item);
       let graph = current.plan.graph;
       let completionPolicy = current.plan.completionPolicy;
       let definitionsByTicketId = current.definitionsByTicketId;
       let appendedTicket: TicketSnapshot | undefined;
+      let correctionPath = new Set<string>();
       if (command.payload.type === "request_correction") {
-        if (graph.ticketIds.length + 1 > DEFAULT_GRAPH_LIMITS.maxTickets || graph.dependencyEdges.length + 2 > DEFAULT_GRAPH_LIMITS.maxEdges) {
-          throw new PlanGraphError("Plan cannot append another correction Ticket within graph limits");
-        }
-        const targetDefinition = current.definitionsByTicketId[String(command.payload.targetTicketId)]!;
-        const correctionId = randomUUID() as TicketId;
-        appendedTicket = {
-          ticketId: correctionId,
-          planId: command.planId,
-          version: 1,
-          status: "pending",
-          parentTicketId: command.payload.targetTicketId,
-        };
-        tickets = [...tickets, appendedTicket];
-        graph = {
-          ...graph,
-          ticketIds: [...graph.ticketIds, correctionId],
-          dependencyEdges: [
-            ...graph.dependencyEdges,
-            { fromTicketId: command.payload.targetTicketId, toTicketId: correctionId },
-            { fromTicketId: correctionId, toTicketId: command.ticketId },
-          ],
-        };
-        definitionsByTicketId = {
-          ...definitionsByTicketId,
-          [String(correctionId)]: {
-            parentTicketId: command.payload.targetTicketId,
-            title: `纠错：${targetDefinition.title}`,
-            objective: `修正工单 ${command.payload.targetTicketId} 的交付问题：${command.payload.reason}`,
-            successCriteria: [
-              `解决报告问题：${command.payload.reason}`,
-              ...targetDefinition.successCriteria,
-            ],
-            assignment: structuredClone(targetDefinition.assignment),
-            outputContract: structuredClone(targetDefinition.outputContract),
-          },
-        };
+        correctionPath = ticketPathBetween(graph, correctionTargetId!, command.ticketId);
+        tickets = tickets.map((item) => {
+          if (!correctionPath.has(String(item.ticketId))) return item;
+          const isTarget = item.ticketId === correctionTargetId;
+          return {
+            ...item,
+            status: isTarget ? "ready" as const : "pending" as const,
+            version: item.ticketId === command.ticketId ? item.version : item.version + 1,
+            activeAuthority: undefined,
+            activeAttemptId: undefined,
+            completion: undefined,
+          };
+        });
       } else if (command.payload.type === "request_plan_change") {
         if (graph.ticketIds.length + 1 > DEFAULT_GRAPH_LIMITS.maxTickets || graph.dependencyEdges.length + 1 > DEFAULT_GRAPH_LIMITS.maxEdges) {
           throw new PlanGraphError("Plan cannot append another amendment Ticket within graph limits");
@@ -428,6 +452,7 @@ export class TicketEngine {
           version: 1,
           status: "pending",
           parentTicketId: command.ticketId,
+          attempts: [],
         };
         tickets = [...tickets, appendedTicket];
         graph = {
@@ -439,11 +464,12 @@ export class TicketEngine {
           ...definitionsByTicketId,
           [String(amendmentId)]: {
             parentTicketId: command.ticketId,
-            title: "计划修订",
+            title: current.plan.amendmentTemplate.title,
             objective: `处理工单 ${command.ticketId} 提出的计划结构问题：${command.payload.reason}`,
-            successCriteria: ["核对结构变更原因和证据", "追加完成 Mission 所需的新工单和依赖", "保持 Plan 无环且具有可验证终点"],
+            successCriteria: [...current.plan.amendmentTemplate.successCriteria],
             assignment: structuredClone(current.plan.plannerAssignment),
-            outputContract: { schemaRef: "plan-change-set-v3" },
+            outputContract: structuredClone(current.plan.amendmentTemplate.outputContract),
+            permissions: { amendPlan: true },
           },
         };
       }
@@ -465,14 +491,16 @@ export class TicketEngine {
         status === "blocked"
           ? { type: "TicketBlocked", requiredInput: command.payload.type === "block" ? command.payload.requiredInput : undefined }
           : status === "pending"
-            ? { type: "TicketRetryQueued", prerequisiteTicketId: appendedTicket!.ticketId }
+            ? { type: "TicketRetryQueued", prerequisiteTicketId: correctionTargetId ?? appendedTicket!.ticketId }
             : { type: "TicketTerminal", status: status as "completed" | "failed" },
         command.issuedAt,
       )];
       for (const ready of changed.ready) pendingEvents.push(ticketEvent(ready, { type: "TicketReady", ticketVersion: ready.version }, command.issuedAt));
       if (command.payload.type === "request_correction") {
-        pendingEvents.push(planEvent(command.planId, plan.version, { type: "TicketCorrectionRequested", sourceTicketId: command.ticketId, targetTicketId: command.payload.targetTicketId, correctionTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));
-        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
+        const reopened = tickets.find((item) => item.ticketId === correctionTargetId)!;
+        pendingEvents.push(ticketEvent(reopened, { type: "TicketReopened", returnedByTicketId: command.ticketId, attemptNumber: reopened.attempts.length + 1 }, command.issuedAt));
+        pendingEvents.push(ticketEvent(reopened, { type: "TicketReady", ticketVersion: reopened.version }, command.issuedAt));
+        pendingEvents.push(planEvent(command.planId, plan.version, { type: "TicketCorrectionRequested", sourceTicketId: command.ticketId, targetTicketId: correctionTargetId!, reason: command.payload.reason }, command.issuedAt));
       } else if (command.payload.type === "request_plan_change") {
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
@@ -541,7 +569,85 @@ function asMaterialized(aggregate: TicketAggregate): MaterializedPlanGraph {
   return { planId: aggregate.plan.planId, graph: aggregate.plan.graph, completionPolicy: aggregate.plan.completionPolicy, definitionsByTicketId: aggregate.definitionsByTicketId, addedTicketIds: [] };
 }
 function createTickets(graph: MaterializedPlanGraph, planId: PlanId): TicketSnapshot[] {
-  return graph.graph.ticketIds.map((ticketId) => ({ ticketId, planId, version: 1, status: "pending", ...(graph.definitionsByTicketId[String(ticketId)]?.parentTicketId ? { parentTicketId: graph.definitionsByTicketId[String(ticketId)].parentTicketId } : {}) }));
+  return graph.graph.ticketIds.map((ticketId) => ({ ticketId, planId, version: 1, status: "pending", attempts: [], ...(graph.definitionsByTicketId[String(ticketId)]?.parentTicketId ? { parentTicketId: graph.definitionsByTicketId[String(ticketId)].parentTicketId } : {}) }));
+}
+
+function settleAttempt(
+  ticket: TicketSnapshot,
+  attemptId: string | undefined,
+  update: Partial<TicketSnapshot["attempts"][number]> & Pick<TicketSnapshot["attempts"][number], "status">,
+): TicketSnapshot["attempts"] {
+  if (!attemptId) throw new TicketEngineOperationError("invalid_request", `Ticket ${ticket.ticketId} has no active Attempt`);
+  let found = false;
+  const attempts = ticket.attempts.map((attempt) => {
+    if (attempt.attemptId !== attemptId) return attempt;
+    found = true;
+    return { ...attempt, ...structuredClone(update) };
+  });
+  if (!found) throw new TicketEngineOperationError("invalid_request", `Attempt ${attemptId} does not exist`);
+  return attempts;
+}
+
+function cancelTicket(ticket: TicketSnapshot, endedAt: string, reason: string): TicketSnapshot {
+  return {
+    ...ticket,
+    status: "cancelled",
+    version: ticket.version + 1,
+    activeAuthority: undefined,
+    activeAttemptId: undefined,
+    attempts: ticket.activeAttemptId
+      ? settleAttempt(ticket, ticket.activeAttemptId, { status: "cancelled", endedAt, reason })
+      : ticket.attempts,
+  };
+}
+
+function validateCompletionHandoff(handoff: TicketHandoff, criterionCount: number): string | undefined {
+  if (handoff.schemaVersion !== 1 || !handoff.summary.trim()) return "Completion handoff must have schemaVersion 1 and a summary";
+  if (!Array.isArray(handoff.evidence) || handoff.evidence.some((ref) => !ref?.kind?.trim() || !ref?.ref?.trim())) {
+    return "Completion handoff evidence is invalid";
+  }
+  if (!Array.isArray(handoff.residualRisks) || handoff.residualRisks.some((risk) => typeof risk !== "string")) {
+    return "Completion handoff residualRisks must be strings";
+  }
+  if (!Array.isArray(handoff.criterionResults) || handoff.criterionResults.length !== criterionCount) {
+    return `Completion handoff must report all ${criterionCount} success criteria`;
+  }
+  const indexes = new Set<number>();
+  for (const result of handoff.criterionResults) {
+    if (!Number.isSafeInteger(result.criterionIndex) || result.criterionIndex < 0 || result.criterionIndex >= criterionCount || indexes.has(result.criterionIndex)) {
+      return "Completion handoff criterion indexes must uniquely cover the Ticket success criteria";
+    }
+    indexes.add(result.criterionIndex);
+    if (result.status !== "satisfied") return "A Ticket cannot complete while a success criterion is unsatisfied or unverified";
+    if (!Array.isArray(result.evidence) || result.evidence.some((ref) => !ref?.kind?.trim() || !ref?.ref?.trim())) {
+      return "Completion handoff criterion evidence is invalid";
+    }
+  }
+  return undefined;
+}
+
+function ticketPathBetween(graph: PlanGraphSnapshot, from: TicketId, to: TicketId): Set<string> {
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  for (const edge of graph.dependencyEdges) {
+    outgoing.set(String(edge.fromTicketId), [...(outgoing.get(String(edge.fromTicketId)) ?? []), String(edge.toTicketId)]);
+    incoming.set(String(edge.toTicketId), [...(incoming.get(String(edge.toTicketId)) ?? []), String(edge.fromTicketId)]);
+  }
+  const descendants = reachable(String(from), outgoing);
+  const ancestors = reachable(String(to), incoming);
+  return new Set([...descendants].filter((id) => ancestors.has(id)));
+}
+
+function reachable(start: string, edges: ReadonlyMap<string, string[]>): Set<string> {
+  const seen = new Set<string>();
+  const queue = [start];
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    queue.push(...(edges.get(current) ?? []));
+  }
+  return seen;
 }
 function initializeReady(tickets: TicketSnapshot[], edges: MaterializedPlanGraph["graph"]["dependencyEdges"]): void {
   const incoming = new Set(edges.map((edge) => String(edge.toTicketId)));
@@ -603,7 +709,7 @@ function hasCapability(policy: PlanAuthorizationPolicy, principalId: string, tea
 function canApplyChangeFromTicket(aggregate: TicketAggregate, ticketId: TicketId, authority: TicketExecutionAuthority, principalId: string): boolean {
   const ticket = aggregate.tickets.find((item) => item.ticketId === ticketId);
   const definition = aggregate.definitionsByTicketId[String(ticketId)];
-  if (!ticket || !definition || definition.outputContract.schemaRef !== "plan-change-set-v3") return false;
+  if (!ticket || !definition?.permissions?.amendPlan) return false;
   if (ticket.status !== "running" && ticket.status !== "blocked") return false;
   if (!authorityMatches(ticket.activeAuthority, authority)) return false;
   if (authority.kind === "claim") return aggregate.claims.some((claim) => claim.claimId === authority.claimId && claim.principalId === principalId);

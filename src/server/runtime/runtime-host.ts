@@ -404,7 +404,7 @@ export class RuntimeHost {
         targetAgentId: link?.agentId,
         capabilityTags: work.definition.assignment.requiredCapabilities,
         priority: 0,
-        attempt: 1,
+        attempt: Math.max(1, work.ticket.attempts.length),
         parentTicketId: work.ticket.parentTicketId,
         dependsOnTicketIds: plan.graph.dependencyEdges.filter((edge) => edge.toTicketId === ticketId).map((edge) => String(edge.fromTicketId)),
         createdAt: record.createdAt,

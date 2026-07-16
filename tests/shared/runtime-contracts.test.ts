@@ -15,7 +15,7 @@ describe("Ticket Engine runtime contracts", () => {
   it("uses Plan as the only Ticket partition", () => {
     const planId = "5deef401-b641-402d-b879-84909d3a2061" as PlanId;
     const ticketId = "e529480a-9364-4370-887d-e57cd4e09228" as TicketId;
-    const create = { commandId: "c1", planId, actorPrincipalId: "planner", issuedAt: "2026-07-14T00:00:00.000Z", payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "d", definitionVersion: 1, policyRef: { policyId: "p", policyVersion: 1, contentHash: "hash" }, plannerAssignment: {}, initialChange: { additions: [{ clientRef: "work", title: "工作", objective: "完成", successCriteria: ["完成"], assignment: {}, outputContract: { schemaRef: "result-v1" } }], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "work" }] } } } } satisfies PlanCommandEnvelope;
+    const create = { commandId: "c1", planId, actorPrincipalId: "planner", issuedAt: "2026-07-14T00:00:00.000Z", payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "d", definitionVersion: 1, policyRef: { policyId: "p", policyVersion: 1, contentHash: "hash" }, plannerAssignment: {}, amendmentTemplate: { title: "修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "change-v1" } }, initialChange: { additions: [{ clientRef: "work", title: "工作", objective: "完成", successCriteria: ["完成"], assignment: {}, outputContract: { schemaRef: "result-v1" } }], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "work" }] } } } } satisfies PlanCommandEnvelope;
     const claim = { commandId: "c2", planId, actorPrincipalId: "agent", issuedAt: "2026-07-14T00:00:00.000Z", payload: { type: "claim", requestId: "r1", ticketId, expectedTicketVersion: 1, leaseDurationMs: 1000 } } satisfies ClaimCommandEnvelope;
     expect(create.payload.type).toBe("create_plan");
     expect(claim.planId).toBe(planId);
@@ -26,7 +26,7 @@ describe("Ticket Engine runtime contracts", () => {
     const accept = (_payload: TicketCommandPayload) => undefined;
     accept({
       type: "complete",
-      handoff: { schemaVersion: 1, summary: "完成工作", output: {}, evidence: [] },
+      handoff: { schemaVersion: 1, summary: "完成工作", output: {}, evidence: [], criterionResults: [], residualRisks: [] },
     });
     if (false) {
       // @ts-expect-error Ticket Engine never routes directly to a team role.

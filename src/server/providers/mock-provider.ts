@@ -29,6 +29,8 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       status: "completed",
       summary: "已形成执行工单 DAG",
       evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
       domainOutcome: {
         result: { plan: "实现、质量检查、验收" },
         change: {
@@ -52,8 +54,16 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     status: "completed",
     summary: "模拟 Agent 已完成当前目标",
     evidence: [],
+    criterionResults: completedCriteria(instructions),
+    residualRisks: [],
     domainOutcome: { ok: true },
   };
+}
+
+function completedCriteria(instructions: string) {
+  const block = instructions.match(/成功标准：\r?\n((?:- [^\r\n]*(?:\r?\n|$))+)/)?.[1] ?? "";
+  const count = block.split(/\r?\n/).filter((line) => line.startsWith("- ")).length;
+  return Array.from({ length: count }, (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] }));
 }
 
 function currentTicketId(instructions: string): string {

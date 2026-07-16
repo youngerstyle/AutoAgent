@@ -51,8 +51,6 @@ export function validateMissionTicketOutcome(schemaRef: string | undefined, stat
     if (!("result" in value) || !isRecord(value.change)) return { valid: false, reason: "plan-change-set-v3 需要 result 和 change" };
     const error = validateChangeSet(value.change);
     if (error) return { valid: false, reason: error };
-    const deliveryError = validateDeliveryClosure(value.change);
-    if (deliveryError) return { valid: false, reason: deliveryError };
   }
   return { valid: true };
 }
@@ -69,7 +67,7 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
   const base = `完成当前 Goal 时必须使用 goalResolution；domainOutcome 只提交输出契约要求的领域交付物，Ticket 和 Plan 状态由平台提交。满足成功标准时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时使用 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 disposition=plan_change_required 与 reason。Host 返回 correctable 只表示当前提案需要修正并重新提交，应保持原本基于工作事实判断的 Goal 结论；不得仅因提案结构或契约校验被退回就改成 failed 或 blocked。${targets}${workContext}不得根据角色名称或自然语言猜测工单流转。`;
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
-    const contract = `change 的完整结构示例为：{"additions":[{"clientRef":"dev","title":"开发","objective":"实现目标","successCriteria":["产生真实交付物"],"assignment":{"requiredCapabilities":["delivery:implement"]},"outputContract":{"schemaRef":"delivery-v1"}},{"clientRef":"qa","title":"质量检查","objective":"验证交付物和成功标准","successCriteria":["形成可复现验证证据"],"assignment":{"requiredCapabilities":["delivery:verify"]},"outputContract":{"schemaRef":"qa-report-v1"}},{"clientRef":"acceptance","title":"最终验收","objective":"依据原始目标和 QA 证据作出最终验收","successCriteria":["明确通过或退回结论"],"assignment":{"requiredCapabilities":["delivery:accept"]},"outputContract":{"schemaRef":"acceptance-v1"}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"dev"}},{"from":{"clientRef":"dev"},"to":{"clientRef":"qa"}},{"from":{"clientRef":"qa"},"to":{"clientRef":"acceptance"}}],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"acceptance"}]}。这是最小交付闭环示例，不要求每个 Mission 都增加架构工单；但新增交付链必须包含 qa-report-v1 验证和 acceptance-v1 最终验收，并以验收工单作为终点。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。`;
+    const contract = `change 的结构为：{"additions":[{"clientRef":"work","title":"执行工作","objective":"完成明确目标","successCriteria":["形成可核验交付"],"assignment":{"requiredCapabilities":["从团队快照选择的能力"]},"outputContract":{"schemaRef":"由该工单领域决定的输出契约"}},{"clientRef":"review","title":"独立验证","objective":"依据成功标准检查上游交付","successCriteria":["形成通过或退回的可复现证据"],"assignment":{"requiredCapabilities":["从团队快照选择的验证能力"]},"outputContract":{"schemaRef":"由验证工作决定的输出契约"}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"work"}},{"from":{"clientRef":"work"},"to":{"clientRef":"review"}}],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"review"}]}。这只是字段结构示例，不规定角色名称、工单数量、能力名称或 schemaRef。你必须根据 Mission、成功标准、风险和当前团队能力设计真实 DAG；可逆且低风险的工作无需机械增加层级，软件交付等需要独立验证的工作必须包含可核验的下游检查和真实终点。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。`;
     const currentPlan = planningContext
       ? `当前 Plan 与团队的平台事实快照如下（这是 Ticket Engine 和 Team Binding 的权威状态）：${JSON.stringify(planningContext)}。无需读取工作区文件来猜测 Plan 或 Ticket 状态；项目文件只用于理解实际交付物。同一个 assignment 必须能由一名成员完整满足：优先直接使用快照中的 principalId；若使用 requiredCapabilities，则其中每一项都必须同时存在于同一名成员的 capabilities 中，不得把多名成员的能力合并为一个 Ticket 的要求。`
       : "";
@@ -93,7 +91,14 @@ export function proposalToTicketCommand(proposal: GoalResolutionProposal<GoalRes
   let payload: TicketCommandPayload;
   if (proposal.status === "completed" && proposal.domainOutcome?.disposition === "correction_required") payload = { type: "request_correction", targetTicketId: proposal.domainOutcome.targetTicketId as TicketId, reason: proposal.domainOutcome.reason as string, evidence };
   else if (proposal.status === "completed" && proposal.domainOutcome?.disposition === "plan_change_required") payload = { type: "request_plan_change", reason: proposal.domainOutcome.reason as string, evidence };
-  else if (proposal.status === "completed") payload = { type: "complete", handoff: { schemaVersion: 1, summary: proposal.summary, output: proposal.domainOutcome, evidence } };
+  else if (proposal.status === "completed") payload = { type: "complete", handoff: {
+    schemaVersion: 1,
+    summary: proposal.summary,
+    output: proposal.domainOutcome,
+    evidence,
+    criterionResults: proposal.criterionResults.map((item) => ({ ...item, evidence: item.evidence.map((ref) => ({ kind: ref.kind, ref: ref.ref })) })),
+    residualRisks: [...proposal.residualRisks],
+  } };
   else if (proposal.status === "blocked") payload = { type: "block", reason: proposal.summary, requiredInput: isRecord(proposal.domainOutcome) && typeof proposal.domainOutcome.requiredInput === "string" ? proposal.domainOutcome.requiredInput : undefined };
   else payload = { type: "fail", reason: proposal.summary, evidence };
   return { commandId: stableId("ticket_command", JSON.stringify([link.planId, link.ticketId, proposal.proposalId, link.ticketVersion])), proposalId: proposal.proposalId, planId: link.planId, ticketId: link.ticketId, expectedTicketVersion: link.ticketVersion, actorPrincipalId: link.agentPrincipalId, executionRef: link.agentGoalId, authority: link.authority, issuedAt, payload };
@@ -135,45 +140,6 @@ function validateChangeSet(value: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-function validateDeliveryClosure(value: Record<string, unknown>): string | undefined {
-  const additions = value.additions as Array<Record<string, unknown>>;
-  const dependencies = value.dependencyAdditions as Array<Record<string, unknown>>;
-  const terminals = value.requiredTerminalRefs as Array<Record<string, unknown>>;
-  const schemaByRef = new Map(additions.map((node) => [
-    String(node.clientRef),
-    String((node.outputContract as Record<string, unknown>).schemaRef),
-  ]));
-  const acceptanceRefs = [...schemaByRef].filter(([, schema]) => schema === "acceptance-v1").map(([ref]) => ref);
-  const terminalAcceptanceRefs = terminals.flatMap((ref) => (
-    typeof ref.clientRef === "string" && acceptanceRefs.includes(ref.clientRef) ? [ref.clientRef] : []
-  ));
-  if (!acceptanceRefs.length || !terminalAcceptanceRefs.length) {
-    return "新增交付链必须包含 acceptance-v1 最终验收工单，并把该工单设为 requiredTerminalRefs 终点";
-  }
-  const qaRefs = [...schemaByRef].filter(([, schema]) => schema === "qa-report-v1").map(([ref]) => ref);
-  if (!qaRefs.length) return "新增交付链必须在最终验收前包含 qa-report-v1 质量检查工单";
-
-  const outgoing = new Map<string, string[]>();
-  for (const edge of dependencies) {
-    const from = isRecord(edge.from) && typeof edge.from.clientRef === "string" ? edge.from.clientRef : undefined;
-    const to = isRecord(edge.to) && typeof edge.to.clientRef === "string" ? edge.to.clientRef : undefined;
-    if (!from || !to) continue;
-    outgoing.set(from, [...(outgoing.get(from) ?? []), to]);
-  }
-  const qaReachesAcceptance = qaRefs.some((qaRef) => {
-    const visited = new Set<string>();
-    const queue = [qaRef];
-    while (queue.length) {
-      const current = queue.shift()!;
-      if (visited.has(current)) continue;
-      visited.add(current);
-      if (terminalAcceptanceRefs.includes(current)) return true;
-      queue.push(...(outgoing.get(current) ?? []));
-    }
-    return false;
-  });
-  return qaReachesAcceptance ? undefined : "qa-report-v1 质量检查工单必须位于 acceptance-v1 最终验收工单的上游";
-}
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isNonEmptyString(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()); }
 function isStringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every(isNonEmptyString); }

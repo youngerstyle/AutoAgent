@@ -203,6 +203,8 @@ describe("RuntimeHost", () => {
                 status: "completed",
                 summary: "仍然缺少 graph",
                 evidence: [],
+                criterionResults: Array.from({ length: 5 }, (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] })),
+                residualRisks: [],
                 domainOutcome: { result: { plan: "incomplete" } },
               },
             }
@@ -211,6 +213,8 @@ describe("RuntimeHost", () => {
                 status: "completed",
                 summary: "需求接收完成",
                 evidence: [],
+                criterionResults: Array.from({ length: 3 }, (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] })),
+                residualRisks: [],
                 domainOutcome: { accepted: true },
               },
             };

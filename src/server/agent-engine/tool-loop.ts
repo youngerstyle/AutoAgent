@@ -529,11 +529,30 @@ function goalResolutionTool(): AgentToolDefinition {
             additionalProperties: false,
           },
         },
+        criterionResults: {
+          type: "array",
+          description: "逐项回应当前 Goal 的 successCriteria；completed 时必须按索引完整覆盖且全部为 satisfied",
+          items: {
+            type: "object",
+            properties: {
+              criterionIndex: { type: "integer", minimum: 0 },
+              status: { type: "string", enum: ["satisfied", "not_satisfied", "not_verified"] },
+              evidence: {
+                type: "array",
+                items: { type: "object", properties: { kind: { type: "string" }, ref: { type: "string" } }, required: ["kind", "ref"], additionalProperties: false },
+              },
+              note: { type: "string" },
+            },
+            required: ["criterionIndex", "status", "evidence"],
+            additionalProperties: false,
+          },
+        },
+        residualRisks: { type: "array", items: { type: "string" } },
         domainOutcome: {
           description: "当前 Goal 的结构化领域结果；完成时提交交付结果，阻塞时提交 requiredInput 等阻塞事实，失败时提交失败事实",
         },
       },
-      required: ["status", "summary", "evidence", "domainOutcome"],
+      required: ["status", "summary", "evidence", "criterionResults", "residualRisks", "domainOutcome"],
       additionalProperties: false,
     },
   };
@@ -573,6 +592,36 @@ function parseResolutionProposal(
     kind: (item as Record<string, unknown>).kind as string,
     ref: (item as Record<string, unknown>).ref as string,
   }));
+  if (!Array.isArray(value.criterionResults)) return { ok: false, reason: "criterionResults 必须是数组" };
+  const criterionResults = [];
+  const seen = new Set<number>();
+  for (const [index, item] of value.criterionResults.entries()) {
+    if (!isRecord(item) || !Number.isInteger(item.criterionIndex) || !new Set(["satisfied", "not_satisfied", "not_verified"]).has(String(item.status)) || !Array.isArray(item.evidence)) {
+      return { ok: false, reason: `criterionResults[${index}] 结构无效` };
+    }
+    const criterionIndex = item.criterionIndex as number;
+    if (criterionIndex < 0 || criterionIndex >= goal.spec.successCriteria.length || seen.has(criterionIndex)) {
+      return { ok: false, reason: `criterionResults[${index}].criterionIndex 无效或重复` };
+    }
+    seen.add(criterionIndex);
+    const itemEvidence = item.evidence;
+    if (itemEvidence.some((entry) => !isRecord(entry) || typeof entry.kind !== "string" || typeof entry.ref !== "string")) {
+      return { ok: false, reason: `criterionResults[${index}].evidence 结构无效` };
+    }
+    criterionResults.push({
+      criterionIndex,
+      status: item.status as "satisfied" | "not_satisfied" | "not_verified",
+      evidence: itemEvidence.map((entry) => ({ kind: (entry as Record<string, unknown>).kind as string, ref: (entry as Record<string, unknown>).ref as string })),
+      ...(typeof item.note === "string" ? { note: item.note } : {}),
+    });
+  }
+  if (!Array.isArray(value.residualRisks) || value.residualRisks.some((item) => typeof item !== "string")) {
+    return { ok: false, reason: "residualRisks 必须是字符串数组" };
+  }
+  if (value.status === "completed") {
+    if (criterionResults.length !== goal.spec.successCriteria.length) return { ok: false, reason: "completed 必须逐项回应全部成功标准" };
+    if (criterionResults.some((item) => item.status !== "satisfied")) return { ok: false, reason: "存在未满足或未验证的成功标准，不能提交 completed" };
+  }
   return { ok: true, value: {
     proposalId: stableId("proposal", goal.spec.id, turnId),
     turnId,
@@ -582,6 +631,8 @@ function parseResolutionProposal(
     status: value.status as "completed" | "blocked" | "failed",
     summary: value.summary,
     evidence,
+    criterionResults,
+    residualRisks: [...value.residualRisks] as string[],
     domainOutcome: value.domainOutcome,
     createdAt,
   } };

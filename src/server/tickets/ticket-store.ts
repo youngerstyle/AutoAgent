@@ -31,7 +31,7 @@ export interface TicketOutboxEntry { position: number; event: TicketEvent }
 export interface TicketStorageIdentity { taskId: string; taskRunId: string; planId: PlanId }
 
 export interface TicketAggregate {
-  schemaVersion: 4;
+  schemaVersion: 5;
   storageIdentity: TicketStorageIdentity;
   aggregateVersion: number;
   plan: PlanSnapshot;
@@ -46,7 +46,7 @@ export interface TicketAggregate {
 }
 
 export interface TicketAggregateSeed {
-  schemaVersion: 4;
+  schemaVersion: 5;
   plan: PlanSnapshot;
   definitionsByTicketId: Record<string, TicketDefinition>;
   tickets: TicketSnapshot[];
@@ -73,8 +73,6 @@ export class TicketStoreCorruptionError extends Error {
 
 const writeQueues = new Map<string, Promise<unknown>>();
 const DEFAULT_OPTIONS: ResolvedTicketStoreOptions = { lockWaitTimeoutMs: 60_000, lockRetryMs: 10, lockStaleMs: 30_000 };
-const TERMINAL = new Set(["completed", "returned", "failed", "cancelled"]);
-
 export class TicketStore {
   private readonly options: ResolvedTicketStoreOptions;
 
@@ -92,7 +90,7 @@ export class TicketStore {
       if (await this.readFromDisk(seed.plan.planId)) throw new TicketStoreConflictError(`Plan ${seed.plan.planId} already exists`);
       const pendingEvents = seed.pendingEvents ?? [];
       const aggregate: TicketAggregate = {
-        schemaVersion: 4,
+        schemaVersion: 5,
         storageIdentity: this.storageIdentity(seed.plan.planId),
         aggregateVersion: 1,
         plan: structuredClone(seed.plan),
@@ -132,7 +130,7 @@ export class TicketStore {
       }
       let position = current.outbox.at(-1)?.position ?? 0;
       const next: TicketAggregate = {
-        schemaVersion: 4,
+        schemaVersion: 5,
         storageIdentity: this.storageIdentity(planId),
         aggregateVersion: current.aggregateVersion + 1,
         plan: structuredClone(proposed.plan),
@@ -198,7 +196,7 @@ export class TicketStore {
     const ids: PlanId[] = [];
     for (const name of names.filter((item) => item.endsWith(".json")).sort()) {
       const raw = JSON.parse(await readFile(path.join(directory, name), "utf8")) as { schemaVersion?: number; storageIdentity?: { planId?: string } };
-      if (raw.schemaVersion !== 4 || !raw.storageIdentity?.planId) continue;
+      if (raw.schemaVersion !== 5 || !raw.storageIdentity?.planId) continue;
       const planId = raw.storageIdentity.planId as PlanId;
       this.validate(raw, planId);
       ids.push(planId);
@@ -246,14 +244,48 @@ export class TicketStore {
   private validate(value: unknown, planId: PlanId): asserts value is TicketAggregate {
     if (!value || typeof value !== "object") throw new TicketStoreCorruptionError("Ticket aggregate must be an object");
     const aggregate = value as Partial<TicketAggregate>;
-    if (aggregate.schemaVersion !== 4) throw new TicketStoreCorruptionError("Only Ticket aggregate schema v4 is schedulable");
+    if (aggregate.schemaVersion !== 5) throw new TicketStoreCorruptionError("Only Ticket aggregate schema v5 is schedulable");
     if (aggregate.storageIdentity?.planId !== planId || aggregate.plan?.planId !== planId) throw new TicketStoreCorruptionError("Plan identity mismatch");
+    const amendment = aggregate.plan?.amendmentTemplate;
+    if (!amendment || !amendment.title?.trim() || !Array.isArray(amendment.successCriteria) || amendment.successCriteria.length === 0
+      || amendment.successCriteria.some((item) => !item?.trim()) || !amendment.outputContract?.schemaRef?.trim()) {
+      throw new TicketStoreCorruptionError("Plan amendment template is invalid");
+    }
     if (!Array.isArray(aggregate.tickets) || !aggregate.definitionsByTicketId) throw new TicketStoreCorruptionError("Plan Tickets are missing");
     const ids = new Set<string>();
     for (const ticket of aggregate.tickets) {
       if (ticket.planId !== planId || ids.has(String(ticket.ticketId))) throw new TicketStoreCorruptionError("Duplicate or foreign Ticket");
       ids.add(String(ticket.ticketId));
       if (!aggregate.definitionsByTicketId[String(ticket.ticketId)]) throw new TicketStoreCorruptionError(`Definition missing for Ticket ${ticket.ticketId}`);
+      if (!Array.isArray(ticket.attempts)) throw new TicketStoreCorruptionError(`Attempts missing for Ticket ${ticket.ticketId}`);
+      const attemptIds = new Set<string>();
+      for (const [index, attempt] of ticket.attempts.entries()) {
+        if (!attempt.attemptId || attemptIds.has(attempt.attemptId) || attempt.attemptNumber !== index + 1) {
+          throw new TicketStoreCorruptionError(`Invalid Attempt history for Ticket ${ticket.ticketId}`);
+        }
+        attemptIds.add(attempt.attemptId);
+      }
+      if (ticket.activeAttemptId && !attemptIds.has(ticket.activeAttemptId)) {
+        throw new TicketStoreCorruptionError(`Active Attempt missing for Ticket ${ticket.ticketId}`);
+      }
+      const activeAttempt = ticket.activeAttemptId
+        ? ticket.attempts.find((attempt) => attempt.attemptId === ticket.activeAttemptId)
+        : undefined;
+      if ((ticket.status === "running" || ticket.status === "blocked") && !activeAttempt) {
+        throw new TicketStoreCorruptionError(`Executing Ticket ${ticket.ticketId} has no active Attempt`);
+      }
+      if (ticket.status !== "running" && ticket.status !== "blocked" && ticket.activeAttemptId) {
+        throw new TicketStoreCorruptionError(`Non-executing Ticket ${ticket.ticketId} has an active Attempt`);
+      }
+      if (activeAttempt && (activeAttempt.status !== ticket.status || activeAttempt.endedAt)) {
+        throw new TicketStoreCorruptionError(`Active Attempt state does not match Ticket ${ticket.ticketId}`);
+      }
+      if (ticket.attempts.some((attempt) => {
+        const isActive = attempt.attemptId === ticket.activeAttemptId;
+        return !isActive && (attempt.status === "running" || attempt.status === "blocked" || !attempt.endedAt);
+      })) {
+        throw new TicketStoreCorruptionError(`Historical Attempt is not settled for Ticket ${ticket.ticketId}`);
+      }
     }
     if (aggregate.plan?.graph.ticketIds.some((ticketId) => !ids.has(String(ticketId)))) throw new TicketStoreCorruptionError("Plan graph references unknown Ticket");
   }
@@ -263,8 +295,20 @@ export class TicketStore {
     for (const ticket of previous.tickets) {
       const current = nextById.get(String(ticket.ticketId));
       if (!current) throw new TicketStoreCorruptionError(`Historical Ticket ${ticket.ticketId} was removed`);
-      if (TERMINAL.has(ticket.status) && (current.status !== ticket.status || current.version !== ticket.version)) {
-        throw new TicketStoreCorruptionError(`Terminal Ticket ${ticket.ticketId} is immutable`);
+      if ((ticket.status === "failed" || ticket.status === "cancelled") && (current.status !== ticket.status || current.version !== ticket.version)) {
+        throw new TicketStoreCorruptionError(`Final Ticket ${ticket.ticketId} is immutable`);
+      }
+      if (current.attempts.length < ticket.attempts.length) {
+        throw new TicketStoreCorruptionError(`Attempt history was removed from Ticket ${ticket.ticketId}`);
+      }
+      for (const [index, attempt] of ticket.attempts.entries()) {
+        const updated = current.attempts[index];
+        if (!updated || updated.attemptId !== attempt.attemptId) {
+          throw new TicketStoreCorruptionError(`Attempt history was reordered for Ticket ${ticket.ticketId}`);
+        }
+        if (attempt.endedAt && JSON.stringify(updated) !== JSON.stringify(attempt)) {
+          throw new TicketStoreCorruptionError(`Ended Attempt ${attempt.attemptId} is immutable`);
+        }
       }
     }
     const oldEdges = new Set(previous.plan.graph.dependencyEdges.map((edge) => `${edge.fromTicketId}\0${edge.toTicketId}`));

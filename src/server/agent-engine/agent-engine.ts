@@ -44,6 +44,10 @@ export class AcceptingGoalResolutionPort implements GoalResolutionPort {
     goal: AgentGoal,
     proposal: GoalResolutionProposal<TStatus>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    const completionError = validateGoalCriterionResults(goal, proposal);
+    if (completionError) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
+    }
     const outputContract = goal.spec.outputContract;
     if (outputContract) {
       const validation = this.validator?.validate(outputContract.schemaRef, proposal.domainOutcome)
@@ -60,6 +64,26 @@ export class AcceptingGoalResolutionPort implements GoalResolutionPort {
       decision: { accepted: true, committedState: proposal.status },
     };
   }
+}
+
+export function validateGoalCriterionResults(goal: AgentGoal, proposal: GoalResolutionProposal): string | undefined {
+  if (!Array.isArray(proposal.criterionResults)) return "criterionResults 必须是数组";
+  if (!Array.isArray(proposal.residualRisks) || proposal.residualRisks.some((item) => typeof item !== "string")) {
+    return "residualRisks 必须是字符串数组";
+  }
+  if (proposal.status !== "completed") return undefined;
+  const expected = goal.spec.successCriteria.length;
+  if (proposal.criterionResults.length !== expected) return `完成报告必须逐项回应全部 ${expected} 条成功标准`;
+  const seen = new Set<number>();
+  for (const result of proposal.criterionResults) {
+    if (!Number.isInteger(result.criterionIndex) || result.criterionIndex < 0 || result.criterionIndex >= expected || seen.has(result.criterionIndex)) {
+      return "criterionResults 的 criterionIndex 必须唯一覆盖当前 Goal 的成功标准";
+    }
+    seen.add(result.criterionIndex);
+    if (result.status !== "satisfied") return `成功标准 ${result.criterionIndex + 1} 尚未满足，不能提交 completed`;
+    if (!Array.isArray(result.evidence)) return `成功标准 ${result.criterionIndex + 1} 的 evidence 必须是数组`;
+  }
+  return undefined;
 }
 
 export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainOutcome> {

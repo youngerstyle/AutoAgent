@@ -488,6 +488,8 @@ function proposalFor(goal: AgentGoal): GoalResolutionProposal<"completed"> {
     status: "completed",
     summary: "修复完成",
     evidence: [{ kind: "file", ref: "src/main.ts" }],
+    criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ kind: "file", ref: "src/main.ts" }] }],
+    residualRisks: [],
     createdAt: T1,
   };
 }

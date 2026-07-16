@@ -104,6 +104,13 @@ export interface AgentGoalControlRequest {
 
 export type GoalResolutionStatus = "completed" | "blocked" | "failed";
 
+export interface GoalCriterionResult {
+  criterionIndex: number;
+  status: "satisfied" | "not_satisfied" | "not_verified";
+  evidence: EvidenceRef[];
+  note?: string;
+}
+
 export interface GoalResolutionProposal<
   TStatus extends GoalResolutionStatus = GoalResolutionStatus,
   TDomainOutcome = unknown,
@@ -116,6 +123,8 @@ export interface GoalResolutionProposal<
   status: TStatus;
   summary: string;
   evidence: EvidenceRef[];
+  criterionResults: GoalCriterionResult[];
+  residualRisks: string[];
   domainOutcome?: TDomainOutcome;
   createdAt: string;
 }

@@ -31,6 +31,7 @@ describe("single Plan runtime contract", () => {
       },
       policyRef: { policyId: "policy-1", policyVersion: 1, contentHash: "sha256:test" },
       plannerAssignment: { requiredCapabilities: ["plan:plan"] },
+      amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "change-v1" } },
     } satisfies PlanSnapshot;
     const mission = {
       missionId: plan.missionId,

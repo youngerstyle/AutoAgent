@@ -60,6 +60,8 @@ describe("Ticket Agent resolution adapter", () => {
           summary: "实现了核心玩法",
           output: { artifact: "src/game.ts" },
           evidence: [{ kind: "file", ref: "src/game.ts" }],
+          criterionResults: [],
+          residualRisks: [],
         },
       }],
       {
@@ -102,16 +104,15 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('"objective"');
     expect(instruction).toContain('"assignment":{"requiredCapabilities"');
     expect(instruction).toContain('"outputContract":{"schemaRef"');
-    expect(instruction).toContain('{"clientRef":"dev"}');
+    expect(instruction).toContain('{"clientRef":"work"}');
     expect(instruction).toContain('{"ticketId":"');
     expect(instruction).toContain('"ticketId":"ticket-intake"');
     expect(instruction).toContain('"status":"completed"');
     expect(instruction).toContain('"principalId":"principal:dev"');
     expect(instruction).toContain("同一个 assignment 必须能由一名成员完整满足");
     expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
-    expect(instruction).toContain('"schemaRef":"qa-report-v1"');
-    expect(instruction).toContain('"schemaRef":"acceptance-v1"');
-    expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"acceptance"}]');
+    expect(instruction).toContain("不规定角色名称、工单数量、能力名称或 schemaRef");
+    expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"review"}]');
   });
 
   it("validates Plan change shape before invoking Ticket Engine", () => {
@@ -122,7 +123,7 @@ describe("Ticket Agent resolution adapter", () => {
     })).toEqual({ valid: true });
   });
 
-  it("rejects a structurally valid Plan that stops at QA without final acceptance", () => {
+  it("does not impose fixed role names or output schemas on a structurally valid Plan", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
       result: {},
       change: {
@@ -134,10 +135,7 @@ describe("Ticket Agent resolution adapter", () => {
         cancelTicketIds: [],
         requiredTerminalRefs: [{ clientRef: "qa" }],
       },
-    })).toEqual({
-      valid: false,
-      reason: "新增交付链必须包含 acceptance-v1 最终验收工单，并把该工单设为 requiredTerminalRefs 终点",
-    });
+    })).toEqual({ valid: true });
   });
 
   it("returns the exact malformed Plan change field to the planning Agent", () => {
@@ -218,5 +216,5 @@ function deliveryClosure() {
     requiredTerminalRefs: [{ clientRef: "acceptance" }],
   };
 }
-function proposal(status: "completed" | "blocked" | "failed", domainOutcome: MissionTicketOutcome): GoalResolutionProposal<any, MissionTicketOutcome> { return { proposalId: "proposal", goalId: "goal", expectedGoalVersion: 1, resolvingGoalVersion: 2, status, summary: "summary", evidence: [], domainOutcome, createdAt: NOW }; }
+function proposal(status: "completed" | "blocked" | "failed", domainOutcome: MissionTicketOutcome): GoalResolutionProposal<any, MissionTicketOutcome> { return { proposalId: "proposal", goalId: "goal", expectedGoalVersion: 1, resolvingGoalVersion: 2, status, summary: "summary", evidence: [], criterionResults: status === "completed" ? [{ criterionIndex: 0, status: "satisfied", evidence: [] }] : [], residualRisks: [], domainOutcome, createdAt: NOW }; }
 const link: ActiveMissionLink = { dispatchId: "dispatch", missionId: "mission", planId: "ca24185e-4957-4bb2-973f-ea4d89382557" as PlanId, ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId, ticketVersion: 2, agentId: "pm", agentPrincipalId: "planner", claimRequestId: "claim", goalStartKey: "start", updatedAt: NOW, status: "resolving", authority: { kind: "claim", claimId: "claim", fencingToken: 1 }, agentThreadId: "thread", agentGoalId: "goal" };

@@ -12,6 +12,7 @@ import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
 import { createPlanPolicy, PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { TeamBinding } from "../../src/shared/contracts/mission-control.js";
+import type { AgentGoal } from "../../src/shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
@@ -61,6 +62,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "需求已接收",
       evidence: [],
+      criterionResults: satisfied(goal!),
+      residualRisks: [],
       domainOutcome: outcome,
       createdAt: NOW,
     });
@@ -154,6 +157,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "需求已接收",
       evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
       domainOutcome: { accepted: true },
       createdAt: NOW,
     })).resolves.toMatchObject({ attempt: { pending: "retry_later" } });
@@ -196,6 +201,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "需求已接收",
       evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
       domainOutcome: { accepted: true },
       createdAt: NOW,
     });
@@ -233,6 +240,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "需求已接收",
       evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
       domainOutcome: { accepted: true },
       createdAt: NOW,
     });
@@ -294,6 +303,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "bad shape",
       evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
       domainOutcome: undefined as never,
       createdAt: NOW,
     });
@@ -327,6 +338,8 @@ describe("MissionProcessManager", () => {
       status: "completed",
       summary: "需求已接收",
       evidence: [],
+      criterionResults: satisfied(intakeGoal),
+      residualRisks: [],
       domainOutcome: { accepted: true },
       createdAt: NOW,
     });
@@ -343,6 +356,8 @@ describe("MissionProcessManager", () => {
       status: "blocked",
       summary: "缺少不可替代输入",
       evidence: [],
+      criterionResults: [],
+      residualRisks: [],
       domainOutcome: undefined as never,
       createdAt: NOW,
     });
@@ -364,6 +379,7 @@ describe("MissionProcessManager", () => {
           definitionVersion: 1,
           policyRef: fixture.policy.ref,
           plannerAssignment: { principalId: "principal-pm" },
+          amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "plan-change-set-v3" } },
           initialChange: {
             additions: [
               { clientRef: "dev", title: "开发", objective: "实现功能", successCriteria: ["功能可运行"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" } },
@@ -382,7 +398,7 @@ describe("MissionProcessManager", () => {
     const devLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running")!;
     const devEngine = fixture.engines.get("dev")!;
     const devGoal = (await devEngine.getGoal(devLink.agentGoalId!))!;
-    await devEngine.proposeGoalResolution({ proposalId: "dev-complete", goalId: devGoal.spec.id, expectedGoalVersion: devGoal.version, resolvingGoalVersion: devGoal.version + 1, status: "completed", summary: "开发完成", evidence: [], domainOutcome: { result: "artifact" }, createdAt: NOW });
+    await devEngine.proposeGoalResolution({ proposalId: "dev-complete", goalId: devGoal.spec.id, expectedGoalVersion: devGoal.version, resolvingGoalVersion: devGoal.version + 1, status: "completed", summary: "开发完成", evidence: [], criterionResults: satisfied(devGoal), residualRisks: [], domainOutcome: { result: "artifact" }, createdAt: NOW });
     await fixture.manager.tick();
 
     mission = await fixture.manager.tick();
@@ -392,6 +408,7 @@ describe("MissionProcessManager", () => {
     await qaEngine.proposeGoalResolution({
       proposalId: "qa-needs-correction", goalId: qaGoal.spec.id, expectedGoalVersion: qaGoal.version, resolvingGoalVersion: qaGoal.version + 1,
       status: "completed", summary: "发现缺陷", evidence: [],
+      criterionResults: satisfied(qaGoal), residualRisks: [],
       domainOutcome: { disposition: "correction_required", targetTicketId: devLink.ticketId, reason: "碰撞失效" }, createdAt: NOW,
     });
     mission = await fixture.manager.tick();
@@ -399,9 +416,9 @@ describe("MissionProcessManager", () => {
     expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "pending" });
 
     mission = await fixture.manager.tick();
-    const correctionLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running" && item.ticketId !== devLink.ticketId)!;
+    const correctionLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running" && item.ticketId === devLink.ticketId && item.dispatchId !== devLink.dispatchId)!;
     const correctionGoal = (await devEngine.getGoal(correctionLink.agentGoalId!))!;
-    await devEngine.proposeGoalResolution({ proposalId: "correction-complete", goalId: correctionGoal.spec.id, expectedGoalVersion: correctionGoal.version, resolvingGoalVersion: correctionGoal.version + 1, status: "completed", summary: "缺陷已修复", evidence: [], domainOutcome: { result: "fixed" }, createdAt: NOW });
+    await devEngine.proposeGoalResolution({ proposalId: "correction-complete", goalId: correctionGoal.spec.id, expectedGoalVersion: correctionGoal.version, resolvingGoalVersion: correctionGoal.version + 1, status: "completed", summary: "缺陷已修复", evidence: [], criterionResults: satisfied(correctionGoal), residualRisks: [], domainOutcome: { result: "fixed" }, createdAt: NOW });
     await fixture.manager.tick();
 
     mission = await fixture.manager.tick();
@@ -413,6 +430,10 @@ describe("MissionProcessManager", () => {
 });
 
 const NOW = "2026-07-10T00:00:00.000Z";
+
+function satisfied(goal: AgentGoal) {
+  return goal.spec.successCriteria.map((_, criterionIndex) => ({ criterionIndex, status: "satisfied" as const, evidence: [] }));
+}
 
 async function createFixture(clock = { now: new Date(NOW) }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-mission-manager-"));

@@ -38,7 +38,7 @@ export class AgentTraceStore {
         throw error;
       }
       const existing = JSON.parse(await readFile(file, "utf8")) as AgentTraceRecord;
-      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error("Trace idempotency conflict");
+      if (JSON.stringify(traceIdentity(existing)) !== JSON.stringify(traceIdentity(record))) throw new Error("Trace idempotency conflict");
     }
   }
 
@@ -58,4 +58,9 @@ export class AgentTraceStore {
       .filter((record) => record.agentId === this.agentId && (!threadId || record.threadId === threadId))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.traceId.localeCompare(right.traceId));
   }
+}
+
+function traceIdentity(record: AgentTraceRecord): Omit<AgentTraceRecord, "createdAt"> {
+  const { createdAt: _createdAt, ...identity } = record;
+  return identity;
 }
