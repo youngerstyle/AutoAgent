@@ -507,6 +507,58 @@ describe("RuntimeHost", () => {
     fixture.host.stop();
   });
 
+  it("automatically dispatches work made ready by the previous Agent turn", async () => {
+    const fixture = await createFixture({ intervalMs: 10 });
+    await fixture.host.createTask({
+      taskId: "task-production-scheduler",
+      title: "生产调度验证",
+      objective: "构建一个可验证的演示",
+    });
+
+    await fixture.host.start();
+    await waitFor(async () => {
+      const mission = await fixture.host.context("task-production-scheduler")!.manager.current();
+      return mission.links.some((link) => link.agentId === "wa_pm");
+    }, 5_000);
+    fixture.host.stop();
+
+    const mission = await fixture.host.context("task-production-scheduler")!.manager.current();
+    expect(mission.links).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: "wa_boss", status: "settled" }),
+      expect.objectContaining({ agentId: "wa_pm" }),
+    ]));
+  });
+
+  it("keeps production control responsive while an Agent turn is still running", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    await fixture.host.start();
+    await fixture.host.createTask({
+      taskId: "task-slow-agent",
+      title: "慢 Agent 验证",
+      objective: "验证调度隔离",
+    });
+    const context = fixture.host.context("task-slow-agent")!;
+    let releaseTurn!: () => void;
+    const turnStarted = new Promise<void>((resolve) => {
+      const loop = context.loops.get("wa_boss")!;
+      loop.runSlice = async () => {
+        resolve();
+        await new Promise<void>((release) => { releaseTurn = release; });
+        return { turnId: "slow-turn", status: "waiting", toolCalls: 0 };
+      };
+    });
+
+    await turnStarted;
+    const controlResult = await Promise.race([
+      fixture.host.pauseTask("task-slow-agent").then(() => "paused"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+    ]);
+    fixture.host.stop();
+    releaseTurn();
+
+    expect(controlResult).toBe("paused");
+  });
+
   it("lets operator cancellation bypass business-flow advancement", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-cancel", title: "取消验证", objective: "构建演示" });
@@ -580,7 +632,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Pr
   throw new Error("Timed out waiting for asynchronous Agent turn");
 }
 
-async function createFixture() {
+async function createFixture(options: { intervalMs?: number } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-home-"));
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-ws-"));
   const workspace: Workspace = {
@@ -594,6 +646,8 @@ async function createFixture() {
   const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
   const policyStore = new PlanPolicyStore(home);
   const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-  const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, { intervalMs: 60_000 });
+  const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, {
+    intervalMs: options.intervalMs ?? 60_000,
+  });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
 }

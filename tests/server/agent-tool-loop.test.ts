@@ -161,6 +161,28 @@ describe("AgentToolLoop", () => {
     }));
   });
 
+  it("normalizes the resolution summary from the domain outcome", async () => {
+    const fixture = await createFixture([
+      { items: [{
+        type: "tool_call",
+        callId: "resolve-with-domain-summary",
+        name: "goal_resolution",
+        arguments: {
+          status: "completed",
+          evidence: [],
+          criterionResults: completedCriteria(),
+          residualRisks: [],
+          domainOutcome: { summary: "架构方案已完成", artifact: "architecture.md" },
+        },
+      }] },
+    ]);
+
+    const turn = await fixture.loop.runSlice(fixture.input);
+
+    expect(turn.status).toBe("resolution_proposed");
+    expect(await fixture.engine.getGoal("goal")).toMatchObject({ status: "completed" });
+  });
+
   it("returns the exact invalid goal resolution field to the model", async () => {
     const fixture = await createFixture([
       {

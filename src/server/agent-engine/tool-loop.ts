@@ -552,7 +552,7 @@ function goalResolutionTool(): AgentToolDefinition {
           description: "当前 Goal 的结构化领域结果；完成时提交交付结果，阻塞时提交 requiredInput 等阻塞事实，失败时提交失败事实",
         },
       },
-      required: ["status", "summary", "evidence", "criterionResults", "residualRisks", "domainOutcome"],
+      required: ["status", "evidence", "criterionResults", "residualRisks", "domainOutcome"],
       additionalProperties: false,
     },
   };
@@ -579,7 +579,8 @@ function parseResolutionProposal(
   if (!new Set(["completed", "blocked", "failed"]).has(String(value.status))) {
     return { ok: false, reason: "status 必须是 completed、blocked 或 failed" };
   }
-  if (typeof value.summary !== "string" || !value.summary.trim()) {
+  const summary = resolutionSummary(value);
+  if (!summary) {
     return { ok: false, reason: "summary 必须是非空字符串" };
   }
   if (!Array.isArray(value.evidence)) return { ok: false, reason: "evidence 必须是数组" };
@@ -629,13 +630,21 @@ function parseResolutionProposal(
     expectedGoalVersion: goal.version,
     resolvingGoalVersion: goal.version + 1,
     status: value.status as "completed" | "blocked" | "failed",
-    summary: value.summary,
+    summary,
     evidence,
     criterionResults,
     residualRisks: [...value.residualRisks] as string[],
     domainOutcome: value.domainOutcome,
     createdAt,
   } };
+}
+
+function resolutionSummary(value: Record<string, unknown>): string | undefined {
+  const outcome = isRecord(value.domainOutcome) ? value.domainOutcome : undefined;
+  const result = outcome && isRecord(outcome.result) ? outcome.result : undefined;
+  return [value.summary, outcome?.summary, result?.summary, outcome?.reason]
+    .find((candidate): candidate is string => typeof candidate === "string" && Boolean(candidate.trim()))
+    ?.trim();
 }
 
 function toolError(

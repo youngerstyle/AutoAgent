@@ -48,8 +48,10 @@ export class RuntimeHost {
   private readonly store: RuntimeHostStore;
   private readonly contexts = new Map<string, RuntimeContext>();
   private readonly readOnlyTasks = new Map<string, string>();
+  private readonly agentRuns = new Map<string, Promise<void>>();
   private timer?: NodeJS.Timeout;
   private tickPromise?: Promise<void>;
+  private backgroundTickPromise?: Promise<void>;
   private operationTail: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -112,7 +114,11 @@ export class RuntimeHost {
   async start(): Promise<void> {
     await this.recover();
     if (this.timer) return;
-    this.timer = setInterval(() => void this.tick().catch(() => undefined), this.options.intervalMs ?? 1_000);
+    this.timer = setInterval(() => {
+      void this.backgroundTick().catch((error) => {
+        console.error("RuntimeHost background tick failed", error);
+      });
+    }, this.options.intervalMs ?? 1_000);
     this.timer.unref();
   }
 
@@ -173,8 +179,18 @@ export class RuntimeHost {
     }
   }
 
-  private async tickUnlocked(): Promise<void> {
-    for (const context of this.contexts.values()) await this.tickTask(context);
+  private backgroundTick(): Promise<void> {
+    if (this.backgroundTickPromise) return this.backgroundTickPromise;
+    const pending = this.exclusive(() => this.tickUnlocked(false));
+    const tracked = pending.finally(() => {
+      if (this.backgroundTickPromise === tracked) this.backgroundTickPromise = undefined;
+    });
+    this.backgroundTickPromise = tracked;
+    return tracked;
+  }
+
+  private async tickUnlocked(awaitAgentRuns = true): Promise<void> {
+    for (const context of this.contexts.values()) await this.tickTask(context, awaitAgentRuns);
   }
 
   private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<{ appended: boolean; turnId: string }> {
@@ -494,10 +510,11 @@ export class RuntimeHost {
     return result;
   }
 
-  private async tickTask(context: RuntimeContext): Promise<void> {
+  private async tickTask(context: RuntimeContext, awaitAgentRuns = true): Promise<void> {
     let mission = await context.manager.tick();
     for (const link of mission.links) {
       if (link.status !== "running") continue;
+      if (this.agentRuns.has(this.agentRunKey(context, link.agentId))) continue;
       const engine = context.engines.get(link.agentId);
       const goal = await engine?.getGoal(link.agentGoalId);
       if (goal?.status !== "active") continue;
@@ -512,7 +529,15 @@ export class RuntimeHost {
         });
         continue;
       }
-      await this.runAgentSlice(context, link);
+      const run = this.runAgentOnce(context, link);
+      if (awaitAgentRuns) {
+        await run;
+      } else {
+        void run.catch((error) => {
+          console.error(`Agent turn failed for ${context.record.taskId}/${link.agentId}`, error);
+          void this.exclusive(() => this.recordAgentTurnErrorUnlocked(context.record.taskId, link.agentId, error)).catch(() => undefined);
+        });
+      }
     }
     mission = await context.manager.tick();
     const plan = await context.tickets.getPlan(mission.record.planId);
@@ -524,6 +549,27 @@ export class RuntimeHost {
       context.record = { ...context.record, status, updatedAt: this.now().toISOString() };
       await this.store.save(context.record);
     }
+  }
+
+  private runAgentOnce(context: RuntimeContext, link: ActiveMissionLink): Promise<void> {
+    const key = this.agentRunKey(context, link.agentId);
+    const existing = this.agentRuns.get(key);
+    if (existing) return existing;
+    const pending = this.runAgentSlice(context, link);
+    const tracked = pending.finally(() => {
+      if (this.agentRuns.get(key) === tracked) this.agentRuns.delete(key);
+      if (this.timer) {
+        queueMicrotask(() => void this.backgroundTick().catch((error) => {
+          console.error("RuntimeHost follow-up tick failed", error);
+        }));
+      }
+    });
+    this.agentRuns.set(key, tracked);
+    return tracked;
+  }
+
+  private agentRunKey(context: RuntimeContext, agentId: string): string {
+    return `${context.record.taskId}:${agentId}`;
   }
 
   private async runAgentSlice(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string): Promise<void> {
