@@ -62,6 +62,34 @@ describe("AgentToolRuntime", () => {
     });
   });
 
+  it("keeps relative paths workspace-scoped even when explicit host access is enabled", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-host-boundary-"));
+    const root = path.join(parent, "workspace");
+    const outside = path.join(parent, "outside.txt");
+    await writeFile(outside, "reference", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+      allowHostAccess: true,
+    }, ["listFiles", "readFile", "writeFile"]);
+
+    await expect(runtime.execute({ tool: "listFiles", path: ".." })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Path escapes workspace"),
+    });
+    await expect(runtime.execute({ tool: "readFile", path: "../outside.txt" })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Path escapes workspace"),
+    });
+    await expect(runtime.execute({ tool: "readFile", path: outside })).resolves.toMatchObject({
+      ok: true,
+      content: "reference",
+    });
+  });
+
   it("describes the actual host shell and directs file creation through writeFile", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-definition-"));
     const runtime = new AgentToolRuntime({

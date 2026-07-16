@@ -611,7 +611,12 @@ export class RuntimeHost {
     for (const agent of workspaceAgents) {
       const profile = profiles.find((item) => item.id === agent.profileId);
       if (!profile) continue;
-      const resolutionPort = new MissionGoalResolutionPort(() => undefined, agent.id, () => this.now());
+      const resolutionPort = new MissionGoalResolutionPort(
+        () => undefined,
+        agent.id,
+        () => this.now(),
+        this.workspace.rootPath,
+      );
       const store = new AgentStore(this.workspace.rootPath, agent.id);
       const engine = new AgentEngine<MissionTicketOutcome>(store, resolutionPort, { now: () => this.now() });
       const policy = resolvePolicy(this.workspace, agent);
