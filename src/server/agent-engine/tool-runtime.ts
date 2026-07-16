@@ -102,6 +102,12 @@ export class AgentToolRuntime {
 }
 
 function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
+  const shellDescription = process.platform === "win32"
+    ? "在工作区通过 Windows cmd.exe 执行一条已授权命令并等待结束。不要使用 Bash heredoc、mkdir -p、cat 或 PowerShell here-string；创建或修改多行文本文件必须调用 writeFile"
+    : "在工作区通过 POSIX shell 执行一条已授权命令并等待结束。创建或修改多行文本文件优先调用 writeFile";
+  const serviceDescription = process.platform === "win32"
+    ? "在工作区通过 Windows cmd.exe 启动一个已授权的后台服务。不要使用 Bash 或 PowerShell 专用语法"
+    : "在工作区通过 POSIX shell 启动一个已授权的后台服务";
   const schemas: Record<WorkspaceToolName, AgentToolDefinition> = {
     listFiles: {
       name,
@@ -120,12 +126,12 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     },
     shell: {
       name,
-      description: "在工作区执行一条已授权命令并等待结束",
+      description: shellDescription,
       inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
     },
     startService: {
       name,
-      description: "在工作区启动一个已授权的后台服务",
+      description: serviceDescription,
       inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
     },
     pollProcess: {

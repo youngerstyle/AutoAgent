@@ -33,4 +33,29 @@ describe("AgentToolRuntime", () => {
     const result = await runtime.execute({ tool: "shell", command: "node -e \"process.exit(3)\"" });
     expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
   });
+
+  it("describes the actual host shell and directs file creation through writeFile", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-definition-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["writeFile", "shell", "startService"]);
+
+    const definitions = runtime.definitions();
+    const shell = definitions.find((item) => item.name === "shell");
+    const startService = definitions.find((item) => item.name === "startService");
+
+    expect(shell?.description).toContain("writeFile");
+    if (process.platform === "win32") {
+      expect(shell?.description).toContain("Windows cmd.exe");
+      expect(shell?.description).toContain("不要使用 Bash heredoc");
+      expect(startService?.description).toContain("Windows cmd.exe");
+    } else {
+      expect(shell?.description).toContain("POSIX shell");
+      expect(startService?.description).toContain("POSIX shell");
+    }
+  });
 });
