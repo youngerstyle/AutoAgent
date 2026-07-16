@@ -5,5 +5,8 @@ dist/
 .tmp-*/
 .tmp/
 .tmp-*.log
+.pi-debug*.log
+.server.*.log
+.tank*-snapshot.json
 .env
 .env.*

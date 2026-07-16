@@ -219,13 +219,16 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     value: unknown;
     createdAt: string;
   }): Promise<void> {
+    const value = input.goalId && isRecord(input.value)
+      ? { ...input.value, goalId: input.goalId }
+      : input.value;
     await this.appendThreadItem(
       input.threadId,
       input.itemId,
       input.kind,
       `${input.kind}:${input.itemId}`,
       input.createdAt,
-      input.value,
+      value,
       undefined,
       undefined,
       input.turnId,

@@ -64,6 +64,8 @@ describe("AgentContextAssembler", () => {
     expect(assembled.instructions).toContain("冷静、求证");
     expect(assembled.instructions).toContain("软件工程师");
     expect(assembled.instructions).toContain("读取事实，修改代码，运行验证。");
+    expect(assembled.instructions).toContain("默认值只能补充 human 未说明的细节");
+    expect(assembled.instructions).toContain("不得把降级交付当作原目标完成");
     expect(assembled.instructions).toContain("只有调用 goal_resolution 工具");
     expect(assembled.instructions).not.toContain("先检查报错");
     expect(assembled.prompt).not.toContain(agent.agentDir);

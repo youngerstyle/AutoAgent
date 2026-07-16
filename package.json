@@ -16,10 +16,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.60.0",
+    "@earendil-works/pi-agent-core": "0.80.7",
+    "@earendil-works/pi-ai": "0.80.7",
+    "@earendil-works/pi-coding-agent": "0.80.7",
     "express": "^4.19.2",
     "openai": "^4.104.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "typebox": "1.1.38"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -16,8 +16,8 @@ import type { PlanId, PlanPolicyRef } from "../../shared/contracts/ticket-engine
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { AgentContextAssembler } from "../agent-engine/context-assembler.js";
-import { RegistryAgentProviderAdapter } from "../agent-engine/provider-adapter.js";
-import { AgentToolLoop } from "../agent-engine/tool-loop.js";
+import { PiAgentRuntime } from "../agent-engine/pi-runtime.js";
+import type { AgentExecutionRuntime } from "../agent-engine/runtime.js";
 import { AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { ensureCoreTeam, listWorkspaceAgents } from "../agents/roster.js";
@@ -41,7 +41,7 @@ interface RuntimeContext {
   tickets: TicketEngine;
   manager: MissionProcessManager;
   engines: Map<string, AgentEngine<MissionTicketOutcome>>;
-  loops: Map<string, AgentToolLoop>;
+  loops: Map<string, AgentExecutionRuntime>;
 }
 
 export class RuntimeHost {
@@ -60,7 +60,7 @@ export class RuntimeHost {
     private readonly providers: ProviderRegistry,
     private readonly policyStore: PlanPolicyStore,
     private readonly policyRef: PlanPolicyRef,
-    private readonly options: { intervalMs?: number; maxTokensPerAgentGoalWindow?: number; now?: () => Date } = {},
+    private readonly options: { intervalMs?: number; now?: () => Date } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
   }
@@ -125,6 +125,9 @@ export class RuntimeHost {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    for (const context of this.contexts.values()) {
+      for (const runtime of context.loops.values()) void runtime.dispose?.();
+    }
   }
 
   private async createTaskUnlocked(input: { taskId: string; title: string; objective: string }): Promise<RuntimeTaskRecord> {
@@ -604,7 +607,7 @@ export class RuntimeHost {
       { teamBindingIds: [team.teamBindingId], now: () => this.now() },
     );
     const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();
-    const loops = new Map<string, AgentToolLoop>();
+    const loops = new Map<string, AgentExecutionRuntime>();
     for (const agent of workspaceAgents) {
       const profile = profiles.find((item) => item.id === agent.profileId);
       if (!profile) continue;
@@ -614,13 +617,15 @@ export class RuntimeHost {
       const policy = resolvePolicy(this.workspace, agent);
       const enabled = toolsForPolicy(policy).map((tool) => tool.name) as WorkspaceToolName[];
       engines.set(agent.id, engine);
-      loops.set(agent.id, new AgentToolLoop(
+      loops.set(agent.id, new PiAgentRuntime(
+        this.workspace.rootPath,
         engine,
+        store,
         new AgentContextAssembler(store),
-        new RegistryAgentProviderAdapter(this.providers),
+        this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { maxTokensPerGoalWindow: this.options.maxTokensPerAgentGoalWindow, now: () => this.now() },
+        { now: () => this.now() },
       ));
     }
     const manager = new MissionProcessManager(
@@ -685,18 +690,7 @@ function projectThread(
   payloads: Map<string, unknown>,
   record: RuntimeTaskRecord,
 ): AgentThreadEvent[] {
-  const events: AgentThreadEvent[] = [{
-    id: `mission-objective:${record.taskId}:${thread.agentId}`,
-    taskId: record.taskId,
-    taskRunId: record.runId,
-    workspaceAgentId: thread.agentId,
-    sequence: 0,
-    timestamp: record.createdAt,
-    source: "human",
-    kind: "human_message",
-    visibility: "chat",
-    payload: { content: record.objective },
-  }];
+  const events: AgentThreadEvent[] = [];
   for (const item of thread.items) {
     const payload = payloads.get(item.payloadRef);
     if (item.kind === "goal") {

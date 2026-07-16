@@ -76,6 +76,5 @@ function config(autoAgentHome: string): AppConfig {
     autoAgentHome,
     useMockProvider: true,
     providerRetryCount: 0,
-    maxTokensPerAgentGoalWindow: 250_000,
   };
 }

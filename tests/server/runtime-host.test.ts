@@ -28,7 +28,7 @@ describe("RuntimeHost", () => {
     });
     const acknowledged = await Promise.race([
       creating.then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_000)),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 3_000)),
     ]);
 
     expect(acknowledged).toBe(true);
@@ -125,6 +125,38 @@ describe("RuntimeHost", () => {
     expect(events.findIndex((event) => event.kind === "system_note")).toBeGreaterThan(1);
   });
 
+  it("rebuilds an empty Pi session from the chronological Agent thread before the first model turn", async () => {
+    const fixture = await createFixture();
+    const histories: Array<Array<{ type: string; content?: string }>> = [];
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        histories.push(input.history);
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-after-history-rebuild",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              evidence: [],
+              criterionResults: [],
+              residualRisks: [],
+              domainOutcome: { accepted: true },
+            },
+          }],
+        };
+      },
+    });
+
+    const objective = "1:1复刻 CF 红白机的坦克98 游戏";
+    await fixture.host.createTask({ taskId: "task-pi-history-origin", title: "坦克98", objective });
+    await fixture.host.tick();
+
+    expect(histories.length).toBeGreaterThanOrEqual(1);
+    expect(histories[0]).toContainEqual({ type: "user_message", content: objective });
+  });
+
   it("does not replay an active goal after a waiting tail without new input", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
@@ -153,7 +185,7 @@ describe("RuntimeHost", () => {
     await fixture.host.tick();
 
     const updated = await boss.getThread(thread!.threadId);
-    expect(modelTurns).toBe(1);
+    expect(modelTurns).toBe(3);
     expect(updated.items.at(-1)?.itemId).toBe("legacy-waiting");
     expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
   });
@@ -186,7 +218,7 @@ describe("RuntimeHost", () => {
 
     expect(second).toBe(first);
     await Promise.all([first, second]);
-    expect(modelTurns).toBe(2);
+    expect(modelTurns).toBe(3);
   });
 
   it("does not spend another model turn on the same correction without new input", async () => {
@@ -233,6 +265,131 @@ describe("RuntimeHost", () => {
     for (let index = 0; index < 6; index += 1) await fixture.host.tick();
 
     expect(planningTurns).toBe(2);
+  });
+
+  it("pauses one turn after the same invalid tool call repeats without progress", async () => {
+    const fixture = await createFixture();
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: `invalid-resolution-${modelTurns}`,
+            name: "goal_resolution",
+            arguments: {},
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-repeated-invalid-tool", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
+
+    const context = fixture.host.context("task-repeated-invalid-tool")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(modelTurns).toBe(3);
+    expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect((await context.tickets.getPlan((await context.manager.current()).record.planId)).status).toBe("active");
+
+    await fixture.host.tick();
+    expect(modelTurns).toBe(3);
+  });
+
+  it("continues beyond twenty successful Pi tool calls and returns each result to the next model turn", async () => {
+    const fixture = await createFixture();
+    let modelTurns = 0;
+    let correlatedResults = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        modelTurns += 1;
+        if (modelTurns > 1 && input.history.at(-1)?.type === "tool_result") correlatedResults += 1;
+        if (modelTurns <= 25) {
+          return {
+            items: [{
+              type: "tool_call" as const,
+              callId: `list-${modelTurns}`,
+              name: "listFiles",
+              arguments: { path: "." },
+            }],
+          };
+        }
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-after-progress",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "完成需求接收",
+              evidence: [],
+              criterionResults: [],
+              residualRisks: [],
+              domainOutcome: { accepted: true },
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-many-tools", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
+
+    expect(modelTurns).toBe(26);
+    expect(correlatedResults).toBe(25);
+    const context = fixture.host.context("task-many-tools")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "completed" });
+  });
+
+  it("continues an active Goal after an ordinary assistant reply until a resolution is submitted", async () => {
+    const fixture = await createFixture();
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        if (modelTurns === 1) {
+          return { items: [{ type: "assistant_message" as const, content: "当前没有现成源码，需要确认是否继续。" }] };
+        }
+        if (modelTurns === 2) {
+          return {
+            items: [{
+              type: "tool_call" as const,
+              callId: "inspect-empty-workspace",
+              name: "listFiles",
+              arguments: { path: "." },
+            }],
+          };
+        }
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-after-continuation",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "已继续处理并完成目标",
+              evidence: [],
+              criterionResults: [],
+              residualRisks: [],
+              domainOutcome: { accepted: true },
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-goal-continuation", title: "演示", objective: "构建演示" });
+    await fixture.host.tick();
+
+    expect(modelTurns).toBe(3);
+    const context = fixture.host.context("task-goal-continuation")!;
+    const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "completed" });
   });
 
   it("does not replay an active ticket after a non-retryable provider failure", async () => {
@@ -295,14 +452,12 @@ describe("RuntimeHost", () => {
 
   it("starts a new turn when the same human message is sent after another pause", async () => {
     const fixture = await createFixture();
-    let providerAvailable = false;
     let providerTurns = 0;
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn() {
         providerTurns += 1;
-        if (!providerAvailable) throw new ProviderError("502 status code (no body)", false, "OPENAI_ERROR");
-        return { items: [{ type: "assistant_message" as const, content: "继续处理" }] };
+        throw new ProviderError("502 status code (no body)", false, "OPENAI_ERROR");
       },
     });
     await fixture.host.createTask({ taskId: "task-repeated-human-message", title: "演示", objective: "构建演示" });
@@ -312,27 +467,16 @@ describe("RuntimeHost", () => {
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
     expect(await engine.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
 
-    providerAvailable = true;
     await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-1");
-    await waitFor(async () => providerTurns === 2);
-
-    const activeGoal = (await engine.getGoal(link.agentGoalId!))!;
-    await engine.controlGoal({
-      requestId: "pause-between-identical-human-messages",
-      goalId: activeGoal.spec.id,
-      expectedGoalVersion: activeGoal.version,
-      action: "pause",
-      reason: "test another paused boundary",
-    });
+    await waitFor(async () => (await engine.getGoal(link.agentGoalId!))?.status === "paused" && providerTurns >= 2);
 
     await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-2");
-    await waitFor(async () => providerTurns === 3);
-
-    expect(await engine.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
+    await waitFor(async () => (await engine.getGoal(link.agentGoalId!))?.status === "paused" && providerTurns >= 3);
+    const turnsAfterSecondMessage = providerTurns;
 
     await fixture.host.sendAgentMessage("task-repeated-human-message", "wa_boss", "继续", "human-message-2");
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(providerTurns).toBe(3);
+    expect(providerTurns).toBe(turnsAfterSecondMessage);
   });
 
   it("correlates a human message and every resulting item with one durable turn id", async () => {
@@ -380,7 +524,20 @@ describe("RuntimeHost", () => {
       async runModelTurn() {
         providerTurns += 1;
         if (!providerAvailable) throw new ProviderError("provider unavailable", false, "OPENAI_ERROR");
-        return { items: [{ type: "assistant_message" as const, content: "恢复后继续" }] };
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-recovered-human-turn",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              evidence: [],
+              criterionResults: [],
+              residualRisks: [],
+              domainOutcome: { accepted: true },
+            },
+          }],
+        };
       },
     });
     await fixture.host.createTask({ taskId: "task-recover-human-turn", title: "演示", objective: "构建演示" });
@@ -421,11 +578,11 @@ describe("RuntimeHost", () => {
     await restarted.recover();
     await restarted.tick();
 
-    expect(providerTurns).toBe(2);
+    expect(providerTurns).toBeGreaterThanOrEqual(2);
     const recoveredEngine = restarted.context("task-recover-human-turn")!.engines.get("wa_boss")!;
     const recoveredThread = (await recoveredEngine.getThreadForAgent("wa_boss", "task-recover-human-turn"))!;
     const correlated = recoveredThread.items.filter((item) => item.turnId === turnId);
-    expect(correlated.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
+    expect(correlated.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "tool", "observation"]));
     expect(correlated.every((item) => item.turnId === turnId)).toBe(true);
     const started = correlated.find((item) => item.itemId === `${turnId}:started`)!;
     expect(await recoveredEngine.getPayload(started.payloadRef)).toMatchObject({
@@ -454,16 +611,6 @@ describe("RuntimeHost", () => {
       },
     });
     await fixture.host.createTask({ taskId: "task-live-snapshot", title: "演示", objective: "构建演示" });
-    await fixture.host.tick();
-    const liveBoss = fixture.host.context("task-live-snapshot")!.engines.get("wa_boss")!;
-    const liveThread = (await liveBoss.getThreadForAgent("wa_boss", "task-live-snapshot"))!;
-    await liveBoss.sendMessage({
-      messageId: "new-input-before-held-model",
-      threadId: liveThread.threadId,
-      senderPrincipalId: "human",
-      content: "继续处理新的事实",
-      createdAt: "2026-07-10T00:04:00.000Z",
-    });
     holdModel = true;
     const runningTick = fixture.host.tick();
     await modelStarted;

@@ -117,4 +117,35 @@ describe("append-only Plan graph", () => {
     statuses.set(graph.graph.ticketIds[1], "ready");
     expect(evaluatePlanOutcome({ graph: graph.graph, completionPolicy: graph.completionPolicy, ticketStatuses: statuses })).toBe("active");
   });
+
+  it("does not complete while an older non-cancelled branch still has open Tickets", () => {
+    const [amendment, oldAcceptance, newAcceptance] = [
+      "97f10503-c6de-48e4-b56b-f84404b76965",
+      "6f5e1767-402a-4af0-b48e-6c9e9a926451",
+      "00c5ca54-0a60-4db2-9a48-34f1d4eb3725",
+    ].map((value) => value as TicketId);
+    const graph = {
+      schemaVersion: 3 as const,
+      ticketIds: [amendment!, oldAcceptance!, newAcceptance!],
+      dependencyEdges: [
+        { fromTicketId: amendment!, toTicketId: oldAcceptance! },
+        { fromTicketId: amendment!, toTicketId: newAcceptance! },
+      ],
+    };
+    const completionPolicy = {
+      requiredTerminalTicketIds: [newAcceptance!],
+      failurePolicy: "require_resolution" as const,
+      blockedPolicy: "wait" as const,
+    };
+    const statuses = new Map<TicketId, TicketStatus>([
+      [amendment!, "completed"],
+      [oldAcceptance!, "running"],
+      [newAcceptance!, "completed"],
+    ]);
+
+    expect(evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses })).toBe("active");
+
+    statuses.set(oldAcceptance!, "returned");
+    expect(evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses })).toBe("completed");
+  });
 });

@@ -13,7 +13,7 @@ describe("V2 runtime public routes", () => {
   it("starts a ticket-agent task and sends a private message only to the selected Agent", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-api-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-api-ws-"));
-    const app = await bootstrapServer({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0, maxTokensPerAgentGoalWindow: 250_000 });
+    const app = await bootstrapServer({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0 });
     registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
     const workspaceResponse = await request(app).post("/api/workspaces").send({
       name: "V2",

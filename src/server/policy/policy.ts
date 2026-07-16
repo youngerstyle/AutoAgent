@@ -14,6 +14,6 @@ export function resolvePolicy(workspace: Workspace, agent: Pick<WorkspaceAgent, 
     ...agent.policyOverride,
     profile: workspace.policyProfile,
     workspaceRoot: workspace.rootPath,
-    allowHostAccess: workspace.policyProfile === "development" || agent.policyOverride?.allowHostAccess === true
+    allowHostAccess: agent.policyOverride?.allowHostAccess ?? workspace.policyProfile === "development"
   };
 }

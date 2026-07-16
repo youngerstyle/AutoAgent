@@ -98,6 +98,13 @@ export class ProviderRegistry {
       ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
   }
 
+  /** Internal runtime credentials. Never return this value from an HTTP route. */
+  async runtimeConfig(provider: ProviderName, model: string): Promise<ProviderConfig> {
+    if (provider === "mock") return { provider, model };
+    const config = await this.configFor(provider);
+    return { ...config, model };
+  }
+
   async createModelConfig(config: Partial<ModelConfig> & Pick<ModelConfig, "provider">): Promise<ModelConfig> {
     const stored = await this.readConfigFile();
     const configs = await this.ensureStoredModelConfigs(stored);

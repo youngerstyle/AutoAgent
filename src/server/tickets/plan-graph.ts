@@ -171,7 +171,9 @@ export function findUnresolvedRequiredFailures(input: RequiredFailureInput): Tic
 export function evaluatePlanOutcome(input: PlanOutcomeInput): EvaluatedPlanOutcome {
   const required = computeRequiredClosure(input.graph, input.completionPolicy.requiredTerminalTicketIds);
   const statuses = [...required].map((ticketId) => statusOf(input.ticketStatuses, ticketId));
-  if (statuses.length > 0 && statuses.every((status) => status === "completed")) return "completed";
+  const allTicketStatuses = input.graph.ticketIds.map((ticketId) => statusOf(input.ticketStatuses, ticketId));
+  const hasOpenTicket = allTicketStatuses.some((status) => status === undefined || !isTerminal(status));
+  if (statuses.length > 0 && statuses.every((status) => status === "completed") && !hasOpenTicket) return "completed";
   if (statuses.some((status) => status === "failed") && input.completionPolicy.failurePolicy === "fail_fast") {
     return "failed";
   }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -32,6 +32,34 @@ describe("AgentToolRuntime", () => {
 
     const result = await runtime.execute({ tool: "shell", command: "node -e \"process.exit(3)\"" });
     expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
+  });
+
+  it("rejects relative and absolute paths outside the workspace when host access is disabled", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-boundary-"));
+    const root = path.join(parent, "workspace");
+    const outside = path.join(parent, "outside.txt");
+    await writeFile(outside, "secret", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+      allowHostAccess: false,
+    }, ["listFiles", "readFile", "writeFile"]);
+
+    await expect(runtime.execute({ tool: "readFile", path: "../outside.txt" })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Path escapes workspace"),
+    });
+    await expect(runtime.execute({ tool: "readFile", path: outside })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Path escapes workspace"),
+    });
+    await expect(runtime.execute({ tool: "writeFile", path: "../created.txt", content: "bad" })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Path escapes workspace"),
+    });
   });
 
   it("describes the actual host shell and directs file creation through writeFile", async () => {

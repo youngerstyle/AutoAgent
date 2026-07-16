@@ -27,6 +27,9 @@ describe("Ticket Agent resolution adapter", () => {
     const sourceTicketId = "ce699a21-cdbc-4612-91f9-b607970668a6" as TicketId;
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["implementation", "quality:verify"], [{ ticketId: targetTicketId, title: "开发" }], sourceTicketId);
     expect(instruction).toContain("plan-change-set-v3");
+    expect(instruction).toContain("goal_resolution");
+    expect(instruction).toContain("唯一提交入口");
+    expect(instruction).not.toContain("goalResolution");
     expect(instruction).toContain(targetTicketId);
     expect(instruction).toContain(sourceTicketId);
     expect(instruction).toContain("新增执行链必须位于当前规划工单");

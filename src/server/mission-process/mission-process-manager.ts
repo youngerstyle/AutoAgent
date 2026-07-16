@@ -242,6 +242,15 @@ export class MissionProcessManager {
     if (!goalId) {
       const work = await this.tickets.getWorkItem(link.ticketId);
       if (!work) throw new Error("Ticket work item is missing");
+      if (aggregate.links.length === 1 && aggregate.links[0]?.dispatchId === link.dispatchId) {
+        await agent.sendMessage({
+          messageId: stableId("mission_objective", aggregate.missionId),
+          threadId,
+          senderPrincipalId: "human",
+          content: aggregate.record.objective,
+          createdAt: this.now().toISOString(),
+        });
+      }
       const member = this.team.members.find((item) => item.agentId === link.agentId)!;
       const requiredCapabilities = work.definition.assignment.requiredCapabilities ?? [];
       const missingCapabilities = requiredCapabilities.filter((capability) => !member.capabilities.includes(capability));

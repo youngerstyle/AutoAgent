@@ -51,7 +51,6 @@ export function createApp(config: AppConfig = loadConfig()) {
     providerRegistry,
     policyStore,
     policyRef,
-    { maxTokensPerAgentGoalWindow: config.maxTokensPerAgentGoalWindow },
   );
   app.locals.runtimeHostRegistry = mission;
   app.use(express.json({ limit: "2mb" }));

@@ -12,7 +12,7 @@ describe("mock team loop E2E", () => {
 
   it("creates a workspace and completes one Mission Plan through public routes", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-home-"));
-    const app = createApp({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0, maxTokensPerAgentGoalWindow: 250_000 });
+    const app = createApp({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0 });
     registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-ws-"));
 
