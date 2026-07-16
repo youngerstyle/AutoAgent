@@ -11,6 +11,7 @@
     "test:run": "vitest run",
     "test:contracts": "vitest run tests/shared/runtime-contracts.test.ts tests/shared/ticket-contract-strengthening.test.ts && tsc --noEmit",
     "test:e2e": "vitest run tests/e2e",
+    "test:acceptance:real": "node scripts/real-user-acceptance.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -27,6 +28,7 @@
     "@types/react-dom": "^18.3.5",
     "@types/supertest": "^6.0.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright-core": "^1.61.1",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

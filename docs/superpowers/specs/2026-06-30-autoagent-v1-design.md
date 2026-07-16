@@ -306,7 +306,7 @@ Provider adapters should expose:
 - token/usage metadata when available
 - retryable vs terminal error classification
 
-Tests must use mock providers even though production runs real LLMs.
+Deterministic Engine and contract tests use mock providers. Release acceptance is a separate gate: it must use a configured real provider and verify the final artifact from the user's point of view, as defined in `2026-07-16-user-view-real-acceptance.md`.
 
 ## Tool and Policy Runtime
 
