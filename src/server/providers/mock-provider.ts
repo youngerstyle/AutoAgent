@@ -27,11 +27,11 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     const sourceTicketId = currentTicketId(instructions);
     return {
       status: "completed",
-      summary: "已形成执行工单 DAG",
       evidence: [],
       criterionResults: completedCriteria(instructions),
       residualRisks: [],
       domainOutcome: {
+        summary: "已形成执行工单 DAG",
         result: { plan: "实现、质量检查、验收" },
         change: {
           additions: [
@@ -52,11 +52,10 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
   }
   return {
     status: "completed",
-    summary: "模拟 Agent 已完成当前目标",
     evidence: [],
     criterionResults: completedCriteria(instructions),
     residualRisks: [],
-    domainOutcome: { ok: true },
+    domainOutcome: { summary: "模拟 Agent 已完成当前目标", ok: true },
   };
 }
 

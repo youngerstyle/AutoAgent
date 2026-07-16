@@ -28,6 +28,8 @@ export interface MissionAggregate {
 }
 
 const queues = new Map<string, Promise<unknown>>();
+const RENAME_MAX_ATTEMPTS = 6;
+const RENAME_RETRY_BACKOFF_MS = 25;
 
 export class MissionStoreConflictError extends Error {}
 export class LegacyMissionPlanError extends Error {}
@@ -199,10 +201,27 @@ async function writeDurable(file: string, value: unknown): Promise<void> {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporary, file);
+    await renameWithRetry(temporary, file);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await rename(source, target);
+      return;
+    } catch (error) {
+      if (!isRetriableRenameError(error) || attempt === RENAME_MAX_ATTEMPTS - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_BACKOFF_MS * (attempt + 1)));
+    }
+  }
+}
+
+function isRetriableRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
 }
