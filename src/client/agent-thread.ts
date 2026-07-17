@@ -6,6 +6,8 @@ export interface AgentThreadBubble {
   id: string;
   role: AgentThreadBubbleRole;
   title?: string;
+  collapsed?: boolean;
+  summary?: string;
   body: string;
 }
 
@@ -90,7 +92,14 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
   if (event.kind === "system_note") {
     const resolution = goalResolutionBubble(event);
     if (resolution) return resolution;
-    return { id: event.id, role: "system", title: "系统约束", body: payloadText(event.payload, "content", "message", "summary") };
+    return {
+      id: event.id,
+      role: "system",
+      title: "Agent 工作规则",
+      collapsed: true,
+      summary: "平台提供给 Agent 的内部规则，通常无需处理",
+      body: payloadText(event.payload, "content", "message", "summary"),
+    };
   }
   return undefined;
 }

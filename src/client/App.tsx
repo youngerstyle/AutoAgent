@@ -1167,6 +1167,32 @@ function useChatThreadAutoScroll(scrollKey: string) {
   return threadRef;
 }
 
+function AgentThreadBubbleView({ bubble }: { bubble: AgentThreadBubble }) {
+  if (bubble.collapsed) {
+    return (
+      <article className={`chat-message ${bubble.role} collapsed-message`}>
+        <details className="thread-message-details">
+          <summary>
+            <span>
+              <strong>{bubble.title ?? "辅助信息"}</strong>
+              <small>{bubble.summary ?? "点击查看详情"}</small>
+            </span>
+          </summary>
+          <div className="thread-message-detail-body">
+            <AgentMessageBody rawText={bubble.body} />
+          </div>
+        </details>
+      </article>
+    );
+  }
+  return (
+    <article className={`chat-message ${bubble.role}`}>
+      {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
+      <AgentMessageBody rawText={bubble.body} />
+    </article>
+  );
+}
+
 function AgentHumanLoopBox(props: {
   agentName: string;
   prompt: NonNullable<ReturnType<typeof buildHumanFlowPrompt>>;
@@ -1199,12 +1225,7 @@ function AgentHumanLoopBox(props: {
         </div>
       </header>
       <div className="chat-thread" ref={threadRef}>
-        {bubbles.map((bubble) => (
-          <article key={bubble.id} className={`chat-message ${bubble.role}`}>
-            {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
-            <AgentMessageBody rawText={bubble.body} />
-          </article>
-        ))}
+        {bubbles.map((bubble) => <AgentThreadBubbleView key={bubble.id} bubble={bubble} />)}
         {props.prompt.manualTest ? (
           <article className="chat-message agent">
             <ManualTestActionCard
@@ -1269,10 +1290,7 @@ function AgentDirectChatBox(props: {
       </header>
       <div className="chat-thread" ref={threadRef}>
         {props.bubbles.length > 0 ? props.bubbles.map((bubble) => (
-          <article key={bubble.id} className={`chat-message ${bubble.role}`}>
-            {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
-            <AgentMessageBody rawText={bubble.body} />
-          </article>
+          <AgentThreadBubbleView key={bubble.id} bubble={bubble} />
         )) : (
           <article className="chat-message agent">
             <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>

@@ -679,6 +679,68 @@ button:disabled {
   border-left: 4px solid #6f7d8c;
 }
 
+.chat-message.collapsed-message {
+  width: min(100%, 520px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.thread-message-details {
+  min-width: 0;
+}
+
+.thread-message-details > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.thread-message-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.thread-message-details > summary::before {
+  content: "›";
+  flex: 0 0 auto;
+  color: #607080;
+  font-size: 18px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.thread-message-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.thread-message-details > summary span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.thread-message-details > summary strong {
+  color: #102030;
+  font-size: 14px;
+}
+
+.thread-message-details > summary small {
+  color: #647383;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.thread-message-detail-body {
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid #d8e0e8;
+  padding: 10px 12px;
+  background: #ffffff;
+}
+
 .thread-bubble-title {
   display: block;
   margin-bottom: 6px;

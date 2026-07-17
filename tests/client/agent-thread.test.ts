@@ -50,7 +50,12 @@ describe("agent thread view", () => {
         title: "收到工单",
         body: "实现坦克移动与射击\n\n成功标准：\n- 方向键可移动\n- 空格键可射击\n\n交付格式：delivery-v1",
       }),
-      expect.objectContaining({ title: "系统约束", body: "必须提交结构化结果" }),
+      expect.objectContaining({
+        title: "Agent 工作规则",
+        collapsed: true,
+        summary: "平台提供给 Agent 的内部规则，通常无需处理",
+        body: "必须提交结构化结果",
+      }),
     ]);
   });
 
