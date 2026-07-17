@@ -98,6 +98,79 @@ describe("MissionProcessManager", () => {
     });
   });
 
+  it("delivers the complete accepted ancestor lineage to a downstream Agent", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "preserve the original delivery target",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: {
+          definitionId: "lineage-flow",
+          definitionVersion: 1,
+          policyRef: fixture.policy.ref,
+          plannerAssignment: { principalId: "principal-pm" },
+          amendmentTemplate: { title: "plan revision", successCriteria: ["revision is valid"], outputContract: { schemaRef: "plan-change-set-v3" } },
+          initialChange: {
+            additions: [
+              { clientRef: "scope", title: "scope baseline", objective: "record the immutable acceptance baseline", successCriteria: ["baseline remains traceable"], assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "scope-v1" } },
+              { clientRef: "build", title: "implementation", objective: "build from the accepted baseline", successCriteria: ["artifact is produced"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "build-v1" } },
+              { clientRef: "review", title: "independent review", objective: "judge the artifact against the project facts", successCriteria: ["decision cites project facts"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "review-v1" } },
+            ],
+            dependencyAdditions: [
+              { from: { clientRef: "scope" }, to: { clientRef: "build" } },
+              { from: { clientRef: "build" }, to: { clientRef: "review" } },
+            ],
+            cancelTicketIds: [],
+            requiredTerminalRefs: [{ clientRef: "review" }],
+          },
+        },
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+
+    let mission = await fixture.manager.tick();
+    const scopeLink = mission.links.find((item) => item.agentId === "boss" && item.status === "running")!;
+    const boss = fixture.engines.get("boss")!;
+    const scopeGoal = (await boss.getGoal(scopeLink.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "scope-complete", goalId: scopeGoal.spec.id, expectedGoalVersion: scopeGoal.version, resolvingGoalVersion: scopeGoal.version + 1,
+      status: "completed", summary: "original baseline accepted", evidence: [], criterionResults: satisfied(scopeGoal), residualRisks: [],
+      domainOutcome: { baseline: "full interactive delivery, not a simulation" }, createdAt: NOW,
+    });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const buildLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running")!;
+    const dev = fixture.engines.get("dev")!;
+    const buildGoal = (await dev.getGoal(buildLink.agentGoalId!))!;
+    await dev.proposeGoalResolution({
+      proposalId: "build-complete", goalId: buildGoal.spec.id, expectedGoalVersion: buildGoal.version, resolvingGoalVersion: buildGoal.version + 1,
+      status: "completed", summary: "artifact implemented", evidence: [], criterionResults: satisfied(buildGoal), residualRisks: [],
+      domainOutcome: { artifact: "dist/app" }, createdAt: NOW,
+    });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const reviewLink = mission.links.find((item) => item.agentId === "qa" && item.status === "running")!;
+    const qa = fixture.engines.get("qa")!;
+    const reviewThread = await qa.getThread(reviewLink.agentThreadId!);
+    const payloads = await qa.getPayloads(reviewThread.items.map((item) => item.payloadRef));
+    const instruction = [...payloads.values()].find((value) => (
+      typeof value === "object"
+      && value !== null
+      && "senderPrincipalId" in value
+      && value.senderPrincipalId === "mission-process"
+    )) as { content: string };
+
+    expect(instruction.content).toContain('"missionObjective":"preserve the original delivery target"');
+    expect(instruction.content).toContain('"handoffLineage"');
+    expect(instruction.content).toContain('"successCriteria":["baseline remains traceable"]');
+    expect(instruction.content).toContain('"baseline":"full interactive delivery, not a simulation"');
+    expect(instruction.content).toContain('"artifact":"dist/app"');
+    expect(instruction.content.indexOf('"title":"scope baseline"')).toBeLessThan(instruction.content.indexOf('"title":"implementation"'));
+  });
+
   it("recovers a persisted running link without creating a second claim or goal", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({

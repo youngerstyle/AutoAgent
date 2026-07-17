@@ -181,7 +181,7 @@ describe("RuntimeHost", () => {
     expect(instructions.length).toBeGreaterThanOrEqual(2);
     const reusedBossSessionTurn = instructions.find((value) => value.includes("本轮按时间序收到的消息"));
     expect(reusedBossSessionTurn).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
-    expect(reusedBossSessionTurn).toContain("upstreamHandoffs");
+    expect(reusedBossSessionTurn).toContain("handoffLineage");
   });
 
   it("does not replay an active goal after a waiting tail without new input", async () => {

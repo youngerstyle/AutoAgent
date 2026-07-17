@@ -35,7 +35,7 @@ UI 可以继续使用用户可理解的“已完成”，但必须明确作用�
 - assignment：负责人或所需能力；
 - outputContract：领域交付物的结构契约；
 - permissions：该工单被显式授予的控制面权限，例如是否允许提交 Plan 变更；权限不由角色名或 outputContract 猜测；
-- 直接上游 Ticket 的持久 handoff；
+- 当前 Ticket 在 DAG 中全部已完成祖先的持久 handoff 谱系；
 - Mission 目标和当前 Plan 身份。
 
 执行 Agent 不能修改 Ticket 的成功标准，也不能通过自己的总结缩小 Mission 范围。若标准无法满足，Agent 应报告 blocked、failed 或显式请求 Plan 修订。
@@ -143,7 +143,7 @@ DEV Attempt 1 completed
 
 - 把 Ticket 工作契约转换为 Agent Goal；
 - 把 Agent Proposal 转换为 Ticket Command；
-- 把直接上游 handoff 投递给下一个 Agent；
+- 把按 DAG 拓扑排序的祖先 handoff 谱系投递给下一个 Agent；
 - 不根据自然语言、角色名、文件数量或工具结果猜测下一步。
 
 ## 9. 完成与终止

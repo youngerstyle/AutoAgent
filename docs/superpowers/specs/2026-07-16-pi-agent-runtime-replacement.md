@@ -23,7 +23,7 @@
 
 ## 单向数据流
 
-1. Mission Control 从 Ticket Engine 读取当前 Ticket、成功标准和直接上游 handoff。
+1. Mission Control 从 Ticket Engine 读取当前 Ticket、成功标准和按 DAG 拓扑排序的完整祖先 handoff 谱系。
 2. Mission Control 在 `AgentEngine` 中创建或恢复 Agent Goal 和线程。
 3. Pi Runtime Adapter 将稳定档案、当前 Goal、按时间序排列的线程消息和授权工具装入一个 Pi Session。
 4. Pi 负责模型调用、原生工具执行、错误反馈、压缩、重试、中断和继续运行。

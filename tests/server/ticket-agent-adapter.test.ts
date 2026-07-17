@@ -75,6 +75,7 @@ describe("Ticket Agent resolution adapter", () => {
         ticketId: "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId,
         title: "开发实现",
         objective: "实现可运行游戏",
+        successCriteria: ["implementation is independently verifiable"],
         outputContract: { schemaRef: "delivery-v1" },
         handoff: {
           schemaVersion: 1,

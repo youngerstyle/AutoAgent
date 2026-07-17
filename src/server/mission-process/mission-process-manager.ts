@@ -28,6 +28,7 @@ import {
   type MissionTicketOutcome,
   missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
+import { orderedAncestorTicketIds } from "./ticket-context-lineage.js";
 
 export interface MissionAgentDirectory {
   get(agentId: string): AgentPort<MissionTicketOutcome>;
@@ -351,14 +352,13 @@ export class MissionProcessManager {
 
   private async listUpstreamDeliveries(planId: PlanId, ticketId: TicketId) {
     const plan = await this.tickets.getPlan(planId);
-    const upstreamIds = plan.graph.dependencyEdges
-      .filter((edge) => edge.toTicketId === ticketId)
-      .map((edge) => edge.fromTicketId);
+    const upstreamIds = orderedAncestorTicketIds(plan.graph, ticketId);
     const workItems = await Promise.all(upstreamIds.map((upstreamId) => this.tickets.getWorkItem(upstreamId)));
     return workItems.flatMap((work) => work?.ticket.status === "completed" && work.ticket.completion ? [{
       ticketId: work.ticket.ticketId,
       title: work.definition.title,
       objective: work.definition.objective,
+      successCriteria: work.definition.successCriteria,
       outputContract: work.definition.outputContract,
       handoff: work.ticket.completion.handoff,
     }] : []);

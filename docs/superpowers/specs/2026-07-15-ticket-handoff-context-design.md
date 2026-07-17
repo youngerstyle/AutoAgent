@@ -36,10 +36,30 @@ When a Ticket becomes ready and is assigned, Mission Control appends one assignm
 
 1. Mission objective.
 2. Current Ticket identity, objective, success criteria, and output contract.
-3. One immutable handoff envelope for every directly required upstream Ticket.
+3. One immutable handoff envelope for every completed ancestor Ticket in the
+   current Ticket's DAG lineage, ordered topologically from the earliest input
+   to the direct dependencies.
 4. Correction targets and Plan facts only when the current Ticket contract requires them.
 
 An upstream envelope includes source Ticket identity and definition plus its accepted `TicketHandoff`. It never contains the upstream Agent's Session, hidden reasoning, raw tool trace, or assembled prompt.
+
+The lineage is derived only from persisted DAG edges. Mission Control does not
+guess relevance from role names, Ticket titles, schema names, natural language,
+or artifact contents. Diamond-shaped graphs are de-duplicated by Ticket ID.
+Every ancestor appears before its descendants, while graph declaration order is
+used as a deterministic tie-breaker for parallel branches.
+
+This is deliberately different from copying only direct parents. A dependency
+edge controls scheduling, but a multi-step handoff also forms an information
+lineage. Passing only the last person's summary turns collaboration into a game
+of telephone: a scope baseline can disappear after architecture, leaving QA to
+judge only a developer's self-description. Passing the accepted ancestor
+handoffs preserves the project record while keeping every Agent Session private.
+
+Mission Control must not summarize, reinterpret, merge, rank, or approve these
+handoffs. The assigned Agent receives the durable facts and uses its LLM to
+decide whether its own Goal is complete, blocked, failed, needs correction, or
+requires a Plan change.
 
 The target Agent's own Thread history remains in chronological order and is assembled normally by Agent Engine.
 
@@ -49,7 +69,8 @@ The target Agent's own Thread history remains in chronological order and is asse
 2. The Agent submits a goal proposal with status, summary, domain output, and evidence.
 3. Mission Control converts an accepted completion proposal into a Ticket `complete` command carrying `TicketHandoff`.
 4. Ticket Engine persists the handoff and unlocks graph dependants.
-5. Mission Control dispatches the next ready Ticket and appends the mission, ticket, and upstream handoff context to that Agent's Thread.
+5. Mission Control dispatches the next ready Ticket and appends the mission,
+   current Ticket, and ordered ancestor handoff lineage to that Agent's Thread.
 6. The next Agent uses its LLM to continue, block, request correction, request a Plan change, or complete its own Ticket.
 
 No role names or fixed phase sequence participate in this mechanism. The Plan DAG determines which handoffs are relevant.
@@ -66,6 +87,12 @@ No role names or fixed phase sequence participate in this mechanism. The Plan DA
 
 - Contract test: a complete command requires and stores one canonical handoff.
 - Ticket Engine test: completed handoff remains immutable and unlocks the dependant Ticket.
-- Mission Process test: the downstream Agent receives mission objective, current Ticket context, and direct upstream handoff.
+- Mission Process test: the downstream Agent receives the immutable Mission
+  objective, current Ticket context, and every completed ancestor handoff in
+  deterministic topological order.
+- Lineage test: a three-step chain preserves the first Ticket's accepted scope
+  for the final Agent.
+- Diamond test: parallel ancestors are ordered deterministically and a shared
+  ancestor is included exactly once.
 - Isolation test: the downstream message contains no upstream Thread history or tool trace.
 - Recovery test: replay does not duplicate the handoff or assignment message.
