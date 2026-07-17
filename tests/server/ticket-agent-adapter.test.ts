@@ -43,7 +43,7 @@ describe("Ticket Agent resolution adapter", () => {
 
     expect(instruction).toContain("空工作区或尚不存在项目文件不属于 human 输入边界");
     expect(instruction).toContain("自行创建所需目录、源码、配置、构建入口和测试");
-    expect(instruction).toContain("不可替代的外部事实、凭证、授权或不可逆操作确认");
+    expect(instruction).toContain("不可替代的外部事实、凭证、授权、人工操作或不可逆操作确认");
   });
 
   it("rejects a blocked proposal that does not identify an external input for human", () => {
@@ -52,16 +52,49 @@ describe("Ticket Agent resolution adapter", () => {
       summary: "工作区为空",
     })).toEqual({
       valid: false,
-      reason: "blocked 必须说明不可替代的外部输入 requiredInput；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞",
+      reason: "blocked 必须提供结构化 requiredInput（kind、description，可选 details）；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞",
     });
     expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
       disposition: "blocked",
       requiredInput: "生产环境发布凭证",
-    })).toEqual({ valid: true });
+    })).toMatchObject({ valid: false });
     expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
       disposition: "blocked",
-      requiredInput: ["验收基线", "构建产物", "QA 证据"],
+      requiredInput: {
+        kind: "manual_test",
+        description: "需要 human 在浏览器中验证交互",
+        details: {
+          testFile: "index.html",
+          steps: ["打开游戏", "完成一局"],
+          expectedResult: "可以正常通关",
+        },
+      },
     })).toEqual({ valid: true });
+  });
+
+  it("preserves a typed human-input request in the Ticket command", () => {
+    const requiredInput = {
+      kind: "manual_test",
+      description: "需要 human 在浏览器中验证交互",
+      details: { testFile: "index.html", steps: ["完成一局"] },
+    };
+
+    expect(proposalToTicketCommand(proposal("blocked", {
+      disposition: "blocked",
+      requiredInput,
+    }), link, NOW).payload).toEqual({
+      type: "block",
+      reason: "summary",
+      requiredInput,
+    });
+  });
+
+  it("tells Agents to block on an unavailable execution environment instead of returning upstream work", () => {
+    const instruction = missionOutcomeInstruction("qa-report-v1");
+
+    expect(instruction).toContain("当前启用的工具或运行环境无法完成不可替代的验证");
+    expect(instruction).toContain('requiredInput.kind="manual_test"');
+    expect(instruction).toContain("不得使用 correction_required");
   });
 
   it("renders mission, current Ticket, and upstream handoffs without sharing Agent history", () => {

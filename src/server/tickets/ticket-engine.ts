@@ -402,7 +402,7 @@ export class TicketEngine {
       const attemptUpdate = command.payload.type === "complete"
         ? { status: "completed" as const, endedAt: command.issuedAt, executionRef: command.executionRef, handoff: structuredClone(command.payload.handoff) }
         : command.payload.type === "block"
-          ? { status: "blocked" as const, reason: command.payload.reason }
+          ? { status: "blocked" as const, reason: command.payload.reason, requiredInput: structuredClone(command.payload.requiredInput) }
           : command.payload.type === "fail"
             ? { status: "failed" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence) }
             : { status: "returned" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence) };
@@ -488,8 +488,8 @@ export class TicketEngine {
       };
       const pendingEvents: TicketEvent[] = [ticketEvent(
         settled,
-        status === "blocked"
-          ? { type: "TicketBlocked", requiredInput: command.payload.type === "block" ? command.payload.requiredInput : undefined }
+        command.payload.type === "block"
+          ? { type: "TicketBlocked", requiredInput: structuredClone(command.payload.requiredInput) }
           : status === "pending"
             ? { type: "TicketRetryQueued", prerequisiteTicketId: correctionTargetId ?? appendedTicket!.ticketId }
             : { type: "TicketTerminal", status: status as "completed" | "failed" },

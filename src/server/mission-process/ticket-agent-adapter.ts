@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { GoalResolutionDecision, GoalResolutionProposal, GoalResolutionStatus } from "../../shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../shared/contracts/mission-control.js";
-import type { PlanChangeSet, PlanCommandEnvelope, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract } from "../../shared/contracts/ticket-engine.js";
+import type { PlanChangeSet, PlanCommandEnvelope, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
 
 export type MissionTicketOutcome = Record<string, unknown>;
 export interface PlanChangeSetOutcome extends MissionTicketOutcome { result: unknown; change: PlanChangeSet }
@@ -41,8 +41,8 @@ export interface SharedPlanContext {
 
 export function validateMissionTicketOutcome(schemaRef: string | undefined, status: GoalResolutionStatus, value: unknown): { valid: true } | { valid: false; reason: string } {
   if (status === "blocked") {
-    if (!isRecord(value) || !requiredInputText(value.requiredInput)) {
-      return { valid: false, reason: "blocked 必须说明不可替代的外部输入 requiredInput；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞" };
+    if (!isRecord(value) || !requiredInputValue(value.requiredInput)) {
+      return { valid: false, reason: "blocked 必须提供结构化 requiredInput（kind、description，可选 details）；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞" };
     }
     if (value.disposition !== undefined && value.disposition !== "blocked") {
       return { valid: false, reason: "blocked 状态的 domainOutcome.disposition 只能是 blocked" };
@@ -89,7 +89,7 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
       : "";
     return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代输入时使用 blocked，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
   }
-  return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权或不可逆操作确认时才使用 blocked，并准确说明所缺输入。`;
+  return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作或不可逆操作确认时才使用 blocked，并通过结构化 requiredInput 提交：kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，使用 requiredInput.kind="manual_test"；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
 }
 
 export function proposalToPlanChangeCommand(proposal: GoalResolutionProposal<GoalResolutionStatus, MissionTicketOutcome>, link: ActiveMissionLink, planVersion: number, issuedAt: string): PlanCommandEnvelope | undefined {
@@ -115,7 +115,7 @@ export function proposalToTicketCommand(proposal: GoalResolutionProposal<GoalRes
     criterionResults: proposal.criterionResults.map((item) => ({ ...item, evidence: item.evidence.map((ref) => ({ kind: ref.kind, ref: ref.ref })) })),
     residualRisks: [...proposal.residualRisks],
   } };
-  else if (proposal.status === "blocked") payload = { type: "block", reason: proposal.summary, requiredInput: isRecord(proposal.domainOutcome) ? requiredInputText(proposal.domainOutcome.requiredInput) : undefined };
+  else if (proposal.status === "blocked") payload = { type: "block", reason: proposal.summary, requiredInput: requiredInputValue(proposal.domainOutcome?.requiredInput)! };
   else payload = { type: "fail", reason: proposal.summary, evidence };
   return { commandId: stableId("ticket_command", JSON.stringify([link.planId, link.ticketId, proposal.proposalId, link.ticketVersion])), proposalId: proposal.proposalId, planId: link.planId, ticketId: link.ticketId, expectedTicketVersion: link.ticketVersion, actorPrincipalId: link.agentPrincipalId, executionRef: link.agentGoalId, authority: link.authority, issuedAt, payload };
 }
@@ -158,11 +158,23 @@ function validateChangeSet(value: Record<string, unknown>): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isNonEmptyString(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()); }
-function requiredInputText(value: unknown): string | undefined {
-  if (isNonEmptyString(value)) return value.trim();
-  if (!Array.isArray(value)) return undefined;
-  const items = value.filter(isNonEmptyString).map((item) => item.trim());
-  return items.length ? items.join("；") : undefined;
+const REQUIRED_INPUT_KINDS = new Set<TicketRequiredInputKind>([
+  "manual_test",
+  "authorization",
+  "credential",
+  "external_fact",
+  "irreversible_confirmation",
+  "tool_policy",
+]);
+function requiredInputValue(value: unknown): TicketRequiredInput | undefined {
+  if (!isRecord(value) || !isNonEmptyString(value.kind) || !REQUIRED_INPUT_KINDS.has(value.kind as TicketRequiredInputKind)
+    || !isNonEmptyString(value.description)) return undefined;
+  if (value.details !== undefined && !isRecord(value.details)) return undefined;
+  return {
+    kind: value.kind as TicketRequiredInputKind,
+    description: value.description.trim(),
+    ...(isRecord(value.details) ? { details: structuredClone(value.details) } : {}),
+  };
 }
 function isStringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every(isNonEmptyString); }
 function isPlanTicketRef(value: unknown): boolean {

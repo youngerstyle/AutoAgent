@@ -222,6 +222,35 @@ describe("TicketEngine single Plan flow", () => {
     expect(await fixture.engine.getTicket(fixture.acceptance)).toMatchObject({ status: "pending" });
   });
 
+  it("keeps completed development closed when QA waits for a human manual test", async () => {
+    const fixture = await createExecutionFixture();
+    const qaClaim = await fixture.engine.claimReady({
+      requestId: "claim-qa-manual",
+      planId: fixture.planId,
+      ticketId: fixture.qa,
+      expectedTicketVersion: 2,
+      principalId: "qa",
+      leaseDurationMs: 60_000,
+    });
+
+    const result = await fixture.engine.applyTicket(ticketCommand(fixture.planId, fixture.qa, qaClaim!, "qa-manual", {
+      type: "block",
+      reason: "静态检查完成，缺少浏览器交互环境",
+      requiredInput: {
+        kind: "manual_test",
+        description: "请在浏览器中按步骤完成一局",
+        details: { testFile: "index.html", steps: ["打开游戏", "完成一局"] },
+      },
+    }));
+
+    expect(result).toMatchObject({ accepted: true, ticketStatus: "blocked", planStatus: "blocked" });
+    expect(await fixture.engine.getTicket(fixture.dev)).toMatchObject({ status: "completed" });
+    expect(await fixture.engine.getTicket(fixture.qa)).toMatchObject({
+      status: "blocked",
+      attempts: [{ requiredInput: { kind: "manual_test" } }],
+    });
+  });
+
   it("returns one durable claim when the same request races concurrently", async () => {
     const fixture = await createFixture();
     const ticketId = fixture.plan.graph.ticketIds[0]!;
@@ -238,7 +267,12 @@ describe("TicketEngine single Plan flow", () => {
     const fixture = await createFixture();
     const ticketId = fixture.plan.graph.ticketIds[0]!;
     const claim = await fixture.engine.claimReady({ requestId: "claim-block", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
-    const blocked = await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block", { type: "block", reason: "需要输入" }));
+    const requiredInput = {
+      kind: "manual_test" as const,
+      description: "需要 human 在浏览器中完成交互测试",
+      details: { testFile: "index.html", steps: ["完成一局"] },
+    };
+    const blocked = await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block", { type: "block", reason: "需要输入", requiredInput }));
     if (!blocked.accepted || blocked.nextAuthority?.kind !== "blocked_owner") throw new Error("Expected blocked ownership");
     const moved = await fixture.engine.transferBlockedOwnership({
       requestId: "move-owner",
@@ -250,6 +284,7 @@ describe("TicketEngine single Plan flow", () => {
     expect(await fixture.engine.getTicket(ticketId)).toMatchObject({
       version: moved.ticketVersion,
       activeAuthority: { kind: "blocked_owner", ownershipId: moved.ownershipId, fencingToken: moved.fencingToken },
+      attempts: [{ status: "blocked", requiredInput }],
     });
   });
 
@@ -257,7 +292,11 @@ describe("TicketEngine single Plan flow", () => {
     const fixture = await createFixture();
     const ticketId = fixture.plan.graph.ticketIds[0]!;
     const claim = await fixture.engine.claimReady({ requestId: "claim-pause", planId: fixture.planId, ticketId, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
-    await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block-pause", { type: "block", reason: "等待输入" }));
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, ticketId, claim!, "block-pause", {
+      type: "block",
+      reason: "等待输入",
+      requiredInput: { kind: "external_fact", description: "等待外部事实" },
+    }));
     expect(await fixture.engine.applyPlan({ commandId: "pause", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "pause", expectedPlanVersion: 3 } }))
       .toMatchObject({ accepted: true, planStatus: "paused" });
     expect(await fixture.engine.applyPlan({ commandId: "resume", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "resume", expectedPlanVersion: 4 } }))

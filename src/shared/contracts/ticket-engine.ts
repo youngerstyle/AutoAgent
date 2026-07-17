@@ -220,13 +220,28 @@ export interface TicketAttempt {
   endedAt?: string;
   handoff?: TicketHandoff;
   reason?: string;
+  requiredInput?: TicketRequiredInput;
   evidence?: TicketEvidenceRef[];
+}
+
+export type TicketRequiredInputKind =
+  | "manual_test"
+  | "authorization"
+  | "credential"
+  | "external_fact"
+  | "irreversible_confirmation"
+  | "tool_policy";
+
+export interface TicketRequiredInput {
+  kind: TicketRequiredInputKind;
+  description: string;
+  details?: Record<string, unknown>;
 }
 
 export interface BlockTicketCommand {
   type: "block";
   reason: string;
-  requiredInput?: string;
+  requiredInput: TicketRequiredInput;
 }
 
 export interface RequestCorrectionCommand {
@@ -413,7 +428,7 @@ export type TicketAggregateEventPayload =
   | { type: "TicketReady"; ticketVersion: number }
   | { type: "TicketClaimed"; claimId: string; attemptId: string; attemptNumber: number }
   | { type: "ClaimExpired"; claimId: string }
-  | { type: "TicketBlocked"; requiredInput?: string }
+  | { type: "TicketBlocked"; requiredInput: TicketRequiredInput }
   | { type: "TicketRetryQueued"; prerequisiteTicketId: TicketId }
   | { type: "TicketReopened"; returnedByTicketId: TicketId; attemptNumber: number }
   | {

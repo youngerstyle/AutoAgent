@@ -6,13 +6,14 @@ import type {
   EntityStatus,
   MissionPhase,
   Ticket,
+  TicketBlocker,
   Workspace,
   WorkspaceAgent,
   WorkspaceSnapshot,
   WorkspaceToolName,
 } from "../../shared/types.js";
 import type { ActiveMissionLink } from "../../shared/contracts/mission-control.js";
-import type { PlanId, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
+import type { PlanId, PlanPolicyRef, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { AgentContextAssembler } from "../agent-engine/context-assembler.js";
@@ -430,8 +431,8 @@ export class RuntimeHost {
         attempt: Math.max(1, work.ticket.attempts.length),
         parentTicketId: work.ticket.parentTicketId,
         dependsOnTicketIds: plan.graph.dependencyEdges.filter((edge) => edge.toTicketId === ticketId).map((edge) => String(edge.fromTicketId)),
-        blocker: work.ticket.status === "blocked" && activeAttempt?.reason
-          ? { type: "external_dependency", reason: activeAttempt.reason }
+        blocker: work.ticket.status === "blocked" && activeAttempt?.reason && activeAttempt.requiredInput
+          ? projectTicketBlocker(activeAttempt.reason, activeAttempt.requiredInput)
           : undefined,
         createdAt: record.createdAt,
         updatedAt: link?.updatedAt ?? record.updatedAt,
@@ -764,6 +765,21 @@ function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string
 function legacyTicketStatus(status: string): Ticket["status"] {
   if (status === "ready" || status === "pending") return "pending";
   return status as Ticket["status"];
+}
+
+export function projectTicketBlocker(reason: string, requiredInput: TicketRequiredInput): TicketBlocker {
+  const type: TicketBlocker["type"] = requiredInput.kind === "manual_test"
+    ? "manual_test_required"
+    : requiredInput.kind === "authorization" || requiredInput.kind === "irreversible_confirmation"
+      ? "human_authorization_required"
+      : requiredInput.kind === "tool_policy"
+        ? "tool_policy_blocked"
+        : "external_dependency";
+  return {
+    type,
+    reason: requiredInput.description || reason,
+    ...(requiredInput.details ? { details: structuredClone(requiredInput.details) } : {}),
+  };
 }
 
 function runtimeStatus(status: RuntimeTaskRecord["status"]): EntityStatus {

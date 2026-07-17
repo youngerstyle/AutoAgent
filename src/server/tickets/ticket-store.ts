@@ -263,6 +263,9 @@ export class TicketStore {
         if (!attempt.attemptId || attemptIds.has(attempt.attemptId) || attempt.attemptNumber !== index + 1) {
           throw new TicketStoreCorruptionError(`Invalid Attempt history for Ticket ${ticket.ticketId}`);
         }
+        if (attempt.requiredInput !== undefined && !isTicketRequiredInput(attempt.requiredInput)) {
+          throw new TicketStoreCorruptionError(`Invalid required input for Attempt ${attempt.attemptId}`);
+        }
         attemptIds.add(attempt.attemptId);
       }
       if (ticket.activeAttemptId && !attemptIds.has(ticket.activeAttemptId)) {
@@ -273,6 +276,9 @@ export class TicketStore {
         : undefined;
       if ((ticket.status === "running" || ticket.status === "blocked") && !activeAttempt) {
         throw new TicketStoreCorruptionError(`Executing Ticket ${ticket.ticketId} has no active Attempt`);
+      }
+      if (ticket.status === "blocked" && !activeAttempt?.requiredInput) {
+        throw new TicketStoreCorruptionError(`Blocked Ticket ${ticket.ticketId} has no required input`);
       }
       if (ticket.status !== "running" && ticket.status !== "blocked" && ticket.activeAttemptId) {
         throw new TicketStoreCorruptionError(`Non-executing Ticket ${ticket.ticketId} has an active Attempt`);
@@ -396,6 +402,15 @@ export class TicketStore {
     try { if (parseLockMetadata(await readFile(file, "utf8"))?.token === token) await rm(file); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
+}
+
+function isTicketRequiredInput(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  return new Set(["manual_test", "authorization", "credential", "external_fact", "irreversible_confirmation", "tool_policy"]).has(String(input.kind))
+    && typeof input.description === "string"
+    && Boolean(input.description.trim())
+    && (input.details === undefined || (typeof input.details === "object" && input.details !== null && !Array.isArray(input.details)));
 }
 
 function parseLockMetadata(content: string): PlanLockMetadata | undefined {

@@ -80,7 +80,10 @@ describe("agent thread view", () => {
           summary: "无法继续发布",
           domainOutcome: {
             summary: "缺少生产环境授权，无法执行不可逆发布操作。",
-            requiredInput: ["生产环境发布授权", "审批记录"],
+            requiredInput: {
+              kind: "authorization",
+              description: "生产环境发布授权和审批记录",
+            },
           },
         },
       }),
@@ -90,7 +93,7 @@ describe("agent thread view", () => {
       expect.objectContaining({
         role: "agent",
         title: "为什么停下来",
-        body: "无法继续发布\n\n缺少生产环境授权，无法执行不可逆发布操作。\n\n需要：生产环境发布授权；审批记录",
+        body: "无法继续发布\n\n缺少生产环境授权，无法执行不可逆发布操作。\n\n需要：生产环境发布授权和审批记录",
       }),
     ]);
   });

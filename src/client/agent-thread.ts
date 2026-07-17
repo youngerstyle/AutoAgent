@@ -103,11 +103,10 @@ function goalResolutionBubble(event: AgentThreadEvent): AgentThreadBubble | unde
   const outcome = args.domainOutcome && typeof args.domainOutcome === "object" && !Array.isArray(args.domainOutcome)
     ? args.domainOutcome as Record<string, unknown>
     : undefined;
-  const requiredInput = typeof outcome?.requiredInput === "string"
-    ? outcome.requiredInput
-    : Array.isArray(outcome?.requiredInput)
-      ? outcome.requiredInput.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).join("；")
-      : undefined;
+  const input = outcome?.requiredInput && typeof outcome.requiredInput === "object" && !Array.isArray(outcome.requiredInput)
+    ? outcome.requiredInput as Record<string, unknown>
+    : undefined;
+  const requiredInput = typeof input?.description === "string" ? input.description : undefined;
   const body = [
     typeof args.summary === "string" ? args.summary : undefined,
     typeof outcome?.summary === "string" ? outcome.summary : undefined,

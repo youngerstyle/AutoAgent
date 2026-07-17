@@ -655,7 +655,11 @@ type TicketCommandPayload =
   | {
       type: "block";
       reason: string;
-      requiredInput?: string;
+      requiredInput: {
+        kind: "manual_test" | "authorization" | "credential" | "external_fact" | "irreversible_confirmation" | "tool_policy";
+        description: string;
+        details?: Record<string, unknown>;
+      };
     }
   | {
       type: "return_to_parent";
@@ -1308,7 +1312,7 @@ type TicketEventPayload =
   | { type: "TicketReady"; ticketId: string; ticketVersion: number }
   | { type: "TicketClaimed"; ticketId: string; claimId: string }
   | { type: "ClaimExpired"; ticketId: string; claimId: string }
-  | { type: "TicketBlocked"; ticketId: string; requiredInput?: string }
+  | { type: "TicketBlocked"; ticketId: string; requiredInput: TicketRequiredInput }
   | { type: "TicketTerminal"; ticketId: string; status: "completed" | "returned" | "failed" | "cancelled" }
   | { type: "AuthorityRevoked"; ticketId: string; fencingToken: number }
   | { type: "WorkflowStatusChanged"; workflowId: string; status: WorkflowStatus };
@@ -1322,6 +1326,8 @@ type AgentEventPayload =
 type TicketEvent = EngineEventEnvelope<TicketEventPayload>;
 type AgentEvent = EngineEventEnvelope<AgentEventPayload>;
 ```
+
+`blocked` 与 `correction_required` 是两个不同的领域事实。当前 Agent 已确认某张上游交付存在可修复缺陷时，才请求纠错；当前 Agent 因缺少不可替代的外部输入、授权或人工操作环境而不能完成自己的成功标准时，阻塞当前 Ticket。尤其是 QA 已完成静态检查但没有浏览器交互能力时，应提交 `requiredInput.kind="manual_test"`，Ticket 保持 blocked 并进入该 QA Agent 的 human-in-loop，不能重新打开开发 Ticket。Mission Control 只按结构化 `kind` 投影 UI，不从自然语言关键词猜测类型。
 
 Ticket event payload 至少区分 `TicketReady`、`TicketClaimed`、`ClaimExpired`、`TicketBlocked`、`TicketTerminal`、`AuthorityRevoked` 和 `WorkflowStatusChanged`；Agent event payload 至少区分 `MessageAppended`、`TurnStatusChanged`、`GoalStatusChanged` 和 `GoalProposalCreated`。每个 payload 只携带所属 aggregate 的事实，不复制另一 Engine 的内部状态。
 

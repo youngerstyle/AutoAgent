@@ -354,15 +354,12 @@ describe("client view model", () => {
       attempt: 1,
       blocker: {
         type: "manual_test_required" as const,
-        reason: JSON.stringify({
-          status: "manual_test_required",
-          report: {
-            summary: "静态分析通过，但需要人工浏览器测试。",
-            test_file: "C:\\ws\\index.html",
-            test_steps: ["打开 index.html", "按 R 重启"],
-            expected_result: "全部步骤通过"
-          }
-        })
+        reason: "静态分析通过，但需要人工浏览器测试。",
+        details: {
+          testFile: "C:\\ws\\index.html",
+          steps: ["打开 index.html", "按 R 重启"],
+          expectedResult: "全部步骤通过",
+        },
       },
       createdAt: "now",
       updatedAt: "now"

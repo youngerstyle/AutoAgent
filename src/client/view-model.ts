@@ -226,8 +226,14 @@ export function buildBlockedPanelCopy(snapshot?: WorkspaceSnapshot): { title: st
 export function buildManualTestAction(ticket: Ticket): ManualTestActionView | undefined {
   if (ticket.status !== "blocked" || ticket.blocker?.type !== "manual_test_required") return undefined;
   const parsed = parseBlockerJson(ticket.blocker.reason);
-  const report = isRecord(parsed?.report) ? parsed.report : isRecord(parsed) ? parsed : undefined;
-  const summary = stringValue(report?.summary) ?? (report ? undefined : ticket.blocker.reason) ?? manualTestDefaultSummary(ticket);
+  const report = isRecord(ticket.blocker.details)
+    ? ticket.blocker.details
+    : isRecord(parsed?.report)
+      ? parsed.report
+      : isRecord(parsed)
+        ? parsed
+        : undefined;
+  const summary = stringValue(report?.summary) ?? ticket.blocker.reason ?? manualTestDefaultSummary(ticket);
   const testFile = stringValue(report?.test_file) ?? stringValue(report?.testFile) ?? stringValue(report?.target);
   const steps = stringArray(report?.test_steps)
     ?? stringArray(report?.manual_test_steps)

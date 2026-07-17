@@ -122,6 +122,7 @@ export type TicketBlockerType =
 export interface TicketBlocker {
   type: TicketBlockerType;
   reason: string;
+  details?: Record<string, unknown>;
 }
 
 export interface Ticket {

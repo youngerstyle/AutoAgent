@@ -5,13 +5,24 @@ import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
-import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
+import { projectTicketBlocker, RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("RuntimeHost", () => {
+  it("projects typed manual-test input into the QA human-loop contract", () => {
+    expect(projectTicketBlocker("QA 缺少浏览器环境", {
+      kind: "manual_test",
+      description: "请在浏览器中完成一局",
+      details: { testFile: "index.html", steps: ["完成一局"] },
+    })).toEqual({
+      type: "manual_test_required",
+      reason: "请在浏览器中完成一局",
+      details: { testFile: "index.html", steps: ["完成一局"] },
+    });
+  });
   it("acknowledges a newly persisted task before any Agent model turn finishes", async () => {
     const fixture = await createFixture();
     fixture.providers.get = async () => ({
