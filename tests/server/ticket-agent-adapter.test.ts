@@ -70,7 +70,31 @@ describe("Ticket Agent resolution adapter", () => {
       [],
       [],
       undefined,
-      undefined,
+      {
+        planId: "plan-a",
+        version: 4,
+        tickets: [
+          {
+            ticketId: "ticket-intake",
+            status: "completed",
+            title: "需求接收",
+            objective: "形成正式目标说明",
+            successCriteria: ["目标边界已对齐"],
+            outputContract: { schemaRef: "brief-v1" },
+          },
+          {
+            ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201",
+            status: "running",
+            title: "质量检查",
+            objective: "验证核心玩法",
+            successCriteria: ["形成可复现结论"],
+            outputContract: { schemaRef: "qa-report-v1" },
+          },
+        ],
+        dependencyEdges: [{ fromTicketId: "ticket-intake", toTicketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" }],
+        requiredTerminalTicketIds: ["40614afd-9312-4f9b-97fe-d14e18fe4201"],
+        teamMembers: [{ principalId: "principal:qa", name: "测试", capabilities: ["delivery:verify"] }],
+      },
       [{
         ticketId: "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId,
         title: "开发实现",
@@ -87,7 +111,6 @@ describe("Ticket Agent resolution adapter", () => {
         },
       }],
       {
-        missionObjective: "交付可玩的坦克游戏",
         ticket: {
           ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId,
           title: "质量检查",
@@ -98,7 +121,10 @@ describe("Ticket Agent resolution adapter", () => {
       },
     );
 
-    expect(instruction).toContain('"missionObjective":"交付可玩的坦克游戏"');
+    expect(instruction).not.toContain('"missionObjective"');
+    expect(instruction).toContain('"currentPlan"');
+    expect(instruction).toContain('"successCriteria":["目标边界已对齐"]');
+    expect(instruction).toContain('"outputContract":{"schemaRef":"brief-v1"}');
     expect(instruction).toContain('"summary":"实现了核心玩法"');
     expect(instruction).toContain('"artifact":"src/game.ts"');
     expect(instruction).not.toContain("tool_call");
@@ -116,7 +142,7 @@ describe("Ticket Agent resolution adapter", () => {
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
       planId: "plan-a",
       version: 3,
-      tickets: [{ ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标" }],
+      tickets: [{ ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标", successCriteria: ["形成共识"], outputContract: { schemaRef: "brief-v1" } }],
       dependencyEdges: [],
       requiredTerminalTicketIds: ["ticket-planning"],
       teamMembers: [{ principalId: "principal:dev", name: "开发", capabilities: ["delivery:implement"] }],

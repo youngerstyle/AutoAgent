@@ -4,7 +4,7 @@
 
 **Goal:** Give every Ticket owner complete, durable upstream delivery context without sharing Agent Sessions or adding platform-side semantic completion rules.
 
-**Architecture:** Ticket Engine stores a canonical `TicketHandoff` as the only completion payload. Mission Control persists the Mission objective and appends a deterministic assignment message containing the current Ticket plus the accepted handoff lineage of every DAG ancestor to the target Agent Thread. Agent Engine remains unchanged and reconstructs only that Agent's own chronological Thread. This lineage rule supersedes the original direct-parent-only implementation described by this historical plan.
+**Architecture:** Ticket Engine stores a canonical `TicketHandoff` as the only completion payload. Mission Control retains the raw human request for initial intake/audit and appends a deterministic assignment message containing the shared current Plan, current Ticket, and accepted handoff lineage of every DAG ancestor to the target Agent Thread. It does not copy the raw request into downstream assignments. Agent Engine remains unchanged and reconstructs only that Agent's own chronological Thread. This rule supersedes the original direct-parent-only implementation described by this historical plan.
 
 **Tech Stack:** TypeScript, Node.js, Vitest, append-only Ticket and Agent stores.
 

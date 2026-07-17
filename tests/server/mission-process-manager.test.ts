@@ -52,6 +52,12 @@ describe("MissionProcessManager", () => {
     expect(intakeLink).toMatchObject({ status: "running", agentId: "boss" });
 
     const boss = fixture.engines.get("boss")!;
+    const intakeThread = await boss.getThread(intakeLink.agentThreadId!);
+    const intakePayloads = await boss.getPayloads(intakeThread.items.map((item) => item.payloadRef));
+    expect([...intakePayloads.values()]).toContainEqual(expect.objectContaining({
+      senderPrincipalId: "human",
+      content: "build",
+    }));
     const goal = await boss.getGoal(intakeLink.agentGoalId!);
     const outcome: MissionTicketOutcome = { brief: "accepted" };
     await boss.proposeGoalResolution({
@@ -84,9 +90,11 @@ describe("MissionProcessManager", () => {
       && "senderPrincipalId" in value
       && value.senderPrincipalId === "mission-process"
     ));
-    expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"missionObjective":"build"'),
-    });
+    expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"missionObjective"') });
+    expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"build"') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"currentPlan"') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"successCriteria"') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"outputContract"') });
     expect(missionInstruction).toMatchObject({
       content: expect.stringContaining('"summary":"需求已接收"'),
     });
@@ -132,6 +140,12 @@ describe("MissionProcessManager", () => {
     let mission = await fixture.manager.tick();
     const scopeLink = mission.links.find((item) => item.agentId === "boss" && item.status === "running")!;
     const boss = fixture.engines.get("boss")!;
+    const scopeThread = await boss.getThread(scopeLink.agentThreadId!);
+    const scopePayloads = await boss.getPayloads(scopeThread.items.map((item) => item.payloadRef));
+    expect([...scopePayloads.values()]).not.toContainEqual(expect.objectContaining({
+      senderPrincipalId: "human",
+      content: "preserve the original delivery target",
+    }));
     const scopeGoal = (await boss.getGoal(scopeLink.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "scope-complete", goalId: scopeGoal.spec.id, expectedGoalVersion: scopeGoal.version, resolvingGoalVersion: scopeGoal.version + 1,
@@ -163,7 +177,10 @@ describe("MissionProcessManager", () => {
       && value.senderPrincipalId === "mission-process"
     )) as { content: string };
 
-    expect(instruction.content).toContain('"missionObjective":"preserve the original delivery target"');
+    expect(instruction.content).not.toContain('"missionObjective"');
+    expect(instruction.content).not.toContain("preserve the original delivery target");
+    expect(instruction.content).toContain('"currentPlan"');
+    expect(instruction.content).toContain('"requiredTerminalTicketIds"');
     expect(instruction.content).toContain('"handoffLineage"');
     expect(instruction.content).toContain('"successCriteria":["baseline remains traceable"]');
     expect(instruction.content).toContain('"baseline":"full interactive delivery, not a simulation"');

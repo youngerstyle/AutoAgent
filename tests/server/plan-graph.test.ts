@@ -45,6 +45,15 @@ describe("append-only Plan graph", () => {
     expect(graph.definitionsByTicketId[ids[1]].title).toBe("同名工作");
   });
 
+  it("preserves an explicit original-request context policy on the materialized Ticket", () => {
+    const input = change(["intake"]);
+    input.additions[0]!.contextPolicy = { includeOriginalRequest: true };
+
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[0] });
+
+    expect(graph.definitionsByTicketId[ids[0]].contextPolicy).toEqual({ includeOriginalRequest: true });
+  });
+
   it("appends new Tickets without changing historical Ticket identity", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
     const second = materializePlanGraph({

@@ -118,10 +118,11 @@ describe("RuntimeHost", () => {
       source: "platform",
       kind: "ticket_received",
       payload: {
-        brief: expect.stringContaining("1:1复刻 CF 红白机的坦克98 游戏"),
+        brief: expect.stringContaining("当前 Agent thread 中提交的原始诉求"),
         expectedArtifact: "boss-intake-v1",
       },
     });
+    expect(JSON.stringify(events.slice(1))).not.toContain("1:1复刻 CF 红白机的坦克98 游戏");
     expect(events.findIndex((event) => event.kind === "system_note")).toBeGreaterThan(1);
   });
 
@@ -254,7 +255,7 @@ describe("RuntimeHost", () => {
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
-        const planning = input.instructions.includes("plan-change-set-v3");
+        const planning = input.instructions.includes("输出契约 plan-change-set-v3");
         if (planning) planningTurns += 1;
         const structured = planning
           ? {

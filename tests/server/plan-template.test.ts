@@ -6,14 +6,15 @@ import type { PlanPolicyRef } from "../../src/shared/contracts/ticket-engine.js"
 describe("versioned plan product data", () => {
   it("defines intake then planning without human or downstream topology in manager code", () => {
     const definition = createMinimalTeamPlanDefinition(policyRef, "构建坦克大战");
-    expect(definition.initialChange.additions[0]?.objective).toContain("构建坦克大战");
+    expect(JSON.stringify(definition)).not.toContain("构建坦克大战");
     expect(definition.initialChange.additions[0]?.objective).toContain("不要求 human 撰写完整规格");
     expect(definition.initialChange.additions[0]?.successCriteria).toEqual(expect.arrayContaining([
       expect.stringContaining("可逆的不确定项不阻塞交接"),
       expect.stringContaining("不可替代输入时才阻塞"),
     ]));
     expect(definition.initialChange.additions.map((node) => node.clientRef)).toEqual(["intake", "planning"]);
-    expect(definition.initialChange.additions[1]?.objective).toContain("构建坦克大战");
+    expect(definition.initialChange.additions.map((node) => node.contextPolicy?.includeOriginalRequest ?? false)).toEqual([true, false]);
+    expect(definition.initialChange.additions[1]?.objective).toContain("需求接收工单的正式交付");
     expect(definition.initialChange.additions[1]?.successCriteria).toEqual(expect.arrayContaining([
       expect.stringContaining("新增实际执行工单"),
       expect.stringContaining("不能把启动骨架"),
@@ -28,9 +29,9 @@ describe("versioned plan product data", () => {
 
   it("resolves an immutable version before Mission start", async () => {
     const registry = new PlanDefinitionRegistry(policyRef);
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 4, teamBindingId: "team-a", objective: "构建坦克大战" }))
+      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 4 } });
     await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 3, teamBindingId: "team-a", objective: "构建坦克大战" }))
-      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 3 } });
-    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 2, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .rejects.toThrow("version does not exist");
   });
 });

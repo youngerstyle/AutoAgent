@@ -1,10 +1,10 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 3;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 4;
 
-export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missionObjective: string): PlanDefinition {
-  if (!missionObjective.trim()) throw new Error("Mission objective is required");
+export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, originalRequest: string): PlanDefinition {
+  if (!originalRequest.trim()) throw new Error("Mission original request is required");
   return {
     definitionId: DEFAULT_PLAN_TEMPLATE_ID,
     definitionVersion: DEFAULT_PLAN_TEMPLATE_VERSION,
@@ -20,7 +20,7 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missio
         {
           clientRef: "intake",
           title: "需求接收",
-          objective: `理解并处理以下 human 目标，在不要求 human 撰写完整规格的前提下，使用合理默认值形成可供团队计划的目标说明：\n${missionObjective.trim()}`,
+          objective: "理解 human 在当前 Agent thread 中提交的原始诉求；在不要求 human 撰写完整规格的前提下，使用合理默认值形成可供团队共同执行的正式目标说明。原始诉求只用于需求接收和审计，正式 handoff 才是后续工作的权威需求基线。",
           successCriteria: [
             "目标、约束、已知事实和团队采用的默认假设被记录",
             "可逆的不确定项不阻塞交接，必要问题作为可选校准项",
@@ -28,11 +28,12 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, missio
           ],
           assignment: { requiredCapabilities: ["mission:intake"] },
           outputContract: { schemaRef: "boss-intake-v1" },
+          contextPolicy: { includeOriginalRequest: true },
         },
         {
           clientRef: "planning",
           title: "计划拆解",
-          objective: `根据需求接收工单的交付，把以下 human 原始目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan：\n${missionObjective.trim()}`,
+          objective: "根据需求接收工单的正式交付，把已对齐目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan。不得重新使用 human 原始诉求覆盖正式 handoff。",
           successCriteria: [
             "新增实际执行工单，形成完成 Mission 所需的真实交付链",
             "不能把启动骨架（intake → planning）当作完整计划",

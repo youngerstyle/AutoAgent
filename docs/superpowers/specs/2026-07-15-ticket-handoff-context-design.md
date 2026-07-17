@@ -34,12 +34,16 @@ The Ticket Engine does not interpret these fields. It only validates their struc
 
 When a Ticket becomes ready and is assigned, Mission Control appends one assignment message to the target Agent Thread. The message contains:
 
-1. Mission objective.
+1. Current Plan snapshot shared by every participant.
 2. Current Ticket identity, objective, success criteria, and output contract.
 3. One immutable handoff envelope for every completed ancestor Ticket in the
    current Ticket's DAG lineage, ordered topologically from the earliest input
    to the direct dependencies.
-4. Correction targets and Plan facts only when the current Ticket contract requires them.
+4. Correction targets when the current Ticket contract requires them.
+
+The raw human request is delivered chronologically only to the initial intake
+Agent. Its accepted handoff is the aligned domain brief used by downstream
+work; Mission Control does not inject the raw request into every assignment.
 
 An upstream envelope includes source Ticket identity and definition plus its accepted `TicketHandoff`. It never contains the upstream Agent's Session, hidden reasoning, raw tool trace, or assembled prompt.
 
@@ -80,16 +84,18 @@ No role names or fixed phase sequence participate in this mechanism. The Plan DA
 - A handoff is written by the same idempotent Ticket command that completes the Ticket.
 - Replaying the command returns the existing result and cannot create a second handoff.
 - Assignment messages use the existing deterministic dispatch message ID, so recovery cannot append duplicates.
-- Mission objective is persisted in the Mission record and survives Runtime Host restart.
+- The raw request remains persisted for intake/audit, while shared execution
+  context is rebuilt from the current Plan and accepted Ticket handoffs after a
+  Runtime Host restart.
 - Mission and Ticket aggregate schema versions advance with the new durable shapes. Older projects remain read-only and are never scheduled through the new contract.
 
 ## Verification
 
 - Contract test: a complete command requires and stores one canonical handoff.
 - Ticket Engine test: completed handoff remains immutable and unlocks the dependant Ticket.
-- Mission Process test: the downstream Agent receives the immutable Mission
-  objective, current Ticket context, and every completed ancestor handoff in
-  deterministic topological order.
+- Mission Process test: the downstream Agent receives the current Plan, current
+  Ticket context, and every completed ancestor handoff in deterministic
+  topological order, without a separate copy of the raw human request.
 - Lineage test: a three-step chain preserves the first Ticket's accepted scope
   for the final Agent.
 - Diamond test: parallel ancestors are ordered deterministically and a shared

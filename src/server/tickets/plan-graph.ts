@@ -87,6 +87,9 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
+      ...(addition.contextPolicy?.includeOriginalRequest === true
+        ? { contextPolicy: { includeOriginalRequest: true } }
+        : {}),
       ...(addition.permissions?.amendPlan === true ? { permissions: { amendPlan: true } } : {}),
     };
   }
@@ -206,6 +209,9 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   value.successCriteria.forEach((item, index) => requireText(item, `${label}.successCriteria[${index}]`));
   requireText(value.outputContract.schemaRef, `${label}.outputContract.schemaRef`);
+  if (value.contextPolicy?.includeOriginalRequest !== undefined && typeof value.contextPolicy.includeOriginalRequest !== "boolean") {
+    throw new PlanGraphError(`${label}.contextPolicy.includeOriginalRequest must be a boolean`);
+  }
   if (value.permissions?.amendPlan !== undefined && typeof value.permissions.amendPlan !== "boolean") {
     throw new PlanGraphError(`${label}.permissions.amendPlan must be a boolean`);
   }

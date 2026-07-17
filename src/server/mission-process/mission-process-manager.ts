@@ -243,7 +243,7 @@ export class MissionProcessManager {
     if (!goalId) {
       const work = await this.tickets.getWorkItem(link.ticketId);
       if (!work) throw new Error("Ticket work item is missing");
-      if (aggregate.links.length === 1 && aggregate.links[0]?.dispatchId === link.dispatchId) {
+      if (work.definition.contextPolicy?.includeOriginalRequest) {
         await agent.sendMessage({
           messageId: stableId("mission_objective", aggregate.missionId),
           threadId,
@@ -295,12 +295,9 @@ export class MissionProcessManager {
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
               await this.listCorrectionTargets(link.planId, link.ticketId),
               link.ticketId,
-              work.definition.outputContract.schemaRef === "plan-change-set-v3"
-                ? await this.planningContext(link.planId)
-                : undefined,
+              await this.sharedPlanContext(link.planId),
               await this.listUpstreamDeliveries(link.planId, link.ticketId),
               {
-                missionObjective: aggregate.record.objective,
                 ticket: {
                   ticketId: work.ticket.ticketId,
                   title: work.definition.title,
@@ -325,7 +322,7 @@ export class MissionProcessManager {
     return this.updateLink(aggregate, dispatchId, active);
   }
 
-  private async planningContext(planId: PlanId) {
+  private async sharedPlanContext(planId: PlanId) {
     const plan = await this.tickets.getPlan(planId);
     const workItems = await Promise.all(plan.graph.ticketIds.map((ticketId) => this.tickets.getWorkItem(ticketId)));
     return {
@@ -336,6 +333,8 @@ export class MissionProcessManager {
         status: work.ticket.status,
         title: work.definition.title,
         objective: work.definition.objective,
+        successCriteria: work.definition.successCriteria,
+        outputContract: work.definition.outputContract,
       }] : []),
       dependencyEdges: plan.graph.dependencyEdges.map((edge) => ({
         fromTicketId: String(edge.fromTicketId),
