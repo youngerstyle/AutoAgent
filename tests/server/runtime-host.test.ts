@@ -23,6 +23,43 @@ describe("RuntimeHost", () => {
       details: { testFile: "index.html", steps: ["完成一局"] },
     });
   });
+  it("turns request_human_input into a blocked Ticket without language inference", async () => {
+    const fixture = await createFixture();
+    let exposed = false;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        exposed = input.tools.some((tool) => tool.name === "request_human_input");
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "human-input",
+            name: "request_human_input",
+            arguments: {
+              kind: "manual_test",
+              description: "请在浏览器中完成一局",
+              details: { testFile: "index.html", steps: ["完成一局"] },
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-human-input-tool", title: "人工测试", objective: "验证浏览器交互" });
+    await fixture.host.tick();
+    await waitFor(async () => (await fixture.host.snapshot()).tickets?.some((ticket) => ticket.status === "blocked") ?? false, 5_000);
+    const snapshot = await fixture.host.snapshot();
+
+    expect(exposed).toBe(true);
+    expect(snapshot.tickets).toContainEqual(expect.objectContaining({
+      status: "blocked",
+      blocker: {
+        type: "manual_test_required",
+        reason: "请在浏览器中完成一局",
+        details: { testFile: "index.html", steps: ["完成一局"] },
+      },
+    }));
+  });
   it("acknowledges a newly persisted task before any Agent model turn finishes", async () => {
     const fixture = await createFixture();
     fixture.providers.get = async () => ({

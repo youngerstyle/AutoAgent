@@ -43,7 +43,7 @@ describe("Ticket Agent resolution adapter", () => {
 
     expect(instruction).toContain("空工作区或尚不存在项目文件不属于 human 输入边界");
     expect(instruction).toContain("自行创建所需目录、源码、配置、构建入口和测试");
-    expect(instruction).toContain("不可替代的外部事实、凭证、授权、人工操作或不可逆操作确认");
+    expect(instruction).toContain("不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整");
   });
 
   it("rejects a blocked proposal that does not identify an external input for human", () => {
@@ -52,37 +52,31 @@ describe("Ticket Agent resolution adapter", () => {
       summary: "工作区为空",
     })).toEqual({
       valid: false,
-      reason: "blocked 必须提供结构化 requiredInput（kind、description，可选 details）；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞",
+      reason: "blocked 提案只能由 request_human_input 工具产生",
     });
     expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
       disposition: "blocked",
       requiredInput: "生产环境发布凭证",
     })).toMatchObject({ valid: false });
-    expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
-      disposition: "blocked",
-      requiredInput: {
-        kind: "manual_test",
-        description: "需要 human 在浏览器中验证交互",
-        details: {
-          testFile: "index.html",
-          steps: ["打开游戏", "完成一局"],
-          expectedResult: "可以正常通关",
-        },
+    expect(validateMissionTicketOutcome("delivery-v1", "blocked", undefined, {
+      kind: "manual_test" as const,
+      description: "需要 human 在浏览器中验证交互",
+      details: {
+        testFile: "index.html",
+        steps: ["打开游戏", "完成一局"],
+        expectedResult: "可以正常通关",
       },
     })).toEqual({ valid: true });
   });
 
   it("preserves a typed human-input request in the Ticket command", () => {
     const requiredInput = {
-      kind: "manual_test",
+      kind: "manual_test" as const,
       description: "需要 human 在浏览器中验证交互",
       details: { testFile: "index.html", steps: ["完成一局"] },
     };
 
-    expect(proposalToTicketCommand(proposal("blocked", {
-      disposition: "blocked",
-      requiredInput,
-    }), link, NOW).payload).toEqual({
+    expect(proposalToTicketCommand(proposal("blocked", {}, requiredInput), link, NOW).payload).toEqual({
       type: "block",
       reason: "summary",
       requiredInput,
@@ -93,7 +87,7 @@ describe("Ticket Agent resolution adapter", () => {
     const instruction = missionOutcomeInstruction("qa-report-v1");
 
     expect(instruction).toContain("当前启用的工具或运行环境无法完成不可替代的验证");
-    expect(instruction).toContain('requiredInput.kind="manual_test"');
+    expect(instruction).toContain('request_human_input(kind="manual_test")');
     expect(instruction).toContain("不得使用 correction_required");
   });
 
@@ -168,7 +162,7 @@ describe("Ticket Agent resolution adapter", () => {
     const instruction = missionOutcomeInstruction("delivery-v1");
 
     expect(instruction).toContain("Host 返回 correctable 只表示当前提案需要修正并重新提交");
-    expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed 或 blocked");
+    expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed");
   });
 
   it("describes the complete Plan change contract to the planning Agent", () => {
@@ -297,5 +291,5 @@ function deliveryClosure() {
     requiredTerminalRefs: [{ clientRef: "acceptance" }],
   };
 }
-function proposal(status: "completed" | "blocked" | "failed", domainOutcome: MissionTicketOutcome): GoalResolutionProposal<any, MissionTicketOutcome> { return { proposalId: "proposal", goalId: "goal", expectedGoalVersion: 1, resolvingGoalVersion: 2, status, summary: "summary", evidence: [], criterionResults: status === "completed" ? [{ criterionIndex: 0, status: "satisfied", evidence: [] }] : [], residualRisks: [], domainOutcome, createdAt: NOW }; }
+function proposal(status: "completed" | "blocked" | "failed", domainOutcome: MissionTicketOutcome, humanInputRequest?: GoalResolutionProposal["humanInputRequest"]): GoalResolutionProposal<any, MissionTicketOutcome> { return { proposalId: "proposal", goalId: "goal", expectedGoalVersion: 1, resolvingGoalVersion: 2, status, summary: "summary", evidence: [], criterionResults: status === "completed" ? [{ criterionIndex: 0, status: "satisfied", evidence: [] }] : [], residualRisks: [], domainOutcome, ...(humanInputRequest ? { humanInputRequest } : {}), createdAt: NOW }; }
 const link: ActiveMissionLink = { dispatchId: "dispatch", missionId: "mission", planId: "ca24185e-4957-4bb2-973f-ea4d89382557" as PlanId, ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId, ticketVersion: 2, agentId: "pm", agentPrincipalId: "planner", claimRequestId: "claim", goalStartKey: "start", updatedAt: NOW, status: "resolving", authority: { kind: "claim", claimId: "claim", fencingToken: 1 }, agentThreadId: "thread", agentGoalId: "goal" };

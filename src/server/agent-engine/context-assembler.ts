@@ -392,7 +392,7 @@ function stableSection(input: AgentContextAssemblerInput): string {
     "human 提供的是目标和方向，不负责撰写完整规格。优先使用现有项目事实、工具和专业判断补全可操作细节。",
     "对可逆、低风险的不确定项，明确记录合理假设并继续推进；可以提出简短问题用于校准，但不得把回答作为推进前提。",
     "默认值只能补充 human 未说明的细节，不能削弱、改写或重新命名 human 已明确的目标、范围与质量限定。若确实需要降级范围，必须明确提交风险、阻塞或计划变更，不得把降级交付当作原目标完成。",
-    "只有缺少系统无法替代的输入时，才允许提交 blocked；偏好、范围细节和实现选择应由 Agent 先给出默认方案。",
+    "只有缺少系统无法替代的输入时，才调用 request_human_input；偏好、范围细节和实现选择应由 Agent 先给出默认方案。",
     "## Tools",
     "工具以 Provider 原生函数调用提供。只能调用本轮注册且已授权的工具；不得在助手文本中伪造工具调用或工具结果。",
   ].join("\n");
@@ -409,7 +409,7 @@ function goalSection(goal?: AgentGoal): string {
     goal.spec.contextRefs.length
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
-    "普通回复、工具调用或一次 turn 结束都不代表目标完成。只有调用 goal_resolution 工具才能提交 GoalResolutionProposal。",
+    "普通回复、工作工具调用或一次 turn 结束都不代表目标完成。完成或失败时调用 goal_resolution；缺少不可替代的 human 输入时调用 request_human_input。",
   ].filter(Boolean).join("\n");
 }
 

@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
+import { AGENT_HUMAN_INPUT_KINDS, type AgentGoal, type AgentHumanInputKind, type AgentHumanInputRequest, type GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 import type { ProviderName, WorkspaceToolName } from "../../shared/types.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import type { AgentModelHistoryItem, AgentModelTurnResult } from "../providers/types.js";
@@ -22,7 +22,7 @@ import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentStore } from "./agent-store.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceInput, AgentExecutionSliceResult } from "./runtime.js";
-import { parseResolutionProposal } from "./resolution-proposal.js";
+import { createHumanInputProposal, parseResolutionProposal } from "./resolution-proposal.js";
 import type { AgentTraceStore } from "./trace-store.js";
 import { AgentToolRuntime, type AgentToolIntent } from "./tool-runtime.js";
 
@@ -171,7 +171,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.safety.repeatedToolBatchCount = 0;
     state.safety.consecutiveIdleResponses = 0;
     state.safety.blockedReason = undefined;
-    const activeTools = [...this.tools.definitions().map((tool) => tool.name), ...(goal ? ["goal_resolution"] : [])];
+    const activeTools = [...this.tools.definitions().map((tool) => tool.name), ...(goal ? ["goal_resolution", "request_human_input"] : [])];
     state.session.setActiveToolsByName(activeTools);
 
     try {
@@ -297,7 +297,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     }
     const resolution: ResolutionBinding = {};
     const safety: RunSafetyBinding = { failures: new Map(), repeatedToolBatchCount: 0, consecutiveIdleResponses: 0 };
-    const customTools = [...workspaceTools(this.tools), goalTool(resolution, this.now)];
+    const customTools = [...workspaceTools(this.tools), goalTool(resolution, this.now), humanInputTool(resolution, this.now)];
     const { session } = await createAgentSession({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
@@ -378,7 +378,7 @@ function unresolvedGoalPrompt(goal: AgentGoal): string {
     "当前 Goal 仍处于 active，上一轮普通回复没有结案。",
     "请直接继续执行可推进的工作，不要等待 human 重复确认可逆的实现选择，也不要仅说明下一步计划。",
     "如果已有足够授权，请使用工具创建、修改并验证真实交付物。",
-    "完成、受阻或失败时必须调用 goal_resolution 提交结论；只有缺少不可替代的外部输入时才能提交 blocked。",
+    "完成或失败时调用 goal_resolution 提交结论；只有缺少不可替代的 human 输入时才调用 request_human_input。",
     `Goal：${goal.spec.objective}`,
   ].join("\n");
 }
@@ -393,7 +393,7 @@ function activeGoalPrompt(goal: AgentGoal): string {
     goal.spec.contextRefs.length
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
-    "完成、受阻或失败时使用 goal_resolution 提交真实结论。",
+    "完成或失败时使用 goal_resolution 提交真实结论；需要不可替代的 human 输入时使用 request_human_input。",
   ].filter(Boolean).join("\n");
 }
 
@@ -451,7 +451,7 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
     label: "提交工作结论",
     description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作，criterionResults 应如实记录满足、不满足或未验证；被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
     parameters: Type.Object({
-      status: Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]),
+      status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),
       evidence: Type.Array(Type.Object({ kind: Type.String(), ref: Type.String() })),
       criterionResults: Type.Array(Type.Object({
@@ -489,6 +489,44 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
       return {
         content: [{ type: "text", text: JSON.stringify({ proposalSubmitted: true, proposalId: parsed.value.proposalId }) }],
         details,
+        terminate: true,
+      };
+    },
+  });
+}
+
+function humanInputTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
+  return defineTool({
+    name: "request_human_input",
+    label: "请求 human 输入",
+    description: "当前 Goal 只有在缺少不可替代的人工测试、授权、凭证、外部事实、不可逆操作确认或工具策略调整时调用。调用后当前 Goal 等待 human 回复。可逆实现选择、可自行完成的工作或普通失败不得使用此工具。",
+    parameters: Type.Object({
+      kind: Type.Union(AGENT_HUMAN_INPUT_KINDS.map((kind) => Type.Literal(kind))),
+      description: Type.String(),
+      details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    }),
+    async execute(_callId, params) {
+      if (!binding.goal || !binding.turnId || !binding.onProposal) {
+        throw new Error("当前没有可请求 human 输入的 Goal");
+      }
+      const value = params as { kind?: unknown; description?: unknown; details?: unknown };
+      const description = typeof value.description === "string" ? value.description.trim() : "";
+      if (!AGENT_HUMAN_INPUT_KINDS.includes(value.kind as AgentHumanInputKind) || !description) {
+        throw new Error("kind 或 description 无效");
+      }
+      if (value.details !== undefined && !isRecord(value.details)) {
+        throw new Error("details 必须是对象");
+      }
+      const request: AgentHumanInputRequest = {
+        kind: value.kind as AgentHumanInputKind,
+        description,
+        ...(value.details ? { details: structuredClone(value.details) } : {}),
+      };
+      const proposal = createHumanInputProposal(binding.goal, binding.turnId, request, now().toISOString());
+      binding.onProposal(proposal);
+      return {
+        content: [{ type: "text", text: JSON.stringify({ humanInputRequested: true, proposalId: proposal.proposalId }) }],
+        details: { ok: true, proposal },
         terminate: true,
       };
     },
@@ -704,7 +742,7 @@ function stableSystemPrompt(input: AgentExecutionSliceInput): string {
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
       : "",
-    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。完成、受阻或失败时必须调用 goal_resolution，把输出契约要求的领域交付物直接放入 domainOutcome。该调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
+    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。完成或失败时必须调用 goal_resolution，把输出契约要求的领域交付物直接放入 domainOutcome；缺少不可替代的 human 输入时必须调用 request_human_input。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
   ].filter(Boolean).join("\n\n");
 }
 

@@ -270,7 +270,7 @@ export class MissionProcessManager {
             ? `${assignmentIssue}。记录分配阻塞事实，等待具备授权的 plan 维护者修订 Ticket DAG。`
             : work.definition.objective,
           successCriteria: assignmentIssue
-            ? ["明确记录无法分配的能力", "提交 blocked，不伪装完成原工作"]
+            ? ["明确记录无法分配的能力", "调用 request_human_input，不伪装完成原工作"]
             : work.definition.successCriteria,
           contextRefs: [
             { kind: "mission", ref: aggregate.missionId },
@@ -289,7 +289,7 @@ export class MissionProcessManager {
         goalId,
         senderPrincipalId: "mission-process",
         content: assignmentIssue
-          ? `${assignmentIssue}。这是工单分配异常，不执行原工作；请提交 blocked，并在 summary 中记录缺失能力。`
+          ? `${assignmentIssue}。这是工单分配异常，不执行原工作；请调用 request_human_input，并说明缺失能力。`
           : missionOutcomeInstruction(
               work.definition.outputContract.schemaRef,
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
@@ -429,7 +429,7 @@ export class MissionProcessManager {
     const goal = await agent.getGoal(link.agentGoalId);
     if (!goal) throw new Error("Goal is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
-    const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome);
+    const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
     const assignmentError = validation.valid
       ? validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team)
       : undefined;

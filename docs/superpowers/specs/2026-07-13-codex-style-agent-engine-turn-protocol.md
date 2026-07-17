@@ -160,7 +160,7 @@ control fact
 - Provider 网络/额度错误：turn `execution_blocked`，Goal 保持原状态，不自动重试到失控。
 - 工具参数错误：写入 tool_result error，并允许模型在同一 turn 修正。
 - `goal_resolution` 缺少输出契约要求的 `domainOutcome` 属于工具参数错误；必须在同一 turn 把错误返回模型修正，不能先把无效结果提交给 Mission Control 再阻塞整个 Ticket。
-- 工具执行错误：写入 tool_result error，并允许模型决定重试、换方案或提交 blocked/failed。
+- 工具执行错误：写入 tool_result error，并允许模型决定重试、换方案、调用 `request_human_input` 或通过 `goal_resolution` 提交 failed。
 - Provider 返回普通文本但活动 Goal 未结算：当前 turn 正常结束，Goal 保持 active；由 Goal runner 在存在新的可执行事实时继续，不能把同一旧响应无限重放。
 - Provider 违反原生协议：明确记录 protocol error，不从文本降级解析控制命令。
 

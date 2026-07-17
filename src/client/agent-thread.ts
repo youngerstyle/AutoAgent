@@ -98,25 +98,26 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
 function goalResolutionBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
   if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return undefined;
   const payload = event.payload as Record<string, unknown>;
+  if (payload.name === "request_human_input" && payload.arguments && typeof payload.arguments === "object" && !Array.isArray(payload.arguments)) {
+    const args = payload.arguments as Record<string, unknown>;
+    const description = typeof args.description === "string" ? args.description.trim() : "";
+    if (!description) return undefined;
+    return { id: event.id, role: "agent", title: "为什么停下来", body: description };
+  }
   if (payload.name !== "goal_resolution" || !payload.arguments || typeof payload.arguments !== "object" || Array.isArray(payload.arguments)) return undefined;
   const args = payload.arguments as Record<string, unknown>;
   const outcome = args.domainOutcome && typeof args.domainOutcome === "object" && !Array.isArray(args.domainOutcome)
     ? args.domainOutcome as Record<string, unknown>
     : undefined;
-  const input = outcome?.requiredInput && typeof outcome.requiredInput === "object" && !Array.isArray(outcome.requiredInput)
-    ? outcome.requiredInput as Record<string, unknown>
-    : undefined;
-  const requiredInput = typeof input?.description === "string" ? input.description : undefined;
   const body = [
     typeof args.summary === "string" ? args.summary : undefined,
     typeof outcome?.summary === "string" ? outcome.summary : undefined,
-    requiredInput ? `需要：${requiredInput}` : undefined,
   ].filter((item): item is string => Boolean(item?.trim())).filter((item, index, items) => items.indexOf(item) === index).join("\n\n");
   if (!body) return undefined;
   return {
     id: event.id,
     role: "agent",
-    title: args.status === "blocked" ? "为什么停下来" : "处理结论",
+    title: "处理结论",
     body,
   };
 }

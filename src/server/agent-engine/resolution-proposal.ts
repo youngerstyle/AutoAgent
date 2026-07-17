@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AgentGoal, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
+import type { AgentGoal, AgentHumanInputRequest, GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 
 export function parseResolutionProposal(
   value: unknown,
@@ -8,8 +8,8 @@ export function parseResolutionProposal(
   createdAt: string,
 ): { ok: true; value: GoalResolutionProposal } | { ok: false; reason: string } {
   if (!isRecord(value)) return { ok: false, reason: "顶层参数必须是对象" };
-  if (!new Set(["completed", "blocked", "failed"]).has(String(value.status))) {
-    return { ok: false, reason: "status 必须是 completed、blocked 或 failed" };
+  if (!new Set(["completed", "failed"]).has(String(value.status))) {
+    return { ok: false, reason: "status 必须是 completed 或 failed；需要 human 输入时调用 request_human_input" };
   }
   const summary = resolutionSummary(value);
   if (!summary) return { ok: false, reason: "summary 必须是非空字符串" };
@@ -66,7 +66,7 @@ export function parseResolutionProposal(
       goalId: goal.spec.id,
       expectedGoalVersion: goal.version,
       resolvingGoalVersion: goal.version + 1,
-      status: value.status as "completed" | "blocked" | "failed",
+      status: value.status as "completed" | "failed",
       summary,
       evidence: value.evidence.map((item) => ({ kind: item.kind as string, ref: item.ref as string })),
       criterionResults,
@@ -74,6 +74,28 @@ export function parseResolutionProposal(
       domainOutcome: value.domainOutcome,
       createdAt,
     },
+  };
+}
+
+export function createHumanInputProposal(
+  goal: AgentGoal,
+  turnId: string,
+  request: AgentHumanInputRequest,
+  createdAt: string,
+): GoalResolutionProposal<"blocked"> {
+  return {
+    proposalId: stableId("proposal", goal.spec.id, turnId),
+    turnId,
+    goalId: goal.spec.id,
+    expectedGoalVersion: goal.version,
+    resolvingGoalVersion: goal.version + 1,
+    status: "blocked",
+    summary: request.description,
+    evidence: [],
+    criterionResults: [],
+    residualRisks: [],
+    humanInputRequest: structuredClone(request),
+    createdAt,
   };
 }
 

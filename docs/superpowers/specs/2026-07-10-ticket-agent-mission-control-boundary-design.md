@@ -1072,7 +1072,7 @@ Ticket adapter 对确定性结果只允许以下映射：
 ### 9.4 阻塞和 human-in-loop
 
 ```text
-Agent 提交 blocked proposal
+Agent 调用 request_human_input，Agent Engine 生成 blocked proposal
   -> Ticket Engine 接受 Ticket blocked
   -> Agent Goal blocked
   -> UI 在该 Agent 上显示需处理标记
@@ -1327,7 +1327,23 @@ type TicketEvent = EngineEventEnvelope<TicketEventPayload>;
 type AgentEvent = EngineEventEnvelope<AgentEventPayload>;
 ```
 
-`blocked` 与 `correction_required` 是两个不同的领域事实。当前 Agent 已确认某张上游交付存在可修复缺陷时，才请求纠错；当前 Agent 因缺少不可替代的外部输入、授权或人工操作环境而不能完成自己的成功标准时，阻塞当前 Ticket。尤其是 QA 已完成静态检查但没有浏览器交互能力时，应提交 `requiredInput.kind="manual_test"`，Ticket 保持 blocked 并进入该 QA Agent 的 human-in-loop，不能重新打开开发 Ticket。Mission Control 只按结构化 `kind` 投影 UI，不从自然语言关键词猜测类型。
+`blocked` 与 `correction_required` 是两个不同的领域事实。当前 Agent 已确认某张上游交付存在可修复缺陷时，才在领域结果中请求纠错；当前 Agent 因缺少不可替代的外部输入、授权或人工操作环境而不能完成自己的成功标准时，必须调用 Agent Engine 的 `request_human_input` 控制工具。尤其是 QA 已完成静态检查但没有浏览器交互能力时，应调用 `request_human_input(kind="manual_test")`，由 Mission Control 把工具产生的结构化请求映射为当前 QA Ticket 的 blocked 状态，不能重新打开开发 Ticket。Mission Control 只按结构化 `kind` 投影 UI，不从自然语言关键词猜测类型。
+
+### Human-in-loop 是 Agent Engine 控制工具
+
+Agent 不得通过 `goal_resolution.status="blocked"` 或在领域交付物中夹带 `requiredInput` 来请求 human。Agent Engine 必须提供一等控制工具：
+
+```ts
+request_human_input({
+  kind: "manual_test" | "authorization" | "credential" | "external_fact" | "irreversible_confirmation" | "tool_policy",
+  description: string,
+  details?: Record<string, unknown>,
+})
+```
+
+工具调用本身就是 Agent 的显式控制决定。Agent Engine 将其记录在当前 Thread/Turn，生成带 `humanInputRequest` 的 blocked Goal proposal，并终止本轮执行；`goal_resolution` 只允许 `completed` 或 `failed`。Mission Control 消费该 proposal，将 `humanInputRequest` 原样翻译成当前 Ticket 的 `BlockTicketCommand.requiredInput`。Ticket Engine 不理解测试、授权或凭证的业务语义，也不修改上下游 Ticket。Human 回复追加到同一 Agent Thread，并恢复同一个 blocked Goal 的下一轮 turn。
+
+这一机制禁止三类旁路：不得从自然语言关键词推断 human-in-loop；不得按 Agent 角色自动阻塞；不得由 UI 直接改 Ticket 状态。UI 只把已经提交并持久化的结构化请求渲染为对应交互。
 
 Ticket event payload 至少区分 `TicketReady`、`TicketClaimed`、`ClaimExpired`、`TicketBlocked`、`TicketTerminal`、`AuthorityRevoked` 和 `WorkflowStatusChanged`；Agent event payload 至少区分 `MessageAppended`、`TurnStatusChanged`、`GoalStatusChanged` 和 `GoalProposalCreated`。每个 payload 只携带所属 aggregate 的事实，不复制另一 Engine 的内部状态。
 

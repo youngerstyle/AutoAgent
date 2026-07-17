@@ -37,7 +37,7 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     if (evidenceError) {
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
     }
-    const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome);
+    const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
     if (!validation.valid) {
       return {
         settle: true,

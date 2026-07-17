@@ -1,7 +1,57 @@
 import { describe, expect, it } from "vitest";
-import { parseResolutionProposal } from "../../src/server/agent-engine/resolution-proposal.js";
+import { createHumanInputProposal, parseResolutionProposal } from "../../src/server/agent-engine/resolution-proposal.js";
 
 describe("parseResolutionProposal", () => {
+  it("creates a blocked Goal proposal from the explicit human-input control tool", () => {
+    const goal = {
+      version: 3,
+      spec: {
+        id: "goal",
+        threadId: "thread",
+        objective: "在真实浏览器中验证游戏",
+        successCriteria: ["完成一局人工测试"],
+        contextRefs: [],
+        createdAt: "2026-07-16T00:00:00.000Z",
+      },
+    } as any;
+
+    expect(createHumanInputProposal(goal, "turn", {
+      kind: "manual_test",
+      description: "请在浏览器中完成一局",
+      details: { testFile: "index.html", steps: ["打开游戏", "完成一局"] },
+    }, "2026-07-16T00:01:00.000Z")).toMatchObject({
+      goalId: "goal",
+      expectedGoalVersion: 3,
+      status: "blocked",
+      summary: "请在浏览器中完成一局",
+      humanInputRequest: {
+        kind: "manual_test",
+        description: "请在浏览器中完成一局",
+      },
+    });
+    expect(createHumanInputProposal(goal, "turn", {
+      kind: "manual_test",
+      description: "请在浏览器中完成一局",
+    }, "2026-07-16T00:01:00.000Z")).not.toHaveProperty("domainOutcome");
+  });
+
+  it("does not allow goal_resolution to submit blocked", () => {
+    const goal = {
+      version: 1,
+      spec: { id: "goal", threadId: "thread", objective: "工作", successCriteria: [], contextRefs: [], createdAt: "now" },
+    } as any;
+
+    expect(parseResolutionProposal({
+      status: "blocked",
+      summary: "等待人类",
+      evidence: [],
+      criterionResults: [],
+      residualRisks: [],
+    }, goal, "turn", "now")).toEqual({
+      ok: false,
+      reason: "status 必须是 completed 或 failed；需要 human 输入时调用 request_human_input",
+    });
+  });
   it("reports the exact missing success-criterion indexes", () => {
     const goal = {
       version: 1,

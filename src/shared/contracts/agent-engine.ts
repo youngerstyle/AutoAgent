@@ -104,6 +104,23 @@ export interface AgentGoalControlRequest {
 
 export type GoalResolutionStatus = "completed" | "blocked" | "failed";
 
+export const AGENT_HUMAN_INPUT_KINDS = [
+  "manual_test",
+  "authorization",
+  "credential",
+  "external_fact",
+  "irreversible_confirmation",
+  "tool_policy",
+] as const;
+
+export type AgentHumanInputKind = (typeof AGENT_HUMAN_INPUT_KINDS)[number];
+
+export interface AgentHumanInputRequest {
+  kind: AgentHumanInputKind;
+  description: string;
+  details?: Record<string, unknown>;
+}
+
 export interface GoalCriterionResult {
   criterionIndex: number;
   status: "satisfied" | "not_satisfied" | "not_verified";
@@ -126,6 +143,7 @@ export interface GoalResolutionProposal<
   criterionResults: GoalCriterionResult[];
   residualRisks: string[];
   domainOutcome?: TDomainOutcome;
+  humanInputRequest?: AgentHumanInputRequest;
   createdAt: string;
 }
 
