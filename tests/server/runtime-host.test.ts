@@ -128,10 +128,12 @@ describe("RuntimeHost", () => {
   it("rebuilds an empty Pi session from the chronological Agent thread before the first model turn", async () => {
     const fixture = await createFixture();
     const histories: Array<Array<{ type: string; content?: string }>> = [];
+    const instructions: string[] = [];
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
         histories.push(input.history);
+        instructions.push(input.instructions);
         return {
           items: [{
             type: "tool_call" as const,
@@ -155,6 +157,31 @@ describe("RuntimeHost", () => {
 
     expect(histories.length).toBeGreaterThanOrEqual(1);
     expect(histories[0]).toContainEqual({ type: "user_message", content: objective });
+    expect(instructions[0]).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
+  });
+
+  it("delivers a new ticket instruction to an existing Pi session instead of replacing it with Goal metadata", async () => {
+    const fixture = await createFixture();
+    const instructions: string[] = [];
+    const originalGet = fixture.providers.get.bind(fixture.providers);
+    fixture.providers.get = async (name) => {
+      const provider = await originalGet(name);
+      return {
+        ...provider,
+        async runModelTurn(input) {
+        instructions.push(input.instructions);
+          return provider.runModelTurn(input);
+        },
+      };
+    };
+
+    await fixture.host.createTask({ taskId: "task-new-goal-message", title: "演示", objective: "构建可运行演示" });
+    for (let index = 0; index < 12; index += 1) await fixture.host.tick();
+
+    expect(instructions.length).toBeGreaterThanOrEqual(2);
+    const reusedBossSessionTurn = instructions.find((value) => value.includes("本轮按时间序收到的消息"));
+    expect(reusedBossSessionTurn).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
+    expect(reusedBossSessionTurn).toContain("upstreamHandoffs");
   });
 
   it("does not replay an active goal after a waiting tail without new input", async () => {

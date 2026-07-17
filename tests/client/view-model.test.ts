@@ -150,6 +150,37 @@ describe("client view model", () => {
     });
   });
 
+  it("marks the blocking Agent and shows the persisted blocker reason", () => {
+    const blockedDev: WorkspaceSnapshot = {
+      ...snapshot("blocked"),
+      tickets: [{
+        id: "tk_dev",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "implementation",
+        status: "blocked",
+        brief: "实现可运行游戏",
+        expectedArtifact: "delivery-v1",
+        targetAgentId: "wa_dev",
+        priority: 0,
+        attempt: 1,
+        blocker: { type: "external_dependency", reason: "缺少生产环境发布授权" },
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+
+    expect(buildHumanFlowPrompt(blockedDev)).toMatchObject({
+      agentId: "wa_dev",
+      transcript: expect.stringContaining("缺少生产环境发布授权"),
+    });
+    expect(buildAgentNodes(blockedDev).find((node) => node.id === "wa_dev")).toMatchObject({
+      needsAttention: true,
+      currentStep: "需要你回复",
+    });
+  });
+
   it("does not turn stale implementation evidence failures into human prompts", () => {
     const blocked = {
       ...snapshot("blocked"),

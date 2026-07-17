@@ -33,6 +33,15 @@ export interface PlanningContext {
 }
 
 export function validateMissionTicketOutcome(schemaRef: string | undefined, status: GoalResolutionStatus, value: unknown): { valid: true } | { valid: false; reason: string } {
+  if (status === "blocked") {
+    if (!isRecord(value) || !requiredInputText(value.requiredInput)) {
+      return { valid: false, reason: "blocked 必须说明不可替代的外部输入 requiredInput；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞" };
+    }
+    if (value.disposition !== undefined && value.disposition !== "blocked") {
+      return { valid: false, reason: "blocked 状态的 domainOutcome.disposition 只能是 blocked" };
+    }
+    return { valid: true };
+  }
   if (status !== "completed") return { valid: true };
   if (!isRecord(value)) return { valid: false, reason: `输出契约 ${schemaRef ?? "未定义"} 要求结构化领域结果` };
   const disposition = value.disposition;
@@ -99,7 +108,7 @@ export function proposalToTicketCommand(proposal: GoalResolutionProposal<GoalRes
     criterionResults: proposal.criterionResults.map((item) => ({ ...item, evidence: item.evidence.map((ref) => ({ kind: ref.kind, ref: ref.ref })) })),
     residualRisks: [...proposal.residualRisks],
   } };
-  else if (proposal.status === "blocked") payload = { type: "block", reason: proposal.summary, requiredInput: isRecord(proposal.domainOutcome) && typeof proposal.domainOutcome.requiredInput === "string" ? proposal.domainOutcome.requiredInput : undefined };
+  else if (proposal.status === "blocked") payload = { type: "block", reason: proposal.summary, requiredInput: isRecord(proposal.domainOutcome) ? requiredInputText(proposal.domainOutcome.requiredInput) : undefined };
   else payload = { type: "fail", reason: proposal.summary, evidence };
   return { commandId: stableId("ticket_command", JSON.stringify([link.planId, link.ticketId, proposal.proposalId, link.ticketVersion])), proposalId: proposal.proposalId, planId: link.planId, ticketId: link.ticketId, expectedTicketVersion: link.ticketVersion, actorPrincipalId: link.agentPrincipalId, executionRef: link.agentGoalId, authority: link.authority, issuedAt, payload };
 }
@@ -142,6 +151,12 @@ function validateChangeSet(value: Record<string, unknown>): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function isNonEmptyString(value: unknown): value is string { return typeof value === "string" && Boolean(value.trim()); }
+function requiredInputText(value: unknown): string | undefined {
+  if (isNonEmptyString(value)) return value.trim();
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter(isNonEmptyString).map((item) => item.trim());
+  return items.length ? items.join("；") : undefined;
+}
 function isStringArray(value: unknown): value is string[] { return Array.isArray(value) && value.every(isNonEmptyString); }
 function isPlanTicketRef(value: unknown): boolean {
   if (!isRecord(value)) return false;

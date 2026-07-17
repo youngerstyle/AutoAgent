@@ -411,21 +411,28 @@ export class RuntimeHost {
       const work = await context.tickets.getWorkItem(ticketId);
       if (!work) continue;
       const link = linksByTicket.get(String(ticketId));
+      const targetAgent = agents.find((agent) => agent.id === link?.agentId);
+      const activeAttempt = work.ticket.attempts.find((attempt) => attempt.attemptId === work.ticket.activeAttemptId)
+        ?? work.ticket.attempts.at(-1);
       tickets.push({
         id: String(ticketId),
         workspaceId: this.workspace.id,
         taskId: record.taskId,
         taskRunId: record.runId,
-        type: presentationTicketType(work.definition.outputContract.schemaRef),
+        type: presentationTicketType(work.definition.outputContract.schemaRef, targetAgent?.roleInWorkspace),
         status: legacyTicketStatus(work.ticket.status),
         brief: work.definition.objective,
         expectedArtifact: work.definition.outputContract.schemaRef,
         targetAgentId: link?.agentId,
+        targetRole: targetAgent?.roleInWorkspace,
         capabilityTags: work.definition.assignment.requiredCapabilities,
         priority: 0,
         attempt: Math.max(1, work.ticket.attempts.length),
         parentTicketId: work.ticket.parentTicketId,
         dependsOnTicketIds: plan.graph.dependencyEdges.filter((edge) => edge.toTicketId === ticketId).map((edge) => String(edge.fromTicketId)),
+        blocker: work.ticket.status === "blocked" && activeAttempt?.reason
+          ? { type: "external_dependency", reason: activeAttempt.reason }
+          : undefined,
         createdAt: record.createdAt,
         updatedAt: link?.updatedAt ?? record.updatedAt,
       });
@@ -464,7 +471,7 @@ export class RuntimeHost {
         currentStep: goal?.spec.objective,
       });
     }
-    const status = runtimeStatus(record.status);
+    const status = presentationStatus(record.status, plan.status);
     return {
       workspace: this.workspace,
       mission: {
@@ -765,12 +772,23 @@ function runtimeStatus(status: RuntimeTaskRecord["status"]): EntityStatus {
   return status;
 }
 
-function presentationTicketType(schemaRef: string): Ticket["type"] {
+function presentationStatus(runtime: RuntimeTaskRecord["status"], plan: string): EntityStatus {
+  if (plan === "blocked") return "blocked";
+  if (plan === "paused") return "paused";
+  if (plan === "completed") return "completed";
+  if (plan === "failed") return "failed";
+  if (plan === "cancelled") return "interrupted";
+  return runtimeStatus(runtime);
+}
+
+function presentationTicketType(schemaRef: string, role?: WorkspaceAgent["roleInWorkspace"]): Ticket["type"] {
   if (schemaRef === "boss-intake-v1") return "boss_intake";
   if (schemaRef === "plan-change-set-v3") return "pm_plan";
-  if (schemaRef === "delivery-v1") return "implementation";
-  if (schemaRef === "qa-report-v1") return "qa";
-  if (schemaRef === "acceptance-v1") return "boss_acceptance";
+  if (role === "pm") return "pm_plan";
+  if (role === "architect") return "architect_plan";
+  if (role === "dev") return "implementation";
+  if (role === "qa") return "qa";
+  if (role === "boss") return "boss_acceptance";
   return "specialist";
 }
 

@@ -474,7 +474,7 @@ function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgen
 
 function latestBlockedTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
   const ticket = latestBlockedTicket(snapshot);
-  if (!ticket?.blocker || !new Set(["human_authorization_required", "tool_policy_blocked"]).has(ticket.blocker.type)) return undefined;
+  if (!ticket?.blocker) return undefined;
   const phase = ticket.type;
   const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : waiterForPhase(phase);
   const rawOutput = ticket.blocker?.reason ?? ticket.returnReason ?? ticket.brief;

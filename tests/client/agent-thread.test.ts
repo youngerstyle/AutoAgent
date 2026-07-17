@@ -71,6 +71,30 @@ describe("agent thread view", () => {
     ]);
   });
 
+  it("renders the Agent's blocked resolution as a readable chat message", () => {
+    const bubbles = buildAgentThreadBubbles([
+      threadEvent(1, "evt_resolution", "system", "system_note", {
+        name: "goal_resolution",
+        arguments: {
+          status: "blocked",
+          summary: "无法继续发布",
+          domainOutcome: {
+            summary: "缺少生产环境授权，无法执行不可逆发布操作。",
+            requiredInput: ["生产环境发布授权", "审批记录"],
+          },
+        },
+      }),
+    ]);
+
+    expect(bubbles).toEqual([
+      expect.objectContaining({
+        role: "agent",
+        title: "为什么停下来",
+        body: "无法继续发布\n\n缺少生产环境授权，无法执行不可逆发布操作。\n\n需要：生产环境发布授权；审批记录",
+      }),
+    ]);
+  });
+
   it("falls back to legacy direct messages only when no thread events exist", () => {
     const bubbles = buildAgentThreadBubbles([], [{
       id: "hm_1",

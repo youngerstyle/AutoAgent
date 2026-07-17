@@ -79,7 +79,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const turnId = input.turnId ?? pending?.turnId
       ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
     const triggerMessageId = input.triggerMessageId ?? (pending?.kind === "message" ? pending.itemId : undefined);
-    const state = await this.requireSession(input);
+    const state = await this.requireSession({ ...input, triggerMessageId });
     let toolCalls = 0;
     let proposal: GoalResolutionProposal | undefined;
     let eventSequence = 0;
@@ -279,12 +279,18 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     await loader.reload();
     if (!sessionManager.getEntries().some((entry) => entry.type === "message" || entry.type === "compaction")) {
       const thread = await this.engine.getThread(input.threadId);
+      const triggerIndex = input.triggerMessageId
+        ? thread.items.findIndex((item) => item.itemId === input.triggerMessageId)
+        : -1;
+      const historyThread = triggerIndex >= 0
+        ? { ...thread, items: thread.items.slice(0, triggerIndex), version: Math.max(0, thread.items[triggerIndex]!.sequence - 1) }
+        : thread;
       const goal = input.goalId ? await this.engine.getGoal(input.goalId) : undefined;
       const assembled = await this.contextAssembler.assemble({
         profile: input.profile,
         agent: input.agent,
         policy: input.policy,
-        thread,
+        thread: historyThread,
         goal,
       });
       restoreSessionHistory(sessionManager, assembled.history, model);
@@ -320,21 +326,20 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     pending: PendingThreadInput | undefined,
     triggerMessageId: string | undefined,
   ): Promise<string> {
-    if (goal && !state.goalIds.has(goal.spec.id)) {
+    const isNewGoal = Boolean(goal && !state.goalIds.has(goal.spec.id));
+    if (goal && isNewGoal) {
       state.session.sessionManager.appendCustomEntry("autoagent_goal", { goalId: goal.spec.id });
       state.goalIds.add(goal.spec.id);
-      const assembled = await this.contextAssembler.assemble({
-        profile: input.profile, agent: input.agent, policy: input.policy,
-        thread: await this.engine.getThread(input.threadId), goal,
-      });
-      return assembled.instructions;
     }
     if (triggerMessageId) {
       const thread = await this.engine.getThread(input.threadId);
       const item = thread.items.find((candidate) => candidate.itemId === triggerMessageId);
       const payload = item ? (await this.store.payloads([item.payloadRef])).get(item.payloadRef) : undefined;
       const content = isRecord(payload) && typeof payload.content === "string" ? payload.content.trim() : "";
-      if (content) return content;
+      if (content) {
+        if (!isNewGoal) return content;
+        return `${activeGoalPrompt(goal!)}\n\n## 本轮按时间序收到的消息\n${content}`;
+      }
     }
     if (pending?.kind === "correction") return `Host 对目标结算的决定：${pending.content}`;
     throw new Error("Agent turn 没有新的按时间序输入");
@@ -376,6 +381,20 @@ function unresolvedGoalPrompt(goal: AgentGoal): string {
     "完成、受阻或失败时必须调用 goal_resolution 提交结论；只有缺少不可替代的外部输入时才能提交 blocked。",
     `Goal：${goal.spec.objective}`,
   ].join("\n");
+}
+
+function activeGoalPrompt(goal: AgentGoal): string {
+  return [
+    "## Goal",
+    "开始处理以下当前 Goal。触发本轮的最新消息是工作上下文的一部分，不得忽略或用角色说明替代。",
+    `目标：${goal.spec.objective}`,
+    `成功标准：\n${goal.spec.successCriteria.map((item) => `- ${item}`).join("\n") || "- 未定义"}`,
+    goal.spec.outputContract ? `输出契约：${goal.spec.outputContract.schemaRef}` : undefined,
+    goal.spec.contextRefs.length
+      ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
+      : undefined,
+    "完成、受阻或失败时使用 goal_resolution 提交真实结论。",
+  ].filter(Boolean).join("\n");
 }
 
 async function pendingThreadInput(

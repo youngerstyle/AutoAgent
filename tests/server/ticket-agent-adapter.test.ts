@@ -46,6 +46,24 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不可替代的外部事实、凭证、授权或不可逆操作确认");
   });
 
+  it("rejects a blocked proposal that does not identify an external input for human", () => {
+    expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
+      disposition: "blocked",
+      summary: "工作区为空",
+    })).toEqual({
+      valid: false,
+      reason: "blocked 必须说明不可替代的外部输入 requiredInput；如果当前 Agent 能自行创建或验证交付物，就应继续工作而不是阻塞",
+    });
+    expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
+      disposition: "blocked",
+      requiredInput: "生产环境发布凭证",
+    })).toEqual({ valid: true });
+    expect(validateMissionTicketOutcome("delivery-v1", "blocked", {
+      disposition: "blocked",
+      requiredInput: ["验收基线", "构建产物", "QA 证据"],
+    })).toEqual({ valid: true });
+  });
+
   it("renders mission, current Ticket, and upstream handoffs without sharing Agent history", () => {
     const instruction = missionOutcomeInstruction(
       "qa-report-v1",
