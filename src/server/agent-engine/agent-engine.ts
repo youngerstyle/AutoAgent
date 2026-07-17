@@ -80,7 +80,6 @@ export function validateGoalCriterionResults(goal: AgentGoal, proposal: GoalReso
       return "criterionResults 的 criterionIndex 必须唯一覆盖当前 Goal 的成功标准";
     }
     seen.add(result.criterionIndex);
-    if (result.status !== "satisfied") return `成功标准 ${result.criterionIndex + 1} 尚未满足，不能提交 completed`;
     if (!Array.isArray(result.evidence)) return `成功标准 ${result.criterionIndex + 1} 的 evidence 必须是数组`;
   }
   return undefined;

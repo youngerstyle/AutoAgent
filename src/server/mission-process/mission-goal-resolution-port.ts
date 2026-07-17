@@ -27,6 +27,10 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     if (completionError) {
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
     }
+    const outcomeError = validateSuccessfulOutcomeCriteria(proposal);
+    if (outcomeError) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: outcomeError } };
+    }
     const evidenceError = this.workspaceRoot
       ? validateWorkspaceEvidence(this.workspaceRoot, proposal)
       : undefined;
@@ -48,6 +52,16 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
       retryAfter: this.now().toISOString(),
     };
   }
+}
+
+function validateSuccessfulOutcomeCriteria(proposal: GoalResolutionProposal): string | undefined {
+  if (proposal.status !== "completed") return undefined;
+  const outcome = isRecord(proposal.domainOutcome) ? proposal.domainOutcome : undefined;
+  const disposition = outcome?.disposition;
+  if (disposition === "correction_required" || disposition === "plan_change_required") return undefined;
+  const incomplete = proposal.criterionResults.filter((item) => item.status !== "satisfied");
+  if (!incomplete.length) return undefined;
+  return `正常完成 Ticket 时成功标准必须全部满足；未满足或未验证 criterionIndex: ${incomplete.map((item) => item.criterionIndex).join(", ")}。若事实要求纠正上游或修改计划，请提交对应 disposition`;
 }
 
 export function validateWorkspaceEvidence(
@@ -73,4 +87,8 @@ export function validateWorkspaceEvidence(
 function isFilesystemEvidence(kind: string, ref: string): boolean {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref)) return false;
   return ["tool", "file", "document", "artifact"].includes(kind.trim().toLowerCase());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

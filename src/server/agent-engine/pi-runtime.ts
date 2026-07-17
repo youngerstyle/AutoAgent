@@ -449,7 +449,7 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: "提交当前 Goal 的完成、受阻或失败提案。这是领域交付物的唯一提交入口：将输出契约要求的结果直接放入 domainOutcome；Host 会校验提案并提交 Ticket/Plan。不要寻找或写入另一个提交文件、接口或平台内部状态。普通回复不会改变 Goal 或 Ticket 状态。",
+    description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作，criterionResults 应如实记录满足、不满足或未验证；被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
     parameters: Type.Object({
       status: Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),

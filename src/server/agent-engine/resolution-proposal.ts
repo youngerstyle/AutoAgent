@@ -56,9 +56,6 @@ export function parseResolutionProposal(
         reason: `completed 必须逐项回应全部成功标准；当前缺少 criterionIndex: ${missing.join(", ")}`,
       };
     }
-    if (criterionResults.some((item) => item.status !== "satisfied")) {
-      return { ok: false, reason: "存在未满足或未验证的成功标准，不能提交 completed" };
-    }
   }
 
   return {

@@ -439,7 +439,11 @@ describe("MissionProcessManager", () => {
     await qaEngine.proposeGoalResolution({
       proposalId: "qa-needs-correction", goalId: qaGoal.spec.id, expectedGoalVersion: qaGoal.version, resolvingGoalVersion: qaGoal.version + 1,
       status: "completed", summary: "发现缺陷", evidence: [],
-      criterionResults: satisfied(qaGoal), residualRisks: [],
+      criterionResults: qaGoal.spec.successCriteria.map((_criterion, criterionIndex) => ({
+        criterionIndex,
+        status: "not_satisfied" as const,
+        evidence: [],
+      })), residualRisks: [],
       domainOutcome: { disposition: "correction_required", targetTicketId: devLink.ticketId, reason: "碰撞失效" }, createdAt: NOW,
     });
     mission = await fixture.manager.tick();
