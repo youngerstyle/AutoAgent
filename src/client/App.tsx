@@ -679,7 +679,6 @@ export function App() {
                   actionDisabled={agentActionDisabled}
                   onChange={setAgentMessage}
                   onUseSuggestion={() => setAgentMessage(suggestedFollowup)}
-                  onFollowup={(message) => void sendSelectedAgentMessage(message)}
                   onSend={(message) => void sendSelectedAgentMessage(message)}
                 />
               ) : selectedAgent ? (
@@ -1103,8 +1102,6 @@ function debugKindLabel(kind: LoopDebugEntry["kind"]): string {
 
 function ManualTestActionCard(props: {
   action: NonNullable<ReturnType<typeof buildManualTestAction>>;
-  disabled: boolean;
-  onFollowup: (message: string) => void;
 }) {
   return (
     <section className="manual-test-action">
@@ -1117,10 +1114,6 @@ function ManualTestActionCard(props: {
         </ol>
       ) : null}
       {props.action.expectedResult ? <em>通过标准：{props.action.expectedResult}</em> : null}
-      <div className="ticket-actions">
-        <button type="button" disabled={props.disabled} onClick={() => props.onFollowup(props.action.passMessage)}>测试通过</button>
-        <button type="button" disabled={props.disabled} onClick={() => props.onFollowup(props.action.failMessage)}>测试不通过，打回开发</button>
-      </div>
     </section>
   );
 }
@@ -1202,7 +1195,6 @@ function AgentHumanLoopBox(props: {
   actionDisabled: boolean;
   onChange: (value: string) => void;
   onUseSuggestion: () => void;
-  onFollowup: (message: string) => void;
   onSend: (message: string) => void;
 }) {
   const messageBody = props.prompt.transcript.replace(/^[^\n]+:\n/, "");
@@ -1230,8 +1222,6 @@ function AgentHumanLoopBox(props: {
           <article className="chat-message agent">
             <ManualTestActionCard
               action={props.prompt.manualTest}
-              disabled={props.actionDisabled}
-              onFollowup={props.onFollowup}
             />
           </article>
         ) : null}
@@ -1240,6 +1230,13 @@ function AgentHumanLoopBox(props: {
         <button type="button" className="quick-reply" title={props.prompt.suggestion} onClick={props.onUseSuggestion}>使用建议方案</button>
       ) : null}
       <div className="chat-composer">
+        {props.prompt.manualTest ? (
+          <div className="manual-test-shortcuts" aria-label="人工测试快捷回复">
+            <span>快捷回复</span>
+            <button type="button" disabled={props.actionDisabled} onClick={() => props.onChange(props.prompt.manualTest?.passMessage ?? "")}>测试通过</button>
+            <button type="button" disabled={props.actionDisabled} onClick={() => props.onChange(props.prompt.manualTest?.failMessage ?? "")}>测试不通过</button>
+          </div>
+        ) : null}
         <textarea
           aria-label={props.prompt.inputLabel}
           value={props.value}

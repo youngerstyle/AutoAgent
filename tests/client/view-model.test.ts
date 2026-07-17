@@ -488,8 +488,8 @@ describe("client view model", () => {
       agentId: "wa_qa",
       waiter: "测试",
       phase: "质量检查",
-      inputLabel: "测试结果",
-      placeholder: "回复测试",
+      inputLabel: "回复当前 Agent",
+      placeholder: "输入测试结果、发现的问题，或继续向当前 Agent 提问",
       manualTest: {
         summary: "静态分析通过，需要人工浏览器测试。",
         testFile: "C:\\ws\\index.html",

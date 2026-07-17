@@ -322,8 +322,8 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
     waiter: owner,
     phase: flowProblem.phase ?? phaseLabelForHuman(phase),
     transcript: `${owner}:\n${rawOutput}`,
-    inputLabel: manualTest ? "测试结果" : "回复说明",
-    placeholder: `回复${owner}`,
+    inputLabel: manualTest ? "回复当前 Agent" : "回复说明",
+    placeholder: manualTest ? "输入测试结果、发现的问题，或继续向当前 Agent 提问" : `回复${owner}`,
     submitLabel: "发送",
     suggestion: manualTest?.passMessage ?? "补充必要信息，让当前 Agent 继续判断。",
     manualTest

@@ -1090,29 +1090,39 @@ button:disabled {
   padding-right: 4px;
 }
 
-.ticket-actions {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
+.manual-test-shortcuts {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
-.ticket-actions button {
-  min-height: 34px;
+.manual-test-shortcuts > span {
+  color: #647383;
+  font-size: 12px;
+}
+
+.manual-test-shortcuts button {
+  min-height: 26px;
   border: 1px solid #b8c7d6;
-  border-radius: 6px;
+  border-radius: 999px;
   background: #ffffff;
   color: #102033;
+  padding: 3px 9px;
   font: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 
-.ticket-actions button:first-child {
+.manual-test-shortcuts button:first-child {
   border-color: #0f8a8a;
   background: #eefafa;
   color: #075f63;
 }
 
-.ticket-actions button:disabled {
+.manual-test-shortcuts button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
