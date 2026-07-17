@@ -547,6 +547,11 @@ export class MissionProcessManager {
     let current = aggregate;
     for (const link of current.links) {
       if (link.status !== "resolving" || !link.lastProposalId) continue;
+      const goal = await this.agents.get(link.agentId).getGoal(link.agentGoalId);
+      if (goal?.status === "active" && !goal.activeProposalId) {
+        current = await this.updateLink(current, link.dispatchId, { ...link, status: "running" });
+        continue;
+      }
       current = await this.continueSettlement(current, link.dispatchId, link.lastProposalId);
     }
     return current;

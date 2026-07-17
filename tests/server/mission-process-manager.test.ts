@@ -255,6 +255,37 @@ describe("MissionProcessManager", () => {
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
   });
 
+  it("restores a resolving Mission link when a correctable proposal was already consumed", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    if (link.status !== "running") throw new Error("Expected a running Mission link");
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    expect(goal).toMatchObject({ status: "active" });
+    await fixture.missionStore.transact(mission.version, (current) => ({
+      ...current,
+      version: current.version + 1,
+      links: current.links.map((item) => item.dispatchId === link.dispatchId
+        ? { ...link, status: "resolving" as const, lastProposalId: "proposal-consumed-before-link-update" }
+        : item),
+    }));
+
+    const recovered = await fixture.manager.tick();
+
+    expect(recovered.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "running" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "active" });
+  });
+
   it("renews a running claim before expiry without creating a second dispatch", async () => {
     const clock = { now: new Date(NOW) };
     const fixture = await createFixture(clock);
@@ -465,13 +496,14 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     const port = new MissionGoalResolutionPort(() => undefined, member.agentId, () => new Date(clock.now));
     engines.set(member.agentId, new AgentEngine<MissionTicketOutcome>(new AgentStore(root, member.agentId), port, { now: () => new Date(clock.now) }));
   }
+  const missionStore = new MissionStore(root, "mission-a");
   const manager = new MissionProcessManager(
-    new MissionStore(root, "mission-a"),
+    missionStore,
     tickets,
     { get: (agentId) => engines.get(agentId)! },
     team,
     "planner",
     () => new Date(clock.now),
   );
-  return { root, policy, team, ticketStore, tickets, engines, manager };
+  return { root, policy, team, ticketStore, missionStore, tickets, engines, manager };
 }
