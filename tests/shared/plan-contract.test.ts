@@ -38,6 +38,13 @@ describe("single Plan runtime contract", () => {
       objective: "build",
       planId,
       planCreateCommandId: "create-plan-1",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: {
+        teamBindingId: "team-a",
+        version: 1,
+        contentHash: "team-hash",
+        members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }],
+      },
       status: "linked",
       linkedAt: "2026-07-14T00:00:00.000Z",
     } satisfies MissionRecord;

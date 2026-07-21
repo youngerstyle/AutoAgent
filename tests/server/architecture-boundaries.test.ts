@@ -73,7 +73,20 @@ describe("runtime architecture boundaries", () => {
       /\bhuman_action\b/,
       /\b(?:qa-report-v1|acceptance-v1)\b/,
       /\.(?:match|test|search)\s*\(/,
-      /new\s+RegExp\s*\(/
+      /new\s+RegExp\s*\(/,
+      /from\s+["'][^"']*\/agent-engine\/agent-engine/,
+      /selectMemberOrPlanner/,
+    ])).toEqual([]);
+  });
+
+  it("keeps runtime control paths free of role-name routing and product capability injection", () => {
+    expect(violationsInFiles([
+      "runtime/runtime-host-registry.ts",
+      "product/team-binding.ts",
+    ], [
+      /roleInWorkspace\s*===/,
+      /PRODUCT_CAPABILITIES/,
+      /selectMemberOrPlanner/,
     ])).toEqual([]);
   });
 });

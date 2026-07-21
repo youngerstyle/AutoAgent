@@ -40,15 +40,13 @@ describe("mock team loop E2E", () => {
       expect.arrayContaining(["boss", "pm", "architect", "dev", "qa"])
     );
     expect(snapshot.assignments).toEqual([]);
-    expect(snapshot.tickets.map((ticket: { type: string }) => ticket.type)).toEqual(
-      expect.arrayContaining(["boss_intake", "pm_plan", "implementation", "qa", "boss_acceptance"])
-    );
-    type TicketView = { id: string; type: string; dependsOnTicketIds: string[] };
-    const ticketByType = new Map<string, TicketView>((snapshot.tickets as TicketView[]).map((ticket) => [ticket.type, ticket]));
-    expect(ticketByType.get("pm_plan")?.dependsOnTicketIds).toEqual([ticketByType.get("boss_intake")?.id]);
-    expect(ticketByType.get("implementation")?.dependsOnTicketIds).toEqual([ticketByType.get("pm_plan")?.id]);
-    expect(ticketByType.get("qa")?.dependsOnTicketIds).toEqual([ticketByType.get("implementation")?.id]);
-    expect(ticketByType.get("boss_acceptance")?.dependsOnTicketIds).toEqual([ticketByType.get("qa")?.id]);
+    type TicketView = { id: string; type: string; status: string; targetAgentId?: string; dependsOnTicketIds: string[] };
+    const tickets = snapshot.tickets as TicketView[];
+    expect(tickets).toHaveLength(5);
+    expect(tickets.every((ticket) => ticket.type === "work" && ticket.status === "completed" && ticket.targetAgentId)).toBe(true);
+    for (let index = 1; index < tickets.length; index += 1) {
+      expect(tickets[index].dependsOnTicketIds).toEqual([tickets[index - 1].id]);
+    }
     expect(Object.values(snapshot.agentThreads).flat().length).toBeGreaterThan(0);
   });
 });

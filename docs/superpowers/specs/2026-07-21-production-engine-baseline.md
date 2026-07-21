@@ -92,3 +92,10 @@ A release is not production-ready until all gates pass:
 10. Soak acceptance: repeated Missions run for hours without increasing pending queues, stale claims or memory use.
 
 Mock-provider tests prove deterministic contracts only. They never count as artifact or product acceptance.
+## 调度与团队绑定不变量
+
+- `TeamBinding` 是 Mission 创建时形成的不可变快照，必须随 Mission 持久化。恢复任务只能读取该快照，不得根据当前档案或当前工作区成员重新推导历史 Mission 的负责人、能力或验收权限。
+- Agent 的协议能力来自档案配置。岗位名称只用于展示和默认模板初始化，Mission Control 不得在运行时根据 `boss`、`pm`、`dev`、`qa` 等角色名追加能力。
+- Ticket 没有满足 `principalId` 或 `requiredCapabilities` 的成员时保持 `ready` 且未领取。Mission Control 必须暴露能力缺口，不得静默改派给规划者或其他角色。
+- Mission 的全局 human 消息发送给创建时固化的 owner；单 Agent 私聊发送给被选择的 Agent。两者都不得通过角色名称猜测接收者。
+- Ticket 的负责人、状态、依赖和权限来自 Ticket Engine 与 TeamBinding；旧五阶段名称只能作为兼容展示数据，不能参与调度。

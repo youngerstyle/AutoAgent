@@ -42,18 +42,21 @@ describe("Ticket Engine runtime contracts", () => {
 });
 
 describe("Mission Control runtime contracts", () => {
-  it("stores exactly one Plan identity per Mission in schema v3", () => {
-    const record = { missionId: "mission", objective: "完成项目目标", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
+  it("stores exactly one Plan identity and an immutable TeamBinding per Mission in schema v4", () => {
+    const record = { missionId: "mission", objective: "完成项目目标", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", ownerPrincipalId: "principal-boss", teamBinding: { teamBindingId: "team-a", version: 1, contentHash: "team-hash", members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }] }, status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
     expect(record.planId).toBeDefined();
     expect(record.objective).toBe("完成项目目标");
   });
 
-  it("keeps v2 runtime records read-only and schedules only v3", () => {
+  it("keeps earlier runtime records read-only and schedules only v4", () => {
     const v2 = { engine: "ticket_agent", schemaVersion: 2, record: {} };
     const v3 = { engine: "ticket_agent", schemaVersion: 3, record: { missionId: "m", objective: "goal", planId: "p", planCreateCommandId: "c", status: "starting" } };
+    const v4 = { engine: "ticket_agent", schemaVersion: 4, record: { missionId: "m", objective: "goal", planId: "p", planCreateCommandId: "c", ownerPrincipalId: "principal-boss", teamBinding: { teamBindingId: "team-a", version: 1, contentHash: "team-hash", members: [] }, status: "starting" } };
     expect(classifyRuntimeRecordVersion(v2)).toBe("ticket_agent@2");
     expect(classifyRuntimeRecord(v2).schedulable).toBe(false);
     expect(classifyRuntimeRecordVersion(v3)).toBe("ticket_agent@3");
-    expect(classifyRuntimeRecord(v3).schedulable).toBe(true);
+    expect(classifyRuntimeRecord(v3).schedulable).toBe(false);
+    expect(classifyRuntimeRecordVersion(v4)).toBe("ticket_agent@4");
+    expect(classifyRuntimeRecord(v4).schedulable).toBe(true);
   });
 });

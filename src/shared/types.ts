@@ -79,6 +79,7 @@ export interface TaskRun {
 }
 
 export type AssignmentType =
+  | "work"
   | "boss_intake"
   | "pm_plan"
   | "architect_plan"
@@ -251,6 +252,8 @@ export interface AutoAgentEvent<TPayload = Record<string, unknown>> {
 
 export type MissionPhase =
   | "idle"
+  | "running"
+  | "blocked"
   | "boss_intake"
   | "pm_plan"
   | "architect_plan"

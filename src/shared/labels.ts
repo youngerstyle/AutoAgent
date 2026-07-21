@@ -2,6 +2,7 @@ import type { AgentRole, AssignmentType, EntityStatus, MissionPhase } from "./ty
 
 export function roleLabel(role: AgentRole | string): string {
   const labels: Record<string, string> = {
+    work: "工作项",
     boss: "老板",
     pm: "产品/项目",
     architect: "架构师",
@@ -28,6 +29,8 @@ export function assignmentLabel(type: AssignmentType | string): string {
 export function phaseLabel(phase: MissionPhase | string): string {
   const labels: Record<string, string> = {
     idle: "空闲",
+    running: "执行中",
+    blocked: "受阻",
     intake: "需求接收",
     planning: "计划拆解",
     architecture: "架构设计",

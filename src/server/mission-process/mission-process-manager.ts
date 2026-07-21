@@ -53,6 +53,8 @@ export class MissionProcessManager {
   async startMission(input: MissionStartRequest): Promise<MissionAggregate> {
     if (input.missionId !== this.store.missionId) throw new Error("Mission identity mismatch");
     if (input.resolvedStart.teamBindingId !== this.team.teamBindingId) throw new Error("Team binding mismatch");
+    if (input.teamBinding.contentHash !== this.team.contentHash) throw new Error("Team binding snapshot mismatch");
+    if (!this.team.members.some((member) => member.principalId === input.ownerPrincipalId)) throw new Error("Mission owner is not a TeamBinding member");
     const commandId = stableId("plan_create", input.missionId);
     let aggregate = await this.store.read();
     if (!aggregate) {
@@ -62,10 +64,13 @@ export class MissionProcessManager {
         objective: input.objective,
         planId,
         planCreateCommandId: commandId,
+        ownerPrincipalId: input.ownerPrincipalId,
+        teamBinding: structuredClone(input.teamBinding),
         status: "starting",
       });
     }
     if (aggregate.record.objective !== input.objective) throw new Error("Mission objective mismatch");
+    if (aggregate.record.teamBinding.contentHash !== this.team.contentHash) throw new Error("Persisted TeamBinding does not match runtime TeamBinding");
     const planId = aggregate.record.planId;
     const replay = await this.tickets.getPlanCommandResult(planId, commandId);
     const result = replay ?? await this.tickets.createPlan({
@@ -96,6 +101,7 @@ export class MissionProcessManager {
     aggregate = await this.renewActiveClaims(aggregate);
     aggregate = await this.reconcileResolvingLinks(aggregate);
     aggregate = await this.pumpTicketEvents(aggregate);
+    aggregate = await this.reconcileReadyTickets(aggregate);
     aggregate = await this.pumpAgentEvents(aggregate);
     return aggregate;
   }
@@ -184,7 +190,8 @@ export class MissionProcessManager {
     if (existing) return this.continueDispatch(aggregate, dispatchId);
     const work = await this.tickets.getWorkItem(ticketId);
     if (!work) throw new Error(`Ticket work item ${ticketId} is missing`);
-    const member = selectMemberOrPlanner(this.team, work.definition.assignment.principalId, work.definition.assignment.requiredCapabilities ?? []);
+    const member = selectMember(this.team, work.definition.assignment.principalId, work.definition.assignment.requiredCapabilities ?? []);
+    if (!member) return aggregate;
     const link: MissionLink = {
       dispatchId,
       missionId: aggregate.missionId,
@@ -204,6 +211,16 @@ export class MissionProcessManager {
       links: [...current.links, link],
     }));
     return this.continueDispatch(persisted, dispatchId);
+  }
+
+  private async reconcileReadyTickets(aggregate: MissionAggregate): Promise<MissionAggregate> {
+    const plan = await this.tickets.getPlan(aggregate.record.planId);
+    let current = aggregate;
+    for (const ticketId of plan.graph.ticketIds) {
+      const ticket = await this.tickets.getTicket(ticketId);
+      if (ticket?.status === "ready") current = await this.ensureDispatch(current, ticketId, ticket.version);
+    }
+    return current;
   }
 
   private async continueDispatch(aggregate: MissionAggregate, dispatchId: string): Promise<MissionAggregate> {
@@ -746,15 +763,11 @@ export class MissionProcessManager {
   }
 }
 
-function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefined, capabilities: string[]) {
+function selectMember(team: TeamBinding, principalId: string | undefined, capabilities: string[]) {
   const candidates = principalId
     ? team.members.filter((member) => member.principalId === principalId)
     : team.members;
-  const member = candidates.find((item) => capabilities.every((capability) => item.capabilities.includes(capability)));
-  if (member) return member;
-  const planner = team.members.find((item) => item.capabilities.includes("plan:plan"));
-  if (planner) return planner;
-  throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
+  return candidates.find((item) => capabilities.every((capability) => item.capabilities.includes(capability)));
 }
 
 export async function validateTeamAssignments(

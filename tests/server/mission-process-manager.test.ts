@@ -89,6 +89,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -103,12 +105,60 @@ describe("MissionProcessManager", () => {
     expect(await fixture.ticketStore.listPlanIds()).toEqual([first.record.planId]);
   });
 
+  it("leaves an unassignable Ticket ready instead of silently dispatching it to the planner", async () => {
+    const fixture = await createFixture();
+    const definition = createMinimalTeamPlanDefinition(fixture.policy.ref, "build");
+    definition.initialChange.additions[0]!.assignment = { requiredCapabilities: ["missing:capability"] };
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: { planDefinition: definition, teamBindingId: fixture.team.teamBindingId },
+    });
+
+    const mission = await fixture.manager.tick();
+    const plan = await fixture.tickets.getPlan(mission.record.planId);
+    const firstTicket = await fixture.tickets.getTicket(plan.graph.ticketIds[0]!);
+
+    expect(firstTicket?.status).toBe("ready");
+    expect(mission.links).toEqual([]);
+    expect(await fixture.engines.get("pm")!.getThreadForAgent("pm", "mission-a")).toBeUndefined();
+  });
+
+  it("rejects a changed TeamBinding when an existing Mission is reopened", async () => {
+    const fixture = await createFixture();
+    const request = {
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: { planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"), teamBindingId: fixture.team.teamBindingId },
+    } as const;
+    await fixture.manager.startMission(request);
+    const changedTeam = { ...fixture.team, contentHash: "changed-team-hash" };
+    const changedManager = new MissionProcessManager(
+      fixture.missionStore,
+      fixture.tickets,
+      { get: (agentId) => fixture.engines.get(agentId)! },
+      changedTeam,
+      "planner",
+    );
+
+    await expect(changedManager.startMission({ ...request, teamBinding: changedTeam }))
+      .rejects.toThrow("Persisted TeamBinding does not match runtime TeamBinding");
+  });
+
   it("links TicketReady to one Agent Goal and explicit Goal proposal back to Ticket", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -180,6 +230,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "deliver the complete agreed product",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: {
           definitionId: "baseline-settlement-flow",
@@ -265,6 +317,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "preserve the original delivery target",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: {
           definitionId: "lineage-flow",
@@ -347,6 +401,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -365,6 +421,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -420,6 +478,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -461,6 +521,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -504,6 +566,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -536,6 +600,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -560,6 +626,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -595,6 +663,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
         teamBindingId: fixture.team.teamBindingId,
@@ -647,6 +717,8 @@ describe("MissionProcessManager", () => {
       missionId: "mission-a",
       objective: "build and verify",
       requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
       resolvedStart: {
         planDefinition: {
           definitionId: "correction-flow",
@@ -712,7 +784,6 @@ const NOW = "2026-07-10T00:00:00.000Z";
 function satisfied(goal: AgentGoal) {
   return goal.spec.successCriteria.map((_, criterionIndex) => ({ criterionIndex, status: "satisfied" as const, evidence: [] }));
 }
-
 function baselineOutcome(): MissionTicketOutcome {
   return {
     baseline: {

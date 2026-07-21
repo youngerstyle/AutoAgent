@@ -39,6 +39,13 @@ const record: MissionRecord = {
   objective: "build",
   planId: "178f1785-71a8-4a87-b799-8184b86eb227" as PlanId,
   planCreateCommandId: "create-a",
+  ownerPrincipalId: "principal-boss",
+  teamBinding: {
+    teamBindingId: "team-a",
+    version: 1,
+    contentHash: "team-hash",
+    members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }],
+  },
   status: "starting",
 };
 const PLAN_ID = record.planId;

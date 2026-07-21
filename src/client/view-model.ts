@@ -319,7 +319,7 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
   const latestReply = snapshot.humanLoop?.latestReply;
   const rawOutput = latestReply?.text ?? flowProblem.rawOutput;
   return {
-    title: manualTest ? "需要人工测试" : latestReply ? "需要补充信息" : titleForHumanFlow(flowProblem.rawOutput),
+    title: latestReply ? "需要补充信息" : flowProblem.title,
     agentId: flowProblem.agentId,
     waiter: owner,
     phase: flowProblem.phase ?? phaseLabelForHuman(phase),
@@ -414,12 +414,13 @@ type BlockedAgentProblem = {
   agentId?: string;
   owner: string;
   phase: string;
+  title: string;
   rawOutput: string;
   manualTest?: ManualTestActionView;
 };
 
 function blockedAgentProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
-  return latestManualTestTicketProblem(snapshot) ?? latestBlockedTicketProblem(snapshot) ?? latestAssignmentBlockedProblem(snapshot) ?? earliestBlockingPhaseProblem(snapshot) ?? implementationEvidenceProblem(snapshot);
+  return latestManualTestTicketProblem(snapshot) ?? latestBlockedTicketProblem(snapshot);
 }
 
 function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: AgentProfile): AgentProfileView {
@@ -486,6 +487,7 @@ function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgen
     agentId: ticket.targetAgentId ?? agentIdForRole(snapshot, ticket.targetRole) ?? agentIdForPhase(snapshot, phase),
     owner,
     phase: phaseLabelForHuman(phase),
+    title: "需要人工测试",
     rawOutput: testLines.length ? testLines.join("\n") : ticket.blocker?.reason ?? "QA 请求人工测试。",
     manualTest
   };
@@ -501,107 +503,20 @@ function latestBlockedTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgentPr
     agentId: ticket.targetAgentId ?? agentIdForRole(snapshot, ticket.targetRole) ?? agentIdForPhase(snapshot, phase),
     owner,
     phase: phaseLabelForHuman(phase),
+    title: titleForBlocker(ticket.blocker.type),
     rawOutput
   };
 }
 
-function latestAssignmentBlockedProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
-  const blockedIndex = lastEventIndex(snapshot.recentEvents, "assignment.blocked");
-  if (blockedIndex < 0) return undefined;
-  const blocked = snapshot.recentEvents[blockedIndex];
-  const phase = phaseFromAssignmentEvent(blocked);
-  const payload = blocked.payload as Record<string, unknown>;
-  const assignmentRun = payload.assignmentRun as { workspaceAgentId?: string } | undefined;
-  const assignmentId = stringValue(payload.assignmentId);
-  const assignment = assignmentId ? snapshot.assignments.find((item) => item.id === assignmentId) : undefined;
-  const toolResults = Array.isArray(payload.toolResults) ? payload.toolResults as Array<Record<string, unknown>> : [];
-  const toolFailure = toolResults.find((item) => item.ok === false || typeof item.error === "string");
-  const reason = stringValue(payload.reason) ?? stringValue(toolFailure?.error) ?? "没有拿到平台边界原因。";
-  if (!isHumanActionBoundaryText(reason)) return undefined;
-  const rawOutput = rawAgentOutput(snapshot.recentEvents, blocked, blockedIndex, payload.result ?? reason);
-  return {
-    agentId: blocked.actorId ?? assignmentRun?.workspaceAgentId ?? assignment?.ownerWorkspaceAgentId ?? agentIdForPhase(snapshot, phase),
-    owner: waiterForPhase(phase),
-    phase: phaseLabelForHuman(phase),
-    rawOutput
+function titleForBlocker(type: NonNullable<Ticket["blocker"]>["type"]): string {
+  const labels: Record<NonNullable<Ticket["blocker"]>["type"], string> = {
+    manual_test_required: "需要人工测试",
+    human_authorization_required: "需要授权",
+    waiting_for_agent_capacity: "等待可用 Agent",
+    tool_policy_blocked: "需要调整工具权限",
+    external_dependency: "需要外部信息"
   };
-}
-
-function earliestBlockingPhaseProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
-  for (let index = 0; index < snapshot.recentEvents.length; index += 1) {
-    const event = snapshot.recentEvents[index];
-    if (event.type !== "assignment.completed") continue;
-    const result = event.payload.result as Record<string, unknown> | undefined;
-    if (!result || typeof result !== "object") continue;
-    const status = lower(result.status);
-    const decision = lower(result.decision);
-    const action = lower(result.action);
-    const reason = stringValue(result.reason) ?? stringValue(result.report) ?? stringValue(result.summary) ?? "";
-    const clarificationSignal = [status, decision, action].some((value) => hasClarificationSignal(value));
-    const blocked = result.clarification_required === true
-      || status.includes("need_clarification")
-      || status.includes("awaiting_clarification")
-      || status === "blocked"
-      || action.includes("awaiting_clarification")
-      || action.includes("return_to_clarification")
-      || action === "block"
-      || result.blocked === true
-      || clarificationSignal
-      || decision === "reject";
-    if (!blocked) continue;
-    if (!isHumanActionBoundaryText(`${status} ${decision} ${action} ${reason}`)) continue;
-    const phase = phaseFromAssignmentEvent(event);
-    return {
-      agentId: event.actorId ?? agentIdForPhase(snapshot, phase),
-      owner: waiterForPhase(phase),
-      phase: phaseLabelForHuman(phase),
-      rawOutput: rawAgentOutput(snapshot.recentEvents, event, index, result)
-    };
-  }
-  return undefined;
-}
-
-function implementationEvidenceProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
-  return undefined;
-}
-
-function isHumanAuthorizationText(value: string): boolean {
-  const text = value.toLowerCase();
-  return text.includes("human_authorization")
-    || text.includes("human_approval")
-    || text.includes("requires_human")
-    || text.includes("await_human_authorization")
-    || text.includes("await_human_approval")
-    || value.includes("需要人工授权")
-    || value.includes("等待人工授权")
-    || value.includes("需要人工审批")
-    || value.includes("等待人工审批");
-}
-
-function isManualTestingText(value: string): boolean {
-  const text = value.toLowerCase();
-  return text.includes("manual_test")
-    || text.includes("manual testing")
-    || value.includes("人工测试")
-    || value.includes("人工验收")
-    || value.includes("缺少浏览器")
-    || value.includes("浏览器运行环境")
-    || value.includes("无法实际执行手动测试");
-}
-
-function isHumanActionBoundaryText(value: string): boolean {
-  return isHumanAuthorizationText(value) || isManualTestingText(value);
-}
-
-function titleForHumanFlow(rawOutput: string): string {
-  return isManualTestingText(rawOutput) ? "需要人工测试" : "需要授权";
-}
-
-function lastEventIndex(events: WorkspaceSnapshot["recentEvents"], type: WorkspaceSnapshot["recentEvents"][number]["type"]): number {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index].type === type) return index;
-  }
-  return -1;
+  return labels[type];
 }
 
 function agentIdForPhase(snapshot: WorkspaceSnapshot, phase: string): string | undefined {
@@ -621,49 +536,6 @@ function agentIdForRole(snapshot: WorkspaceSnapshot, role?: string): string | un
   return role ? snapshot.agents.find((agent) => agent.roleInWorkspace === role)?.id : undefined;
 }
 
-function rawAgentOutput(
-  events: WorkspaceSnapshot["recentEvents"],
-  event: WorkspaceSnapshot["recentEvents"][number],
-  eventIndex: number,
-  result: unknown
-): string {
-  const payload = event.payload as Record<string, unknown>;
-  const directRaw = stringValue(payload.rawText);
-  if (directRaw) return directRaw;
-
-  for (let index = eventIndex - 1; index >= 0; index -= 1) {
-    const candidate = events[index];
-    if (candidate.type !== "provider.completed") continue;
-    if (event.actorId && candidate.actorId && event.actorId !== candidate.actorId) continue;
-    const providerEvents = (candidate.payload as Record<string, unknown>).providerEvents;
-    if (!Array.isArray(providerEvents)) continue;
-    const textEvent = providerEvents.find((item) => {
-      return typeof item === "object"
-        && item !== null
-        && (item as Record<string, unknown>).type === "text"
-        && stringValue((item as Record<string, unknown>).text);
-    }) as Record<string, unknown> | undefined;
-    const text = stringValue(textEvent?.text);
-    if (text) return text;
-  }
-
-  if (typeof result === "string") return result;
-  if (result && typeof result === "object") return JSON.stringify(result, null, 2);
-  return "没有拿到 Agent 原始输出。";
-}
-
-function phaseFromAssignmentEvent(event: WorkspaceSnapshot["recentEvents"][number]): string {
-  const assignment = event.payload.assignment as { type?: string } | undefined;
-  if (assignment?.type) return assignment.type;
-  if (event.summary.includes("需求接收")) return "boss_intake";
-  if (event.summary.includes("计划拆解")) return "pm_plan";
-  if (event.summary.includes("架构设计")) return "architect_plan";
-  if (event.summary.includes("开发执行")) return "implementation";
-  if (event.summary.includes("质量检查")) return "qa";
-  if (event.summary.includes("老板验收")) return "boss_acceptance";
-  return "boss_acceptance";
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
@@ -671,23 +543,6 @@ function stringValue(value: unknown): string | undefined {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
-function lower(value: unknown): string {
-  return typeof value === "string" ? value.toLowerCase() : "";
-}
-
-function hasClarificationSignal(value: string): boolean {
-  if (!value || value.includes("不需要澄清")) return false;
-  return value.includes("need clarification")
-    || value.includes("needs clarification")
-    || value.includes("clarification required")
-    || value.includes("awaiting clarification")
-    || value.includes("暂不执行")
-    || value.includes("需澄清")
-    || value.includes("需要澄清")
-    || value.includes("等待澄清");
-}
-
 
 function phaseLabelForHuman(phase: string): string {
   const labels: Record<string, string> = {

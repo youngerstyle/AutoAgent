@@ -263,7 +263,7 @@ describe("client view model", () => {
     expect(buildAgentNodes(blocked).find((node) => node.id === "wa_pm")?.needsAttention).toBe(false);
   });
 
-  it("shows human prompts only for explicit authorization boundaries", () => {
+  it("does not infer authorization boundaries from legacy event prose", () => {
     const blocked = {
       ...snapshot("blocked"),
       activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "boss_intake" as const },
@@ -277,16 +277,11 @@ describe("client view model", () => {
       ]
     };
 
-    expect(buildHumanFlowPrompt(blocked)).toMatchObject({
-      agentId: "wa_boss",
-      waiter: "老板",
-      phase: "需求接收"
-    });
-    expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("生产部署需要人工授权");
-    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_boss")?.needsAttention).toBe(true);
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_boss")?.needsAttention).toBe(false);
   });
 
-  it("labels browser capability gaps as manual testing instead of vague intervention", () => {
+  it("does not infer manual testing from legacy event prose", () => {
     const blocked = {
       ...snapshot("blocked"),
       activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
@@ -300,14 +295,8 @@ describe("client view model", () => {
       ]
     };
 
-    expect(buildHumanFlowPrompt(blocked)).toMatchObject({
-      title: "需要人工测试",
-      agentId: "wa_qa",
-      waiter: "测试",
-      phase: "质量检查"
-    });
-    expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("请人工打开 index.html");
-    expect(buildHumanFlowPrompt(blocked)?.transcript).not.toContain("需要人工介入");
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+    expect(buildAgentNodes(blocked).find((node) => node.id === "wa_qa")?.needsAttention).toBe(false);
   });
 
   it("does not describe QA defect blocks as authorization boundaries", () => {

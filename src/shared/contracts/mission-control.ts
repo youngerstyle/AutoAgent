@@ -50,6 +50,8 @@ export interface MissionStartRequest {
   objective: string;
   resolvedStart: ResolvedMissionStartBundle;
   requestedByPrincipalId: string;
+  ownerPrincipalId: string;
+  teamBinding: TeamBinding;
 }
 
 export interface PlanDefinitionRegistryPort {
@@ -66,6 +68,8 @@ interface MissionRecordBase {
   objective: string;
   planId: PlanId;
   planCreateCommandId: string;
+  ownerPrincipalId: string;
+  teamBinding: TeamBinding;
   baseline?: MissionBaseline;
 }
 
@@ -197,7 +201,7 @@ export interface LegacyPhaseRuntimeRecordEnvelope {
 
 export interface TicketAgentRuntimeRecordEnvelope {
   engine: "ticket_agent";
-  schemaVersion: 3;
+  schemaVersion: 4;
   record: MissionRecord;
 }
 
@@ -218,6 +222,7 @@ export type RuntimeRecordVersion =
   | "legacy_phase@1"
   | "ticket_agent@2"
   | "ticket_agent@3"
+  | "ticket_agent@4"
   | "undiscriminated_legacy"
   | "unsupported";
 
@@ -234,7 +239,7 @@ export function isTicketAgentRuntimeEnvelope(
     !("engine" in input) ||
     !("schemaVersion" in input) ||
     input.engine !== "ticket_agent" ||
-    input.schemaVersion !== 3 ||
+    input.schemaVersion !== 4 ||
     !("record" in input) ||
     typeof input.record !== "object" ||
     input.record === null
@@ -248,6 +253,8 @@ export function isTicketAgentRuntimeEnvelope(
     !hasString(record, "objective") ||
     !hasString(record, "planId") ||
     !hasString(record, "planCreateCommandId") ||
+    !hasString(record, "ownerPrincipalId") ||
+    !("teamBinding" in record) ||
     !("status" in record)
   ) {
     return false;
@@ -274,11 +281,14 @@ export function classifyRuntimeRecordVersion(input: unknown): RuntimeRecordVersi
   if (input.engine === "ticket_agent" && input.schemaVersion === 3) {
     return "ticket_agent@3";
   }
+  if (input.engine === "ticket_agent" && input.schemaVersion === 4) {
+    return "ticket_agent@4";
+  }
   return "unsupported";
 }
 
 export function classifyRuntimeRecord(input: unknown): RuntimeRecordClassification {
-  if (classifyRuntimeRecordVersion(input) !== "ticket_agent@3") {
+  if (classifyRuntimeRecordVersion(input) !== "ticket_agent@4") {
     return { kind: "legacy_readonly", schedulable: false };
   }
 

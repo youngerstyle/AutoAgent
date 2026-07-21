@@ -41,14 +41,10 @@ export class AcceptingGoalResolutionPort implements GoalResolutionPort {
   constructor(private readonly validator?: AgentOutputContractValidator) {}
 
   async resolve<TStatus extends GoalResolutionStatus>(
-    goal: AgentGoal,
+    _goal: AgentGoal,
     proposal: GoalResolutionProposal<TStatus>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
-    const completionError = validateGoalCriterionResults(goal, proposal);
-    if (completionError) {
-      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
-    }
-    const outputContract = goal.spec.outputContract;
+    const outputContract = _goal.spec.outputContract;
     if (outputContract) {
       const validation = this.validator?.validate(outputContract.schemaRef, proposal.domainOutcome)
         ?? { valid: false as const, reason: `No validator registered for ${outputContract.schemaRef}` };
@@ -459,7 +455,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     if (existing) {
       if (hash(existing) !== hash(proposal)) throw new AgentEngineConflictError("Proposal conflict");
       const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
-      const attempt = await this.resolutionPort.resolve(
+      const attempt = await this.resolveProposal(
         goal,
         existing as GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
       );
@@ -476,7 +472,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       pendingEvents: [goalEvent(resolving, "GoalProposalCreated", proposal.createdAt, proposal.proposalId)],
     }));
     const persistedGoal = updated.goals.find((item) => item.spec.id === proposal.goalId)!;
-    const attempt = await this.resolutionPort.resolve(persistedGoal, proposal);
+    const attempt = await this.resolveProposal(persistedGoal, proposal);
     if (!attempt.settle) return { goal: persistedGoal, attempt };
     const decisionId = stableId("decision", proposal.proposalId, hash(attempt.decision));
     const settled = await this.settleProposal({
@@ -486,6 +482,17 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       decision: attempt.decision,
     });
     return { goal: settled.goal, attempt };
+  }
+
+  private async resolveProposal<TStatus extends GoalResolutionStatus>(
+    goal: AgentGoal,
+    proposal: GoalResolutionProposal<TStatus, TDomainOutcome>,
+  ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    const completionError = validateGoalCriterionResults(goal, proposal);
+    if (completionError) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
+    }
+    return this.resolutionPort.resolve(goal, proposal);
   }
 
   async settleProposal<TStatus extends GoalResolutionStatus>(

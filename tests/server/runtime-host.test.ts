@@ -149,6 +149,55 @@ describe("RuntimeHost", () => {
     restarted.stop();
   });
 
+  it("keeps the Mission TeamBinding snapshot unchanged when profiles change before restart", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-team-snapshot", title: "snapshot", objective: "preserve assignment authority" });
+    const before = await fixture.host.context("task-team-snapshot")!.manager.current();
+    const beforeHash = before.record.teamBinding.contentHash;
+    const beforeDev = before.record.teamBinding.members.find((member) => member.agentId === "wa_dev")!;
+    fixture.host.stop();
+
+    await fixture.profiles.update("prof_dev", { capabilities: ["changed:after-mission-created"] });
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    await restarted.recover();
+    const after = await restarted.context("task-team-snapshot")!.manager.current();
+
+    expect(after.record.teamBinding.contentHash).toBe(beforeHash);
+    expect(after.record.teamBinding.members.find((member) => member.agentId === "wa_dev")?.capabilities)
+      .toEqual(beforeDev.capabilities);
+    restarted.stop();
+  });
+
+  it("routes a global human message to the persisted Mission owner instead of a role name", async () => {
+    const fixture = await createFixture();
+    const boss = (await fixture.profiles.list()).find((profile) => profile.id === "prof_boss")!;
+    const pm = (await fixture.profiles.list()).find((profile) => profile.id === "prof_pm")!;
+    await fixture.profiles.update("prof_boss", { capabilities: boss.capabilities.filter((item) => item !== "mission:intake") });
+    await fixture.profiles.update("prof_pm", { capabilities: [...pm.capabilities, "mission:intake"] });
+    await fixture.host.createTask({ taskId: "task-explicit-owner", title: "owner", objective: "route by persisted authority" });
+
+    const mission = await fixture.host.context("task-explicit-owner")!.manager.current();
+    expect(mission.record.ownerPrincipalId).toBe("principal:wa_pm");
+    await fixture.host.sendTaskMessage("task-explicit-owner", "global owner message", "owner-message");
+    const pmThread = await fixture.host.context("task-explicit-owner")!.engines.get("wa_pm")!
+      .getThreadForAgent("wa_pm", "task-explicit-owner");
+    const payloads = await fixture.host.context("task-explicit-owner")!.engines.get("wa_pm")!
+      .getPayloads(pmThread!.items.map((item) => item.payloadRef));
+
+    expect([...payloads.values()]).toContainEqual(expect.objectContaining({
+      messageId: "owner-message",
+      senderPrincipalId: "human",
+      content: "global owner message",
+    }));
+  });
+
   it("does not present an active Plan as paused just because the scheduler is not started", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-hydrated-status", title: "status", objective: "verify projection" });

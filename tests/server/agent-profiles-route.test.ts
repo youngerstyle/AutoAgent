@@ -50,7 +50,8 @@ describe("agent profiles route", () => {
     const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
     const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
     expect(persistedPm.identity).toBe(pm.identity);
-    expect(persistedPm.contentVersion).toBe(5);
+    expect(persistedPm.contentVersion).toBe(6);
+    expect(persistedPm.capabilities).toContain("plan:plan");
   });
 
   it("migrates v3 rule-like soul into v4 soul traits while preserving model and agent.md", async () => {
@@ -72,7 +73,8 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(5);
+    expect(dev.contentVersion).toBe(6);
+    expect(dev.capabilities).toContain("delivery:implement");
     expect(dev.defaultModel).toBe("deepseek-v4-flash");
     expect(dev.agentMd).toContain("已经存在的手册要保留");
     expect(dev.soul).toContain("可运行变化获得安全感");
@@ -99,10 +101,11 @@ describe("agent profiles route", () => {
 
     expect(dev.identity).toBe("用户改过的开发岗位定义");
     expect(dev.soul).toBe("用户改过的开发灵魂特质");
-    expect(dev.capabilities).toEqual(["TypeScript", "验证"]);
+    expect(dev.capabilities).toEqual(expect.arrayContaining(["delivery:implement", "TypeScript", "验证"]));
     expect(dev.agentMd).toContain("# 使命");
     expect(dev.agentMd).toContain("实现");
-    expect(dev.contentVersion).toBe(5);
+    expect(dev.contentVersion).toBe(6);
+    expect(dev.capabilities).toContain("delivery:implement");
   });
 
   it("persists editable global identity and soul separately from workspace overrides", async () => {

@@ -9,7 +9,6 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "./ticket-agent-adapter.js";
 import { validateMissionTicketOutcome } from "./ticket-agent-adapter.js";
-import { validateGoalCriterionResults } from "../agent-engine/agent-engine.js";
 import { isWorkspacePath } from "../policy/path-policy.js";
 
 export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTicketOutcome> {
@@ -24,10 +23,6 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     goal: AgentGoal,
     proposal: GoalResolutionProposal<TStatus, MissionTicketOutcome>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
-    const completionError = validateGoalCriterionResults(goal, proposal);
-    if (completionError) {
-      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: completionError } };
-    }
     const outcomeError = validateSuccessfulOutcomeCriteria(proposal);
     if (outcomeError) {
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: outcomeError } };

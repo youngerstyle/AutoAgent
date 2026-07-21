@@ -468,6 +468,28 @@ describe("AgentEngine", () => {
       decision: { reason: "artifact is required" },
     });
   });
+
+  it("does not let a custom resolution port bypass success-criterion coverage", async () => {
+    const port = new AcceptAllPort();
+    const fixture = await activeGoalFixture(port);
+    const proposal = {
+      ...proposalFor(fixture.goal),
+      criterionResults: [],
+    };
+
+    const result = await fixture.engine.proposeGoalResolution(proposal);
+
+    expect(port.resolveCalls).toBe(0);
+    expect(result.attempt).toMatchObject({
+      settle: true,
+      decision: {
+        accepted: false,
+        disposition: "correctable",
+        reason: "完成报告必须逐项回应全部 1 条成功标准",
+      },
+    });
+    expect(result.goal.status).toBe("active");
+  });
 });
 
 class RetryPort implements GoalResolutionPort {
@@ -476,6 +498,18 @@ class RetryPort implements GoalResolutionPort {
     _proposal: GoalResolutionProposal<TStatus>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
     return { settle: false, pending: "retry_later", reason: "host unavailable", retryAfter: T1 };
+  }
+}
+
+class AcceptAllPort implements GoalResolutionPort {
+  resolveCalls = 0;
+
+  async resolve<TStatus extends GoalResolutionStatus>(
+    _goal: AgentGoal,
+    proposal: GoalResolutionProposal<TStatus>,
+  ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    this.resolveCalls += 1;
+    return { settle: true, decision: { accepted: true, committedState: proposal.status } };
   }
 }
 

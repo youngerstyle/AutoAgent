@@ -12,7 +12,7 @@ import type {
   WorkspaceSnapshot,
   WorkspaceToolName,
 } from "../../shared/types.js";
-import type { ActiveMissionLink } from "../../shared/contracts/mission-control.js";
+import type { ActiveMissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
 import type { PlanId, PlanPolicyRef, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
@@ -39,6 +39,7 @@ import { RuntimeHostStore, type RuntimeTaskRecord } from "./runtime-host-store.j
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
+  team: TeamBinding;
   tickets: TicketEngine;
   manager: MissionProcessManager;
   engines: Map<string, AgentEngine<MissionTicketOutcome>>;
@@ -101,6 +102,14 @@ export class RuntimeHost {
     return result.snapshot;
   }
 
+  async sendTaskMessage(taskId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
+    const context = await this.requireContext(taskId);
+    const mission = await context.manager.current();
+    const owner = mission.record.teamBinding.members.find((member) => member.principalId === mission.record.ownerPrincipalId);
+    if (!owner) throw new Error("Mission owner is unavailable in the persisted TeamBinding");
+    return this.sendAgentMessage(taskId, owner.agentId, message, messageId);
+  }
+
   pauseTask(taskId: string): Promise<void> {
     return this.exclusive(() => this.pauseTaskUnlocked(taskId));
   }
@@ -149,13 +158,17 @@ export class RuntimeHost {
       createdAt: now,
       updatedAt: now,
     };
-    await this.store.save(record);
     const context = await this.compose(record);
+    const owner = context.team.members.find((member) => member.capabilities.includes("mission:intake"));
+    if (!owner) throw new Error("TeamBinding has no Mission owner with mission:intake capability");
+    await this.store.save(record);
     this.contexts.set(record.taskId, context);
     await context.manager.startMission({
       missionId: record.missionId,
       objective: record.objective,
       requestedByPrincipalId: "human",
+      ownerPrincipalId: owner.principalId,
+      teamBinding: context.team,
       resolvedStart: {
         planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
         teamBindingId: "minimal-team",
@@ -170,10 +183,16 @@ export class RuntimeHost {
       try {
         const context = await this.compose(record);
         this.contexts.set(record.taskId, context);
+        const persisted = await context.manager.current().catch(() => undefined);
+        const ownerPrincipalId = persisted?.record.ownerPrincipalId
+          ?? context.team.members.find((member) => member.capabilities.includes("mission:intake"))?.principalId;
+        if (!ownerPrincipalId) throw new Error("Persisted Mission has no available owner");
         await context.manager.startMission({
           missionId: record.missionId,
           objective: record.objective,
           requestedByPrincipalId: "runtime-recovery",
+          ownerPrincipalId,
+          teamBinding: context.team,
           resolvedStart: {
             planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
             teamBindingId: "minimal-team",
@@ -450,7 +469,7 @@ export class RuntimeHost {
         workspaceId: this.workspace.id,
         taskId: record.taskId,
         taskRunId: record.runId,
-        type: presentationTicketType(work.definition.outputContract.schemaRef, targetAgent?.roleInWorkspace),
+        type: "work",
         status: legacyTicketStatus(work.ticket.status),
         brief: work.definition.objective,
         expectedArtifact: work.definition.outputContract.schemaRef,
@@ -463,6 +482,12 @@ export class RuntimeHost {
         dependsOnTicketIds: plan.graph.dependencyEdges.filter((edge) => edge.toTicketId === ticketId).map((edge) => String(edge.fromTicketId)),
         blocker: work.ticket.status === "blocked" && activeAttempt?.reason && activeAttempt.requiredInput
           ? projectTicketBlocker(activeAttempt.reason, activeAttempt.requiredInput)
+          : work.ticket.status === "ready" && !link && !hasEligibleMember(mission.record.teamBinding, work.definition.assignment)
+            ? {
+                type: "waiting_for_agent_capacity",
+                reason: assignmentGapReason(work.definition.assignment),
+                details: { assignment: work.definition.assignment },
+              }
           : undefined,
         createdAt: record.createdAt,
         updatedAt: link?.updatedAt ?? record.updatedAt,
@@ -701,11 +726,10 @@ export class RuntimeHost {
       ? await listWorkspaceAgents(this.workspace)
       : await ensureCoreTeam(this.workspace, await this.profiles.list());
     const profiles = await this.profiles.list();
-    const team = createTeamBinding(
-      workspaceAgents,
-      profiles,
-      stableId("team", ...workspaceAgents.map((agent) => agent.id)),
-    );
+    const missionStore = new MissionStore(this.workspace.rootPath, record.missionId);
+    const persistedMission = await missionStore.read();
+    const team = persistedMission?.record.teamBinding
+      ?? createTeamBinding(workspaceAgents, profiles, "minimal-team");
     const tickets = new TicketEngine(
       new TicketStore(this.workspace.rootPath, record.taskId, record.runId),
       this.policyStore,
@@ -739,7 +763,7 @@ export class RuntimeHost {
       ));
     }
     const manager = new MissionProcessManager(
-      new MissionStore(this.workspace.rootPath, record.missionId),
+      missionStore,
       tickets,
       { get: (agentId) => {
         const engine = engines.get(agentId);
@@ -750,7 +774,7 @@ export class RuntimeHost {
       "minimal-team-planner",
       () => this.now(),
     );
-    return { record, tickets, manager, engines, loops };
+    return { record, team, tickets, manager, engines, loops };
   }
 
   private async requireContext(taskId: string): Promise<RuntimeContext> {
@@ -900,16 +924,19 @@ function presentationStatus(plan: string, mission: string): EntityStatus {
   return "running";
 }
 
-function presentationTicketType(schemaRef: string, role?: WorkspaceAgent["roleInWorkspace"]): Ticket["type"] {
-  if (schemaRef === "mission-baseline-v1") return "boss_intake";
-  if (schemaRef === "boss-intake-v1") return "boss_intake";
-  if (schemaRef === "plan-change-set-v3") return "pm_plan";
-  if (role === "pm") return "pm_plan";
-  if (role === "architect") return "architect_plan";
-  if (role === "dev") return "implementation";
-  if (role === "qa") return "qa";
-  if (role === "boss") return "boss_acceptance";
-  return "specialist";
+function hasEligibleMember(team: TeamBinding, assignment: { principalId?: string; requiredCapabilities?: string[] }): boolean {
+  return team.members.some((member) => {
+    if (assignment.principalId && member.principalId !== assignment.principalId) return false;
+    return (assignment.requiredCapabilities ?? []).every((capability) => member.capabilities.includes(capability));
+  });
+}
+
+function assignmentGapReason(assignment: { principalId?: string; requiredCapabilities?: string[] }): string {
+  if (assignment.principalId) return `工单指定负责人 ${assignment.principalId} 不在当前 Mission 的 TeamBinding 中或能力不匹配`;
+  const required = assignment.requiredCapabilities ?? [];
+  return required.length
+    ? `当前 Mission 的 TeamBinding 中没有同时具备以下能力的 Agent：${required.join("、")}`
+    : "当前 Mission 的 TeamBinding 中没有可领取该工单的 Agent";
 }
 
 function presentationPhase(planStatus: string, missionStatus: string, tickets: Ticket[]): MissionPhase {
@@ -917,15 +944,8 @@ function presentationPhase(planStatus: string, missionStatus: string, tickets: T
   if (planStatus === "failed") return "failed";
   if (planStatus === "paused") return "paused";
   if (planStatus === "completed") return "idle";
-  const current = tickets.find((ticket) => ticket.status === "running")
-    ?? tickets.find((ticket) => ticket.status === "blocked")
-    ?? tickets.find((ticket) => ticket.status === "pending");
-  if (!current) return "idle";
-  if (current.type === "boss_intake" || current.type === "pm_plan" || current.type === "architect_plan"
-    || current.type === "implementation" || current.type === "qa" || current.type === "boss_acceptance") {
-    return current.type;
-  }
-  if (current.type === "specialist" || current.type === "rework") return "implementation";
+  if (tickets.some((ticket) => ticket.status === "blocked" || ticket.blocker)) return "blocked";
+  if (tickets.some((ticket) => ticket.status === "running" || ticket.status === "pending")) return "running";
   return "idle";
 }
 
