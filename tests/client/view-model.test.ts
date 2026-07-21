@@ -499,6 +499,68 @@ describe("client view model", () => {
     expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("测试:");
   });
 
+  it("shows the Agent as running after it receives the human test result", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      phase: "implementation" as const,
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "implementation" as const },
+      agents: snapshot("blocked").agents.map((agent) => agent.id === "wa_dev"
+        ? { ...agent, status: "running" as const, currentStep: "根据人工测试反馈修复地图渲染" }
+        : agent),
+      tickets: [{
+        id: "tk_dev",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "implementation" as const,
+        status: "blocked" as const,
+        brief: "开发执行",
+        expectedArtifact: "可玩版本",
+        targetAgentId: "wa_dev",
+        targetRole: "dev" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: {
+          type: "manual_test_required" as const,
+          reason: "请人工试玩并反馈结果"
+        },
+        createdAt: "now",
+        updatedAt: "now"
+      }],
+      agentThreads: {
+        wa_dev: [{
+          id: "human-feedback",
+          turnId: "turn-feedback",
+          taskId: "task_1",
+          taskRunId: "tr_1",
+          workspaceAgentId: "wa_dev",
+          sequence: 1,
+          timestamp: "2026-07-21T03:16:40.824Z",
+          source: "human" as const,
+          kind: "human_message" as const,
+          visibility: "chat" as const,
+          payload: { content: "人工测试不通过" }
+        }, {
+          id: "turn-feedback:started",
+          turnId: "turn-feedback",
+          taskId: "task_1",
+          taskRunId: "tr_1",
+          workspaceAgentId: "wa_dev",
+          sequence: 2,
+          timestamp: "2026-07-21T03:16:41.131Z",
+          source: "system" as const,
+          kind: "system_note" as const,
+          visibility: "timeline" as const,
+          payload: { status: "running" }
+        }]
+      }
+    };
+
+    const dev = buildAgentNodes(blocked).find((node) => node.id === "wa_dev");
+    expect(dev).toMatchObject({ active: true, needsAttention: false, currentStep: "根据人工测试反馈修复地图渲..." });
+    expect(buildHumanFlowPrompt(blocked)).toBeUndefined();
+  });
+
   it("does not keep manual test attention after the task is completed", () => {
     const completed = {
       ...snapshot("completed"),

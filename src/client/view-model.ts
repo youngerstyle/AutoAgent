@@ -109,7 +109,8 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
       const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
       const currentStep = displayText(agent.currentStep);
-      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id)
+      const processingHumanReply = Boolean(problemAgentId === agent.id && hasRunningHumanTurn(snapshot, agent.id));
+      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id && !processingHumanReply)
         || (agent.status === "waiting" && Boolean(currentStep));
       const displayStep = needsAttention ? "需要你回复" : canvasStepLabel(currentStep);
       return {
@@ -121,7 +122,7 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
         currentStepTitle: needsAttention ? problem?.rawOutput ?? currentStep : currentStep,
         x: Math.min(base.x + specialistOffset, 88),
         y: base.y,
-        active: agent.status === "running" && !needsAttention && !blockingWork,
+        active: agent.status === "running" && !needsAttention && (!blockingWork || processingHumanReply),
         needsAttention
       };
     });
@@ -311,6 +312,7 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
   if (!snapshot || !hasBlockingWork(snapshot)) return undefined;
   const flowProblem = blockedAgentProblem(snapshot);
   if (!flowProblem) return undefined;
+  if (flowProblem.agentId && hasRunningHumanTurn(snapshot, flowProblem.agentId)) return undefined;
   const phase = snapshot.activeTaskRun?.phase ?? snapshot.phase;
   const owner = flowProblem.owner ?? waiterForPhase(phase);
   const manualTest = flowProblem.manualTest;
@@ -336,6 +338,17 @@ function hasBlockedTicket(snapshot?: WorkspaceSnapshot): boolean {
 
 function hasBlockingWork(snapshot?: WorkspaceSnapshot): boolean {
   return hasBlockedTicket(snapshot) || snapshot?.status === "blocked";
+}
+
+function hasRunningHumanTurn(snapshot: WorkspaceSnapshot, agentId: string): boolean {
+  if (snapshot.agents.find((agent) => agent.id === agentId)?.status !== "running") return false;
+  const events = snapshot.agentThreads?.[agentId] ?? [];
+  const human = events.slice().reverse().find((event) => event.kind === "human_message" && event.turnId);
+  if (!human?.turnId) return false;
+  const latestState = events
+    .filter((event) => event.turnId === human.turnId && isRecord(event.payload) && typeof event.payload.status === "string")
+    .at(-1);
+  return latestState?.payload.status === "running";
 }
 
 function latestBlockedTicket(snapshot?: WorkspaceSnapshot): Ticket | undefined {
