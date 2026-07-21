@@ -91,9 +91,10 @@ export class RuntimeHost {
   async sendAgentMessage(taskId: string, agentId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
     const result = await this.exclusive(async () => {
       const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId);
-      return { accepted, snapshot: await this.snapshotUnlocked() };
+      const record = await this.store.get(taskId);
+      return { accepted, canRunNow: record?.status === "active", snapshot: await this.snapshotUnlocked() };
     });
-    if (result.accepted.appended) {
+    if (result.accepted.appended && result.canRunNow) {
       void this.enqueueAgentMessageTurn(taskId, agentId, result.accepted.turnId, messageId)
         .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error, result.accepted.turnId)).catch(() => undefined));
     }
@@ -431,6 +432,8 @@ export class RuntimeHost {
     const context = await this.requireContext(record.taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
+    const schedulingPaused = record.status === "active" && !this.timer;
+    const taskPausedForPresentation = record.status === "paused" || schedulingPaused;
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
     const tickets: Ticket[] = [];
     for (const ticketId of plan.graph.ticketIds) {
@@ -490,14 +493,15 @@ export class RuntimeHost {
       const profile = profiles.find((item) => item.id === agent.profileId);
       projectedAgents.push({
         ...agent,
-        status: projectedAgentStatus(link?.status, goal?.status, events),
+        status: taskPausedForPresentation
+          ? projectedPausedAgentStatus(link?.status, goal?.status)
+          : projectedAgentStatus(link?.status, goal?.status, events),
         name: profile?.name,
         role: profile?.role,
         capabilities: profile?.capabilities,
         currentStep: goal?.spec.objective,
       });
     }
-    const schedulingPaused = record.status === "active" && !this.timer;
     const status = schedulingPaused ? "paused" : presentationStatus(record.status, plan.status);
     const phase = schedulingPaused ? "paused" : presentationPhase(plan.status, tickets);
     return {
@@ -800,6 +804,13 @@ function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string
   if (linkStatus === "running" && (activity === "running" || activity === "yielded")) return "running";
   if (linkStatus === "running" && activity === "waiting") return "waiting";
   return linkStatus === "running" ? "waiting" : "idle";
+}
+
+function projectedPausedAgentStatus(linkStatus: string | undefined, goalStatus: string | undefined): EntityStatus {
+  if (linkStatus === "blocked" || goalStatus === "blocked" || goalStatus === "usage_limited") return "blocked";
+  if (linkStatus === "running" || linkStatus === "resolving" || linkStatus === "paused" || goalStatus === "active" || goalStatus === "paused") return "paused";
+  if (goalStatus === "failed") return "failed";
+  return "idle";
 }
 
 function legacyTicketStatus(status: string): Ticket["status"] {
