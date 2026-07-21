@@ -87,10 +87,18 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
-      ...(addition.contextPolicy?.includeOriginalRequest === true
-        ? { contextPolicy: { includeOriginalRequest: true } }
+      ...(addition.contextPolicy?.includeOriginalRequest === true || addition.contextPolicy?.establishesMissionBaseline === true
+        ? { contextPolicy: {
+            ...(addition.contextPolicy.includeOriginalRequest === true ? { includeOriginalRequest: true } : {}),
+            ...(addition.contextPolicy.establishesMissionBaseline === true ? { establishesMissionBaseline: true } : {}),
+          } }
         : {}),
-      ...(addition.permissions?.amendPlan === true ? { permissions: { amendPlan: true } } : {}),
+      ...(addition.permissions?.amendPlan === true || addition.permissions?.settleMission === true
+        ? { permissions: {
+            ...(addition.permissions.amendPlan === true ? { amendPlan: true } : {}),
+            ...(addition.permissions.settleMission === true ? { settleMission: true } : {}),
+          } }
+        : {}),
     };
   }
 
@@ -212,8 +220,14 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   if (value.contextPolicy?.includeOriginalRequest !== undefined && typeof value.contextPolicy.includeOriginalRequest !== "boolean") {
     throw new PlanGraphError(`${label}.contextPolicy.includeOriginalRequest must be a boolean`);
   }
+  if (value.contextPolicy?.establishesMissionBaseline !== undefined && typeof value.contextPolicy.establishesMissionBaseline !== "boolean") {
+    throw new PlanGraphError(`${label}.contextPolicy.establishesMissionBaseline must be a boolean`);
+  }
   if (value.permissions?.amendPlan !== undefined && typeof value.permissions.amendPlan !== "boolean") {
     throw new PlanGraphError(`${label}.permissions.amendPlan must be a boolean`);
+  }
+  if (value.permissions?.settleMission !== undefined && typeof value.permissions.settleMission !== "boolean") {
+    throw new PlanGraphError(`${label}.permissions.settleMission must be a boolean`);
   }
 }
 

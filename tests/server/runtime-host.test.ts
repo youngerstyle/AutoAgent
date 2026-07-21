@@ -272,7 +272,7 @@ describe("RuntimeHost", () => {
       kind: "ticket_received",
       payload: {
         brief: expect.stringContaining("当前 Agent thread 中提交的原始诉求"),
-        expectedArtifact: "boss-intake-v1",
+        expectedArtifact: "mission-baseline-v1",
       },
     });
     expect(JSON.stringify(events.slice(1))).not.toContain("1:1复刻 CF 红白机的坦克98 游戏");
@@ -298,7 +298,7 @@ describe("RuntimeHost", () => {
               evidence: [],
               criterionResults: [],
               residualRisks: [],
-              domainOutcome: { accepted: true },
+              domainOutcome: missionBaselineOutcome(),
             },
           }],
         };
@@ -428,7 +428,7 @@ describe("RuntimeHost", () => {
                 evidence: [],
                 criterionResults: Array.from({ length: 3 }, (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] })),
                 residualRisks: [],
-                domainOutcome: { accepted: true },
+                domainOutcome: missionBaselineOutcome(),
               },
             };
         return {
@@ -509,7 +509,7 @@ describe("RuntimeHost", () => {
               evidence: [],
               criterionResults: [],
               residualRisks: [],
-              domainOutcome: { accepted: true },
+              domainOutcome: missionBaselineOutcome(),
             },
           }],
         };
@@ -557,7 +557,7 @@ describe("RuntimeHost", () => {
               evidence: [],
               criterionResults: [],
               residualRisks: [],
-              domainOutcome: { accepted: true },
+              domainOutcome: missionBaselineOutcome(),
             },
           }],
         };
@@ -715,7 +715,7 @@ describe("RuntimeHost", () => {
               evidence: [],
               criterionResults: [],
               residualRisks: [],
-              domainOutcome: { accepted: true },
+              domainOutcome: missionBaselineOutcome(),
             },
           }],
         };
@@ -1008,6 +1008,18 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Pr
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Timed out waiting for asynchronous Agent turn");
+}
+
+function missionBaselineOutcome() {
+  return {
+    baseline: {
+      objective: "完成当前 human 目标",
+      successCriteria: ["形成可验证的真实交付"],
+      constraints: [],
+      assumptions: [],
+      exclusions: [],
+    },
+  };
 }
 
 async function createFixture(options: { intervalMs?: number } = {}) {

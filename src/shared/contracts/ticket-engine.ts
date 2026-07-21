@@ -34,9 +34,11 @@ export interface TicketDefinition {
   outputContract: TicketOutputContract;
   contextPolicy?: {
     includeOriginalRequest?: boolean;
+    establishesMissionBaseline?: boolean;
   };
   permissions?: {
     amendPlan?: boolean;
+    settleMission?: boolean;
   };
 }
 

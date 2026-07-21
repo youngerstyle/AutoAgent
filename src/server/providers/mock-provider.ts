@@ -23,10 +23,28 @@ export class MockProvider implements AgentModelProvider {
 }
 
 function mockGoalResolution(instructions: string): Record<string, unknown> {
-  if (instructions.includes("plan-change-set-v3")) {
+  const settlesMission = instructions.includes('\"settleMission\":true') && instructions.includes('\"missionBaseline\"');
+  if (instructions.includes("输出契约 mission-baseline-v1：") && !settlesMission) {
+    return {
+      status: "completed",
+      summary: "已建立 Mission 权威目标基线",
+      evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
+      domainOutcome: {
+        baseline: {
+          objective: "完成 human 已明确要求的产品目标",
+          successCriteria: ["真实交付物可运行并通过独立验收"],
+          constraints: [], assumptions: [], exclusions: [],
+        },
+      },
+    };
+  }
+  if (instructions.includes("输出契约 plan-change-set-v3：") && !settlesMission) {
     const sourceTicketId = currentTicketId(instructions);
     return {
       status: "completed",
+      summary: "已形成执行工单 DAG",
       evidence: [],
       criterionResults: completedCriteria(instructions),
       residualRisks: [],
@@ -37,7 +55,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
           additions: [
             node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
             node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "qa-report-v1"),
-            node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
+            { ...node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"), permissions: { settleMission: true } },
           ],
           dependencyAdditions: [
             { from: { ticketId: sourceTicketId }, to: { clientRef: "implementation" } },
@@ -50,8 +68,32 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       },
     };
   }
+  if (settlesMission) {
+    const criterionIds = [...new Set([...instructions.matchAll(/"criterionId":"([^"]+)"/g)].map((match) => match[1]))];
+    const baselineVersion = Number(instructions.match(/"missionBaseline":\{[^}]*"version":(\d+)/)?.[1] ?? 1);
+    return {
+      status: "completed",
+      summary: "已依据 Mission 基线完成最终验收",
+      evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
+      domainOutcome: {
+        missionResolution: {
+          baselineVersion,
+          summary: "mock acceptance",
+          criterionResults: criterionIds.map((criterionId) => ({
+            criterionId,
+            status: "satisfied",
+            evidence: [{ kind: "test", ref: `mock://acceptance/${criterionId}` }],
+          })),
+          residualRisks: [],
+        },
+      },
+    };
+  }
   return {
     status: "completed",
+    summary: "模拟 Agent 已完成当前目标",
     evidence: [],
     criterionResults: completedCriteria(instructions),
     residualRisks: [],

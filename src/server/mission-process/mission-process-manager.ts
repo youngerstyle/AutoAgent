@@ -8,6 +8,7 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import type {
   ActiveMissionLink,
+  MissionBaseline,
   MissionLink,
   MissionStartRequest,
   TeamBinding,
@@ -24,6 +25,8 @@ import {
   proposalToPlanChangeCommand,
   proposalToTicketCommand,
   ticketResultToGoalDecision,
+  createMissionBaseline,
+  validateMissionSettlement,
   validateMissionTicketOutcome,
   type MissionTicketOutcome,
   missionOutcomeInstruction,
@@ -296,7 +299,7 @@ export class MissionProcessManager {
               [...new Set(this.team.members.flatMap((item) => item.capabilities))],
               await this.listCorrectionTargets(link.planId, link.ticketId),
               link.ticketId,
-              await this.sharedPlanContext(link.planId),
+              await this.sharedPlanContext(link.planId, aggregate.record.baseline),
               await this.listUpstreamDeliveries(link.planId, link.ticketId),
               {
                 ticket: {
@@ -305,6 +308,7 @@ export class MissionProcessManager {
                   objective: work.definition.objective,
                   successCriteria: work.definition.successCriteria,
                   outputContract: work.definition.outputContract,
+                  permissions: work.definition.permissions,
                   reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
                 },
               },
@@ -324,7 +328,7 @@ export class MissionProcessManager {
     return this.updateLink(aggregate, dispatchId, active);
   }
 
-  private async sharedPlanContext(planId: PlanId) {
+  private async sharedPlanContext(planId: PlanId, missionBaseline?: MissionBaseline) {
     const plan = await this.tickets.getPlan(planId);
     const workItems = await Promise.all(plan.graph.ticketIds.map((ticketId) => this.tickets.getWorkItem(ticketId)));
     return {
@@ -344,6 +348,7 @@ export class MissionProcessManager {
       })),
       requiredTerminalTicketIds: plan.completionPolicy.requiredTerminalTicketIds.map(String),
       requiredTerminalCapabilities: this.team.deliveryPolicy?.requiredTerminalCapabilities ?? [],
+      ...(missionBaseline ? { missionBaseline } : {}),
       teamMembers: this.team.members.map((member) => ({
         principalId: member.principalId,
         name: member.agentId,
@@ -465,12 +470,39 @@ export class MissionProcessManager {
     const plan = await this.tickets.getPlan(link.planId);
     const goal = await agent.getGoal(link.agentGoalId);
     if (!goal) throw new Error("Goal is missing");
+    const work = await this.tickets.getWorkItem(link.ticketId);
+    if (!work) throw new Error("Ticket work item is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
     const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
     const assignmentError = validation.valid
       ? await validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team, this.tickets)
       : undefined;
-    const correctionReason = validation.valid ? assignmentError : validation.reason;
+    let missionContractError: string | undefined;
+    if (validation.valid && proposal.status === "completed" && work.definition.contextPolicy?.establishesMissionBaseline) {
+      try {
+        createMissionBaseline(
+          proposal.domainOutcome as MissionTicketOutcome,
+          link.ticketId,
+          (aggregate.record.baseline?.version ?? 0) + 1,
+          this.now().toISOString(),
+        );
+      } catch (error) {
+        missionContractError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (validation.valid && proposal.status === "completed" && work.definition.permissions?.settleMission) {
+      const member = this.team.members.find((item) => item.principalId === link.agentPrincipalId);
+      const required = this.team.deliveryPolicy?.requiredTerminalCapabilities ?? [];
+      if (!member || !required.every((capability) => member.capabilities.includes(capability))) {
+        missionContractError = `当前 Agent 没有 Mission 结算能力：${required.join("、")}`;
+      } else if (!aggregate.record.baseline) missionContractError = "Mission 尚未建立权威 baseline，不能结算";
+      else {
+        const resolution = (proposal.domainOutcome as MissionTicketOutcome | undefined)?.missionResolution;
+        const settlementValidation = validateMissionSettlement(aggregate.record.baseline, resolution);
+        if (!settlementValidation.valid) missionContractError = settlementValidation.reason;
+      }
+    }
+    const correctionReason = validation.valid ? (assignmentError ?? missionContractError) : validation.reason;
     if (correctionReason) {
       const decisionId = stableId("invalid_goal_decision", proposalId);
       const settled = await this.settleAgentProposal(
@@ -528,6 +560,48 @@ export class MissionProcessManager {
       decision,
     );
     if (!settled.applied && settled.code === "version_conflict") return aggregate;
+    let currentAggregate = aggregate;
+    if (result.accepted && result.ticketStatus === "completed") {
+      if (work.definition.contextPolicy?.establishesMissionBaseline) {
+        const baseline = createMissionBaseline(
+          proposal.domainOutcome as MissionTicketOutcome,
+          link.ticketId,
+          (currentAggregate.record.baseline?.version ?? 0) + 1,
+          this.now().toISOString(),
+        );
+        currentAggregate = await this.store.transact(currentAggregate.version, (current) => ({
+          ...current,
+          version: current.version + 1,
+          record: { ...current.record, baseline },
+        }));
+      }
+      if (work.definition.permissions?.settleMission) {
+        const baseline = currentAggregate.record.baseline!;
+        const resolution = (proposal.domainOutcome as MissionTicketOutcome).missionResolution as {
+          baselineVersion: number;
+          summary: string;
+          criterionResults: Array<{ criterionId: string; status: "satisfied"; evidence: Array<{ kind: string; ref: string; note?: string }> }>;
+          residualRisks: string[];
+        };
+        const linkedAt = "linkedAt" in currentAggregate.record ? currentAggregate.record.linkedAt : this.now().toISOString();
+        currentAggregate = await this.store.transact(currentAggregate.version, (current) => ({
+          ...current,
+          version: current.version + 1,
+          record: {
+            ...current.record,
+            status: "completed",
+            linkedAt,
+            baseline,
+            settlement: {
+              ...structuredClone(resolution),
+              acceptedByTicketId: link.ticketId,
+              acceptedByPrincipalId: link.agentPrincipalId,
+              settledAt: this.now().toISOString(),
+            },
+          },
+        }));
+      }
+    }
     let nextLink: MissionLink;
     if (result.accepted && result.ticketStatus === "blocked") {
       nextLink = { ...active, status: "blocked", authority: result.nextAuthority ?? active.authority, claimLeaseUntil: undefined, lastCommandId: command.commandId, lastDecisionId: decisionId };
@@ -552,7 +626,7 @@ export class MissionProcessManager {
           finalGoalVersion: settled.goal.version,
       };
     }
-    return this.updateLink(aggregate, dispatchId, nextLink);
+    return this.updateLink(currentAggregate, dispatchId, nextLink);
   }
 
   private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string }>> {
@@ -691,7 +765,7 @@ export async function validateTeamAssignments(
 ): Promise<string | undefined> {
   if (schemaRef !== "plan-change-set-v3" || !outcome?.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
   const change = outcome.change as unknown as {
-    additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }>;
+    additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] }; permissions?: { settleMission?: boolean } }>;
     requiredTerminalRefs: Array<{ clientRef?: string; ticketId?: TicketId }>;
   };
   for (const node of change.additions) {
@@ -702,17 +776,27 @@ export async function validateTeamAssignments(
     }
   }
   const terminalCapabilities = team.deliveryPolicy?.requiredTerminalCapabilities ?? [];
-  if (!terminalCapabilities.length) return undefined;
   if (!change.requiredTerminalRefs.length) {
-    return `团队交付策略要求至少一个可验收终点；终点负责人必须具备：${terminalCapabilities.join("、")}`;
+    return terminalCapabilities.length
+      ? `团队交付策略要求至少一个可验收终点；终点负责人必须具备：${terminalCapabilities.join("、")}`
+      : "计划必须包含至少一个拥有 Mission 结算权限的终点";
   }
   const additions = new Map(change.additions.map((node) => [node.clientRef, node]));
   for (const [index, ref] of change.requiredTerminalRefs.entries()) {
     let assignment: { principalId?: string; requiredCapabilities?: string[] } | undefined;
+    let settleMission = false;
     let label = ref.clientRef ?? ref.ticketId ?? `#${index + 1}`;
-    if (ref.clientRef) assignment = additions.get(ref.clientRef)?.assignment;
-    else if (ref.ticketId && tickets) assignment = (await tickets.getWorkItem(ref.ticketId))?.definition.assignment;
-    if (!assignment || !membersForAssignment(team, assignment).some((member) => terminalCapabilities.every((capability) => member.capabilities.includes(capability)))) {
+    if (ref.clientRef) {
+      const addition = additions.get(ref.clientRef);
+      assignment = addition?.assignment;
+      settleMission = addition?.permissions?.settleMission === true;
+    } else if (ref.ticketId && tickets) {
+      const work = await tickets.getWorkItem(ref.ticketId);
+      assignment = work?.definition.assignment;
+      settleMission = work?.definition.permissions?.settleMission === true;
+    }
+    if (!settleMission) return `计划终点 ${label} 必须显式设置 permissions.settleMission=true`;
+    if (terminalCapabilities.length && (!assignment || !membersForAssignment(team, assignment).some((member) => terminalCapabilities.every((capability) => member.capabilities.includes(capability))))) {
       return `计划终点 ${label} 不满足团队交付策略；终点负责人必须具备：${terminalCapabilities.join("、")}`;
     }
   }

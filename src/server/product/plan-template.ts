@@ -1,7 +1,7 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 4;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 5;
 
 export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, originalRequest: string): PlanDefinition {
   if (!originalRequest.trim()) throw new Error("Mission original request is required");
@@ -27,8 +27,8 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
             "只有缺少凭证、授权、不可逆操作确认或真实安全边界等不可替代输入时才阻塞",
           ],
           assignment: { requiredCapabilities: ["mission:intake"] },
-          outputContract: { schemaRef: "boss-intake-v1" },
-          contextPolicy: { includeOriginalRequest: true },
+          outputContract: { schemaRef: "mission-baseline-v1" },
+          contextPolicy: { includeOriginalRequest: true, establishesMissionBaseline: true },
         },
         {
           clientRef: "planning",

@@ -54,6 +54,18 @@ describe("append-only Plan graph", () => {
     expect(graph.definitionsByTicketId[ids[0]].contextPolicy).toEqual({ includeOriginalRequest: true });
   });
 
+  it("preserves explicit Mission baseline and settlement authority without inferring roles", () => {
+    const input = change(["intake", "acceptance"]);
+    input.additions[0]!.contextPolicy = { establishesMissionBaseline: true };
+    input.additions[1]!.permissions = { settleMission: true };
+    let index = 0;
+
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[index++]! });
+
+    expect(graph.definitionsByTicketId[ids[0]].contextPolicy).toEqual({ establishesMissionBaseline: true });
+    expect(graph.definitionsByTicketId[ids[1]].permissions).toEqual({ settleMission: true });
+  });
+
   it("appends new Tickets without changing historical Ticket identity", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
     const second = materializePlanGraph({

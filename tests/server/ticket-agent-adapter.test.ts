@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { missionOutcomeInstruction, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionTicketOutcome, type MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { missionOutcomeInstruction, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("keeps PM domain output separate from Plan and Ticket commands", () => {
@@ -233,6 +233,53 @@ describe("Ticket Agent resolution adapter", () => {
     })).toEqual({ valid: true });
   });
 
+  it("requires a structured authoritative Mission baseline", () => {
+    expect(validateMissionTicketOutcome("mission-baseline-v1", "completed", {
+      baseline: {
+        objective: "1:1 复刻目标产品",
+        successCriteria: ["核心行为和视觉可按证据验收"],
+        constraints: ["在当前工作区交付"],
+        assumptions: [],
+        exclusions: [],
+      },
+    })).toEqual({ valid: true });
+
+    expect(validateMissionTicketOutcome("mission-baseline-v1", "completed", {
+      baseline: { objective: "先做个简版", successCriteria: [] },
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("successCriteria") });
+  });
+
+  it("accepts Mission settlement only with exact current baseline coverage", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 2,
+      objective: "deliver the agreed product",
+      criteria: [
+        { criterionId: "criterion-a", text: "artifact runs" },
+        { criterionId: "criterion-b", text: "behavior is verified" },
+      ],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const resolution = {
+      baselineVersion: 2,
+      summary: "accepted",
+      criterionResults: baseline.criteria.map(({ criterionId }) => ({
+        criterionId,
+        status: "satisfied" as const,
+        evidence: [{ kind: "test", ref: `acceptance://${criterionId}` }],
+      })),
+      residualRisks: [],
+    };
+
+    expect(validateMissionSettlement(baseline, resolution)).toEqual({ valid: true });
+    expect(validateMissionSettlement(baseline, { ...resolution, criterionResults: resolution.criterionResults.slice(0, 1) }))
+      .toMatchObject({ valid: false, reason: expect.stringContaining("criterion-b") });
+    expect(validateMissionSettlement(baseline, { ...resolution, baselineVersion: 1 }))
+      .toMatchObject({ valid: false, reason: expect.stringContaining("version") });
+  });
+
   it("does not impose fixed role names or output schemas on a structurally valid Plan", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
       result: {},
@@ -316,7 +363,7 @@ function deliveryClosure() {
     additions: [
       draft("dev", "delivery-v1", ["delivery:implement"]),
       draft("qa", "qa-report-v1", ["delivery:verify"]),
-      draft("acceptance", "acceptance-v1", ["delivery:accept"]),
+      { ...draft("acceptance", "acceptance-v1", ["delivery:accept"]), permissions: { settleMission: true } },
     ],
     dependencyAdditions: [
       { from: { clientRef: "dev" }, to: { clientRef: "qa" } },

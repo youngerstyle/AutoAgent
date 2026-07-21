@@ -27,11 +27,24 @@ describe("versioned plan product data", () => {
     expect(JSON.stringify(definition)).not.toContain("human_action");
   });
 
+  it("declares the intake handoff as the Mission baseline", () => {
+    const definition = createMinimalTeamPlanDefinition(policyRef, "build the agreed product");
+    const [intake] = definition.initialChange.additions;
+
+    expect(intake).toMatchObject({
+      outputContract: { schemaRef: "mission-baseline-v1" },
+      contextPolicy: {
+        includeOriginalRequest: true,
+        establishesMissionBaseline: true,
+      },
+    });
+  });
+
   it("resolves an immutable version before Mission start", async () => {
     const registry = new PlanDefinitionRegistry(policyRef);
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 5, teamBindingId: "team-a", objective: "构建坦克大战" }))
+      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 5 } });
     await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 4, teamBindingId: "team-a", objective: "构建坦克大战" }))
-      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 4 } });
-    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 3, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .rejects.toThrow("version does not exist");
   });
 });

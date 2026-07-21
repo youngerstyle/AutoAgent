@@ -16,6 +16,34 @@ import type { AgentGoal } from "../../src/shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
+  it("requires every required terminal to carry explicit Mission settlement authority", async () => {
+    const team: TeamBinding = {
+      teamBindingId: "team",
+      version: 1,
+      contentHash: "hash",
+      deliveryPolicy: { requiredTerminalCapabilities: ["delivery:accept"] },
+      members: [{ agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"] }],
+    };
+    const withoutAuthority: MissionTicketOutcome = {
+      result: {},
+      change: {
+        additions: [{ clientRef: "accept", title: "accept", objective: "accept", successCriteria: ["accepted"], assignment: { principalId: "principal-approver" }, outputContract: { schemaRef: "acceptance-v1" } }],
+        dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "accept" }],
+      },
+    };
+    const withAuthority = structuredClone(withoutAuthority) as any;
+    withAuthority.change.additions[0].permissions = { settleMission: true };
+    const teamWithoutTerminalCapabilities: TeamBinding = {
+      ...team,
+      deliveryPolicy: undefined,
+    };
+
+    await expect(validateTeamAssignments(withoutAuthority, "plan-change-set-v3", team)).resolves.toContain("settleMission");
+    await expect(validateTeamAssignments(withoutAuthority, "plan-change-set-v3", teamWithoutTerminalCapabilities)).resolves.toContain("settleMission");
+    await expect(validateTeamAssignments(withAuthority, "plan-change-set-v3", team)).resolves.toBeUndefined();
+    await expect(validateTeamAssignments(withAuthority, "plan-change-set-v3", teamWithoutTerminalCapabilities)).resolves.toBeUndefined();
+  });
+
   it("enforces the configured terminal delivery capability without naming a role", async () => {
     const team: TeamBinding = {
       teamBindingId: "team",
@@ -32,7 +60,7 @@ describe("MissionProcessManager", () => {
       change: {
         additions: [
           { clientRef: "build", assignment: { requiredCapabilities: ["delivery:implement"] } },
-          { clientRef: "review", assignment: { requiredCapabilities: ["delivery:verify"] } },
+          { clientRef: "review", assignment: { requiredCapabilities: ["delivery:verify"] }, permissions: { settleMission: true } },
         ],
         requiredTerminalRefs: [{ clientRef: "review" }],
       },
@@ -41,7 +69,7 @@ describe("MissionProcessManager", () => {
       change: {
         additions: [
           ...withoutAcceptance.change.additions,
-          { clientRef: "accept", assignment: { principalId: "principal-approver" } },
+          { clientRef: "accept", assignment: { principalId: "principal-approver" }, permissions: { settleMission: true } },
         ],
         requiredTerminalRefs: [{ clientRef: "accept" }],
       },
@@ -98,7 +126,7 @@ describe("MissionProcessManager", () => {
       content: "build",
     }));
     const goal = await boss.getGoal(intakeLink.agentGoalId!);
-    const outcome: MissionTicketOutcome = { brief: "accepted" };
+    const outcome: MissionTicketOutcome = baselineOutcome();
     await boss.proposeGoalResolution({
       proposalId: "proposal-intake",
       goalId: goal!.spec.id,
@@ -132,17 +160,103 @@ describe("MissionProcessManager", () => {
     expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"missionObjective"') });
     expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"build"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"currentPlan"') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"missionBaseline"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"successCriteria"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"outputContract"') });
     expect(missionInstruction).toMatchObject({
       content: expect.stringContaining('"summary":"需求已接收"'),
     });
     expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"output":{"brief":"accepted"}'),
+      content: expect.stringContaining('"objective":"build the agreed product"'),
     });
     expect(missionInstruction).toMatchObject({
       content: expect.not.stringContaining("proposal-intake"),
     });
+  });
+
+  it("does not complete a Mission until an authorized Ticket settles the current baseline", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "deliver the complete agreed product",
+      requestedByPrincipalId: "human",
+      resolvedStart: {
+        planDefinition: {
+          definitionId: "baseline-settlement-flow",
+          definitionVersion: 1,
+          policyRef: fixture.policy.ref,
+          plannerAssignment: { principalId: "principal-pm" },
+          amendmentTemplate: { title: "plan revision", successCriteria: ["revision is valid"], outputContract: { schemaRef: "plan-change-set-v3" } },
+          initialChange: {
+            additions: [
+              {
+                clientRef: "intake", title: "baseline", objective: "establish baseline", successCriteria: ["baseline recorded"],
+                assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "mission-baseline-v1" },
+                contextPolicy: { includeOriginalRequest: true, establishesMissionBaseline: true },
+              },
+              {
+                clientRef: "accept", title: "acceptance", objective: "accept against baseline", successCriteria: ["acceptance decided"],
+                assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "acceptance-v1" },
+                permissions: { settleMission: true },
+              },
+            ],
+            dependencyAdditions: [{ from: { clientRef: "intake" }, to: { clientRef: "accept" } }],
+            cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "accept" }],
+          },
+        },
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+
+    let mission = await fixture.manager.tick();
+    const boss = fixture.engines.get("boss")!;
+    const intake = mission.links.find((item) => item.status === "running")!;
+    const intakeGoal = (await boss.getGoal(intake.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "baseline-proposal", goalId: intakeGoal.spec.id, expectedGoalVersion: intakeGoal.version, resolvingGoalVersion: intakeGoal.version + 1,
+      status: "completed", summary: "baseline established", evidence: [], criterionResults: satisfied(intakeGoal), residualRisks: [],
+      domainOutcome: baselineOutcome(), createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+    expect(mission.record).toMatchObject({ status: "linked", baseline: { version: 1, objective: "build the agreed product" } });
+
+    mission = await fixture.manager.tick();
+    const acceptance = mission.links.find((item) => item.status === "running")!;
+    const acceptanceGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "incomplete-acceptance", goalId: acceptanceGoal.spec.id, expectedGoalVersion: acceptanceGoal.version, resolvingGoalVersion: acceptanceGoal.version + 1,
+      status: "completed", summary: "accepted without baseline proof", evidence: [], criterionResults: satisfied(acceptanceGoal), residualRisks: [],
+      domainOutcome: { result: "accepted" }, createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+    expect(mission.record.status).toBe("linked");
+    expect(mission.links.find((item) => item.dispatchId === acceptance.dispatchId)).toMatchObject({ status: "running" });
+
+    const retriedGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
+    const baseline = mission.record.baseline!;
+    await boss.proposeGoalResolution({
+      proposalId: "complete-acceptance", goalId: retriedGoal.spec.id, expectedGoalVersion: retriedGoal.version, resolvingGoalVersion: retriedGoal.version + 1,
+      status: "completed", summary: "accepted against baseline", evidence: [], criterionResults: satisfied(retriedGoal), residualRisks: [],
+      domainOutcome: {
+        missionResolution: {
+          baselineVersion: baseline.version,
+          summary: "all baseline criteria accepted",
+          criterionResults: baseline.criteria.map((item) => ({
+            criterionId: item.criterionId,
+            status: "satisfied",
+            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+          })),
+          residualRisks: [],
+        },
+      },
+      createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+    expect(mission.record).toMatchObject({
+      status: "completed",
+      settlement: { acceptedByTicketId: acceptance.ticketId, baselineVersion: 1 },
+    });
+    expect((await fixture.tickets.getPlan(mission.record.planId)).status).toBe("completed");
   });
 
   it("delivers the complete accepted ancestor lineage to a downstream Agent", async () => {
@@ -288,7 +402,7 @@ describe("MissionProcessManager", () => {
       evidence: [],
       criterionResults: satisfied(goal),
       residualRisks: [],
-      domainOutcome: { accepted: true },
+      domainOutcome: baselineOutcome(),
       createdAt: NOW,
     })).resolves.toMatchObject({ attempt: { pending: "retry_later" } });
     await expect(fixture.manager.tick()).rejects.toThrow("simulated process interruption");
@@ -332,7 +446,7 @@ describe("MissionProcessManager", () => {
       evidence: [],
       criterionResults: satisfied(goal),
       residualRisks: [],
-      domainOutcome: { accepted: true },
+      domainOutcome: baselineOutcome(),
       createdAt: NOW,
     });
 
@@ -371,7 +485,7 @@ describe("MissionProcessManager", () => {
       evidence: [],
       criterionResults: satisfied(goal),
       residualRisks: [],
-      domainOutcome: { accepted: true },
+      domainOutcome: baselineOutcome(),
       createdAt: NOW,
     });
 
@@ -500,7 +614,7 @@ describe("MissionProcessManager", () => {
       evidence: [],
       criterionResults: satisfied(intakeGoal),
       residualRisks: [],
-      domainOutcome: { accepted: true },
+      domainOutcome: baselineOutcome(),
       createdAt: NOW,
     });
     await fixture.manager.tick();
@@ -599,6 +713,18 @@ function satisfied(goal: AgentGoal) {
   return goal.spec.successCriteria.map((_, criterionIndex) => ({ criterionIndex, status: "satisfied" as const, evidence: [] }));
 }
 
+function baselineOutcome(): MissionTicketOutcome {
+  return {
+    baseline: {
+      objective: "build the agreed product",
+      successCriteria: ["the agreed product is delivered and verified"],
+      constraints: [],
+      assumptions: [],
+      exclusions: [],
+    },
+  };
+}
+
 async function createFixture(clock = { now: new Date(NOW) }) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-mission-manager-"));
   const policyStore = new PlanPolicyStore(root);
@@ -618,7 +744,7 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     version: 1,
     contentHash: "team-hash",
     members: [
-      { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] },
+      { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake", "delivery:accept"] },
       { agentId: "pm", principalId: "principal-pm", capabilities: ["plan:plan"] },
       { agentId: "dev", principalId: "principal-dev", capabilities: ["implementation"] },
       { agentId: "qa", principalId: "principal-qa", capabilities: ["quality:verify"] },

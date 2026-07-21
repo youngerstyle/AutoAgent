@@ -21,7 +21,8 @@ The UI and Runtime Task state are rebuildable projections. They never decide rou
 | What an Agent has seen and said | Agent rollout |
 | Whether an Agent turn is queued, running or finished | Agent rollout turn records |
 | Whether work is ready, running, blocked, returned or complete | Ticket Engine |
-| Whether a Plan is complete | Ticket Engine completion policy |
+| Whether the current Plan DAG is complete | Ticket Engine completion policy |
+| Whether the Mission is accepted | Mission Control settlement against the Mission baseline |
 | Delivery and settlement progress between the two engines | Mission Control process record |
 | Task status, phase, avatar state and conversation badge | projection only |
 
@@ -58,18 +59,20 @@ Agent completion is a claim about its own Ticket, not about the whole Mission.
 - Browser/manual evidence records the tested URL or artifact and the observations.
 - Platform validation proves evidence exists and is attributable. It does not invent semantic conclusions.
 - QA independently determines pass, correction, plan change or required human input.
-- A Mission is complete only when Ticket Engine's required terminal Tickets are complete.
+- Completing required terminal Tickets completes the current Plan DAG, not the Mission by itself.
+- A Mission is complete only after an authorized Agent submits an accepted settlement covering every criterion in the current Mission baseline.
 
 ## Projection rules
 
 Task state is derived in this order:
 
-1. Plan terminal state.
-2. Plan paused.
-3. Blocked Ticket or blocked Agent Goal requiring human input.
-4. Claimed Agent run or running Ticket.
-5. Ready Ticket waiting for dispatch.
-6. Idle.
+1. Durable Mission settlement, cancellation, or failure.
+2. Plan terminal state that still requires Mission continuation or settlement.
+3. Plan paused.
+4. Blocked Ticket or blocked Agent Goal requiring human input.
+5. Claimed Agent run or running Ticket.
+6. Ready Ticket waiting for dispatch.
+7. Idle.
 
 An Agent avatar is green only while its turn is actually executing. It is yellow only when that Agent owns a blocked Ticket or a failed/paused turn requiring an explicit operator action.
 

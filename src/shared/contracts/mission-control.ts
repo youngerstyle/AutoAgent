@@ -20,7 +20,6 @@ import type {
   PlanDefinition,
   PlanId,
   PlanSnapshot,
-  PlanStatus,
 } from "./ticket-engine.js";
 
 export type { AgentPort, GoalResolutionPort } from "./agent-engine.js";
@@ -67,11 +66,44 @@ interface MissionRecordBase {
   objective: string;
   planId: PlanId;
   planCreateCommandId: string;
+  baseline?: MissionBaseline;
+}
+
+export interface MissionBaselineCriterion {
+  criterionId: string;
+  text: string;
+}
+
+export interface MissionBaseline {
+  baselineId: string;
+  version: number;
+  objective: string;
+  criteria: MissionBaselineCriterion[];
+  constraints: string[];
+  assumptions: string[];
+  exclusions: string[];
+  establishedByTicketId: TicketId;
+  establishedAt: string;
+}
+
+export interface MissionSettlement {
+  baselineVersion: number;
+  acceptedByTicketId: TicketId;
+  acceptedByPrincipalId: string;
+  summary: string;
+  criterionResults: Array<{
+    criterionId: string;
+    status: "satisfied";
+    evidence: Array<{ kind: string; ref: string; note?: string }>;
+  }>;
+  residualRisks: string[];
+  settledAt: string;
 }
 
 export type MissionRecord =
   | (MissionRecordBase & { status: "starting" })
   | (MissionRecordBase & { status: "linked"; linkedAt: string })
+  | (MissionRecordBase & { status: "completed"; linkedAt: string; baseline: MissionBaseline; settlement: MissionSettlement })
   | (MissionRecordBase & { status: "start_failed"; failure: string });
 
 interface MissionLinkBase {
@@ -152,7 +184,7 @@ export type MissionLink =
 
 export interface MissionProjection {
   missionId: string;
-  lifecycle: "starting" | "start_failed" | PlanStatus;
+  lifecycle: "starting" | "start_failed" | "linked" | "completed";
   activity: "idle" | "running" | "waiting_for_human";
   planVersion?: number;
 }
@@ -223,6 +255,7 @@ export function isTicketAgentRuntimeEnvelope(
 
   if (record.status === "starting") return true;
   if (record.status === "linked") return hasString(record, "linkedAt");
+  if (record.status === "completed") return hasString(record, "linkedAt") && "baseline" in record && "settlement" in record;
   if (record.status === "start_failed") return hasString(record, "failure");
   return false;
 }

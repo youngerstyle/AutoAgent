@@ -509,8 +509,8 @@ export class RuntimeHost {
         currentStep: goal?.spec.objective,
       });
     }
-    const status = presentationStatus(plan.status);
-    const phase = presentationPhase(plan.status, tickets);
+    const status = presentationStatus(plan.status, mission.record.status);
+    const phase = presentationPhase(plan.status, mission.record.status, tickets);
     return {
       workspace: this.workspace,
       mission: {
@@ -563,7 +563,7 @@ export class RuntimeHost {
     let mission = await context.manager.tick();
     const planBeforeRuns = await context.tickets.getPlan(mission.record.planId);
     if (planBeforeRuns.status !== "active") {
-      await this.syncTaskStatus(context, planBeforeRuns.status);
+      await this.syncTaskStatus(context, planBeforeRuns.status, mission.record.status);
       return;
     }
     for (const link of mission.links) {
@@ -617,7 +617,7 @@ export class RuntimeHost {
     }
     mission = await context.manager.tick();
     const plan = await context.tickets.getPlan(mission.record.planId);
-    await this.syncTaskStatus(context, plan.status);
+    await this.syncTaskStatus(context, plan.status, mission.record.status);
   }
 
   private async runIdleAgentTurn(
@@ -637,8 +637,8 @@ export class RuntimeHost {
     await context.manager.tick();
   }
 
-  private async syncTaskStatus(context: RuntimeContext, planStatus: string): Promise<void> {
-    const status = planStatus === "completed" ? "completed"
+  private async syncTaskStatus(context: RuntimeContext, planStatus: string, missionStatus: string): Promise<void> {
+    const status = missionStatus === "completed" ? "completed"
       : planStatus === "failed" ? "failed"
         : planStatus === "cancelled" ? "cancelled"
           : planStatus === "paused" ? "paused" : "active";
@@ -890,16 +890,18 @@ export function projectTicketBlocker(reason: string, requiredInput: TicketRequir
   };
 }
 
-function presentationStatus(plan: string): EntityStatus {
+function presentationStatus(plan: string, mission: string): EntityStatus {
+  if (mission === "completed") return "completed";
   if (plan === "blocked") return "blocked";
   if (plan === "paused") return "paused";
-  if (plan === "completed") return "completed";
+  if (plan === "completed") return "blocked";
   if (plan === "failed") return "failed";
   if (plan === "cancelled") return "interrupted";
   return "running";
 }
 
 function presentationTicketType(schemaRef: string, role?: WorkspaceAgent["roleInWorkspace"]): Ticket["type"] {
+  if (schemaRef === "mission-baseline-v1") return "boss_intake";
   if (schemaRef === "boss-intake-v1") return "boss_intake";
   if (schemaRef === "plan-change-set-v3") return "pm_plan";
   if (role === "pm") return "pm_plan";
@@ -910,10 +912,11 @@ function presentationTicketType(schemaRef: string, role?: WorkspaceAgent["roleIn
   return "specialist";
 }
 
-function presentationPhase(status: string, tickets: Ticket[]): MissionPhase {
-  if (status === "completed") return "completed";
-  if (status === "failed") return "failed";
-  if (status === "paused") return "paused";
+function presentationPhase(planStatus: string, missionStatus: string, tickets: Ticket[]): MissionPhase {
+  if (missionStatus === "completed") return "completed";
+  if (planStatus === "failed") return "failed";
+  if (planStatus === "paused") return "paused";
+  if (planStatus === "completed") return "idle";
   const current = tickets.find((ticket) => ticket.status === "running")
     ?? tickets.find((ticket) => ticket.status === "blocked")
     ?? tickets.find((ticket) => ticket.status === "pending");

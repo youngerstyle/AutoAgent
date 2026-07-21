@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentHumanInputRequest, GoalResolutionDecision, GoalResolutionProposal, GoalResolutionStatus } from "../../shared/contracts/agent-engine.js";
-import type { ActiveMissionLink } from "../../shared/contracts/mission-control.js";
+import type { ActiveMissionLink, MissionBaseline } from "../../shared/contracts/mission-control.js";
 import type { PlanChangeSet, PlanCommandEnvelope, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
 
 export type MissionTicketOutcome = Record<string, unknown>;
@@ -27,6 +27,7 @@ export interface TicketAssignmentContext {
     objective: string;
     successCriteria: string[];
     outputContract: TicketOutputContract;
+    permissions?: { amendPlan?: boolean; settleMission?: boolean };
     reworkRequests?: ReworkRequestContext[];
   };
 }
@@ -44,6 +45,7 @@ export interface SharedPlanContext {
   dependencyEdges: Array<{ fromTicketId: string; toTicketId: string }>;
   requiredTerminalTicketIds: string[];
   requiredTerminalCapabilities?: string[];
+  missionBaseline?: MissionBaseline;
   teamMembers: Array<{ principalId: string; name: string; capabilities: string[] }>;
 }
 
@@ -72,7 +74,82 @@ export function validateMissionTicketOutcome(schemaRef: string | undefined, stat
     const error = validateChangeSet(value.change);
     if (error) return { valid: false, reason: error };
   }
+  if (schemaRef === "mission-baseline-v1") {
+    const error = validateBaselineValue(value.baseline);
+    if (error) return { valid: false, reason: error };
+  }
   return { valid: true };
+}
+
+export function createMissionBaseline(
+  outcome: MissionTicketOutcome,
+  ticketId: TicketId,
+  version: number,
+  establishedAt: string,
+): MissionBaseline {
+  const value = outcome.baseline;
+  const error = validateBaselineValue(value);
+  if (error || !isRecord(value)) throw new Error(error ?? "Mission baseline is invalid");
+  const baselineId = stableId("mission_baseline", JSON.stringify([ticketId, version, value]));
+  const criteria = (value.successCriteria as string[]).map((text, index) => ({
+    criterionId: stableId("mission_criterion", JSON.stringify([baselineId, index, text])),
+    text,
+  }));
+  return {
+    baselineId,
+    version,
+    objective: value.objective as string,
+    criteria,
+    constraints: [...value.constraints as string[]],
+    assumptions: [...value.assumptions as string[]],
+    exclusions: [...value.exclusions as string[]],
+    establishedByTicketId: ticketId,
+    establishedAt,
+  };
+}
+
+export function validateMissionSettlement(
+  baseline: MissionBaseline,
+  value: unknown,
+): { valid: true } | { valid: false; reason: string } {
+  if (!isRecord(value)) return { valid: false, reason: "missionResolution 必须是对象" };
+  if (value.baselineVersion !== baseline.version) {
+    return { valid: false, reason: `missionResolution baseline version 必须是当前版本 ${baseline.version}` };
+  }
+  if (!isNonEmptyString(value.summary)) return { valid: false, reason: "missionResolution.summary 必须是非空字符串" };
+  if (!Array.isArray(value.criterionResults)) return { valid: false, reason: "missionResolution.criterionResults 必须是数组" };
+  const results = value.criterionResults;
+  const expected = new Set(baseline.criteria.map((item) => item.criterionId));
+  const seen = new Set<string>();
+  for (const [index, result] of results.entries()) {
+    if (!isRecord(result) || !isNonEmptyString(result.criterionId)) return { valid: false, reason: `missionResolution.criterionResults[${index}].criterionId 无效` };
+    if (!expected.has(result.criterionId)) return { valid: false, reason: `missionResolution 引用了未知 criterion ${result.criterionId}` };
+    if (seen.has(result.criterionId)) return { valid: false, reason: `missionResolution 重复报告 criterion ${result.criterionId}` };
+    seen.add(result.criterionId);
+    if (result.status !== "satisfied") return { valid: false, reason: `Mission 完成时 criterion ${result.criterionId} 必须为 satisfied` };
+    if (!Array.isArray(result.evidence) || result.evidence.length === 0) return { valid: false, reason: `Mission criterion ${result.criterionId} 必须包含验收证据` };
+    for (const evidence of result.evidence) {
+      if (!isRecord(evidence) || !isNonEmptyString(evidence.kind) || !isNonEmptyString(evidence.ref)) return { valid: false, reason: `Mission criterion ${result.criterionId} 的 evidence 无效` };
+    }
+  }
+  const missing = baseline.criteria.filter((item) => !seen.has(item.criterionId));
+  if (missing.length) return { valid: false, reason: `missionResolution 缺少 criterion：${missing.map((item) => item.criterionId).join(", ")}` };
+  if (!Array.isArray(value.residualRisks) || value.residualRisks.some((item) => !isNonEmptyString(item))) {
+    return { valid: false, reason: "missionResolution.residualRisks 必须是字符串数组" };
+  }
+  return { valid: true };
+}
+
+function validateBaselineValue(value: unknown): string | undefined {
+  if (!isRecord(value)) return "mission-baseline-v1 需要 baseline 对象";
+  if (!isNonEmptyString(value.objective)) return "baseline.objective 必须是非空字符串";
+  if (!Array.isArray(value.successCriteria) || value.successCriteria.length === 0 || value.successCriteria.some((item) => !isNonEmptyString(item))) {
+    return "baseline.successCriteria 必须是非空字符串数组";
+  }
+  for (const key of ["constraints", "assumptions", "exclusions"] as const) {
+    if (!Array.isArray(value[key]) || value[key].some((item) => !isNonEmptyString(item))) return `baseline.${key} 必须是字符串数组`;
+  }
+  return undefined;
 }
 
 export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId, sharedPlanContext?: SharedPlanContext, upstreamDeliveries: readonly UpstreamDeliveryContext[] = [], assignmentContext?: TicketAssignmentContext): string {
@@ -85,6 +162,9 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
       ? `当前 Ticket 的交付谱系如下（按 DAG 拓扑顺序，不含其他 Agent 的私有会话）：${JSON.stringify(upstreamDeliveries)}。请基于这些项目事实自行判断当前工作，不要读取平台内部文件猜测上游结果。`
       : "当前 Ticket 没有可用的祖先交付。";
   const base = `完成或失败当前 Goal 时必须调用 goal_resolution；这次工具调用就是领域交付物的唯一提交入口。把输出契约要求的结果直接放入 domainOutcome，平台接收后负责校验并提交 Ticket 和 Plan；不要寻找或写入另一个提交文件、接口或平台内部状态。status=completed 表示当前 Agent 已完成检查、实现、规划或其他受托工作，不表示被检查对象必然通过；criterionResults 必须如实记录每项 satisfied、not_satisfied 或 not_verified。全部满足时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时，即使 criterionResults 包含不满足项，也应使用 status=completed 与 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 status=completed 与 disposition=plan_change_required 及 reason。Host 返回 correctable 只表示当前提案需要修正并重新提交，应保持原本基于工作事实判断的 Goal 结论；不得仅因提案结构或契约校验被退回就改成 failed。${targets}${workContext}不得根据角色名称或自然语言猜测工单流转。`;
+  if (schemaRef === "mission-baseline-v1") {
+    return `${base} 输出契约 mission-baseline-v1：domainOutcome.baseline 必须包含 objective、successCriteria、constraints、assumptions、exclusions。它是团队后续规划和最终验收的权威基线；不得把 human 明确要求降级成第一版、演示版或后续事项。可逆的不确定项应记录为 assumption，不应阻塞。`;
+  }
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
     const contract = `change 的结构为：{"additions":[{"clientRef":"work","title":"执行工作","objective":"完成明确目标","successCriteria":["形成可核验交付"],"assignment":{"requiredCapabilities":["从团队快照选择的能力"]},"outputContract":{"schemaRef":"由该工单领域决定的输出契约"}},{"clientRef":"review","title":"独立验证","objective":"依据成功标准检查上游交付","successCriteria":["形成通过或退回的可复现证据"],"assignment":{"requiredCapabilities":["从团队快照选择的验证能力"]},"outputContract":{"schemaRef":"由验证工作决定的输出契约"}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"work"}},{"from":{"clientRef":"work"},"to":{"clientRef":"review"}}],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"review"}]}。这只是字段结构示例，不规定角色名称、工单数量、能力名称或 schemaRef。你必须根据 Mission、成功标准、风险和当前团队能力设计真实 DAG；可逆且低风险的工作无需机械增加层级，软件交付等需要独立验证的工作必须包含可核验的下游检查和真实终点。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。`;
@@ -94,7 +174,10 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
     const terminalPolicy = sharedPlanContext?.requiredTerminalCapabilities?.length
       ? `团队交付策略要求每个 requiredTerminalRefs 指向的终点都必须可分配给具备以下能力的成员：${sharedPlanContext.requiredTerminalCapabilities.join("、")}。独立质量检查不能代替最终交付验收。`
       : "";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}变更后 DAG 必须无环并包含可验证终点。`;
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}最终 requiredTerminalRefs 必须指向拥有 permissions.settleMission=true 的验收 Ticket；里程碑检查可以是普通 Ticket，不能冒充 Mission 完成。变更后 DAG 必须无环并包含可验证终点。`;
+  }
+  if (assignmentContext?.ticket.permissions?.settleMission) {
+    return `${base} 当前 Ticket 获得 Mission 结算权限。只有你依据当前 Mission baseline 形成最终验收结论后才能正常完成；domainOutcome.missionResolution 必须包含 baselineVersion、summary、criterionResults 和 residualRisks，并逐项引用 baseline criterionId、给出 satisfied 状态和真实 evidence。若目标尚未满足，请提交 correction_required 或 plan_change_required；不得用阶段性交付代替 Mission 验收。`;
   }
   return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整时才调用 request_human_input；kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，调用 request_human_input(kind="manual_test")；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
 }
