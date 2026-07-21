@@ -90,7 +90,7 @@ export class RuntimeHost {
       return { accepted, snapshot: await this.snapshotUnlocked() };
     });
     if (result.accepted.appended) {
-      void this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId, result.accepted.turnId, messageId))
+      void this.enqueueAgentMessageTurn(taskId, agentId, result.accepted.turnId, messageId)
         .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error, result.accepted.turnId)).catch(() => undefined));
     }
     return result.snapshot;
@@ -566,7 +566,18 @@ export class RuntimeHost {
     const key = this.agentRunKey(context, link.agentId);
     const existing = this.agentRuns.get(key);
     if (existing) return existing;
-    const pending = this.runAgentSlice(context, link);
+    return this.trackAgentRun(key, this.runAgentSlice(context, link));
+  }
+
+  private enqueueAgentMessageTurn(taskId: string, agentId: string, turnId: string, triggerMessageId: string): Promise<void> {
+    const key = `${taskId}:${agentId}`;
+    const active = this.agentRuns.get(key);
+    const pending = (active ? active.catch(() => undefined) : Promise.resolve())
+      .then(() => this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId, turnId, triggerMessageId)));
+    return this.trackAgentRun(key, pending);
+  }
+
+  private trackAgentRun(key: string, pending: Promise<void>): Promise<void> {
     const tracked = pending.finally(() => {
       if (this.agentRuns.get(key) === tracked) this.agentRuns.delete(key);
       if (this.timer) {

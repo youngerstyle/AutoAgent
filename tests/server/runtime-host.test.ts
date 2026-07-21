@@ -782,6 +782,56 @@ describe("RuntimeHost", () => {
     expect(controlResult).toBe("paused");
   });
 
+  it("queues a human message behind the active turn for the same Agent", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    await fixture.host.start();
+    await fixture.host.createTask({
+      taskId: "task-agent-turn-queue",
+      title: "Agent turn queue",
+      objective: "verify one turn at a time",
+    });
+    const context = fixture.host.context("task-agent-turn-queue")!;
+    const loop = context.loops.get("wa_boss")!;
+    let activeTurns = 0;
+    let maxActiveTurns = 0;
+    const inputs: Array<{ triggerMessageId?: string }> = [];
+    let releaseFirst!: () => void;
+    let announceFirst!: () => void;
+    let announceSecond!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { announceFirst = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { announceSecond = resolve; });
+    loop.runSlice = async (input) => {
+      activeTurns += 1;
+      maxActiveTurns = Math.max(maxActiveTurns, activeTurns);
+      inputs.push({ triggerMessageId: input.triggerMessageId });
+      if (inputs.length === 1) {
+        announceFirst();
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      } else {
+        announceSecond();
+      }
+      activeTurns -= 1;
+      return { turnId: input.turnId ?? `turn-${inputs.length}`, status: "waiting", toolCalls: 0 };
+    };
+
+    await firstStarted;
+    await fixture.host.sendAgentMessage(
+      "task-agent-turn-queue",
+      "wa_boss",
+      "new chronological input",
+      "human-message-during-active-turn",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(inputs).toHaveLength(1);
+
+    releaseFirst();
+    await secondStarted;
+    fixture.host.stop();
+
+    expect(maxActiveTurns).toBe(1);
+    expect(inputs[1]).toMatchObject({ triggerMessageId: "human-message-during-active-turn" });
+  });
+
   it("lets operator cancellation bypass business-flow advancement", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-cancel", title: "取消验证", objective: "构建演示" });

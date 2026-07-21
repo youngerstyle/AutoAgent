@@ -37,6 +37,7 @@ interface ResolutionBinding {
   goal?: AgentGoal;
   turnId?: string;
   onProposal?: (proposal: GoalResolutionProposal) => void;
+  onInvalid?: (reason: string) => void;
   mock?: boolean;
 }
 
@@ -56,6 +57,7 @@ interface RunSafetyBinding {
 
 export class PiAgentRuntime implements AgentExecutionRuntime {
   private readonly sessions = new Map<string, Promise<SessionState>>();
+  private readonly turnTails = new Map<string, Promise<AgentExecutionSliceResult>>();
   private readonly now: () => Date;
 
   constructor(
@@ -71,9 +73,21 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     this.now = options.now ?? (() => new Date());
   }
 
-  async runSlice(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult> {
-    const goal = input.goalId ? await this.engine.getGoal(input.goalId) : undefined;
-    if (input.goalId && !goal) throw new Error("Goal does not exist");
+  runSlice(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult> {
+    const active = this.turnTails.get(input.threadId);
+    const pending = (active ? active.catch(() => undefined) : Promise.resolve())
+      .then(() => this.runSliceSerial(input));
+    const tracked = pending.finally(() => {
+      if (this.turnTails.get(input.threadId) === tracked) this.turnTails.delete(input.threadId);
+    });
+    this.turnTails.set(input.threadId, tracked);
+    return tracked;
+  }
+
+  private async runSliceSerial(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult> {
+    const persistedGoal = input.goalId ? await this.engine.getGoal(input.goalId) : undefined;
+    if (input.goalId && !persistedGoal) throw new Error("Goal does not exist");
+    const goal = persistedGoal?.status === "active" ? persistedGoal : undefined;
     const thread = await this.engine.getThread(input.threadId);
     const pending = await pendingThreadInput(thread, this.store);
     const turnId = input.turnId ?? pending?.turnId
@@ -171,6 +185,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.safety.repeatedToolBatchCount = 0;
     state.safety.consecutiveIdleResponses = 0;
     state.safety.blockedReason = undefined;
+    state.resolution.onInvalid = (reason) => {
+      state.safety.blockedReason ??= reason;
+      void state.session.abort();
+    };
     const activeTools = [...this.tools.definitions().map((tool) => tool.name), ...(goal ? ["goal_resolution", "request_human_input"] : [])];
     state.session.setActiveToolsByName(activeTools);
 
@@ -232,6 +250,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       state.resolution.goal = undefined;
       state.resolution.turnId = undefined;
       state.resolution.onProposal = undefined;
+      state.resolution.onInvalid = undefined;
       state.resolution.mock = undefined;
       unsubscribe();
     }
@@ -240,6 +259,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   dispose(): void {
     for (const pending of this.sessions.values()) void pending.then(({ session }) => session.dispose());
     this.sessions.clear();
+    this.turnTails.clear();
   }
 
   private requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
@@ -466,7 +486,12 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
     async execute(_callId, params) {
       if (!binding.goal || !binding.turnId || !binding.onProposal) {
         const details: ResolutionToolDetails = { ok: false, reason: "当前没有可结算的 Goal", proposal: null };
-        throw new Error(details.reason);
+        binding.onInvalid?.(details.reason);
+        return {
+          content: [{ type: "text", text: details.reason }],
+          details,
+          terminate: true,
+        };
       }
       const submitted = binding.mock
         ? {
@@ -507,7 +532,14 @@ function humanInputTool(binding: ResolutionBinding, now: () => Date): ToolDefini
     }),
     async execute(_callId, params) {
       if (!binding.goal || !binding.turnId || !binding.onProposal) {
-        throw new Error("当前没有可请求 human 输入的 Goal");
+        const reason = "当前没有可请求 human 输入的 Goal";
+        const details: ResolutionToolDetails = { ok: false, reason, proposal: null };
+        binding.onInvalid?.(reason);
+        return {
+          content: [{ type: "text", text: reason }],
+          details,
+          terminate: true,
+        };
       }
       const value = params as { kind?: unknown; description?: unknown; details?: unknown };
       const description = typeof value.description === "string" ? value.description.trim() : "";
@@ -524,9 +556,10 @@ function humanInputTool(binding: ResolutionBinding, now: () => Date): ToolDefini
       };
       const proposal = createHumanInputProposal(binding.goal, binding.turnId, request, now().toISOString());
       binding.onProposal(proposal);
+      const details: ResolutionToolDetails = { ok: true, reason: "", proposal };
       return {
         content: [{ type: "text", text: JSON.stringify({ humanInputRequested: true, proposalId: proposal.proposalId }) }],
-        details: { ok: true, proposal },
+        details,
         terminate: true,
       };
     },
