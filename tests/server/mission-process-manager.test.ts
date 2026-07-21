@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgentEngine } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import { MissionGoalResolutionPort } from "../../src/server/mission-process/mission-goal-resolution-port.js";
-import { MissionProcessManager } from "../../src/server/mission-process/mission-process-manager.js";
+import { MissionProcessManager, validateTeamAssignments } from "../../src/server/mission-process/mission-process-manager.js";
 import { MissionStore } from "../../src/server/mission-process/mission-store.js";
 import { createMinimalTeamPlanDefinition } from "../../src/server/product/plan-template.js";
 import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
@@ -16,6 +16,45 @@ import type { AgentGoal } from "../../src/shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
+  it("enforces the configured terminal delivery capability without naming a role", async () => {
+    const team: TeamBinding = {
+      teamBindingId: "team",
+      version: 1,
+      contentHash: "hash",
+      deliveryPolicy: { requiredTerminalCapabilities: ["delivery:accept"] },
+      members: [
+        { agentId: "builder", principalId: "principal-builder", capabilities: ["delivery:implement"] },
+        { agentId: "reviewer", principalId: "principal-reviewer", capabilities: ["delivery:verify"] },
+        { agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"] },
+      ],
+    };
+    const withoutAcceptance = {
+      change: {
+        additions: [
+          { clientRef: "build", assignment: { requiredCapabilities: ["delivery:implement"] } },
+          { clientRef: "review", assignment: { requiredCapabilities: ["delivery:verify"] } },
+        ],
+        requiredTerminalRefs: [{ clientRef: "review" }],
+      },
+    };
+    const withAcceptance = {
+      change: {
+        additions: [
+          ...withoutAcceptance.change.additions,
+          { clientRef: "accept", assignment: { principalId: "principal-approver" } },
+        ],
+        requiredTerminalRefs: [{ clientRef: "accept" }],
+      },
+    };
+
+    await expect(validateTeamAssignments({ change: {
+      additions: withoutAcceptance.change.additions,
+      requiredTerminalRefs: [],
+    } }, "plan-change-set-v3", team)).resolves.toContain("至少一个可验收终点");
+    await expect(validateTeamAssignments(withoutAcceptance, "plan-change-set-v3", team)).resolves.toContain("delivery:accept");
+    await expect(validateTeamAssignments(withAcceptance, "plan-change-set-v3", team)).resolves.toBeUndefined();
+  });
+
   it("reuses the one durable Plan when the same Mission start is replayed", async () => {
     const fixture = await createFixture();
     const request = {

@@ -237,6 +237,7 @@ export class RuntimeHost {
       threadId: thread.threadId,
       goalId: (await this.activeLink(context, agentId))?.agentGoalId,
       senderPrincipalId: "human",
+      deliveryKind: "turn",
       content: message,
       createdAt,
     });
@@ -434,8 +435,7 @@ export class RuntimeHost {
     const context = await this.requireContext(record.taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
-    const schedulingPaused = record.status === "active" && !this.timer;
-    const taskPausedForPresentation = record.status === "paused" || schedulingPaused;
+    const taskPausedForPresentation = plan.status === "paused";
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
     const tickets: Ticket[] = [];
     for (const ticketId of plan.graph.ticketIds) {
@@ -497,15 +497,20 @@ export class RuntimeHost {
         ...agent,
         status: taskPausedForPresentation
           ? projectedPausedAgentStatus(link?.status, goal?.status)
-          : projectedAgentStatus(link?.status, goal?.status, events),
+          : projectedAgentStatus(
+            link?.status,
+            goal?.status,
+            events,
+            this.agentRuns.has(this.agentRunKey(context, agent.id)),
+          ),
         name: profile?.name,
         role: profile?.role,
         capabilities: profile?.capabilities,
         currentStep: goal?.spec.objective,
       });
     }
-    const status = schedulingPaused ? "paused" : presentationStatus(record.status, plan.status);
-    const phase = schedulingPaused ? "paused" : presentationPhase(plan.status, tickets);
+    const status = presentationStatus(plan.status);
+    const phase = presentationPhase(plan.status, tickets);
     return {
       workspace: this.workspace,
       mission: {
@@ -540,9 +545,7 @@ export class RuntimeHost {
       recentEvents: recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-500),
       phase,
       status,
-      currentStep: schedulingPaused
-        ? "任务已恢复为可查看状态；点击继续后才会调度 Agent。"
-        : tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
+      currentStep: tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
     };
   }
 
@@ -558,6 +561,11 @@ export class RuntimeHost {
 
   private async tickTask(context: RuntimeContext, awaitAgentRuns = true): Promise<void> {
     let mission = await context.manager.tick();
+    const planBeforeRuns = await context.tickets.getPlan(mission.record.planId);
+    if (planBeforeRuns.status !== "active") {
+      await this.syncTaskStatus(context, planBeforeRuns.status);
+      return;
+    }
     for (const link of mission.links) {
       if (link.status !== "running") continue;
       if (this.agentRuns.has(this.agentRunKey(context, link.agentId))) continue;
@@ -586,11 +594,54 @@ export class RuntimeHost {
       }
     }
     mission = await context.manager.tick();
+    const activeAgentIds = new Set(mission.links
+      .filter((link) => new Set(["running", "blocked", "resolving", "paused"]).has(link.status))
+      .map((link) => link.agentId));
+    for (const [agentId, runtime] of context.loops) {
+      if (activeAgentIds.has(agentId)) continue;
+      const key = this.agentRunKey(context, agentId);
+      if (this.agentRuns.has(key)) continue;
+      const thread = await context.engines.get(agentId)?.getThreadForAgent(agentId, context.record.missionId);
+      if (!thread) continue;
+      const pendingHumanTurn = await runtime.pendingHumanTurn(thread.threadId);
+      if (!pendingHumanTurn) continue;
+      const run = this.trackAgentRun(key, this.runIdleAgentTurn(context, agentId, thread.threadId, pendingHumanTurn));
+      if (awaitAgentRuns) {
+        await run;
+      } else {
+        void run.catch((error) => {
+          console.error(`Idle Agent turn failed for ${context.record.taskId}/${agentId}`, error);
+          void this.exclusive(() => this.recordAgentTurnErrorUnlocked(context.record.taskId, agentId, error)).catch(() => undefined);
+        });
+      }
+    }
+    mission = await context.manager.tick();
     const plan = await context.tickets.getPlan(mission.record.planId);
-    const status = plan.status === "completed" ? "completed"
-      : plan.status === "failed" ? "failed"
-        : plan.status === "cancelled" ? "cancelled"
-          : plan.status === "paused" ? "paused" : "active";
+    await this.syncTaskStatus(context, plan.status);
+  }
+
+  private async runIdleAgentTurn(
+    context: RuntimeContext,
+    agentId: string,
+    threadId: string,
+    pending: { turnId: string; triggerMessageId: string },
+  ): Promise<void> {
+    await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(
+      context,
+      agentId,
+      threadId,
+      undefined,
+      pending.turnId,
+      pending.triggerMessageId,
+    ));
+    await context.manager.tick();
+  }
+
+  private async syncTaskStatus(context: RuntimeContext, planStatus: string): Promise<void> {
+    const status = planStatus === "completed" ? "completed"
+      : planStatus === "failed" ? "failed"
+        : planStatus === "cancelled" ? "cancelled"
+          : planStatus === "paused" ? "paused" : "active";
     if (status !== context.record.status) {
       context.record = { ...context.record, status, updatedAt: this.now().toISOString() };
       await this.store.save(context.record);
@@ -795,15 +846,19 @@ function projectThread(
   return events;
 }
 
-function projectedAgentStatus(linkStatus: string | undefined, goalStatus: string | undefined, events: AgentThreadEvent[]): EntityStatus {
+function projectedAgentStatus(
+  linkStatus: string | undefined,
+  goalStatus: string | undefined,
+  events: AgentThreadEvent[],
+  executing: boolean,
+): EntityStatus {
   if (linkStatus === "blocked" || goalStatus === "blocked" || goalStatus === "usage_limited") return "blocked";
   if (goalStatus === "paused") return "paused";
   if (goalStatus === "failed") return "failed";
   if (goalStatus === "completed" || goalStatus === "cancelled") return "idle";
-  if (linkStatus === "running" && goalStatus === "active") return "running";
+  if (executing) return "running";
   const latestControl = [...events].reverse().find((event) => event.source === "system");
   const activity = (latestControl?.payload as Record<string, unknown> | undefined)?.status;
-  if (linkStatus === "running" && (activity === "running" || activity === "yielded")) return "running";
   if (linkStatus === "running" && activity === "waiting") return "waiting";
   return linkStatus === "running" ? "waiting" : "idle";
 }
@@ -835,19 +890,13 @@ export function projectTicketBlocker(reason: string, requiredInput: TicketRequir
   };
 }
 
-function runtimeStatus(status: RuntimeTaskRecord["status"]): EntityStatus {
-  if (status === "active") return "running";
-  if (status === "cancelled") return "interrupted";
-  return status;
-}
-
-function presentationStatus(runtime: RuntimeTaskRecord["status"], plan: string): EntityStatus {
+function presentationStatus(plan: string): EntityStatus {
   if (plan === "blocked") return "blocked";
   if (plan === "paused") return "paused";
   if (plan === "completed") return "completed";
   if (plan === "failed") return "failed";
   if (plan === "cancelled") return "interrupted";
-  return runtimeStatus(runtime);
+  return "running";
 }
 
 function presentationTicketType(schemaRef: string, role?: WorkspaceAgent["roleInWorkspace"]): Ticket["type"] {

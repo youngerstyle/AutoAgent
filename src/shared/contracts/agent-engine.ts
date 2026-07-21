@@ -90,6 +90,7 @@ export interface SendAgentMessageRequest {
   threadId: string;
   goalId?: string;
   senderPrincipalId: string;
+  deliveryKind?: "turn" | "context";
   content: string;
   createdAt: string;
 }

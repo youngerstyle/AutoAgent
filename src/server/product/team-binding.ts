@@ -15,6 +15,9 @@ export function createTeamBinding(agents: WorkspaceAgent[], profiles: AgentProfi
     teamBindingId: "minimal-team",
     version: 1,
     contentHash,
+    deliveryPolicy: {
+      requiredTerminalCapabilities: ["delivery:accept"],
+    },
     members: agents.map((agent) => ({
       agentId: agent.id,
       principalId: `principal:${agent.id}`,

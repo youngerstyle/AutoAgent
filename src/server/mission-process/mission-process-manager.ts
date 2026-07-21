@@ -248,6 +248,7 @@ export class MissionProcessManager {
           messageId: stableId("mission_objective", aggregate.missionId),
           threadId,
           senderPrincipalId: "human",
+          deliveryKind: "context",
           content: aggregate.record.objective,
           createdAt: this.now().toISOString(),
         });
@@ -342,6 +343,7 @@ export class MissionProcessManager {
         toTicketId: String(edge.toTicketId),
       })),
       requiredTerminalTicketIds: plan.completionPolicy.requiredTerminalTicketIds.map(String),
+      requiredTerminalCapabilities: this.team.deliveryPolicy?.requiredTerminalCapabilities ?? [],
       teamMembers: this.team.members.map((member) => ({
         principalId: member.principalId,
         name: member.agentId,
@@ -466,7 +468,7 @@ export class MissionProcessManager {
     const schemaRef = goal.spec.outputContract?.schemaRef;
     const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
     const assignmentError = validation.valid
-      ? validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team)
+      ? await validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team, this.tickets)
       : undefined;
     const correctionReason = validation.valid ? assignmentError : validation.reason;
     if (correctionReason) {
@@ -681,20 +683,48 @@ function selectMemberOrPlanner(team: TeamBinding, principalId: string | undefine
   throw new Error(`No Agent satisfies capabilities: ${capabilities.join(", ")}`);
 }
 
-function validateTeamAssignments(outcome: MissionTicketOutcome | undefined, schemaRef: string | undefined, team: TeamBinding): string | undefined {
+export async function validateTeamAssignments(
+  outcome: MissionTicketOutcome | undefined,
+  schemaRef: string | undefined,
+  team: TeamBinding,
+  tickets?: Pick<TicketPort, "getWorkItem">,
+): Promise<string | undefined> {
   if (schemaRef !== "plan-change-set-v3" || !outcome?.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
-  const change = outcome.change as unknown as { additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }> };
+  const change = outcome.change as unknown as {
+    additions: Array<{ clientRef: string; assignment: { principalId?: string; requiredCapabilities?: string[] } }>;
+    requiredTerminalRefs: Array<{ clientRef?: string; ticketId?: TicketId }>;
+  };
   for (const node of change.additions) {
-    const candidates = node.assignment.principalId
-      ? team.members.filter((member) => member.principalId === node.assignment.principalId)
-      : team.members;
-    const required = node.assignment.requiredCapabilities ?? [];
-    if (!candidates.some((member) => required.every((capability) => member.capabilities.includes(capability)))) {
+    if (!membersForAssignment(team, node.assignment).length) {
+      const required = node.assignment.requiredCapabilities ?? [];
       const available = [...new Set(team.members.flatMap((member) => member.capabilities))].join("、");
       return `新增 Ticket ${node.clientRef} 无可分配 Agent；要求能力：${required.join("、") || "未指定"}；团队可用能力：${available}`;
     }
   }
+  const terminalCapabilities = team.deliveryPolicy?.requiredTerminalCapabilities ?? [];
+  if (!terminalCapabilities.length) return undefined;
+  if (!change.requiredTerminalRefs.length) {
+    return `团队交付策略要求至少一个可验收终点；终点负责人必须具备：${terminalCapabilities.join("、")}`;
+  }
+  const additions = new Map(change.additions.map((node) => [node.clientRef, node]));
+  for (const [index, ref] of change.requiredTerminalRefs.entries()) {
+    let assignment: { principalId?: string; requiredCapabilities?: string[] } | undefined;
+    let label = ref.clientRef ?? ref.ticketId ?? `#${index + 1}`;
+    if (ref.clientRef) assignment = additions.get(ref.clientRef)?.assignment;
+    else if (ref.ticketId && tickets) assignment = (await tickets.getWorkItem(ref.ticketId))?.definition.assignment;
+    if (!assignment || !membersForAssignment(team, assignment).some((member) => terminalCapabilities.every((capability) => member.capabilities.includes(capability)))) {
+      return `计划终点 ${label} 不满足团队交付策略；终点负责人必须具备：${terminalCapabilities.join("、")}`;
+    }
+  }
   return undefined;
+}
+
+function membersForAssignment(team: TeamBinding, assignment: { principalId?: string; requiredCapabilities?: string[] }) {
+  const candidates = assignment.principalId
+    ? team.members.filter((member) => member.principalId === assignment.principalId)
+    : team.members;
+  const required = assignment.requiredCapabilities ?? [];
+  return candidates.filter((member) => required.every((capability) => member.capabilities.includes(capability)));
 }
 
 function isActiveLink(link: MissionLink): link is ActiveMissionLink {

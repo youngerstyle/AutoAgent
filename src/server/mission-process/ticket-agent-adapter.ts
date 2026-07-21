@@ -43,6 +43,7 @@ export interface SharedPlanContext {
   }>;
   dependencyEdges: Array<{ fromTicketId: string; toTicketId: string }>;
   requiredTerminalTicketIds: string[];
+  requiredTerminalCapabilities?: string[];
   teamMembers: Array<{ principalId: string; name: string; capabilities: string[] }>;
 }
 
@@ -90,7 +91,10 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
     const currentPlan = sharedPlanContext && !assignmentContext
       ? `当前 Plan 与团队的平台事实快照如下（这是 Ticket Engine 和 Team Binding 的权威状态）：${JSON.stringify(sharedPlanContext)}。无需读取工作区文件来猜测 Plan 或 Ticket 状态；项目文件只用于理解实际交付物。同一个 assignment 必须能由一名成员完整满足：优先直接使用快照中的 principalId；若使用 requiredCapabilities，则其中每一项都必须同时存在于同一名成员的 capabilities 中，不得把多名成员的能力合并为一个 Ticket 的要求。`
       : "";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。变更后 DAG 必须无环并包含可验证终点。`;
+    const terminalPolicy = sharedPlanContext?.requiredTerminalCapabilities?.length
+      ? `团队交付策略要求每个 requiredTerminalRefs 指向的终点都必须可分配给具备以下能力的成员：${sharedPlanContext.requiredTerminalCapabilities.join("、")}。独立质量检查不能代替最终交付验收。`
+      : "";
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}变更后 DAG 必须无环并包含可验证终点。`;
   }
   return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整时才调用 request_human_input；kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，调用 request_human_input(kind="manual_test")；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
 }

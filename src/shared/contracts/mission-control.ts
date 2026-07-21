@@ -36,6 +36,9 @@ export interface TeamBinding {
   version: number;
   contentHash: string;
   members: TeamBindingMember[];
+  deliveryPolicy?: {
+    requiredTerminalCapabilities: string[];
+  };
 }
 
 export interface ResolvedMissionStartBundle {

@@ -159,6 +159,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       threadId: input.threadId,
       goalId: input.goalId,
       senderPrincipalId: input.senderPrincipalId,
+      deliveryKind: input.deliveryKind ?? "turn",
       content: input.content,
     });
     const current = await this.store.read();

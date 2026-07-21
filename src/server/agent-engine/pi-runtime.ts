@@ -80,6 +80,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     this.now = options.now ?? (() => new Date());
   }
 
+  async pendingHumanTurn(threadId: string): Promise<{ turnId: string; triggerMessageId: string } | undefined> {
+    const thread = await this.engine.getThread(threadId);
+    const pending = await pendingThreadInput(thread, this.store, true, true);
+    return pending?.kind === "message"
+      ? { turnId: pending.turnId, triggerMessageId: pending.itemId }
+      : undefined;
+  }
+
   runSlice(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult> {
     const active = this.turnTails.get(input.threadId);
     const pending = (active ? active.catch(() => undefined) : Promise.resolve())
@@ -97,7 +105,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const goal = persistedGoal?.status === "active" ? persistedGoal : undefined;
     const thread = await this.engine.getThread(input.threadId);
     const pending = await pendingThreadInput(thread, this.store);
-    const turnId = input.turnId ?? pending?.turnId
+    const turnId = input.turnId ?? (pending?.kind === "message" ? pending.turnId : undefined)
       ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
     const triggerMessageId = input.triggerMessageId ?? (pending?.kind === "message" ? pending.itemId : undefined);
     const state = await this.requireSession({ ...input, triggerMessageId });
@@ -410,12 +418,9 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   }
 }
 
-interface PendingThreadInput {
-  kind: "message" | "correction";
-  itemId: string;
-  turnId?: string;
-  content: string;
-}
+type PendingThreadInput =
+  | { kind: "message"; itemId: string; turnId: string; content: string }
+  | { kind: "correction"; itemId: string; content: string };
 
 function unresolvedGoalPrompt(goal: AgentGoal): string {
   return [
@@ -444,12 +449,18 @@ function activeGoalPrompt(goal: AgentGoal): string {
 async function pendingThreadInput(
   thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>,
   store: AgentStore,
+  humanOnly = false,
+  earliest = false,
 ): Promise<PendingThreadInput | undefined> {
   const payloads = await store.payloads(thread.items.map((item) => item.payloadRef));
-  for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+  const indexes = earliest
+    ? thread.items.map((_, index) => index)
+    : thread.items.map((_, index) => thread.items.length - index - 1);
+  for (const index of indexes) {
     const item = thread.items[index]!;
     const payload = payloads.get(item.payloadRef);
     if (item.kind === "message" && isRecord(payload) && typeof payload.content === "string") {
+      if (humanOnly && (payload.senderPrincipalId !== "human" || payload.deliveryKind === "context")) continue;
       const turnId = item.turnId ?? stableId("turn", thread.threadId, item.itemId);
       const consumed = thread.items.slice(index + 1).some((candidate) => {
         if (candidate.turnId === turnId && candidate.kind !== "message") return true;

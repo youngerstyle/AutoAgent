@@ -24,6 +24,7 @@ export interface AgentExecutionSliceResult {
 }
 
 export interface AgentExecutionRuntime {
+  pendingHumanTurn(threadId: string): Promise<{ turnId: string; triggerMessageId: string } | undefined>;
   runSlice(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult>;
   dispose?(): void | Promise<void>;
 }

@@ -149,6 +149,111 @@ describe("RuntimeHost", () => {
     restarted.stop();
   });
 
+  it("does not present an active Plan as paused just because the scheduler is not started", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-hydrated-status", title: "status", objective: "verify projection" });
+
+    const snapshot = await fixture.host.snapshot();
+
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.phase).not.toBe("paused");
+    expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("idle");
+  });
+
+  it("recovers an unconsumed private message for an idle Agent after host restart", async () => {
+    const fixture = await createFixture();
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        return { items: [{ type: "assistant_message" as const, content: "private reply" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-idle-message-recovery", title: "recovery", objective: "keep mission active" });
+    const engine = fixture.host.context("task-idle-message-recovery")!.engines.get("wa_architect")!;
+    const thread = await engine.ensureThread({
+      agentId: "wa_architect",
+      scopeId: "task-idle-message-recovery",
+      idempotencyKey: "architect-recovery-thread",
+    });
+    await engine.sendMessage({
+      messageId: "persisted-idle-private-message",
+      turnId: "turn_idle_private_message",
+      threadId: thread.threadId,
+      senderPrincipalId: "human",
+      deliveryKind: "turn",
+      content: "please inspect independently",
+      createdAt: new Date().toISOString(),
+    });
+    fixture.host.stop();
+
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    await restarted.recover();
+    await restarted.tick();
+
+    const recoveredEngine = restarted.context("task-idle-message-recovery")!.engines.get("wa_architect")!;
+    const recoveredThread = await recoveredEngine.getThreadForAgent("wa_architect", "task-idle-message-recovery");
+    const turnItems = recoveredThread!.items.filter((item) => item.turnId === "turn_idle_private_message");
+    expect(turnItems.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
+    restarted.stop();
+  });
+
+  it("recovers multiple private messages in chronological order after host restart", async () => {
+    const fixture = await createFixture();
+    const prompts: string[] = [];
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        const latestUser = [...input.history].reverse().find((item) => item.type === "user_message");
+        prompts.push(latestUser?.content ?? "");
+        return { items: [{ type: "assistant_message" as const, content: "acknowledged" }] };
+      },
+    });
+    await fixture.host.createTask({ taskId: "task-message-order", title: "order", objective: "keep mission active" });
+    const engine = fixture.host.context("task-message-order")!.engines.get("wa_architect")!;
+    const thread = await engine.ensureThread({
+      agentId: "wa_architect",
+      scopeId: "task-message-order",
+      idempotencyKey: "architect-message-order-thread",
+    });
+    for (const [index, content] of ["first private message", "second private message"].entries()) {
+      await engine.sendMessage({
+        messageId: `persisted-private-message-${index}`,
+        turnId: `turn_private_message_${index}`,
+        threadId: thread.threadId,
+        senderPrincipalId: "human",
+        deliveryKind: "turn",
+        content,
+        createdAt: new Date(Date.now() + index).toISOString(),
+      });
+    }
+    fixture.host.stop();
+
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    await restarted.recover();
+    await restarted.tick();
+    await restarted.tick();
+
+    const privatePrompts = prompts.filter((prompt) => prompt.includes("private message"));
+    expect(privatePrompts).toHaveLength(2);
+    expect(privatePrompts[0]).toContain("first private message");
+    expect(privatePrompts[1]).toContain("second private message");
+    restarted.stop();
+  });
+
   it("projects the original human objective and received Goal before internal Agent instructions", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-thread-origin", title: "坦克98", objective: "1:1复刻 CF 红白机的坦克98 游戏" });

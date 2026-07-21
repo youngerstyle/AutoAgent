@@ -1,4 +1,5 @@
 import path from "node:path";
+import { realpath } from "node:fs/promises";
 import type {
   AgentGoal,
   GoalResolutionAttemptResult,
@@ -36,6 +37,12 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
       : undefined;
     if (evidenceError) {
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
+    }
+    const evidenceFactError = this.workspaceRoot
+      ? await validateWorkspaceEvidenceFacts(this.workspaceRoot, proposal)
+      : undefined;
+    if (evidenceFactError) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceFactError } };
     }
     const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
     if (!validation.valid) {
@@ -84,9 +91,36 @@ export function validateWorkspaceEvidence(
   return undefined;
 }
 
+export async function validateWorkspaceEvidenceFacts(
+  workspaceRoot: string,
+  proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults">,
+): Promise<string | undefined> {
+  const root = await realpath(workspaceRoot);
+  const evidence = [
+    ...proposal.evidence,
+    ...proposal.criterionResults.flatMap((item) => item.evidence),
+  ];
+  for (const item of evidence) {
+    if (!isFilesystemEvidence(item.kind, item.ref)) continue;
+    const absolute = path.isAbsolute(item.ref)
+      ? path.resolve(item.ref)
+      : path.resolve(workspaceRoot, item.ref);
+    let resolved: string;
+    try {
+      resolved = await realpath(absolute);
+    } catch {
+      return `交付证据不存在：${item.ref}`;
+    }
+    if (!isWorkspacePath(root, resolved)) {
+      return `交付证据解析后不属于当前项目：${item.ref}`;
+    }
+  }
+  return undefined;
+}
+
 function isFilesystemEvidence(kind: string, ref: string): boolean {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref)) return false;
-  return ["tool", "file", "document", "artifact"].includes(kind.trim().toLowerCase());
+  return ["file", "document", "artifact"].includes(kind.trim().toLowerCase());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

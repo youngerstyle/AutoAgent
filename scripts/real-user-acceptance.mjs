@@ -20,7 +20,11 @@ const goal = [
 
 let browser;
 let staticServer;
+let staticUrl;
 let snapshot;
+let browserResult;
+const answeredManualTestTickets = new Set();
+const resumedProviderFailures = new Set();
 
 try {
   await preflight();
@@ -42,10 +46,7 @@ try {
   const html = await readFile(indexPath, "utf8");
   assert.match(html, /<html/i, "最终产物 index.html 不是有效 HTML");
 
-  const served = await serveDirectory(workspaceRoot);
-  staticServer = served.server;
-  browser = await chromium.launch({ headless: true, executablePath: resolveBrowserPath() });
-  const browserResult = await verifyTodoInBrowser(browser, served.url);
+  browserResult ??= await runBrowserAcceptance();
 
   const report = {
     passed: true,
@@ -102,10 +103,10 @@ async function resolveWorkspace() {
 }
 
 function assertDeliveryChain(tickets) {
-  const implementation = tickets.find((ticket) => ticket.targetAgentId === "wa_dev");
-  const qa = tickets.find((ticket) => ticket.targetAgentId === "wa_qa");
+  const implementation = tickets.find((ticket) => ticket.capabilityTags?.includes("delivery:implement"));
+  const qa = tickets.find((ticket) => ticket.capabilityTags?.includes("delivery:verify"));
   const acceptance = tickets.find((ticket) =>
-    ticket.targetAgentId === "wa_boss" && ticket.dependsOnTicketIds?.includes(qa?.id)
+    ticket.capabilityTags?.includes("delivery:accept") && ticket.dependsOnTicketIds?.includes(qa?.id)
   );
   assert.ok(implementation, "真实交付链缺少开发工单");
   assert.ok(qa, "真实交付链缺少独立 QA 工单");
@@ -125,10 +126,65 @@ async function waitForTerminal(workspaceId) {
     ].join(" | ");
     if (signature !== lastSignature) console.log(`[真实验收] ${signature}`);
     lastSignature = signature;
+    const manualTest = current.tickets.find((ticket) =>
+      ticket.status === "blocked"
+      && ticket.blocker?.type === "manual_test_required"
+      && !answeredManualTestTickets.has(ticket.id)
+    );
+    if (manualTest) {
+      answeredManualTestTickets.add(manualTest.id);
+      const result = await runBrowserAcceptance();
+      const taskId = current.activeTask?.id;
+      assert.ok(taskId, "人工测试时找不到当前任务");
+      assert.ok(manualTest.targetAgentId, "人工测试工单没有目标 Agent");
+      await api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${manualTest.targetAgentId}/messages`, {
+        method: "POST",
+        body: {
+          message: [
+            "已按你给出的人工测试边界完成真实浏览器验证。以下是实际测试事实，请据此继续当前 QA Goal 并自行作出结论：",
+            JSON.stringify(result),
+          ].join("\n"),
+        },
+      });
+      console.log(`[真实验收] 已向 ${manualTest.targetAgentId} 回传 Ticket ${manualTest.id} 的浏览器测试事实`);
+      await sleep(1_000);
+      continue;
+    }
+    const pausedAgent = current.agents.find((agent) => agent.status === "paused");
+    if (pausedAgent) {
+      const taskId = current.activeTask?.id;
+      assert.ok(taskId, "Agent 暂停时找不到当前任务");
+      if (resumedProviderFailures.has(pausedAgent.id)) {
+        throw new Error(`Agent ${pausedAgent.name} 在受控恢复后再次暂停，停止验收以避免继续消耗`);
+      }
+      resumedProviderFailures.add(pausedAgent.id);
+      await api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${pausedAgent.id}/messages`, {
+        method: "POST",
+        body: { message: "上一次模型调用被供应商错误中断。请在同一个 Goal 中从已有线程状态继续，不要重做已经完成的步骤。" },
+      });
+      console.log(`[真实验收] Agent ${pausedAgent.name} 暂停，已执行一次受控恢复`);
+      await sleep(1_000);
+      continue;
+    }
     if (["completed", "failed", "paused", "interrupted"].includes(current.status)) return current;
     await sleep(1_000);
   }
   throw new Error(`真实 Mission 在 ${timeoutMs}ms 内未结束`);
+}
+
+async function runBrowserAcceptance() {
+  if (browserResult) return browserResult;
+  const indexPath = path.join(workspaceRoot, "index.html");
+  const html = await readFile(indexPath, "utf8");
+  assert.match(html, /<html/i, "人工测试前发现 index.html 不是有效 HTML");
+  if (!staticServer) {
+    const served = await serveDirectory(workspaceRoot);
+    staticServer = served.server;
+    staticUrl = served.url;
+  }
+  browser ??= await chromium.launch({ headless: true, executablePath: resolveBrowserPath() });
+  browserResult = await verifyTodoInBrowser(browser, staticUrl);
+  return browserResult;
 }
 
 async function verifyTodoInBrowser(browserInstance, url) {

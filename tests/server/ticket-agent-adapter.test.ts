@@ -204,6 +204,7 @@ describe("Ticket Agent resolution adapter", () => {
       tickets: [{ ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标", successCriteria: ["形成共识"], outputContract: { schemaRef: "brief-v1" } }],
       dependencyEdges: [],
       requiredTerminalTicketIds: ["ticket-planning"],
+      requiredTerminalCapabilities: ["delivery:accept"],
       teamMembers: [{ principalId: "principal:dev", name: "开发", capabilities: ["delivery:implement"] }],
     });
 
@@ -217,6 +218,8 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('"status":"completed"');
     expect(instruction).toContain('"principalId":"principal:dev"');
     expect(instruction).toContain("同一个 assignment 必须能由一名成员完整满足");
+    expect(instruction).toContain("delivery:accept");
+    expect(instruction).toContain("独立质量检查不能代替最终交付验收");
     expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
     expect(instruction).toContain("不规定角色名称、工单数量、能力名称或 schemaRef");
     expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"review"}]');
