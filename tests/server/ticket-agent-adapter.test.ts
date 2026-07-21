@@ -158,6 +158,38 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).not.toContain("Thread");
   });
 
+  it("passes formal rework requests as current Ticket context", () => {
+    const targetTicketId = "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId;
+    const sourceTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
+    const instruction = missionOutcomeInstruction(
+      "delivery-v1",
+      [],
+      [],
+      undefined,
+      undefined,
+      [],
+      {
+        ticket: {
+          ticketId: targetTicketId,
+          title: "dev",
+          objective: "fix implementation",
+          successCriteria: ["playable"],
+          outputContract: { schemaRef: "delivery-v1" },
+          reworkRequests: [{
+            sourceTicketId,
+            sourceTitle: "qa",
+            reason: "player starts inside a wall",
+            occurredAt: NOW,
+          }],
+        },
+      },
+    );
+
+    expect(instruction).toContain('"reworkRequests"');
+    expect(instruction).toContain(sourceTicketId);
+    expect(instruction).toContain("player starts inside a wall");
+  });
+
   it("treats a correctable Host rejection as a proposal retry rather than Goal failure", () => {
     const instruction = missionOutcomeInstruction("delivery-v1");
 

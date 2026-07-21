@@ -332,14 +332,16 @@ export class RuntimeHost {
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
-    const result = await context.tickets.applyPlan({
-      commandId: stableId("resume", taskId, String(plan.version)),
-      planId: plan.planId,
-      actorPrincipalId: "minimal-team-planner",
-      issuedAt: this.now().toISOString(),
-      payload: { type: "resume", expectedPlanVersion: plan.version },
-    });
-    if (!result.accepted) throw new Error(result.reason);
+    if (plan.status === "paused") {
+      const result = await context.tickets.applyPlan({
+        commandId: stableId("resume", taskId, String(plan.version)),
+        planId: plan.planId,
+        actorPrincipalId: "minimal-team-planner",
+        issuedAt: this.now().toISOString(),
+        payload: { type: "resume", expectedPlanVersion: plan.version },
+      });
+      if (!result.accepted) throw new Error(result.reason);
+    }
     for (const link of mission.links.filter((item) => item.status === "running" || item.status === "paused")) {
       const engine = context.engines.get(link.agentId)!;
       const goal = await engine.getGoal(link.agentGoalId!);
@@ -353,7 +355,7 @@ export class RuntimeHost {
     }
     context.record = { ...context.record, status: "active", updatedAt: this.now().toISOString() };
     await this.store.save(context.record);
-    await this.tickTask(context);
+    await this.tickTask(context, false);
   }
 
   private async cancelTaskUnlocked(taskId: string, reason: string): Promise<void> {

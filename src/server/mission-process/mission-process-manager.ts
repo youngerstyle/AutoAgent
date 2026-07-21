@@ -304,6 +304,7 @@ export class MissionProcessManager {
                   objective: work.definition.objective,
                   successCriteria: work.definition.successCriteria,
                   outputContract: work.definition.outputContract,
+                  reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
                 },
               },
             ),
@@ -361,6 +362,40 @@ export class MissionProcessManager {
       outputContract: work.definition.outputContract,
       handoff: work.ticket.completion.handoff,
     }] : []);
+  }
+
+  private async listReworkRequests(planId: PlanId, ticketId: TicketId) {
+    let after: TicketEventCursor | undefined;
+    const matches: Array<{
+      sourceTicketId: TicketId;
+      reason: string;
+      occurredAt: string;
+    }> = [];
+    for (;;) {
+      const page = await this.tickets.readEvents({ planId, after, limit: 500 });
+      for (const event of page.events) {
+        if (event.aggregateType !== "plan" || event.payload.type !== "TicketCorrectionRequested") continue;
+        if (String(event.payload.targetTicketId) !== String(ticketId)) continue;
+        matches.push({
+          sourceTicketId: event.payload.sourceTicketId,
+          reason: event.payload.reason,
+          occurredAt: event.occurredAt,
+        });
+      }
+      after = page.nextCursor as TicketEventCursor;
+      if (page.events.length === 0) break;
+    }
+    const recent = matches.slice(-5);
+    const titleEntries = await Promise.all([...new Set(recent.map((item) => String(item.sourceTicketId)))]
+      .map(async (id) => {
+        const work = await this.tickets.getWorkItem(id as TicketId);
+        return [id, work?.definition.title] as const;
+      }));
+    const titles = new Map(titleEntries);
+    return recent.map((item) => ({
+      ...item,
+      sourceTitle: titles.get(String(item.sourceTicketId)),
+    }));
   }
 
   private async pumpAgentEvents(aggregate: MissionAggregate): Promise<MissionAggregate> {

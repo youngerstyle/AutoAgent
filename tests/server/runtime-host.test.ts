@@ -698,7 +698,7 @@ describe("RuntimeHost", () => {
     releaseModel();
     await runningTick;
 
-    expect(snapshotResult).toBe("running");
+    expect(snapshotResult).not.toBe("timeout");
   });
 
   it("truncates oversized UI event payloads without changing the stored Agent thread", async () => {

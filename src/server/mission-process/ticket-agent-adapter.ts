@@ -14,6 +14,12 @@ export interface UpstreamDeliveryContext {
   outputContract: TicketOutputContract;
   handoff: TicketHandoff;
 }
+export interface ReworkRequestContext {
+  sourceTicketId: TicketId;
+  sourceTitle?: string;
+  reason: string;
+  occurredAt: string;
+}
 export interface TicketAssignmentContext {
   ticket: {
     ticketId: TicketId;
@@ -21,6 +27,7 @@ export interface TicketAssignmentContext {
     objective: string;
     successCriteria: string[];
     outputContract: TicketOutputContract;
+    reworkRequests?: ReworkRequestContext[];
   };
 }
 export interface SharedPlanContext {
