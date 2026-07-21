@@ -20,12 +20,12 @@ export class RuntimeHostRegistry {
   ) {}
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, false);
     return host.snapshot();
   }
 
   async startTask(input: { workspaceId: string; goal: string; title?: string }): Promise<WorkspaceSnapshot> {
-    const host = await this.host(input.workspaceId);
+    const host = await this.host(input.workspaceId, true);
     await host.createTask({
       taskId: createId("task"),
       title: input.title?.trim() || input.goal.trim().slice(0, 40) || "新任务",
@@ -35,25 +35,25 @@ export class RuntimeHostRegistry {
   }
 
   async pauseTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, false);
     await host.pauseTask(taskId);
     return host.snapshot();
   }
 
   async resumeTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, true);
     await host.resumeTask(taskId);
     return host.snapshot();
   }
 
   async stopTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, false);
     await host.cancelTask(taskId, "human stopped the task");
     return host.snapshot();
   }
 
   async followUpTask(workspaceId: string, taskId: string, message: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, true);
     const snapshot = await host.snapshot();
     const boss = snapshot.agents.find((agent) => agent.roleInWorkspace === "boss");
     if (!boss) throw new Error("Boss Agent is unavailable");
@@ -61,7 +61,7 @@ export class RuntimeHostRegistry {
   }
 
   async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string): Promise<WorkspaceSnapshot> {
-    const host = await this.host(workspaceId);
+    const host = await this.host(workspaceId, true);
     return host.sendAgentMessage(taskId, agentId, message, messageId);
   }
 
@@ -86,13 +86,20 @@ export class RuntimeHostRegistry {
     for (const host of this.hosts.values()) host.stop();
   }
 
-  private async host(workspaceId: string): Promise<RuntimeHost> {
+  private async host(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
     const existing = this.hosts.get(workspaceId);
-    if (existing) return existing;
+    if (existing) {
+      if (startScheduler) await existing.start();
+      return existing;
+    }
     const workspace = await this.workspaces.get(workspaceId);
     await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
     const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef);
-    await host.start();
+    if (startScheduler) {
+      await host.start();
+    } else {
+      await host.hydrate();
+    }
     this.hosts.set(workspaceId, host);
     return host;
   }

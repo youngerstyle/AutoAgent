@@ -49,11 +49,18 @@ interface ResolutionToolDetails {
 
 interface RunSafetyBinding {
   failures: Map<string, number>;
+  seenUsefulToolSignatures: Set<string>;
   lastToolBatchFingerprint?: string;
   repeatedToolBatchCount: number;
   consecutiveIdleResponses: number;
+  unproductiveToolCalls: number;
   blockedReason?: string;
 }
+
+const MAX_REPEATED_TOOL_FAILURES = envPositiveInteger("AUTOAGENT_MAX_REPEATED_TOOL_FAILURES", 3);
+const MAX_REPEATED_TOOL_BATCHES = envPositiveInteger("AUTOAGENT_MAX_REPEATED_TOOL_BATCHES", 3);
+const MAX_IDLE_CONTINUATIONS = envPositiveInteger("AUTOAGENT_MAX_IDLE_CONTINUATIONS", 3);
+const MAX_UNPRODUCTIVE_TOOL_CALLS = envPositiveInteger("AUTOAGENT_MAX_UNPRODUCTIVE_TOOL_CALLS", 80);
 
 export class PiAgentRuntime implements AgentExecutionRuntime {
   private readonly sessions = new Map<string, Promise<SessionState>>();
@@ -130,7 +137,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           })).digest("hex");
           const count = (state.safety.failures.get(fingerprint) ?? 0) + 1;
           state.safety.failures.set(fingerprint, count);
-          if (count >= 3 && !state.safety.blockedReason) {
+          if (count >= MAX_REPEATED_TOOL_FAILURES && !state.safety.blockedReason) {
             state.safety.blockedReason = `同一个工具错误已连续出现 ${count} 次，当前 turn 已暂停以避免空转。`;
             void state.session.abort();
           }
@@ -138,6 +145,15 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           state.safety.failures.clear();
           state.safety.lastToolBatchFingerprint = undefined;
           state.safety.repeatedToolBatchCount = 0;
+        }
+        if (isUsefulToolProgress(toolInput?.name ?? event.toolName, toolInput?.args, event.result, state.safety.seenUsefulToolSignatures)) {
+          state.safety.unproductiveToolCalls = 0;
+        } else {
+          state.safety.unproductiveToolCalls += 1;
+          if (state.safety.unproductiveToolCalls >= MAX_UNPRODUCTIVE_TOOL_CALLS && !state.safety.blockedReason) {
+            state.safety.blockedReason = `连续 ${state.safety.unproductiveToolCalls} 次工具调用没有产生新的可用进展，当前 turn 已暂停以避免空转。`;
+            void state.session.abort();
+          }
         }
         persistEvent(() => this.engine.appendToolItem({
           itemId: `${turnId}:pi:${sequence}:tool-result`, turnId, threadId: input.threadId, goalId: input.goalId,
@@ -163,7 +179,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             state.safety.lastToolBatchFingerprint = fingerprint;
             state.safety.repeatedToolBatchCount = 1;
           }
-          if (state.safety.repeatedToolBatchCount >= 3 && !state.safety.blockedReason) {
+          if (state.safety.repeatedToolBatchCount >= MAX_REPEATED_TOOL_BATCHES && !state.safety.blockedReason) {
             state.safety.blockedReason = "模型连续三次提交完全相同的工具调用且没有取得进展，当前 turn 已暂停。";
             void state.session.abort();
           }
@@ -181,9 +197,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.resolution.onProposal = (value) => { proposal = value; };
     state.resolution.mock = input.provider === "mock";
     state.safety.failures.clear();
+    state.safety.seenUsefulToolSignatures.clear();
     state.safety.lastToolBatchFingerprint = undefined;
     state.safety.repeatedToolBatchCount = 0;
     state.safety.consecutiveIdleResponses = 0;
+    state.safety.unproductiveToolCalls = 0;
     state.safety.blockedReason = undefined;
     state.resolution.onInvalid = (reason) => {
       state.safety.blockedReason ??= reason;
@@ -227,7 +245,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         state.safety.consecutiveIdleResponses = toolCalls === toolCallsBeforePrompt
           ? state.safety.consecutiveIdleResponses + 1
           : 0;
-        if (state.safety.consecutiveIdleResponses >= 3) {
+        if (state.safety.consecutiveIdleResponses >= MAX_IDLE_CONTINUATIONS) {
           return this.block(
             turnId,
             input,
@@ -316,7 +334,13 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       restoreSessionHistory(sessionManager, assembled.history, model);
     }
     const resolution: ResolutionBinding = {};
-    const safety: RunSafetyBinding = { failures: new Map(), repeatedToolBatchCount: 0, consecutiveIdleResponses: 0 };
+    const safety: RunSafetyBinding = {
+      failures: new Map(),
+      seenUsefulToolSignatures: new Set(),
+      repeatedToolBatchCount: 0,
+      consecutiveIdleResponses: 0,
+      unproductiveToolCalls: 0,
+    };
     const customTools = [...workspaceTools(this.tools), goalTool(resolution, this.now), humanInputTool(resolution, this.now)];
     const { session } = await createAgentSession({
       cwd: this.workspaceRoot,
@@ -736,6 +760,36 @@ function toolResultText(result: unknown): string {
   return JSON.stringify(result);
 }
 
+function isUsefulToolProgress(
+  name: string,
+  args: unknown,
+  result: unknown,
+  seen: Set<string>,
+): boolean {
+  if (isRecord(result) && result.ok === false) return false;
+  if (name === "goal_resolution" || name === "request_human_input") return true;
+  if (name === "writeFile") return true;
+  if (name === "startService") return isRecord(result) ? result.running === true || result.ok === true : true;
+  if (name === "shell") {
+    const command = isRecord(args) && typeof args.command === "string" ? args.command : "";
+    if (isTrivialShellCommand(command)) return false;
+  }
+  const signature = createHash("sha256").update(JSON.stringify({ name, args })).digest("hex");
+  if (seen.has(signature)) return false;
+  seen.add(signature);
+  return true;
+}
+
+function isTrivialShellCommand(command: string): boolean {
+  const normalized = command.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return true;
+  if (/^(echo|printf)\b/.test(normalized)) return true;
+  if (/^(pwd|cd|dir|ls)(\s|$)/.test(normalized)) return true;
+  if (/^(true|false|exit\s+\d+)$/.test(normalized)) return true;
+  return /^cmd \/c\s+(echo|cd|dir)\b/.test(normalized)
+    || /^powershell(\.exe)?\s+(-command\s+)?["']?(echo|pwd|cd|dir)\b/.test(normalized);
+}
+
 function legacyResultMessage(result: AgentModelTurnResult, modelId: string): AssistantMessage {
   const content = result.items.map((item) => item.type === "assistant_message"
     ? ({ type: "text", text: item.content } as const)
@@ -766,6 +820,13 @@ function modelConfig(model: Model<any>) {
 }
 
 function zeroCost() { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }; }
+
+function envPositiveInteger(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function stableSystemPrompt(input: AgentExecutionSliceInput): string {
   return [

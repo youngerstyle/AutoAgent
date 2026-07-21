@@ -19,7 +19,7 @@ import type {
   PlanId,
 } from "../../shared/contracts/ticket-engine.js";
 import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
-import { MissionStore } from "./mission-store.js";
+import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
 import {
   proposalToPlanChangeCommand,
   proposalToTicketCommand,
@@ -584,11 +584,30 @@ export class MissionProcessManager {
   }
 
   private async updateLink(aggregate: MissionAggregate, dispatchId: string, next: MissionLink): Promise<MissionAggregate> {
-    return this.store.transact(aggregate.version, (current) => ({
-      ...current,
-      version: current.version + 1,
-      links: current.links.map((item) => item.dispatchId === dispatchId ? { ...next, updatedAt: this.now().toISOString() } : item),
-    }));
+    let expected = aggregate;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return await this.store.transact(expected.version, (current) => {
+          const currentLink = current.links.find((item) => item.dispatchId === dispatchId);
+          if (!currentLink) throw new Error("Mission link is missing");
+          if (new Set(["settled", "cancelled"]).has(currentLink.status) && currentLink.status !== next.status) {
+            return current;
+          }
+          return {
+            ...current,
+            version: current.version + 1,
+            links: current.links.map((item) => {
+              if (item.dispatchId !== dispatchId) return item;
+              return { ...currentLink, ...next, updatedAt: this.now().toISOString() } as MissionLink;
+            }),
+          };
+        });
+      } catch (error) {
+        if (!(error instanceof MissionStoreConflictError) || attempt === 4) throw error;
+        expected = await this.requireAggregate();
+      }
+    }
+    return this.requireAggregate();
   }
 
   private async saveCursor(

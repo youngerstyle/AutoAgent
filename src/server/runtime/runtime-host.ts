@@ -74,6 +74,10 @@ export class RuntimeHost {
     return this.exclusive(() => this.recoverUnlocked());
   }
 
+  hydrate(): Promise<void> {
+    return this.exclusive(() => this.hydrateUnlocked());
+  }
+
   tick(): Promise<void> {
     if (this.tickPromise) return this.tickPromise;
     const pending = this.exclusive(() => this.tickUnlocked());
@@ -183,6 +187,21 @@ export class RuntimeHost {
     }
   }
 
+  private async hydrateUnlocked(): Promise<void> {
+    for (const record of await this.store.list()) {
+      if (new Set(["completed", "failed", "cancelled"]).has(record.status)) continue;
+      if (this.contexts.has(record.taskId)) continue;
+      try {
+        const context = await this.compose(record);
+        this.contexts.set(record.taskId, context);
+      } catch (error) {
+        this.contexts.delete(record.taskId);
+        if (!(error instanceof LegacyMissionPlanError)) throw error;
+        this.readOnlyTasks.set(record.taskId, "这是旧版任务，只能查看历史，不能继续调度。请重新描述目标以创建新的 Mission 和 Plan。");
+      }
+    }
+  }
+
   private backgroundTick(): Promise<void> {
     if (this.backgroundTickPromise) return this.backgroundTickPromise;
     const pending = this.exclusive(() => this.tickUnlocked(false));
@@ -194,7 +213,13 @@ export class RuntimeHost {
   }
 
   private async tickUnlocked(awaitAgentRuns = true): Promise<void> {
-    for (const context of this.contexts.values()) await this.tickTask(context, awaitAgentRuns);
+    for (const context of this.contexts.values()) {
+      try {
+        await this.tickTask(context, awaitAgentRuns);
+      } catch (error) {
+        console.error(`RuntimeHost task tick failed for ${context.record.taskId}`, error);
+      }
+    }
   }
 
   private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<{ appended: boolean; turnId: string }> {
@@ -472,7 +497,9 @@ export class RuntimeHost {
         currentStep: goal?.spec.objective,
       });
     }
-    const status = presentationStatus(record.status, plan.status);
+    const schedulingPaused = record.status === "active" && !this.timer;
+    const status = schedulingPaused ? "paused" : presentationStatus(record.status, plan.status);
+    const phase = schedulingPaused ? "paused" : presentationPhase(plan.status, tickets);
     return {
       workspace: this.workspace,
       mission: {
@@ -495,7 +522,7 @@ export class RuntimeHost {
         taskId: record.taskId,
         workspaceId: this.workspace.id,
         status,
-        phase: presentationPhase(plan.status, tickets),
+        phase,
         startedAt: record.createdAt,
         endedAt: new Set(["completed", "failed", "cancelled"]).has(record.status) ? record.updatedAt : undefined,
       },
@@ -505,9 +532,11 @@ export class RuntimeHost {
       agentThreads,
       agentMessages: {},
       recentEvents: recentEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-500),
-      phase: presentationPhase(plan.status, tickets),
+      phase,
       status,
-      currentStep: tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
+      currentStep: schedulingPaused
+        ? "任务已恢复为可查看状态；点击继续后才会调度 Agent。"
+        : tickets.find((ticket) => ticket.status === "running" || ticket.status === "blocked")?.brief,
     };
   }
 
