@@ -6,7 +6,7 @@ import { MockProvider } from "./mock-provider.js";
 import { OpenAIProvider } from "./openai-provider.js";
 import type { AgentModelProvider, AgentModelTurnInput, AgentModelTurnResult } from "./types.js";
 import { ProviderError } from "./types.js";
-import type { ModelConfig, ProviderConfig, ProviderName } from "../../shared/types.js";
+import type { ModelConfig, ModelThinkingLevel, ProviderConfig, ProviderName } from "../../shared/types.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../../shared/model-context.js";
 
 export interface ProviderRegistryOptions {
@@ -98,6 +98,18 @@ export class ProviderRegistry {
       ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
   }
 
+  async modelRuntimeConfig(provider: ProviderName, model: string): Promise<Pick<ModelConfig, "contextWindowTokens" | "supportsReasoning" | "thinkingLevel">> {
+    if (provider === "mock") {
+      return { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" };
+    }
+    const configs = await this.materializeModelConfigs(await this.readConfigFile());
+    const matches = configs.filter((config) => config.provider === provider && config.model === model);
+    const selected = matches.find((config) => config.isDefault) ?? matches[0];
+    return selected
+      ? pickModelRuntimeConfig(selected)
+      : { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" };
+  }
+
   /** Internal runtime credentials. Never return this value from an HTTP route. */
   async runtimeConfig(provider: ProviderName, model: string): Promise<ProviderConfig> {
     if (provider === "mock") return { provider, model };
@@ -116,6 +128,8 @@ export class ProviderRegistry {
       provider: config.provider,
       model: config.model?.trim() || defaultModel(config.provider),
       contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens),
+      supportsReasoning: Boolean(config.supportsReasoning),
+      thinkingLevel: normalizeThinkingLevel(config.thinkingLevel, Boolean(config.supportsReasoning)),
       apiKey: config.apiKey || undefined,
       baseUrl: config.baseUrl || undefined,
       isDefault: shouldBeDefault,
@@ -142,6 +156,11 @@ export class ProviderRegistry {
       contextWindowTokens: patch.contextWindowTokens === undefined
         ? existing.contextWindowTokens
         : normalizeContextWindowTokens(patch.contextWindowTokens),
+      supportsReasoning: patch.supportsReasoning ?? existing.supportsReasoning,
+      thinkingLevel: normalizeThinkingLevel(
+        patch.thinkingLevel ?? existing.thinkingLevel,
+        patch.supportsReasoning ?? existing.supportsReasoning,
+      ),
       apiKey: patch.apiKey === undefined || patch.apiKey === "" ? existing.apiKey : patch.apiKey,
       baseUrl: patch.baseUrl === undefined ? existing.baseUrl : patch.baseUrl || undefined,
       updatedAt: new Date().toISOString()
@@ -203,6 +222,8 @@ export class ProviderRegistry {
       return ensureSingleDefault(stored.modelConfigs.map((config) => ({
         ...config,
         contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens, true),
+        supportsReasoning: Boolean(config.supportsReasoning),
+        thinkingLevel: normalizeThinkingLevel(config.thinkingLevel, Boolean(config.supportsReasoning)),
       })));
     }
     const now = new Date().toISOString();
@@ -214,6 +235,8 @@ export class ProviderRegistry {
         provider,
         model: legacy?.model ?? defaultModel(provider),
         contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+        supportsReasoning: false,
+        thinkingLevel: "off" as const,
         apiKey: legacy?.apiKey,
         baseUrl: legacy?.baseUrl,
         isDefault: false,
@@ -279,4 +302,18 @@ function normalizeContextWindowTokens(value: unknown, allowMissing = false): num
     throw new Error("contextWindowTokens must be a positive integer");
   }
   return normalized;
+}
+
+function normalizeThinkingLevel(value: unknown, supportsReasoning: boolean): ModelThinkingLevel {
+  if (!supportsReasoning) return "off";
+  const levels: ModelThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+  return levels.includes(value as ModelThinkingLevel) ? value as ModelThinkingLevel : "medium";
+}
+
+function pickModelRuntimeConfig(config: ModelConfig) {
+  return {
+    contextWindowTokens: config.contextWindowTokens,
+    supportsReasoning: config.supportsReasoning,
+    thinkingLevel: config.thinkingLevel,
+  };
 }

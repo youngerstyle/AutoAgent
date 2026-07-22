@@ -1,5 +1,5 @@
 import type { AgentGoal } from "../../shared/contracts/agent-engine.js";
-import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import type { AgentProfile, ModelThinkingLevel, WorkspaceAgent } from "../../shared/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 
 export interface AgentExecutionSliceInput {
@@ -13,6 +13,8 @@ export interface AgentExecutionSliceInput {
   provider: AgentProfile["defaultProvider"];
   model: string;
   contextWindowTokens?: number;
+  supportsReasoning?: boolean;
+  thinkingLevel?: ModelThinkingLevel;
 }
 
 export interface AgentExecutionSliceResult {

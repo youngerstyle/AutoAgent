@@ -303,7 +303,15 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const sessionManager = SessionManager.continueRecent(this.workspaceRoot, sessionDir);
     const auth = AuthStorage.inMemory();
     const registry = ModelRegistry.inMemory(auth);
-    const model = await configureModel(registry, auth, this.providers, input.provider, input.model, input.contextWindowTokens ?? 128_000);
+    const model = await configureModel(
+      registry,
+      auth,
+      this.providers,
+      input.provider,
+      input.model,
+      input.contextWindowTokens ?? 128_000,
+      Boolean(input.supportsReasoning),
+    );
     const settings = SettingsManager.inMemory({
       compaction: { enabled: true },
       retry: input.provider === "mock"
@@ -362,6 +370,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       noTools: "builtin",
       customTools,
       tools: customTools.map((tool) => tool.name),
+      thinkingLevel: input.supportsReasoning ? (input.thinkingLevel ?? "medium") : "off",
     });
     session.setAutoCompactionEnabled(true);
     const goalIds = new Set(sessionManager.getEntries()
@@ -624,6 +633,7 @@ async function configureModel(
   provider: ProviderName,
   modelId: string,
   contextWindow: number,
+  supportsReasoning: boolean,
 ): Promise<Model<any>> {
   if (provider === "mock") {
     const model = mockModel(modelId, contextWindow);
@@ -645,7 +655,7 @@ async function configureModel(
   registry.registerProvider(provider, {
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
-    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: false, input: ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))) }] as any,
+    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: supportsReasoning, input: ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))) }] as any,
   });
   const configured = registry.find(provider, modelId);
   if (!configured) throw new Error(`Pi 无法加载模型 ${provider}/${modelId}`);
@@ -827,7 +837,7 @@ function mockModel(id: string, contextWindow: number) {
 }
 
 function modelConfig(model: Model<any>) {
-  return { id: model.id, name: model.name, api: model.api, reasoning: false, input: ["text"], cost: zeroCost(), contextWindow: model.contextWindow, maxTokens: model.maxTokens, baseUrl: model.baseUrl };
+  return { id: model.id, name: model.name, api: model.api, reasoning: model.reasoning, input: ["text"], cost: zeroCost(), contextWindow: model.contextWindow, maxTokens: model.maxTokens, baseUrl: model.baseUrl };
 }
 
 function zeroCost() { return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }; }

@@ -28,6 +28,8 @@ export function createProviderRouter(registry?: ProviderRegistry) {
       contextWindowTokens: req.body.contextWindowTokens !== undefined
         ? assertContextWindowTokens(req.body.contextWindowTokens)
         : undefined,
+      supportsReasoning: req.body.supportsReasoning !== undefined ? Boolean(req.body.supportsReasoning) : undefined,
+      thinkingLevel: req.body.thinkingLevel !== undefined ? assertThinkingLevel(req.body.thinkingLevel) : undefined,
       apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
       baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,
       isDefault: Boolean(req.body.isDefault)
@@ -44,6 +46,8 @@ export function createProviderRouter(registry?: ProviderRegistry) {
         contextWindowTokens: req.body.contextWindowTokens !== undefined
           ? assertContextWindowTokens(req.body.contextWindowTokens)
           : undefined,
+        supportsReasoning: req.body.supportsReasoning !== undefined ? Boolean(req.body.supportsReasoning) : undefined,
+        thinkingLevel: req.body.thinkingLevel !== undefined ? assertThinkingLevel(req.body.thinkingLevel) : undefined,
         apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
         baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,
         isDefault: req.body.isDefault !== undefined ? Boolean(req.body.isDefault) : undefined
@@ -103,4 +107,12 @@ function assertContextWindowTokens(value: unknown): number {
     throw new HttpError(400, "上下文窗口必须是正整数", "INVALID_CONTEXT_WINDOW");
   }
   return normalized;
+}
+
+function assertThinkingLevel(value: unknown) {
+  const normalized = String(value);
+  const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+  const level = levels.find((candidate) => candidate === normalized);
+  if (!level) throw new HttpError(400, "推理强度无效", "INVALID_THINKING_LEVEL");
+  return level;
 }

@@ -63,6 +63,8 @@ type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
   apiKey: string;
   baseUrl: string;
   contextWindowTokens: number;
+  supportsReasoning: boolean;
+  thinkingLevel: ModelConfig["thinkingLevel"];
 };
 
 type DeleteWorkspaceDialogState = {
@@ -94,7 +96,9 @@ export function App() {
     model: "",
     apiKey: "",
     baseUrl: "",
-    contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS
+    contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
+    supportsReasoning: false,
+    thinkingLevel: "off",
   });
   const [error, setError] = useState("");
   const [taskSubmitting, setTaskSubmitting] = useState(false);
@@ -431,10 +435,12 @@ export function App() {
         model: modelConfigDraft.model,
         apiKey: modelConfigDraft.apiKey,
         baseUrl: modelConfigDraft.baseUrl,
-        contextWindowTokens: modelConfigDraft.contextWindowTokens
+        contextWindowTokens: modelConfigDraft.contextWindowTokens,
+        supportsReasoning: modelConfigDraft.supportsReasoning,
+        thinkingLevel: modelConfigDraft.supportsReasoning ? modelConfigDraft.thinkingLevel : "off"
       });
       setModelConfigs((current) => [...current, result.config]);
-      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "", contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS });
+      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "", contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" });
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -449,7 +455,9 @@ export function App() {
         model: config.model,
         apiKey: config.apiKey === "********" ? undefined : config.apiKey,
         baseUrl: config.baseUrl,
-        contextWindowTokens: config.contextWindowTokens
+        contextWindowTokens: config.contextWindowTokens,
+        supportsReasoning: config.supportsReasoning,
+        thinkingLevel: config.supportsReasoning ? config.thinkingLevel : "off"
       });
       setModelConfigs((current) => current.map((item) => item.id === result.config.id ? result.config : item));
       setError("");
@@ -1712,6 +1720,18 @@ function AgentDetailPanel(props: {
   );
 }
 
+function thinkingLevelOptions(): Array<{ value: ModelConfig["thinkingLevel"]; label: string }> {
+  return [
+    { value: "off", label: "关闭" },
+    { value: "minimal", label: "极低" },
+    { value: "low", label: "低" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+    { value: "xhigh", label: "很高" },
+    { value: "max", label: "最高" },
+  ];
+}
+
 function ModelConfigLibrary(props: {
   configs: ModelConfig[];
   draft: ModelConfigDraft;
@@ -1756,6 +1776,16 @@ function ModelConfigLibrary(props: {
           <label>
             <span>上下文窗口（tokens）</span>
             <input type="number" min="1" step="1000" value={props.draft.contextWindowTokens} onChange={(event) => props.onDraftChange({ ...props.draft, contextWindowTokens: Number(event.target.value) })} />
+          </label>
+          <label>
+            <span>推理模型</span>
+            <input type="checkbox" checked={props.draft.supportsReasoning} onChange={(event) => props.onDraftChange({ ...props.draft, supportsReasoning: event.target.checked, thinkingLevel: event.target.checked ? "medium" : "off" })} />
+          </label>
+          <label>
+            <span>推理强度</span>
+            <select disabled={!props.draft.supportsReasoning} value={props.draft.thinkingLevel} onChange={(event) => props.onDraftChange({ ...props.draft, thinkingLevel: event.target.value as ModelConfig["thinkingLevel"] })}>
+              {thinkingLevelOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
           </label>
         </div>
         <div className="runtime-fields">
@@ -1816,6 +1846,16 @@ function ModelConfigCard(props: {
       <label>
         <span>上下文窗口（tokens）</span>
         <input type="number" min="1" step="1000" value={props.config.contextWindowTokens} onChange={(event) => props.onChange({ ...props.config, contextWindowTokens: Number(event.target.value) })} />
+      </label>
+      <label>
+        <span>推理模型</span>
+        <input type="checkbox" checked={props.config.supportsReasoning} onChange={(event) => props.onChange({ ...props.config, supportsReasoning: event.target.checked, thinkingLevel: event.target.checked ? "medium" : "off" })} />
+      </label>
+      <label>
+        <span>推理强度</span>
+        <select disabled={!props.config.supportsReasoning} value={props.config.thinkingLevel} onChange={(event) => props.onChange({ ...props.config, thinkingLevel: event.target.value as ModelConfig["thinkingLevel"] })}>
+          {thinkingLevelOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
       </label>
       <label>
         <span>接口密钥</span>

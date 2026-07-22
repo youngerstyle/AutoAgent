@@ -51,6 +51,7 @@
 ## 失败语义
 
 - Provider 5xx、限流或网络错误由 Pi 的短期重试处理；重试状态必须可见且可中断。
+- 模型配置必须显式声明是否支持推理及默认推理强度。Pi Session 直接使用这份能力配置；适配层不得把所有自定义网关模型强制标记为非推理模型，否则 Pi 会将会话降级为 `thinking off`。不支持推理的模型保持 `off`，支持推理的模型默认使用配置强度。
 - 工具错误返回同一 Turn，Agent 可自行修正；重复无进展时暂停 Goal，但不改 Ticket 状态。
 - `blocked` 只能由 Agent 调用 `request_human_input` 明确提交不可替代输入缺失的事实；`goal_resolution` 只负责 completed 或 failed。
 - Token 预算是可配置的经济保护，不是固定工具调用轮数；触发后暂停并保留可恢复状态。

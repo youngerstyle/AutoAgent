@@ -329,11 +329,15 @@ export interface ProviderConfig {
   baseUrl?: string;
 }
 
+export type ModelThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 export interface ModelConfig extends ProviderConfig {
   id: string;
   name: string;
   provider: Exclude<ProviderName, "mock">;
   contextWindowTokens: number;
+  supportsReasoning: boolean;
+  thinkingLevel: ModelThinkingLevel;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;

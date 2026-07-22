@@ -800,6 +800,7 @@ export class RuntimeHost {
     const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
     const provider = agent.provider ?? profile.defaultProvider;
     const model = agent.model ?? profile.defaultModel;
+    const modelRuntime = await this.providers.modelRuntimeConfig(provider, model);
     return {
       threadId,
       turnId,
@@ -810,7 +811,7 @@ export class RuntimeHost {
       policy: resolvePolicy(this.workspace, agent),
       provider,
       model,
-      contextWindowTokens: await this.providers.contextWindowTokens(provider, model),
+      ...modelRuntime,
     };
   }
 

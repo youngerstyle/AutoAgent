@@ -121,6 +121,26 @@ describe("ProviderRegistry", () => {
     await expect(registry.contextWindowTokens("openai", "custom-model")).resolves.toBe(256_000);
   });
 
+  it("persists model reasoning capability and exposes it to the Agent runtime", async () => {
+    const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 0 });
+    const created = await registry.createModelConfig({
+      provider: "openai",
+      model: "reasoning-model",
+      supportsReasoning: true,
+      thinkingLevel: "high",
+    });
+
+    expect(created).toMatchObject({ supportsReasoning: true, thinkingLevel: "high" });
+    await expect(registry.modelRuntimeConfig("openai", "reasoning-model")).resolves.toEqual({
+      contextWindowTokens: 128_000,
+      supportsReasoning: true,
+      thinkingLevel: "high",
+    });
+
+    const disabled = await registry.updateModelConfig(created.id, { supportsReasoning: false });
+    expect(disabled).toMatchObject({ supportsReasoning: false, thinkingLevel: "off" });
+  });
+
   it("materializes old model configs with the 128k default context window", async () => {
     const home = await tempHome();
     await mkdir(home, { recursive: true });
@@ -138,7 +158,7 @@ describe("ProviderRegistry", () => {
     const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
 
     await expect(registry.modelConfigs()).resolves.toEqual([
-      expect.objectContaining({ id: "mc_old", contextWindowTokens: 128_000 }),
+      expect.objectContaining({ id: "mc_old", contextWindowTokens: 128_000, supportsReasoning: false, thinkingLevel: "off" }),
     ]);
   });
 
