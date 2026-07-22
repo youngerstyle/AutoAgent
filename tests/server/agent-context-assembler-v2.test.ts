@@ -80,6 +80,39 @@ describe("AgentContextAssembler", () => {
     expect(assembled.history.every((item) => JSON.stringify(item).includes("## Soul") === false)).toBe(true);
   });
 
+  it("keeps image references on the same chronological human message", async () => {
+    const fixture = await contextFixture();
+    const attachment = {
+      attachmentId: "a".repeat(64),
+      type: "image" as const,
+      mimeType: "image/png" as const,
+      fileName: "screen.png",
+      size: 128,
+    };
+    await fixture.engine.sendMessage({
+      messageId: "human-image",
+      threadId: fixture.thread.threadId,
+      senderPrincipalId: "human",
+      content: "这里布局错了",
+      attachments: [attachment],
+      createdAt: "2026-07-13T00:00:00.000Z",
+    });
+
+    const assembled = await fixture.assembler.assemble({
+      profile,
+      agent,
+      policy,
+      thread: await fixture.engine.getThread(fixture.thread.threadId),
+    });
+
+    expect(assembled.history).toEqual([{
+      type: "user_message",
+      content: "这里布局错了",
+      attachments: [attachment],
+    }]);
+    expect(assembled.prompt).toContain("图片附件 1 张");
+  });
+
   it("compacts by whole interaction groups and never leaves a tool result without its call", async () => {
     const fixture = await contextFixture(220);
     for (let index = 0; index < 8; index += 1) {

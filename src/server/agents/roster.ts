@@ -36,19 +36,21 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
     id: "prof_dev",
     name: "开发",
     role: "dev",
+    defaultSkills: ["agent-browser"],
     capabilities: ["delivery:implement", "代码阅读", "实现修改", "工具执行", "本地验证", "调试定位", "变更说明", "风险反馈"],
     defaultProvider: "mock",
     defaultModel: "mock-dev",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess"] }
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "writeFile", "shell", "startService", "pollProcess"] }
   },
   {
     id: "prof_qa",
     name: "测试",
     role: "qa",
+    defaultSkills: ["agent-browser"],
     capabilities: ["delivery:verify", "测试计划", "质量检查", "回归验证", "验收证据", "缺陷报告", "风险分级", "返工反馈"],
     defaultProvider: "mock",
     defaultModel: "mock-qa",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "shell", "startService", "pollProcess"] }
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "shell", "startService", "pollProcess"] }
   }
 ];
 

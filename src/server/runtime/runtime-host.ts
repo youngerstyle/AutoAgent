@@ -12,6 +12,8 @@ import type {
   WorkspaceSnapshot,
   WorkspaceToolName,
 } from "../../shared/types.js";
+import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
+import { AttachmentStore } from "../storage/attachment-store.js";
 import type { ActiveMissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
 import type { PlanId, PlanPolicyRef, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
@@ -89,9 +91,15 @@ export class RuntimeHost {
     return tracked;
   }
 
-  async sendAgentMessage(taskId: string, agentId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
+  async sendAgentMessage(taskId: string, agentId: string, message: string, messageId: string = randomUUID(), attachments: AgentMessageAttachment[] = []): Promise<WorkspaceSnapshot> {
+    await Promise.all(attachments.map(async (attachment) => {
+      const stored = await new AttachmentStore(this.workspace.rootPath).get(attachment.attachmentId);
+      if (stored.metadata.mimeType !== attachment.mimeType || stored.metadata.size !== attachment.size) {
+        throw new Error("附件元数据与工作区存储不一致");
+      }
+    }));
     const result = await this.exclusive(async () => {
-      const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId);
+      const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId, attachments);
       const record = await this.store.get(taskId);
       return { accepted, canRunNow: record?.status === "active", snapshot: await this.snapshotUnlocked() };
     });
@@ -251,7 +259,8 @@ export class RuntimeHost {
     }
   }
 
-  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string): Promise<{ appended: boolean; turnId: string }> {
+  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string, attachments: AgentMessageAttachment[] = []): Promise<{ appended: boolean; turnId: string }> {
+    if (attachments.length > 4) throw new Error("单条消息最多附加 4 张图片");
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
     if (!engine) throw new Error("Agent does not belong to this team");
@@ -267,6 +276,7 @@ export class RuntimeHost {
       senderPrincipalId: "human",
       deliveryKind: "turn",
       content: message,
+      attachments,
       createdAt,
     });
     if (!appended) return { appended: false, turnId };

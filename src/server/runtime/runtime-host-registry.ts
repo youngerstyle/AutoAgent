@@ -1,5 +1,6 @@
 import { createId } from "../../shared/ids.js";
 import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
@@ -57,9 +58,9 @@ export class RuntimeHostRegistry {
     return host.sendTaskMessage(taskId, message);
   }
 
-  async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string): Promise<WorkspaceSnapshot> {
+  async sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string, attachments?: AgentMessageAttachment[]): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId, true);
-    return host.sendAgentMessage(taskId, agentId, message, messageId);
+    return host.sendAgentMessage(taskId, agentId, message, messageId, attachments);
   }
 
   async loopDebugLogByWorkspace(workspaceId: string): Promise<LoopDebugLog> {

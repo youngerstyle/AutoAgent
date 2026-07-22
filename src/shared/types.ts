@@ -13,7 +13,7 @@ export type EntityStatus =
 
 export type AgentRole = "boss" | "pm" | "architect" | "dev" | "qa" | "specialist";
 export type ProviderName = "mock" | "openai" | "anthropic";
-export type WorkspaceToolName = "listFiles" | "readFile" | "writeFile" | "shell" | "startService" | "pollProcess";
+export type WorkspaceToolName = "listFiles" | "readFile" | "readImage" | "writeFile" | "shell" | "startService" | "pollProcess";
 
 export interface Workspace {
   id: string;
@@ -41,6 +41,7 @@ export interface AgentProfile {
   soul?: string;
   agentMd?: string;
   capabilities: string[];
+  defaultSkills?: string[];
   defaultProvider: ProviderName;
   defaultModel: string;
   defaultPolicy: Partial<AgentPolicy>;
@@ -337,6 +338,7 @@ export interface ModelConfig extends ProviderConfig {
   provider: Exclude<ProviderName, "mock">;
   contextWindowTokens: number;
   supportsReasoning: boolean;
+  supportsImages?: boolean;
   thinkingLevel: ModelThinkingLevel;
   isDefault: boolean;
   createdAt: string;

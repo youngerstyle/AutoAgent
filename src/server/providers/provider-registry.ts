@@ -98,16 +98,16 @@ export class ProviderRegistry {
       ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS;
   }
 
-  async modelRuntimeConfig(provider: ProviderName, model: string): Promise<Pick<ModelConfig, "contextWindowTokens" | "supportsReasoning" | "thinkingLevel">> {
+  async modelRuntimeConfig(provider: ProviderName, model: string): Promise<Pick<ModelConfig, "contextWindowTokens" | "supportsReasoning" | "supportsImages" | "thinkingLevel">> {
     if (provider === "mock") {
-      return { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" };
+      return { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, supportsImages: true, thinkingLevel: "off" };
     }
     const configs = await this.materializeModelConfigs(await this.readConfigFile());
     const matches = configs.filter((config) => config.provider === provider && config.model === model);
     const selected = matches.find((config) => config.isDefault) ?? matches[0];
     return selected
       ? pickModelRuntimeConfig(selected)
-      : { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" };
+      : { contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, supportsImages: false, thinkingLevel: "off" };
   }
 
   /** Internal runtime credentials. Never return this value from an HTTP route. */
@@ -129,6 +129,7 @@ export class ProviderRegistry {
       model: config.model?.trim() || defaultModel(config.provider),
       contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens),
       supportsReasoning: Boolean(config.supportsReasoning),
+      supportsImages: Boolean(config.supportsImages),
       thinkingLevel: normalizeThinkingLevel(config.thinkingLevel, Boolean(config.supportsReasoning)),
       apiKey: config.apiKey || undefined,
       baseUrl: config.baseUrl || undefined,
@@ -157,6 +158,7 @@ export class ProviderRegistry {
         ? existing.contextWindowTokens
         : normalizeContextWindowTokens(patch.contextWindowTokens),
       supportsReasoning: patch.supportsReasoning ?? existing.supportsReasoning,
+      supportsImages: patch.supportsImages ?? existing.supportsImages,
       thinkingLevel: normalizeThinkingLevel(
         patch.thinkingLevel ?? existing.thinkingLevel,
         patch.supportsReasoning ?? existing.supportsReasoning,
@@ -223,6 +225,7 @@ export class ProviderRegistry {
         ...config,
         contextWindowTokens: normalizeContextWindowTokens(config.contextWindowTokens, true),
         supportsReasoning: Boolean(config.supportsReasoning),
+        supportsImages: Boolean(config.supportsImages),
         thinkingLevel: normalizeThinkingLevel(config.thinkingLevel, Boolean(config.supportsReasoning)),
       })));
     }
@@ -236,6 +239,7 @@ export class ProviderRegistry {
         model: legacy?.model ?? defaultModel(provider),
         contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
         supportsReasoning: false,
+        supportsImages: false,
         thinkingLevel: "off" as const,
         apiKey: legacy?.apiKey,
         baseUrl: legacy?.baseUrl,
@@ -314,6 +318,7 @@ function pickModelRuntimeConfig(config: ModelConfig) {
   return {
     contextWindowTokens: config.contextWindowTokens,
     supportsReasoning: config.supportsReasoning,
+    supportsImages: config.supportsImages,
     thinkingLevel: config.thinkingLevel,
   };
 }

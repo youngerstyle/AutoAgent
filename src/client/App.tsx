@@ -10,6 +10,7 @@ import {
   getLoopDebugLog,
   getSnapshot,
   listAgentProfiles,
+  listAvailableSkills,
   listAgents,
   listModelConfigs,
   listWorkspaces,
@@ -23,7 +24,9 @@ import {
   updateAgent,
   updateAgentProfile,
   updateModelConfig,
-  type WorkspaceAgentConfig
+  uploadAttachment,
+  type AvailableSkill,
+  type WorkspaceAgentConfig,
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
@@ -64,6 +67,7 @@ type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
   baseUrl: string;
   contextWindowTokens: number;
   supportsReasoning: boolean;
+  supportsImages: boolean;
   thinkingLevel: ModelConfig["thinkingLevel"];
 };
 
@@ -80,6 +84,7 @@ export function App() {
   const [events, setEvents] = useState<AutoAgentEvent[]>([]);
   const [goal, setGoal] = useState("");
   const [agentMessage, setAgentMessage] = useState("");
+  const [agentMessageFiles, setAgentMessageFiles] = useState<File[]>([]);
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
@@ -89,6 +94,7 @@ export function App() {
   const [loopDebugLog, setLoopDebugLog] = useState<LoopDebugLog>({ entries: [] });
   const [agents, setAgents] = useState<WorkspaceAgentConfig[]>([]);
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
+  const [availableSkills, setAvailableSkills] = useState<AvailableSkill[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
   const [modelConfigDraft, setModelConfigDraft] = useState<ModelConfigDraft>({
     name: "",
@@ -98,6 +104,7 @@ export function App() {
     baseUrl: "",
     contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
     supportsReasoning: false,
+    supportsImages: false,
     thinkingLevel: "off",
   });
   const [error, setError] = useState("");
@@ -127,6 +134,7 @@ export function App() {
   useEffect(() => {
     void refreshWorkspaces();
     void refreshAgentProfiles();
+    void refreshAvailableSkills();
     void refreshModelConfigs();
   }, []);
 
@@ -264,6 +272,15 @@ export function App() {
       const result = await listAgentProfiles();
       setAgentProfiles(result.profiles);
       setSelectedProfileId((current) => current || result.profiles[0]?.id || "");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function refreshAvailableSkills() {
+    try {
+      const result = await listAvailableSkills();
+      setAvailableSkills(result.skills);
     } catch (err) {
       setError((err as Error).message);
     }
@@ -408,13 +425,15 @@ export function App() {
     const agentId = selectedAgentId || snapshot?.agents[0]?.id;
     const submission = beginChatSubmission(message);
     const text = submission.message;
-    if (!selectedId || !taskId || !agentId || !text || agentMessageSubmitting) return;
+    if (!selectedId || !taskId || !agentId || (!text && agentMessageFiles.length === 0) || agentMessageSubmitting) return;
     if (snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted") return;
     setAgentMessage(submission.nextDraft);
     setAgentMessageSubmitting(true);
     try {
-      const result = await sendAgentMessage(selectedId, taskId, agentId, text);
+      const attachments = await Promise.all(agentMessageFiles.map(async (file) => (await uploadAttachment(selectedId, file)).attachment));
+      const result = await sendAgentMessage(selectedId, taskId, agentId, text, attachments);
       setSnapshot(result.snapshot);
+      setAgentMessageFiles([]);
       setError("");
     } catch (err) {
       if (selectedWorkspaceIdRef.current === selectedId
@@ -437,10 +456,11 @@ export function App() {
         baseUrl: modelConfigDraft.baseUrl,
         contextWindowTokens: modelConfigDraft.contextWindowTokens,
         supportsReasoning: modelConfigDraft.supportsReasoning,
+        supportsImages: modelConfigDraft.supportsImages,
         thinkingLevel: modelConfigDraft.supportsReasoning ? modelConfigDraft.thinkingLevel : "off"
       });
       setModelConfigs((current) => [...current, result.config]);
-      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "", contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, thinkingLevel: "off" });
+      setModelConfigDraft({ name: "", provider: modelConfigDraft.provider, model: "", apiKey: "", baseUrl: "", contextWindowTokens: DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, supportsReasoning: false, supportsImages: false, thinkingLevel: "off" });
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -457,6 +477,7 @@ export function App() {
         baseUrl: config.baseUrl,
         contextWindowTokens: config.contextWindowTokens,
         supportsReasoning: config.supportsReasoning,
+        supportsImages: config.supportsImages,
         thinkingLevel: config.supportsReasoning ? config.thinkingLevel : "off"
       });
       setModelConfigs((current) => current.map((item) => item.id === result.config.id ? result.config : item));
@@ -531,7 +552,7 @@ export function App() {
     [selectedAgentMessages, selectedAgentThreadEvents]
   );
   const taskIsTerminal = snapshot?.status === "completed" || snapshot?.status === "failed" || snapshot?.status === "interrupted" || mode === "terminal";
-  const agentMessageDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent || !agentMessage.trim();
+  const agentMessageDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent || (!agentMessage.trim() && agentMessageFiles.length === 0);
   const agentActionDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent;
 
   return (
@@ -686,6 +707,9 @@ export function App() {
                   disabled={agentMessageDisabled}
                   actionDisabled={agentActionDisabled}
                   onChange={setAgentMessage}
+                  files={agentMessageFiles}
+                  workspaceId={selectedId}
+                  onFilesChange={setAgentMessageFiles}
                   onUseSuggestion={() => setAgentMessage(suggestedFollowup)}
                   onSend={(message) => void sendSelectedAgentMessage(message)}
                 />
@@ -697,6 +721,9 @@ export function App() {
                   disabled={agentMessageDisabled}
                   sending={agentMessageSubmitting}
                   onChange={setAgentMessage}
+                  files={agentMessageFiles}
+                  workspaceId={selectedId}
+                  onFilesChange={setAgentMessageFiles}
                   onSend={(message) => void sendSelectedAgentMessage(message)}
                 />
               ) : (
@@ -763,6 +790,7 @@ export function App() {
               profileViews={catalogProfiles}
               profiles={agentProfiles}
               modelConfigs={modelConfigs}
+              availableSkills={availableSkills}
               selectedId={selectedCatalogDefinition?.id}
               onSelect={setSelectedProfileId}
               onProfileChange={(next) => setAgentProfiles((current) => current.map((item) => item.id === next.id ? next : item))}
@@ -1168,7 +1196,7 @@ function useChatThreadAutoScroll(scrollKey: string) {
   return threadRef;
 }
 
-function AgentThreadBubbleView({ bubble }: { bubble: AgentThreadBubble }) {
+function AgentThreadBubbleView({ bubble, workspaceId }: { bubble: AgentThreadBubble; workspaceId: string }) {
   if (bubble.collapsed) {
     return (
       <article className={`chat-message ${bubble.role} collapsed-message`}>
@@ -1189,7 +1217,18 @@ function AgentThreadBubbleView({ bubble }: { bubble: AgentThreadBubble }) {
   return (
     <article className={`chat-message ${bubble.role}`}>
       {bubble.title ? <strong className="thread-bubble-title">{bubble.title}</strong> : null}
-      <AgentMessageBody rawText={bubble.body} />
+      {bubble.body ? <AgentMessageBody rawText={bubble.body} /> : null}
+      {bubble.attachments?.length ? (
+        <div className="chat-attachments">
+          {bubble.attachments.map((attachment) => (
+            <img
+              key={attachment.attachmentId}
+              src={`/api/workspaces/${encodeURIComponent(workspaceId)}/attachments/${attachment.attachmentId}`}
+              alt={attachment.fileName}
+            />
+          ))}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1204,6 +1243,9 @@ function AgentHumanLoopBox(props: {
   onChange: (value: string) => void;
   onUseSuggestion: () => void;
   onSend: (message: string) => void;
+  files: File[];
+  workspaceId: string;
+  onFilesChange: (files: File[]) => void;
 }) {
   const messageBody = props.prompt.transcript.replace(/^[^\n]+:\n/, "");
   const bubbles = props.prompt.manualTest
@@ -1225,7 +1267,7 @@ function AgentHumanLoopBox(props: {
         </div>
       </header>
       <div className="chat-thread" ref={threadRef}>
-        {bubbles.map((bubble) => <AgentThreadBubbleView key={bubble.id} bubble={bubble} />)}
+        {bubbles.map((bubble) => <AgentThreadBubbleView key={bubble.id} bubble={bubble} workspaceId={props.workspaceId} />)}
         {props.prompt.manualTest ? (
           <article className="chat-message agent">
             <ManualTestActionCard
@@ -1238,6 +1280,7 @@ function AgentHumanLoopBox(props: {
         <button type="button" className="quick-reply" title={props.prompt.suggestion} onClick={props.onUseSuggestion}>使用建议方案</button>
       ) : null}
       <div className="chat-composer">
+        <ChatAttachmentPicker files={props.files} onChange={props.onFilesChange} />
         {props.prompt.manualTest ? (
           <div className="manual-test-shortcuts" aria-label="人工测试快捷回复">
             <span>快捷回复</span>
@@ -1275,6 +1318,9 @@ function AgentDirectChatBox(props: {
   sending: boolean;
   onChange: (value: string) => void;
   onSend: (message: string) => void;
+  files: File[];
+  workspaceId: string;
+  onFilesChange: (files: File[]) => void;
 }) {
   const agentName = roleLabel(props.agent.roleInWorkspace);
   const statusText = props.agent.currentStep ?? capabilityLabels(props.agent.roleInWorkspace, props.agent.capabilities).join("、") ?? statusLabel(props.agent.status);
@@ -1295,7 +1341,7 @@ function AgentDirectChatBox(props: {
       </header>
       <div className="chat-thread" ref={threadRef}>
         {props.bubbles.length > 0 ? props.bubbles.map((bubble) => (
-          <AgentThreadBubbleView key={bubble.id} bubble={bubble} />
+          <AgentThreadBubbleView key={bubble.id} bubble={bubble} workspaceId={props.workspaceId} />
         )) : (
           <article className="chat-message agent">
             <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
@@ -1303,6 +1349,7 @@ function AgentDirectChatBox(props: {
         )}
       </div>
       <div className="chat-composer">
+        <ChatAttachmentPicker files={props.files} onChange={props.onFilesChange} />
         <textarea
           aria-label={`回复${agentName}`}
           value={props.value}
@@ -1323,6 +1370,38 @@ function AgentDirectChatBox(props: {
       </div>
     </form>
   );
+}
+
+function ChatAttachmentPicker(props: { files: File[]; onChange: (files: File[]) => void }) {
+  return (
+    <div className="chat-attachment-picker">
+      {props.files.map((file, index) => (
+        <span className="pending-attachment" key={`${file.name}:${file.size}:${index}`}>
+          <PendingImage file={file} />
+          <button type="button" title="移除图片" onClick={() => props.onChange(props.files.filter((_, itemIndex) => itemIndex !== index))}>×</button>
+        </span>
+      ))}
+      <label className="attachment-button">
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          onChange={(event) => {
+            const next = Array.from(event.target.files ?? []);
+            if (next.length) props.onChange([...props.files, ...next].slice(0, 4));
+            event.target.value = "";
+          }}
+        />
+        添加图片
+      </label>
+    </div>
+  );
+}
+
+function PendingImage({ file }: { file: File }) {
+  const url = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return <img src={url} alt={file.name} />;
 }
 
 function AgentMessageBody(props: { rawText: string }) {
@@ -1348,6 +1427,7 @@ function AgentHub(props: {
   profileViews: AgentProfileView[];
   profiles: AgentProfile[];
   modelConfigs: ModelConfig[];
+  availableSkills: AvailableSkill[];
   selectedId?: string;
   onSelect: (id: string) => void;
   onProfileChange: (profile: AgentProfile) => void;
@@ -1380,6 +1460,7 @@ function AgentHub(props: {
             profile={selected}
             view={selectedView}
             modelConfigs={props.modelConfigs}
+            availableSkills={props.availableSkills}
             onChange={props.onProfileChange}
             onSave={props.onSave}
           />
@@ -1424,9 +1505,11 @@ function AgentDefinitionEditor(props: {
   profile: AgentProfile;
   view: AgentProfileView;
   modelConfigs: ModelConfig[];
+  availableSkills: AvailableSkill[];
   onChange: (profile: AgentProfile) => void;
   onSave: (profile: AgentProfile) => void;
 }) {
+  const [skillQuery, setSkillQuery] = useState("");
   const capabilitiesText = props.profile.capabilities.join("、");
   const policy = normalizePolicy(props.profile.defaultPolicy);
   const modelTarget = { provider: props.profile.defaultProvider, model: props.profile.defaultModel };
@@ -1434,6 +1517,10 @@ function AgentDefinitionEditor(props: {
   const selectedModelValue = modelSelectionValue(modelTarget, props.modelConfigs);
   const configuredTools = new Set(policy.enabledTools ?? []);
   const effectiveTools = new Set(toolsForPolicy(policy).map((tool) => tool.name));
+  const normalizedSkillQuery = skillQuery.trim().toLocaleLowerCase();
+  const filteredSkills = normalizedSkillQuery
+    ? props.availableSkills.filter((skill) => `${skill.name} ${skill.description}`.toLocaleLowerCase().includes(normalizedSkillQuery))
+    : props.availableSkills;
   const updateDefaultPolicy = (patch: Partial<AgentPolicy>) => {
     props.onChange({ ...props.profile, defaultPolicy: { ...policy, ...patch } });
   };
@@ -1524,6 +1611,33 @@ function AgentDefinitionEditor(props: {
 
       <section className="agent-section runtime-config">
         <h4>默认权限与工具</h4>
+        <input
+          className="skill-search"
+          aria-label="搜索 Skill"
+          placeholder="搜索 Skill"
+          value={skillQuery}
+          onChange={(event) => setSkillQuery(event.target.value)}
+        />
+        <div className="skill-picker" aria-label="默认 Skill">
+          {filteredSkills.length ? filteredSkills.map((skill) => {
+            const checked = (props.profile.defaultSkills ?? []).includes(skill.name);
+            return (
+              <label key={skill.name} className="skill-option" title={skill.filePath}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(event) => {
+                    const next = new Set(props.profile.defaultSkills ?? []);
+                    if (event.target.checked) next.add(skill.name);
+                    else next.delete(skill.name);
+                    props.onChange({ ...props.profile, defaultSkills: Array.from(next) });
+                  }}
+                />
+                <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+              </label>
+            );
+          }) : <small>{props.availableSkills.length ? "没有匹配的 Skill。" : "未发现可用 Skill。请在 ~/.agents/skills 中安装符合 Agent Skills 规范的 Skill。"}</small>}
+        </div>
         <div className="policy-grid">
           <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => updateDefaultPolicy({ canReadWorkspace: checked })} />
           <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => updateDefaultPolicy({ canWriteWorkspace: checked })} />
@@ -1782,6 +1896,10 @@ function ModelConfigLibrary(props: {
             <input type="checkbox" checked={props.draft.supportsReasoning} onChange={(event) => props.onDraftChange({ ...props.draft, supportsReasoning: event.target.checked, thinkingLevel: event.target.checked ? "medium" : "off" })} />
           </label>
           <label>
+            <span>支持图片输入</span>
+            <input type="checkbox" checked={props.draft.supportsImages} onChange={(event) => props.onDraftChange({ ...props.draft, supportsImages: event.target.checked })} />
+          </label>
+          <label>
             <span>推理强度</span>
             <select disabled={!props.draft.supportsReasoning} value={props.draft.thinkingLevel} onChange={(event) => props.onDraftChange({ ...props.draft, thinkingLevel: event.target.value as ModelConfig["thinkingLevel"] })}>
               {thinkingLevelOptions().map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -1850,6 +1968,10 @@ function ModelConfigCard(props: {
       <label>
         <span>推理模型</span>
         <input type="checkbox" checked={props.config.supportsReasoning} onChange={(event) => props.onChange({ ...props.config, supportsReasoning: event.target.checked, thinkingLevel: event.target.checked ? "medium" : "off" })} />
+      </label>
+      <label>
+        <span>支持图片输入</span>
+        <input type="checkbox" checked={props.config.supportsImages} onChange={(event) => props.onChange({ ...props.config, supportsImages: event.target.checked })} />
       </label>
       <label>
         <span>推理强度</span>

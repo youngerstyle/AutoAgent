@@ -41,6 +41,10 @@ export function workspaceAgentSessionsDir(workspaceRoot: string, workspaceAgentI
   return path.join(workspaceAgentDir(workspaceRoot, workspaceAgentId), "sessions");
 }
 
+export function workspaceAttachmentsDir(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "attachments");
+}
+
 export function agentEngineDir(workspaceRoot: string, agentId: string): string {
   const root = path.resolve(workspaceAutoAgentDir(workspaceRoot), "agent-engine");
   const key = createHash("sha256").update(agentId).digest("base64url");

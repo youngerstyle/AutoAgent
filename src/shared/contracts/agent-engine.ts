@@ -92,7 +92,16 @@ export interface SendAgentMessageRequest {
   senderPrincipalId: string;
   deliveryKind?: "turn" | "context";
   content: string;
+  attachments?: AgentMessageAttachment[];
   createdAt: string;
+}
+
+export interface AgentMessageAttachment {
+  attachmentId: string;
+  type: "image";
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  fileName: string;
+  size: number;
 }
 
 export interface AgentGoalControlRequest {

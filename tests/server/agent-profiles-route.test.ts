@@ -50,7 +50,7 @@ describe("agent profiles route", () => {
     const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
     const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
     expect(persistedPm.identity).toBe(pm.identity);
-    expect(persistedPm.contentVersion).toBe(6);
+    expect(persistedPm.contentVersion).toBe(8);
     expect(persistedPm.capabilities).toContain("plan:plan");
   });
 
@@ -73,7 +73,7 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(6);
+    expect(dev.contentVersion).toBe(8);
     expect(dev.capabilities).toContain("delivery:implement");
     expect(dev.defaultModel).toBe("deepseek-v4-flash");
     expect(dev.agentMd).toContain("已经存在的手册要保留");
@@ -104,8 +104,43 @@ describe("agent profiles route", () => {
     expect(dev.capabilities).toEqual(expect.arrayContaining(["delivery:implement", "TypeScript", "验证"]));
     expect(dev.agentMd).toContain("# 使命");
     expect(dev.agentMd).toContain("实现");
-    expect(dev.contentVersion).toBe(6);
+    expect(dev.contentVersion).toBe(8);
     expect(dev.capabilities).toContain("delivery:implement");
+  });
+
+  it("adds newly introduced image reading to v7 profiles without replacing configured tools", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_dev",
+      name: "开发",
+      role: "dev",
+      contentVersion: 7,
+      identity: "用户岗位",
+      soul: "用户个性",
+      agentMd: "用户能力说明",
+      capabilities: ["delivery:implement"],
+      defaultProvider: "openai",
+      defaultModel: "custom-model",
+      defaultPolicy: {
+        canReadWorkspace: true,
+        canWriteWorkspace: true,
+        canExecuteCommands: true,
+        enabledTools: ["listFiles", "readFile", "writeFile", "shell"]
+      }
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
+
+    expect(dev.contentVersion).toBe(8);
+    expect(dev.defaultSkills).toContain("agent-browser");
+    expect(dev.defaultPolicy.enabledTools).toEqual(expect.arrayContaining([
+      "listFiles",
+      "readFile",
+      "readImage",
+      "writeFile",
+      "shell"
+    ]));
   });
 
   it("persists editable global identity and soul separately from workspace overrides", async () => {

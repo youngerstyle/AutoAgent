@@ -257,7 +257,11 @@ function latestCompaction(
 
 function isHistoryItem(value: unknown): value is AgentModelHistoryItem {
   if (!isRecord(value) || typeof value.type !== "string") return false;
-  if ((value.type === "user_message" || value.type === "assistant_message")) return typeof value.content === "string";
+  if (value.type === "user_message") {
+    return typeof value.content === "string"
+      && (value.attachments === undefined || (Array.isArray(value.attachments) && value.attachments.every(isImageAttachment)));
+  }
+  if (value.type === "assistant_message") return typeof value.content === "string";
   if (value.type === "tool_call") return typeof value.callId === "string" && typeof value.name === "string";
   return value.type === "tool_result" && typeof value.callId === "string"
     && typeof value.content === "string" && typeof value.isError === "boolean";
@@ -270,7 +274,8 @@ function hasToolInteraction(group: AgentModelHistoryItem[]): boolean {
 function projectThreadItem(kind: string, value: unknown): AgentModelHistoryItem[] {
   if (!isRecord(value)) return [];
   if (kind === "message" && typeof value.content === "string") {
-    return [{ type: "user_message", content: value.content }];
+    const attachments = Array.isArray(value.attachments) ? value.attachments.filter(isImageAttachment) : [];
+    return [{ type: "user_message", content: value.content, ...(attachments.length ? { attachments } : {}) }];
   }
   if (kind === "model" && typeof value.content === "string") {
     return [{ type: "assistant_message", content: value.content }];
@@ -414,7 +419,10 @@ function goalSection(goal?: AgentGoal): string {
 }
 
 function renderHistoryItem(item: AgentModelHistoryItem): string {
-  if (item.type === "user_message") return `human: ${item.content}`;
+  if (item.type === "user_message") {
+    const images = item.attachments?.length ? ` [图片附件 ${item.attachments.length} 张]` : "";
+    return `human: ${item.content}${images}`;
+  }
   if (item.type === "assistant_message") return `assistant: ${item.content}`;
   if (item.type === "tool_call") return `tool_call(${item.callId}): ${item.name} ${JSON.stringify(item.arguments)}`;
   return `tool_result(${item.callId}, error=${item.isError}): ${item.content}`;
@@ -435,4 +443,13 @@ function estimateTokens(value: string): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isImageAttachment(value: unknown): value is NonNullable<Extract<AgentModelHistoryItem, { type: "user_message" }>["attachments"]>[number] {
+  return isRecord(value)
+    && value.type === "image"
+    && typeof value.attachmentId === "string"
+    && typeof value.mimeType === "string"
+    && typeof value.fileName === "string"
+    && typeof value.size === "number";
 }

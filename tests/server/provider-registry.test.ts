@@ -134,6 +134,7 @@ describe("ProviderRegistry", () => {
     await expect(registry.modelRuntimeConfig("openai", "reasoning-model")).resolves.toEqual({
       contextWindowTokens: 128_000,
       supportsReasoning: true,
+      supportsImages: false,
       thinkingLevel: "high",
     });
 

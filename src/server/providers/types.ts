@@ -1,4 +1,5 @@
 import type { ProviderName } from "../../shared/types.js";
+import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -13,7 +14,7 @@ export interface AgentToolDefinition {
 }
 
 export type AgentModelHistoryItem =
-  | { type: "user_message"; content: string }
+  | { type: "user_message"; content: string; attachments?: AgentMessageAttachment[] }
   | { type: "assistant_message"; content: string }
   | { type: "tool_call"; callId: string; name: string; arguments: unknown }
   | { type: "tool_result"; callId: string; content: string; isError: boolean };

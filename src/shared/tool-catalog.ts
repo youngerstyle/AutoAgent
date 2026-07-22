@@ -27,6 +27,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     promptExample: "{\"toolIntents\":[{\"tool\":\"readFile\",\"path\":\"package.json\"}]}"
   },
   {
+    name: "readImage",
+    label: "查看图片",
+    description: "读取项目中的截图或设计图供视觉模型观察",
+    category: "file",
+    observation: true,
+    promptExample: "由 Provider 原生工具调用 readImage(path)"
+  },
+  {
     name: "writeFile",
     label: "写文件",
     description: "在授权边界内写入项目文件",
@@ -79,7 +87,7 @@ export function isToolEnabledForPolicy(policy: Pick<AgentPolicy, "canReadWorkspa
 }
 
 export function permissionPatchForTool(toolName: WorkspaceToolName): Partial<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">> {
-  if (toolName === "listFiles" || toolName === "readFile") return { canReadWorkspace: true };
+  if (toolName === "listFiles" || toolName === "readFile" || toolName === "readImage") return { canReadWorkspace: true };
   if (toolName === "writeFile") return { canWriteWorkspace: true };
   return { canExecuteCommands: true };
 }
@@ -101,7 +109,7 @@ export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "
 }
 
 function policyAllowsTool(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">, name: WorkspaceToolName): boolean {
-  if (name === "listFiles" || name === "readFile") return policy.canReadWorkspace;
+  if (name === "listFiles" || name === "readFile" || name === "readImage") return policy.canReadWorkspace;
   if (name === "writeFile") return policy.canWriteWorkspace;
   return policy.canExecuteCommands;
 }

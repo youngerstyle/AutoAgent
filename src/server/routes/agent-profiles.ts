@@ -1,4 +1,7 @@
 import { Router } from "express";
+import os from "node:os";
+import path from "node:path";
+import { loadSkills } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.js";
 import { asyncHandler, HttpError } from "../errors.js";
 import { AgentProfileStore, sanitizeProfilePatch } from "../agents/profile-store.js";
@@ -9,6 +12,23 @@ export function createAgentProfileRouter(store?: AgentProfileStore) {
 
   router.get("/", asyncHandler(async (_req, res) => {
     res.json({ profiles: await profileStore.list() });
+  }));
+
+  router.get("/skills", asyncHandler(async (_req, res) => {
+    const loaded = loadSkills({
+      cwd: process.cwd(),
+      agentDir: path.join(os.homedir(), ".agents"),
+      skillPaths: [path.join(os.homedir(), ".agents", "skills")],
+      includeDefaults: false,
+    });
+    res.json({
+      skills: loaded.skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        filePath: skill.filePath,
+      })),
+      diagnostics: loaded.diagnostics,
+    });
   }));
 
   router.patch("/:profileId", asyncHandler(async (req, res) => {

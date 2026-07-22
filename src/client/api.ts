@@ -1,4 +1,5 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
+import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -51,10 +52,23 @@ export function sendTaskFollowup(workspaceId: string, taskId: string, message: s
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/followups`, { method: "POST", body: JSON.stringify({ message }) });
 }
 
-export function sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string): Promise<{ snapshot: WorkspaceSnapshot }> {
+export async function uploadAttachment(workspaceId: string, file: File): Promise<{ attachment: AgentMessageAttachment }> {
+  const response = await fetch(`/api/workspaces/${workspaceId}/attachments`, {
+    method: "POST",
+    headers: { "Content-Type": file.type, "X-File-Name": encodeURIComponent(file.name) },
+    body: file,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(body.error ?? response.statusText);
+  }
+  return response.json();
+}
+
+export function sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, attachments: AgentMessageAttachment[] = []): Promise<{ snapshot: WorkspaceSnapshot }> {
   return api(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${agentId}/messages`, {
     method: "POST",
-    body: JSON.stringify({ message, messageId: crypto.randomUUID() }),
+    body: JSON.stringify({ message, attachments, messageId: crypto.randomUUID() }),
   });
 }
 
@@ -83,7 +97,17 @@ export function listAgentProfiles(): Promise<{ profiles: AgentProfile[] }> {
   return api("/api/agent-profiles");
 }
 
-export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
+export interface AvailableSkill {
+  name: string;
+  description: string;
+  filePath: string;
+}
+
+export function listAvailableSkills(): Promise<{ skills: AvailableSkill[]; diagnostics: unknown[] }> {
+  return api("/api/agent-profiles/skills");
+}
+
+export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultSkills" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
   return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 

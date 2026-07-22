@@ -19,6 +19,7 @@
     "@earendil-works/pi-agent-core": "0.80.7",
     "@earendil-works/pi-ai": "0.80.7",
     "@earendil-works/pi-coding-agent": "0.80.7",
+    "agent-browser": "^0.32.3",
     "express": "^4.19.2",
     "openai": "^4.104.0",
     "react": "^18.3.1",
@@ -36,7 +37,7 @@
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7",
-    "vitest": "^2.1.8"
+    "vite": "^6.4.3",
+    "vitest": "^4.1.10"
   }
 }

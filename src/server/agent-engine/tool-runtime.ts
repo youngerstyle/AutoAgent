@@ -45,6 +45,14 @@ export class AgentToolRuntime {
         const target = resolveToolPath(this.policy, required(intent.path, "path"), "read");
         return { tool: intent.tool, ok: true, path: intent.path, content: await readFile(target, "utf8") };
       }
+      if (intent.tool === "readImage") {
+        const target = resolveToolPath(this.policy, required(intent.path, "path"), "read");
+        const mimeType = imageMimeType(target);
+        if (!mimeType) throw new Error("readImage 只支持 PNG、JPEG、WebP 和 GIF");
+        const data = await readFile(target);
+        if (data.length > 10 * 1024 * 1024) throw new Error("图片超过 10 MiB");
+        return { tool: intent.tool, ok: true, path: intent.path, mimeType, data: data.toString("base64"), size: data.length };
+      }
       if (intent.tool === "writeFile") {
         const target = resolveToolPath(this.policy, required(intent.path, "path"), "write");
         await mkdir(path.dirname(target), { recursive: true });
@@ -106,16 +114,17 @@ export class AgentToolRuntime {
   private async pollService(serviceId: string): Promise<AgentToolResult> {
     if (!/^agent_svc_[a-z0-9_]+$/i.test(serviceId)) throw new Error("serviceId is invalid");
     const file = path.join(this.policy.workspaceRoot, ".autoagent", "agent-services", `${serviceId}.json`);
-    const metadata = JSON.parse(await readFile(file, "utf8")) as {
-      pid?: number;
-      command?: string;
-      stdoutPath?: string;
-      stderrPath?: string;
-      exitCode?: number | null;
-    };
+    let metadata = await readProcessMetadata(file);
     let running = false;
     if (metadata.pid) {
       try { process.kill(metadata.pid, 0); running = true; } catch { running = false; }
+    }
+    if (!running && metadata.exitCode == null) {
+      const deadline = Date.now() + 500;
+      while (metadata.exitCode == null && Date.now() < deadline) {
+        await delay(20);
+        metadata = await readProcessMetadata(file);
+      }
     }
     return {
       tool: "pollProcess",
@@ -166,6 +175,14 @@ interface ManagedProcess {
   exit: Promise<number>;
 }
 
+interface ProcessMetadata {
+  pid?: number;
+  command?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  exitCode?: number | null;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -178,6 +195,10 @@ async function readLog(filePath?: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+async function readProcessMetadata(filePath: string): Promise<ProcessMetadata> {
+  return JSON.parse(await readFile(filePath, "utf8")) as ProcessMetadata;
 }
 
 function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
@@ -196,6 +217,11 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     readFile: {
       name,
       description: "读取工作区内的 UTF-8 文本文件",
+      inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
+    },
+    readImage: {
+      name,
+      description: "读取工作区内的 PNG、JPEG、WebP 或 GIF 图片，让视觉模型观察截图或设计稿",
       inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
     },
     writeFile: {
@@ -220,6 +246,15 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     },
   };
   return schemas[name];
+}
+
+function imageMimeType(filePath: string): "image/png" | "image/jpeg" | "image/webp" | "image/gif" | undefined {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".png") return "image/png";
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".gif") return "image/gif";
+  return undefined;
 }
 
 function objectSchema(

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   AuthStorage,
@@ -12,7 +14,7 @@ import {
   type AgentSession,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { AGENT_HUMAN_INPUT_KINDS, type AgentGoal, type AgentHumanInputKind, type AgentHumanInputRequest, type GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 import type { ProviderName, WorkspaceToolName } from "../../shared/types.js";
@@ -25,6 +27,7 @@ import type { AgentExecutionRuntime, AgentExecutionSliceInput, AgentExecutionSli
 import { createHumanInputProposal, parseResolutionProposal } from "./resolution-proposal.js";
 import type { AgentTraceStore } from "./trace-store.js";
 import { AgentToolRuntime, type AgentToolIntent } from "./tool-runtime.js";
+import { AttachmentStore } from "../storage/attachment-store.js";
 
 interface SessionState {
   session: AgentSession;
@@ -32,6 +35,8 @@ interface SessionState {
   resolution: ResolutionBinding;
   safety: RunSafetyBinding;
 }
+
+type AgentPrompt = string | { text: string; images: ImageContent[] };
 
 interface ResolutionBinding {
   goal?: AgentGoal;
@@ -215,21 +220,30 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       state.safety.blockedReason ??= reason;
       void state.session.abort();
     };
-    const activeTools = [...this.tools.definitions().map((tool) => tool.name), ...(goal ? ["goal_resolution", "request_human_input"] : [])];
+    const activeTools = [
+      ...this.tools.definitions().map((tool) => tool.name).filter((name) => name !== "readImage" || input.supportsImages),
+      ...(goal ? ["goal_resolution", "request_human_input"] : [])
+    ];
     state.session.setActiveToolsByName(activeTools);
 
     try {
-      let prompt = await this.nextPrompt(input, goal, state, pending, triggerMessageId);
+      let prompt = normalizePrompt(await this.nextPrompt(input, goal, state, pending, triggerMessageId));
       let continuation = 0;
       let toolCallsBeforePrompt = toolCalls;
       while (true) {
         await this.trace(turnId, input, "context", {
           sessionId: state.session.sessionId,
-          promptChars: prompt.length,
+          promptChars: prompt.text.length,
+          imageCount: prompt.images.length,
           persistent: Boolean(state.session.sessionFile),
           continuation,
         });
-        await state.session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: "followUp", source: "rpc" });
+        await state.session.prompt(prompt.text, {
+          images: prompt.images,
+          expandPromptTemplates: false,
+          streamingBehavior: "followUp",
+          source: "rpc",
+        });
         await state.session.waitForIdle();
         await eventWrites;
         if (state.safety.blockedReason) {
@@ -265,7 +279,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         }
         toolCallsBeforePrompt = toolCalls;
         continuation += 1;
-        prompt = unresolvedGoalPrompt(goal);
+        prompt = { text: unresolvedGoalPrompt(goal), images: [] };
       }
     } catch (error) {
       if (state.safety.blockedReason) {
@@ -319,6 +333,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       input.model,
       input.contextWindowTokens ?? 128_000,
       Boolean(input.supportsReasoning),
+      Boolean(input.supportsImages),
     );
     const settings = SettingsManager.inMemory({
       compaction: { enabled: true },
@@ -331,14 +346,20 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
       settingsManager: settings,
+      additionalSkillPaths: configuredSkillPaths(this.workspaceRoot, input.profile.defaultSkills ?? []),
       noExtensions: true,
-      noSkills: true,
+      noSkills: false,
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
       systemPrompt: stableSystemPrompt(input),
+      skillsOverride: (base) => {
+        const enabled = new Set(input.profile.defaultSkills ?? []);
+        return { ...base, skills: base.skills.filter((skill) => enabled.has(skill.name)) };
+      },
     });
     await loader.reload();
+    const skillNames = loader.getSkills().skills.map((skill) => skill.name);
     if (!sessionManager.getEntries().some((entry) => entry.type === "message" || entry.type === "compaction")) {
       const thread = await this.engine.getThread(input.threadId);
       const triggerIndex = input.triggerMessageId
@@ -355,7 +376,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         thread: historyThread,
         goal,
       });
-      restoreSessionHistory(sessionManager, assembled.history, model);
+      await restoreSessionHistory(sessionManager, assembled.history, model, this.workspaceRoot);
     }
     const resolution: ResolutionBinding = {};
     const safety: RunSafetyBinding = {
@@ -385,6 +406,16 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       .flatMap((entry) => entry.type === "custom" && entry.customType === "autoagent_goal" ? [entry.data] : [])
       .map((data) => (data as { goalId?: string } | undefined)?.goalId)
       .filter((value): value is string => Boolean(value)));
+    await this.traces.append({
+      traceId: stableId("trace", input.threadId, "skills", skillNames.join(",")),
+      agentId: input.agent.id,
+      threadId: input.threadId,
+      goalId: input.goalId,
+      turnId: input.turnId ?? stableId("turn", input.threadId, "session-resources"),
+      kind: "context",
+      createdAt: this.now().toISOString(),
+      data: { enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics },
+    });
     return { session, goalIds, resolution, safety };
   }
 
@@ -394,7 +425,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state: SessionState,
     pending: PendingThreadInput | undefined,
     triggerMessageId: string | undefined,
-  ): Promise<string> {
+  ): Promise<AgentPrompt> {
     const isNewGoal = Boolean(goal && !state.goalIds.has(goal.spec.id));
     if (goal && isNewGoal) {
       state.session.sessionManager.appendCustomEntry("autoagent_goal", { goalId: goal.spec.id });
@@ -405,8 +436,21 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       const item = thread.items.find((candidate) => candidate.itemId === triggerMessageId);
       const payload = item ? (await this.store.payloads([item.payloadRef])).get(item.payloadRef) : undefined;
       const content = isRecord(payload) && typeof payload.content === "string" ? payload.content.trim() : "";
+      const attachments = isRecord(payload) && Array.isArray(payload.attachments) ? payload.attachments : [];
+      if (attachments.length && !input.supportsImages) {
+        throw new Error(`当前模型 ${input.provider}/${input.model} 未配置图片输入能力`);
+      }
+      const images = await Promise.all(attachments.map(async (value): Promise<ImageContent> => {
+        if (!isRecord(value) || typeof value.attachmentId !== "string") throw new Error("图片附件引用无效");
+        const stored = await new AttachmentStore(this.workspaceRoot).get(value.attachmentId);
+        return { type: "image", data: stored.data.toString("base64"), mimeType: stored.metadata.mimeType };
+      }));
+      if (images.length) {
+        const text = content || "请查看本轮发送的图片。";
+        return { text: isNewGoal ? `${activeGoalPrompt(goal!)}\n\n## 本轮按时间顺序收到的消息\n${text}` : text, images };
+      }
       if (content) {
-        if (!isNewGoal) return content;
+        if (!isNewGoal) return { text: content, images: [] };
         return `${activeGoalPrompt(goal!)}\n\n## 本轮按时间序收到的消息\n${content}`;
       }
     }
@@ -447,6 +491,21 @@ function unresolvedGoalPrompt(goal: AgentGoal): string {
     "完成或失败时调用 goal_resolution 提交结论；只有缺少不可替代的 human 输入时才调用 request_human_input。",
     `Goal：${goal.spec.objective}`,
   ].join("\n");
+}
+
+function normalizePrompt(prompt: AgentPrompt): { text: string; images: ImageContent[] } {
+  return typeof prompt === "string" ? { text: prompt, images: [] } : prompt;
+}
+
+function configuredSkillPaths(workspaceRoot: string, names: string[]): string[] {
+  return names.flatMap((name) => {
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) return [];
+    const candidates = [
+      path.join(workspaceRoot, ".agents", "skills", name),
+      path.join(os.homedir(), ".agents", "skills", name),
+    ];
+    return candidates.find((candidate) => existsSync(path.join(candidate, "SKILL.md"))) ?? [];
+  });
 }
 
 function activeGoalPrompt(goal: AgentGoal): string {
@@ -512,6 +571,15 @@ function workspaceTools(runtime: AgentToolRuntime): ToolDefinition[] {
     async execute(_callId, params) {
       const result = await runtime.execute({ tool: definition.name as WorkspaceToolName, ...(params as Omit<AgentToolIntent, "tool">) });
       if (!result.ok) throw new Error(failureMessage(result));
+      if (result.tool === "readImage" && typeof result.data === "string" && typeof result.mimeType === "string") {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ ok: true, tool: result.tool, path: result.path, size: result.size }) },
+            { type: "image", data: result.data, mimeType: result.mimeType },
+          ],
+          details: { ...result, data: undefined },
+        };
+      }
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
   }));
@@ -629,7 +697,7 @@ function failureMessage(details: unknown): string {
 
 function toolParameters(name: WorkspaceToolName) {
   if (name === "writeFile") return Type.Object({ path: Type.String(), content: Type.String() });
-  if (name === "readFile" || name === "listFiles") return Type.Object({ path: Type.Optional(Type.String()) });
+  if (name === "readFile" || name === "readImage" || name === "listFiles") return Type.Object({ path: Type.Optional(Type.String()) });
   if (name === "pollProcess") return Type.Object({ serviceId: Type.String() });
   return Type.Object({ command: Type.String() });
 }
@@ -642,6 +710,7 @@ async function configureModel(
   modelId: string,
   contextWindow: number,
   supportsReasoning: boolean,
+  supportsImages: boolean,
 ): Promise<Model<any>> {
   if (provider === "mock") {
     const model = mockModel(modelId, contextWindow);
@@ -663,7 +732,7 @@ async function configureModel(
   registry.registerProvider(provider, {
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
-    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: supportsReasoning, input: ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))) }] as any,
+    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: supportsReasoning, input: supportsImages ? ["text", "image"] : ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))) }] as any,
   });
   const configured = registry.find(provider, modelId);
   if (!configured) throw new Error(`Pi 无法加载模型 ${provider}/${modelId}`);
@@ -723,18 +792,28 @@ function messageText(message: Context["messages"][number]): string[] {
   return message.content.flatMap((item) => item.type === "text" ? [item.text] : []);
 }
 
-function restoreSessionHistory(
+async function restoreSessionHistory(
   sessionManager: SessionManager,
   history: AgentModelHistoryItem[],
   model: Model<any>,
-): void {
+  workspaceRoot: string,
+): Promise<void> {
   const toolNames = new Map<string, string>();
   const startedAt = Date.now() - history.length;
-  history.forEach((item, index) => {
+  const attachments = new AttachmentStore(workspaceRoot);
+  for (const [index, item] of history.entries()) {
     const timestamp = startedAt + index;
     if (item.type === "user_message") {
-      sessionManager.appendMessage({ role: "user", content: item.content, timestamp });
-      return;
+      const images = await Promise.all((item.attachments ?? []).map(async (attachment): Promise<ImageContent> => {
+        const stored = await attachments.get(attachment.attachmentId);
+        return { type: "image", data: stored.data.toString("base64"), mimeType: stored.metadata.mimeType };
+      }));
+      sessionManager.appendMessage({
+        role: "user",
+        content: images.length ? [{ type: "text", text: item.content || "请查看图片。" }, ...images] : item.content,
+        timestamp,
+      });
+      continue;
     }
     if (item.type === "assistant_message") {
       sessionManager.appendMessage({
@@ -747,7 +826,7 @@ function restoreSessionHistory(
         stopReason: "stop",
         timestamp,
       });
-      return;
+      continue;
     }
     if (item.type === "tool_call") {
       toolNames.set(item.callId, item.name);
@@ -766,7 +845,7 @@ function restoreSessionHistory(
         stopReason: "toolUse",
         timestamp,
       });
-      return;
+      continue;
     }
     sessionManager.appendMessage({
       role: "toolResult",
@@ -776,7 +855,7 @@ function restoreSessionHistory(
       isError: item.isError,
       timestamp,
     });
-  });
+  }
 }
 
 function toolResultText(result: unknown): string {

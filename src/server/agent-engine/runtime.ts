@@ -14,6 +14,7 @@ export interface AgentExecutionSliceInput {
   model: string;
   contextWindowTokens?: number;
   supportsReasoning?: boolean;
+  supportsImages?: boolean;
   thinkingLevel?: ModelThinkingLevel;
 }
 

@@ -50,10 +50,35 @@ describe("AgentToolRuntime", () => {
     });
     expect(started).toMatchObject({ tool: "shell", ok: true, running: true, serviceId: expect.any(String) });
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
+    let completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
+    const deadline = Date.now() + 2_000;
+    while (completed.running && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
+    }
     expect(completed).toMatchObject({ tool: "pollProcess", ok: true, running: false, exitCode: 0 });
     expect(completed.stdout).toContain("finished");
+  });
+
+  it("returns workspace images as model-ready observations", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-image-"));
+    const image = Buffer.from("89504e470d0a1a0a00000000", "hex");
+    await writeFile(path.join(root, "screen.png"), image);
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: false,
+    }, ["readImage"]);
+
+    await expect(runtime.execute({ tool: "readImage", path: "screen.png" })).resolves.toMatchObject({
+      tool: "readImage",
+      ok: true,
+      mimeType: "image/png",
+      data: image.toString("base64"),
+      size: image.length,
+    });
   });
 
   it("settles parallel shell calls even when one command remains running", async () => {
@@ -64,13 +89,20 @@ describe("AgentToolRuntime", () => {
       canReadWorkspace: true,
       canWriteWorkspace: true,
       canExecuteCommands: true,
-    }, ["shell"], { shellYieldMs: 200 });
+    }, ["shell", "pollProcess"], { shellYieldMs: 200 });
 
     const [short, long] = await Promise.all([
       runtime.execute({ tool: "shell", command: "node -e \"console.log('short')\"" }),
-      runtime.execute({ tool: "shell", command: "node -e \"setTimeout(() => {}, 1000)\"" }),
+      runtime.execute({ tool: "shell", command: "node -e \"setTimeout(() => {}, 3000)\"" }),
     ]);
-    expect(short).toMatchObject({ ok: true, running: false, exitCode: 0 });
+    let settledShort = short;
+    const deadline = Date.now() + 2_000;
+    while (settledShort.running && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      settledShort = await runtime.execute({ tool: "pollProcess", serviceId: String(short.serviceId) });
+    }
+    expect(settledShort).toMatchObject({ ok: true, running: false, exitCode: 0 });
+    expect(settledShort.stdout).toContain("short");
     expect(long).toMatchObject({ ok: true, running: true, serviceId: expect.any(String) });
   });
 

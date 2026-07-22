@@ -5,7 +5,7 @@ import { readJson, writeJson } from "../storage/json.js";
 import { globalAgentProfilesFile } from "../storage/paths.js";
 import { CORE_AGENT_PROFILES } from "./roster.js";
 
-const DEFAULT_PROFILE_CONTENT_VERSION = 6;
+const DEFAULT_PROFILE_CONTENT_VERSION = 8;
 const LEGACY_V4_AUTONOMY_CONTENT_HASHES = new Set([
   "9da2edcf9996cf811045de08949f0599e62a9a034178c92c534b1f2b34caecc8",
   "0f3bd16facddbbcc3afb43459bc1432a2ce6f28e33c36759a444fb5fa7d34b3f",
@@ -28,7 +28,7 @@ export class AgentProfileStore {
     return merged;
   }
 
-  async update(profileId: string, patch: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<AgentProfile> {
+  async update(profileId: string, patch: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultSkills" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<AgentProfile> {
     const profiles = await this.list();
     const existing = profiles.find((profile) => profile.id === profileId);
     if (!existing) throw new Error(`Agent profile not found: ${profileId}`);
@@ -39,6 +39,7 @@ export class AgentProfileStore {
       soul: patch.soul ?? existing.soul,
       agentMd: patch.agentMd ?? existing.agentMd,
       capabilities: patch.capabilities ?? existing.capabilities,
+      defaultSkills: patch.defaultSkills ?? existing.defaultSkills,
       defaultProvider: patch.defaultProvider ?? existing.defaultProvider,
       defaultModel: patch.defaultModel ?? existing.defaultModel,
       defaultPolicy: patch.defaultPolicy ? { ...existing.defaultPolicy, ...patch.defaultPolicy } : existing.defaultPolicy
@@ -115,6 +116,46 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
       ...storedProfile,
       capabilities: [...new Set([...defaultProfile.capabilities.filter(isProtocolCapability), ...storedProfile.capabilities])],
       defaultPolicy: { ...defaultProfile.defaultPolicy, ...storedProfile.defaultPolicy },
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
+    });
+  }
+  if (storedProfile.contentVersion === 6) {
+    const storedPolicy = storedProfile.defaultPolicy;
+    const defaultPolicy = defaultProfile.defaultPolicy;
+    return stripRemovedProfileFields({
+      ...defaultProfile,
+      ...storedProfile,
+      defaultSkills: storedProfile.defaultSkills ?? defaultProfile.defaultSkills,
+      defaultPolicy: {
+        ...defaultPolicy,
+        ...storedPolicy,
+        enabledTools: [
+          ...new Set([
+            ...(storedPolicy.enabledTools ?? []),
+            ...(defaultPolicy.enabledTools ?? []).filter((tool) => tool === "readImage")
+          ])
+        ]
+      },
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION,
+    });
+  }
+  if (storedProfile.contentVersion === 7) {
+    const storedPolicy = storedProfile.defaultPolicy;
+    const defaultPolicy = defaultProfile.defaultPolicy;
+    return stripRemovedProfileFields({
+      ...defaultProfile,
+      ...storedProfile,
+      defaultSkills: storedProfile.defaultSkills ?? defaultProfile.defaultSkills,
+      defaultPolicy: {
+        ...defaultPolicy,
+        ...storedPolicy,
+        enabledTools: [
+          ...new Set([
+            ...(storedPolicy.enabledTools ?? []),
+            ...(defaultPolicy.enabledTools ?? []).filter((tool) => tool === "readImage")
+          ])
+        ]
+      },
       contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
     });
   }
@@ -324,6 +365,7 @@ export function sanitizeProfilePatch(input: Record<string, unknown>) {
     soul: input.soul !== undefined ? String(input.soul) : undefined,
     agentMd: input.agentMd !== undefined ? String(input.agentMd) : undefined,
     capabilities: Array.isArray(input.capabilities) ? input.capabilities.map(String).filter(Boolean) : undefined,
+    defaultSkills: Array.isArray(input.defaultSkills) ? input.defaultSkills.map(String).map((item) => item.trim()).filter(Boolean) : undefined,
     defaultProvider: sanitizeProvider(input.defaultProvider),
     defaultModel: input.defaultModel !== undefined ? String(input.defaultModel) : undefined,
     defaultPolicy: typeof input.defaultPolicy === "object" && input.defaultPolicy ? sanitizePolicy(input.defaultPolicy as Record<string, unknown>) : undefined

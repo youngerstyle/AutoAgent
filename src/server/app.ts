@@ -12,6 +12,7 @@ import { createEventRouter } from "./routes/events.js";
 import { createProviderRouter } from "./routes/providers.js";
 import { createTaskRouter } from "./routes/tasks.js";
 import { createWorkspaceRouter } from "./routes/workspaces.js";
+import { createAttachmentRouter } from "./routes/attachments.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
 import { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
@@ -61,6 +62,7 @@ export function createApp(config: AppConfig = loadConfig()) {
   app.use("/api/agent-profiles", createAgentProfileRouter(profileStore));
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(workspaceStore));
+  app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));

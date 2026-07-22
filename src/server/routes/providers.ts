@@ -29,6 +29,7 @@ export function createProviderRouter(registry?: ProviderRegistry) {
         ? assertContextWindowTokens(req.body.contextWindowTokens)
         : undefined,
       supportsReasoning: req.body.supportsReasoning !== undefined ? Boolean(req.body.supportsReasoning) : undefined,
+      supportsImages: req.body.supportsImages !== undefined ? Boolean(req.body.supportsImages) : undefined,
       thinkingLevel: req.body.thinkingLevel !== undefined ? assertThinkingLevel(req.body.thinkingLevel) : undefined,
       apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
       baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,
@@ -47,6 +48,7 @@ export function createProviderRouter(registry?: ProviderRegistry) {
           ? assertContextWindowTokens(req.body.contextWindowTokens)
           : undefined,
         supportsReasoning: req.body.supportsReasoning !== undefined ? Boolean(req.body.supportsReasoning) : undefined,
+        supportsImages: req.body.supportsImages !== undefined ? Boolean(req.body.supportsImages) : undefined,
         thinkingLevel: req.body.thinkingLevel !== undefined ? assertThinkingLevel(req.body.thinkingLevel) : undefined,
         apiKey: req.body.apiKey !== undefined ? String(req.body.apiKey) : undefined,
         baseUrl: req.body.baseUrl !== undefined ? String(req.body.baseUrl) : undefined,

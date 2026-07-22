@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { asyncHandler } from "../errors.js";
 import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
+import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
 
 export interface TaskRuntimeFacade {
   snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot>;
@@ -9,7 +10,7 @@ export interface TaskRuntimeFacade {
   pauseTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
   resumeTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
   followUpTask(workspaceId: string, taskId: string, message: string): Promise<WorkspaceSnapshot>;
-  sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string): Promise<WorkspaceSnapshot>;
+  sendAgentMessage(workspaceId: string, taskId: string, agentId: string, message: string, messageId?: string, attachments?: AgentMessageAttachment[]): Promise<WorkspaceSnapshot>;
   stopTask(workspaceId: string, taskId: string): Promise<WorkspaceSnapshot>;
 }
 
@@ -59,6 +60,7 @@ export function createTaskRouter(mission: TaskRuntimeFacade) {
       String(req.params.agentId),
       String(req.body.message ?? ""),
       typeof req.body.messageId === "string" ? req.body.messageId : undefined,
+      Array.isArray(req.body.attachments) ? req.body.attachments : undefined,
     );
     res.status(201).json({ snapshot });
   }));

@@ -1,4 +1,5 @@
 import type { AgentDirectMessage, AgentThreadEvent } from "../shared/types";
+import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
 
 export type AgentThreadBubbleRole = "human" | "agent" | "platform" | "tool" | "system";
 
@@ -9,6 +10,7 @@ export interface AgentThreadBubble {
   collapsed?: boolean;
   summary?: string;
   body: string;
+  attachments?: AgentMessageAttachment[];
 }
 
 export interface ChatComposerKeyInput {
@@ -36,7 +38,7 @@ export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessag
   return [...events]
     .sort((a, b) => a.sequence - b.sequence)
     .map(eventToBubble)
-    .filter((bubble): bubble is AgentThreadBubble => Boolean(bubble?.body.trim()));
+    .filter((bubble): bubble is AgentThreadBubble => Boolean(bubble && (bubble.body.trim() || bubble.attachments?.length)));
 }
 
 export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: string): AgentThreadBubble[] {
@@ -49,7 +51,7 @@ export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: s
 
 function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
   if (event.kind === "human_message") {
-    return { id: event.id, role: "human", body: payloadText(event.payload, "content", "message") };
+    return { id: event.id, role: "human", body: payloadText(event.payload, "content", "message"), attachments: payloadAttachments(event.payload) };
   }
   if (event.kind === "agent_message") {
     return { id: event.id, role: "agent", body: payloadText(event.payload, "content", "message") };
@@ -102,6 +104,15 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
     };
   }
   return undefined;
+}
+
+function payloadAttachments(payload: unknown): AgentMessageAttachment[] {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as Record<string, unknown>).attachments)) return [];
+  return ((payload as Record<string, unknown>).attachments as unknown[]).filter((value): value is AgentMessageAttachment => {
+    if (!value || typeof value !== "object") return false;
+    const item = value as Record<string, unknown>;
+    return item.type === "image" && typeof item.attachmentId === "string" && typeof item.mimeType === "string";
+  });
 }
 
 function goalResolutionBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {

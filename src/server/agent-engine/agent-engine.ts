@@ -157,6 +157,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       senderPrincipalId: input.senderPrincipalId,
       deliveryKind: input.deliveryKind ?? "turn",
       content: input.content,
+      attachments: input.attachments ?? [],
     });
     const current = await this.store.read();
     const duplicate = current.messageIds.find((item) => item.messageId === input.messageId);
