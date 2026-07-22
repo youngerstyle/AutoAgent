@@ -127,6 +127,39 @@ describe("MissionProcessManager", () => {
     expect(await fixture.engines.get("pm")!.getThreadForAgent("pm", "mission-a")).toBeUndefined();
   });
 
+  it("keeps a second ready Ticket queued while its target Agent already has active work", async () => {
+    const fixture = await createFixture();
+    const definition = createMinimalTeamPlanDefinition(fixture.policy.ref, "build");
+    definition.initialChange = {
+      additions: ["first", "second"].map((clientRef) => ({
+        clientRef,
+        title: clientRef,
+        objective: `deliver ${clientRef}`,
+        successCriteria: [`${clientRef} delivered`],
+        assignment: { principalId: "principal-dev", requiredCapabilities: ["implementation"] },
+        outputContract: { schemaRef: `${clientRef}-v1` },
+      })),
+      dependencyAdditions: [],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "first" }, { clientRef: "second" }],
+    };
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: { planDefinition: definition, teamBindingId: fixture.team.teamBindingId },
+    });
+
+    const mission = await fixture.manager.tick();
+    const plan = await fixture.tickets.getPlan(mission.record.planId);
+    const tickets = await Promise.all(plan.graph.ticketIds.map((ticketId) => fixture.tickets.getTicket(ticketId)));
+
+    expect(mission.links.filter((link) => link.agentId === "dev" && link.status === "running")).toHaveLength(1);
+    expect(tickets.map((ticket) => ticket?.status).sort()).toEqual(["ready", "running"]);
+  });
+
   it("rejects a changed TeamBinding when an existing Mission is reopened", async () => {
     const fixture = await createFixture();
     const request = {

@@ -418,6 +418,8 @@ Mission 模式使用 Ticket adapter port：把 domain outcome 转为 Ticket Comm
 
 Ticket Engine 是独立的工单、队列和 workflow/DAG 内核。没有 Agent Engine 时，它仍可以由 human worker 或其他执行器领取并完成工单。
 
+同一个 Agent 在同一时刻只持有一张活动 Ticket。多个 ready Ticket 指向同一 Agent 时，Mission Control 只领取其中一张，其余保持 ready；活动 Ticket settled、cancelled 或释放后，下一次调度再领取下一张。Ticket Engine 仍只负责可领取状态和 claim 事务，不感知 Agent 忙闲。
+
 ### 7.2 Ticket Engine 负责
 
 - Ticket 创建和不可变身份；

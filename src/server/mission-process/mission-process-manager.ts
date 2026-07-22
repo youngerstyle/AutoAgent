@@ -192,6 +192,9 @@ export class MissionProcessManager {
     if (!work) throw new Error(`Ticket work item ${ticketId} is missing`);
     const member = selectMember(this.team, work.definition.assignment.principalId, work.definition.assignment.requiredCapabilities ?? []);
     if (!member) return aggregate;
+    if (aggregate.links.some((link) => link.agentId === member.agentId && isActiveLink(link))) {
+      return aggregate;
+    }
     const link: MissionLink = {
       dispatchId,
       missionId: aggregate.missionId,
