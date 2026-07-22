@@ -27,9 +27,13 @@ import {
   proposalToTicketCommand,
   ticketResultToGoalDecision,
   createMissionBaseline,
+  missionAssuranceSource,
+  validateMissionAssuranceReport,
+  validateMissionPlanAssurance,
   validateMissionSettlement,
   validateMissionTicketOutcome,
   type MissionTicketOutcome,
+  type SharedPlanContext,
   missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
 import { orderedAncestorTicketIds } from "./ticket-context-lineage.js";
@@ -329,6 +333,7 @@ export class MissionProcessManager {
                   objective: work.definition.objective,
                   successCriteria: work.definition.successCriteria,
                   outputContract: work.definition.outputContract,
+                  assurance: work.definition.assurance,
                   permissions: work.definition.permissions,
                   reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
                 },
@@ -362,6 +367,7 @@ export class MissionProcessManager {
         objective: work.definition.objective,
         successCriteria: work.definition.successCriteria,
         outputContract: work.definition.outputContract,
+        assurance: work.definition.assurance,
       }] : []),
       dependencyEdges: plan.graph.dependencyEdges.map((edge) => ({
         fromTicketId: String(edge.fromTicketId),
@@ -390,6 +396,18 @@ export class MissionProcessManager {
       outputContract: work.definition.outputContract,
       handoff: work.ticket.completion.handoff,
     }] : []);
+  }
+
+  private async listMissionAssuranceSources(planId: PlanId, ticketId: TicketId) {
+    const plan = await this.tickets.getPlan(planId);
+    const upstreamIds = orderedAncestorTicketIds(plan.graph, ticketId);
+    const workItems = await Promise.all(upstreamIds.map((upstreamId) => this.tickets.getWorkItem(upstreamId)));
+    return workItems.flatMap((work) => {
+      if (!work || work.ticket.status !== "completed" || !work.ticket.completion
+        || work.definition.outputContract.schemaRef !== "mission-assurance-v1") return [];
+      const source = missionAssuranceSource(work.ticket.ticketId, work.ticket.completion.handoff);
+      return source ? [source] : [];
+    });
   }
 
   private async listReworkRequests(planId: PlanId, ticketId: TicketId) {
@@ -495,8 +513,11 @@ export class MissionProcessManager {
     if (!work) throw new Error("Ticket work item is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
     const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
+    const planContext = validation.valid && schemaRef === "plan-change-set-v3"
+      ? await this.sharedPlanContext(link.planId, aggregate.record.baseline)
+      : undefined;
     const assignmentError = validation.valid
-      ? await validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team, this.tickets)
+      ? await validateTeamAssignments(proposal.domainOutcome as MissionTicketOutcome, schemaRef, this.team, this.tickets, planContext)
       : undefined;
     let missionContractError: string | undefined;
     if (validation.valid && proposal.status === "completed" && work.definition.contextPolicy?.establishesMissionBaseline) {
@@ -511,7 +532,22 @@ export class MissionProcessManager {
         missionContractError = error instanceof Error ? error.message : String(error);
       }
     }
-    if (validation.valid && proposal.status === "completed" && work.definition.permissions?.settleMission) {
+    if (validation.valid && proposal.status === "completed" && schemaRef === "mission-assurance-v1"
+      && proposal.domainOutcome?.disposition !== "correction_required"
+      && proposal.domainOutcome?.disposition !== "plan_change_required") {
+      if (!aggregate.record.baseline) missionContractError = "Mission 尚未建立权威 baseline，不能提交 assurance";
+      else {
+        const assuranceValidation = validateMissionAssuranceReport(
+          aggregate.record.baseline,
+          work.definition.assurance?.missionCriterionIds ?? [],
+          proposal.domainOutcome,
+        );
+        if (!assuranceValidation.valid) missionContractError = assuranceValidation.reason;
+      }
+    }
+    if (validation.valid && proposal.status === "completed" && work.definition.permissions?.settleMission
+      && proposal.domainOutcome?.disposition !== "correction_required"
+      && proposal.domainOutcome?.disposition !== "plan_change_required") {
       const member = this.team.members.find((item) => item.principalId === link.agentPrincipalId);
       const required = this.team.deliveryPolicy?.requiredTerminalCapabilities ?? [];
       if (!member || !required.every((capability) => member.capabilities.includes(capability))) {
@@ -519,7 +555,11 @@ export class MissionProcessManager {
       } else if (!aggregate.record.baseline) missionContractError = "Mission 尚未建立权威 baseline，不能结算";
       else {
         const resolution = (proposal.domainOutcome as MissionTicketOutcome | undefined)?.missionResolution;
-        const settlementValidation = validateMissionSettlement(aggregate.record.baseline, resolution);
+        const settlementValidation = validateMissionSettlement(
+          aggregate.record.baseline,
+          resolution,
+          await this.listMissionAssuranceSources(link.planId, link.ticketId),
+        );
         if (!settlementValidation.valid) missionContractError = settlementValidation.reason;
       }
     }
@@ -600,7 +640,7 @@ export class MissionProcessManager {
         const resolution = (proposal.domainOutcome as MissionTicketOutcome).missionResolution as {
           baselineVersion: number;
           summary: string;
-          criterionResults: Array<{ criterionId: string; status: "satisfied"; evidence: Array<{ kind: string; ref: string; note?: string }> }>;
+          criterionResults: Array<{ criterionId: string; status: "satisfied"; assuranceTicketIds: TicketId[]; evidence: Array<{ kind: string; ref: string; note?: string }> }>;
           residualRisks: string[];
         };
         const linkedAt = "linkedAt" in currentAggregate.record ? currentAggregate.record.linkedAt : this.now().toISOString();
@@ -778,6 +818,7 @@ export async function validateTeamAssignments(
   schemaRef: string | undefined,
   team: TeamBinding,
   tickets?: Pick<TicketPort, "getWorkItem">,
+  currentPlan?: SharedPlanContext,
 ): Promise<string | undefined> {
   if (schemaRef !== "plan-change-set-v3" || !outcome?.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
   const change = outcome.change as unknown as {
@@ -815,6 +856,10 @@ export async function validateTeamAssignments(
     if (terminalCapabilities.length && (!assignment || !membersForAssignment(team, assignment).some((member) => terminalCapabilities.every((capability) => member.capabilities.includes(capability))))) {
       return `计划终点 ${label} 不满足团队交付策略；终点负责人必须具备：${terminalCapabilities.join("、")}`;
     }
+  }
+  if (currentPlan?.missionBaseline) {
+    const assurance = validateMissionPlanAssurance(currentPlan.missionBaseline, outcome.change, currentPlan);
+    if (!assurance.valid) return assurance.reason;
   }
   return undefined;
 }

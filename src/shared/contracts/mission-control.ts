@@ -98,6 +98,7 @@ export interface MissionSettlement {
   criterionResults: Array<{
     criterionId: string;
     status: "satisfied";
+    assuranceTicketIds: TicketId[];
     evidence: Array<{ kind: string; ref: string; note?: string }>;
   }>;
   residualRisks: string[];

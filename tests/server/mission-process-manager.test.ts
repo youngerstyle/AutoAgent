@@ -266,29 +266,7 @@ describe("MissionProcessManager", () => {
       ownerPrincipalId: "principal-boss",
       teamBinding: fixture.team,
       resolvedStart: {
-        planDefinition: {
-          definitionId: "baseline-settlement-flow",
-          definitionVersion: 1,
-          policyRef: fixture.policy.ref,
-          plannerAssignment: { principalId: "principal-pm" },
-          amendmentTemplate: { title: "plan revision", successCriteria: ["revision is valid"], outputContract: { schemaRef: "plan-change-set-v3" } },
-          initialChange: {
-            additions: [
-              {
-                clientRef: "intake", title: "baseline", objective: "establish baseline", successCriteria: ["baseline recorded"],
-                assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "mission-baseline-v1" },
-                contextPolicy: { includeOriginalRequest: true, establishesMissionBaseline: true },
-              },
-              {
-                clientRef: "accept", title: "acceptance", objective: "accept against baseline", successCriteria: ["acceptance decided"],
-                assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "acceptance-v1" },
-                permissions: { settleMission: true },
-              },
-            ],
-            dependencyAdditions: [{ from: { clientRef: "intake" }, to: { clientRef: "accept" } }],
-            cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "accept" }],
-          },
-        },
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "deliver the complete agreed product"),
         teamBindingId: fixture.team.teamBindingId,
       },
     });
@@ -306,6 +284,60 @@ describe("MissionProcessManager", () => {
     expect(mission.record).toMatchObject({ status: "linked", baseline: { version: 1, objective: "build the agreed product" } });
 
     mission = await fixture.manager.tick();
+    const planning = mission.links.find((item) => item.agentId === "pm" && item.status === "running")!;
+    const pm = fixture.engines.get("pm")!;
+    const planningGoal = (await pm.getGoal(planning.agentGoalId!))!;
+    const baseline = mission.record.baseline!;
+    await pm.proposeGoalResolution({
+      proposalId: "plan-assured-delivery", goalId: planningGoal.spec.id, expectedGoalVersion: planningGoal.version, resolvingGoalVersion: planningGoal.version + 1,
+      status: "completed", summary: "planned verified settlement", evidence: [], criterionResults: satisfied(planningGoal), residualRisks: [],
+      domainOutcome: {
+        result: { summary: "verified delivery chain" },
+        change: {
+          additions: [
+            {
+              clientRef: "assure", title: "assurance", objective: "verify against baseline", successCriteria: ["baseline criteria verified"],
+              assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "mission-assurance-v1" },
+              assurance: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
+            },
+            {
+              clientRef: "accept", title: "acceptance", objective: "accept against verified baseline", successCriteria: ["acceptance decided"],
+              assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "acceptance-v1" },
+              permissions: { settleMission: true },
+            },
+          ],
+          dependencyAdditions: [
+            { from: { ticketId: planning.ticketId }, to: { clientRef: "assure" } },
+            { from: { clientRef: "assure" }, to: { clientRef: "accept" } },
+          ],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "accept" }],
+        },
+      },
+      createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const assurance = mission.links.find((item) => item.status === "running")!;
+    const assuranceGoal = (await boss.getGoal(assurance.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "assurance-proposal", goalId: assuranceGoal.spec.id, expectedGoalVersion: assuranceGoal.version, resolvingGoalVersion: assuranceGoal.version + 1,
+      status: "completed", summary: "baseline independently verified", evidence: [], criterionResults: satisfied(assuranceGoal), residualRisks: [],
+      domainOutcome: {
+        assuranceReport: {
+          baselineVersion: baseline.version,
+          criterionResults: baseline.criteria.map((item) => ({
+            criterionId: item.criterionId,
+            status: "satisfied",
+            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+          })),
+        },
+      },
+      createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
     const acceptance = mission.links.find((item) => item.status === "running")!;
     const acceptanceGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
     await boss.proposeGoalResolution({
@@ -317,8 +349,43 @@ describe("MissionProcessManager", () => {
     expect(mission.record.status).toBe("linked");
     expect(mission.links.find((item) => item.dispatchId === acceptance.dispatchId)).toMatchObject({ status: "running" });
 
-    const retriedGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
-    const baseline = mission.record.baseline!;
+    const correctionGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "acceptance-requests-correction", goalId: correctionGoal.spec.id, expectedGoalVersion: correctionGoal.version, resolvingGoalVersion: correctionGoal.version + 1,
+      status: "completed", summary: "upstream assurance must be repeated", evidence: [], criterionResults: satisfied(correctionGoal), residualRisks: [],
+      domainOutcome: {
+        disposition: "correction_required",
+        targetTicketId: assurance.ticketId,
+        reason: "verification evidence must be refreshed",
+      },
+      createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+    expect(mission.record.status).toBe("linked");
+
+    mission = await fixture.manager.tick();
+    const assuranceRetry = mission.links.find((item) => item.ticketId === assurance.ticketId && item.status === "running")!;
+    const assuranceRetryGoal = (await boss.getGoal(assuranceRetry.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "assurance-retry", goalId: assuranceRetryGoal.spec.id, expectedGoalVersion: assuranceRetryGoal.version, resolvingGoalVersion: assuranceRetryGoal.version + 1,
+      status: "completed", summary: "baseline verification repeated", evidence: [], criterionResults: satisfied(assuranceRetryGoal), residualRisks: [],
+      domainOutcome: {
+        assuranceReport: {
+          baselineVersion: baseline.version,
+          criterionResults: baseline.criteria.map((item) => ({
+            criterionId: item.criterionId,
+            status: "satisfied",
+            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+          })),
+        },
+      },
+      createdAt: NOW,
+    });
+    mission = await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const acceptanceRetry = mission.links.find((item) => item.ticketId === acceptance.ticketId && item.status === "running")!;
+    const retriedGoal = (await boss.getGoal(acceptanceRetry.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "complete-acceptance", goalId: retriedGoal.spec.id, expectedGoalVersion: retriedGoal.version, resolvingGoalVersion: retriedGoal.version + 1,
       status: "completed", summary: "accepted against baseline", evidence: [], criterionResults: satisfied(retriedGoal), residualRisks: [],
@@ -329,6 +396,7 @@ describe("MissionProcessManager", () => {
           criterionResults: baseline.criteria.map((item) => ({
             criterionId: item.criterionId,
             status: "satisfied",
+            assuranceTicketIds: [assuranceRetry.ticketId],
             evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
           })),
           residualRisks: [],

@@ -87,6 +87,9 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
+      ...(addition.assurance ? { assurance: {
+        missionCriterionIds: addition.assurance.missionCriterionIds.map((item) => item.trim()),
+      } } : {}),
       ...(addition.contextPolicy?.includeOriginalRequest === true || addition.contextPolicy?.establishesMissionBaseline === true
         ? { contextPolicy: {
             ...(addition.contextPolicy.includeOriginalRequest === true ? { includeOriginalRequest: true } : {}),
@@ -217,6 +220,17 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   value.successCriteria.forEach((item, index) => requireText(item, `${label}.successCriteria[${index}]`));
   requireText(value.outputContract.schemaRef, `${label}.outputContract.schemaRef`);
+  if (value.assurance !== undefined) {
+    if (!Array.isArray(value.assurance.missionCriterionIds) || value.assurance.missionCriterionIds.length === 0) {
+      throw new PlanGraphError(`${label}.assurance.missionCriterionIds must be a non-empty array`);
+    }
+    for (const [index, criterionId] of value.assurance.missionCriterionIds.entries()) {
+      requireText(criterionId, `${label}.assurance.missionCriterionIds[${index}]`);
+    }
+    if (new Set(value.assurance.missionCriterionIds).size !== value.assurance.missionCriterionIds.length) {
+      throw new PlanGraphError(`${label}.assurance.missionCriterionIds must not contain duplicates`);
+    }
+  }
   if (value.contextPolicy?.includeOriginalRequest !== undefined && typeof value.contextPolicy.includeOriginalRequest !== "boolean") {
     throw new PlanGraphError(`${label}.contextPolicy.includeOriginalRequest must be a boolean`);
   }

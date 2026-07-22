@@ -32,6 +32,9 @@ export interface TicketDefinition {
   successCriteria: string[];
   assignment: PlannedTicketAssignment;
   outputContract: TicketOutputContract;
+  assurance?: {
+    missionCriterionIds: string[];
+  };
   contextPolicy?: {
     includeOriginalRequest?: boolean;
     establishesMissionBaseline?: boolean;

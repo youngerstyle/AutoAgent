@@ -66,6 +66,18 @@ describe("append-only Plan graph", () => {
     expect(graph.definitionsByTicketId[ids[1]].permissions).toEqual({ settleMission: true });
   });
 
+  it("preserves Mission assurance declarations as Ticket definition data", () => {
+    const input = change(["verification"]);
+    input.additions[0]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    input.additions[0]!.assurance = { missionCriterionIds: ["criterion-a", "criterion-b"] };
+
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[0] });
+
+    expect(graph.definitionsByTicketId[ids[0]].assurance).toEqual({
+      missionCriterionIds: ["criterion-a", "criterion-b"],
+    });
+  });
+
   it("appends new Tickets without changing historical Ticket identity", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
     const second = materializePlanGraph({

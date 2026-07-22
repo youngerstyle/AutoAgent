@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { missionOutcomeInstruction, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { missionOutcomeInstruction, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("keeps PM domain output separate from Plan and Ticket commands", () => {
@@ -223,7 +223,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("delivery:accept");
     expect(instruction).toContain("独立质量检查不能代替最终交付验收");
     expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
-    expect(instruction).toContain("不规定角色名称、工单数量、能力名称或 schemaRef");
+    expect(instruction).toContain("不规定角色名称、工单数量、能力名称或业务内容");
     expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"terminal"}]');
   });
 
@@ -270,16 +270,131 @@ describe("Ticket Agent resolution adapter", () => {
       criterionResults: baseline.criteria.map(({ criterionId }) => ({
         criterionId,
         status: "satisfied" as const,
+        assuranceTicketIds: [`assurance-${criterionId}`],
         evidence: [{ kind: "test", ref: `acceptance://${criterionId}` }],
       })),
       residualRisks: [],
     };
 
-    expect(validateMissionSettlement(baseline, resolution)).toEqual({ valid: true });
-    expect(validateMissionSettlement(baseline, { ...resolution, criterionResults: resolution.criterionResults.slice(0, 1) }))
+    const assuranceSources = baseline.criteria.map(({ criterionId }) => ({
+      ticketId: `assurance-${criterionId}` as TicketId,
+      baselineVersion: 2,
+      criterionResults: [{
+        criterionId,
+        status: "satisfied" as const,
+        evidence: [{ kind: "test", ref: `acceptance://${criterionId}` }],
+      }],
+    }));
+
+    expect(validateMissionSettlement(baseline, resolution, assuranceSources)).toEqual({ valid: true });
+    expect(validateMissionSettlement(baseline, { ...resolution, criterionResults: resolution.criterionResults.slice(0, 1) }, assuranceSources))
       .toMatchObject({ valid: false, reason: expect.stringContaining("criterion-b") });
-    expect(validateMissionSettlement(baseline, { ...resolution, baselineVersion: 1 }))
+    expect(validateMissionSettlement(baseline, { ...resolution, baselineVersion: 1 }, assuranceSources))
       .toMatchObject({ valid: false, reason: expect.stringContaining("version") });
+    expect(validateMissionSettlement(baseline, resolution, []))
+      .toMatchObject({ valid: false, reason: expect.stringContaining("assurance") });
+    expect(validateMissionSettlement(baseline, {
+      ...resolution,
+      criterionResults: resolution.criterionResults.map((result) => ({
+        ...result,
+        assuranceTicketIds: ["unrelated-ticket"],
+      })),
+    }, assuranceSources)).toMatchObject({ valid: false, reason: expect.stringContaining("unrelated-ticket") });
+  });
+
+  it("requires assurance reports to cover the declared baseline criteria without hiding unverified work", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 3,
+      objective: "deliver the agreed product",
+      criteria: [
+        { criterionId: "criterion-a", text: "artifact runs" },
+        { criterionId: "criterion-b", text: "behavior matches" },
+      ],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const report = {
+      assuranceReport: {
+        baselineVersion: 3,
+        criterionResults: [
+          { criterionId: "criterion-a", status: "satisfied", evidence: [{ kind: "browser", ref: "run://a" }] },
+          { criterionId: "criterion-b", status: "satisfied", evidence: [{ kind: "browser", ref: "run://b" }] },
+        ],
+      },
+    };
+
+    expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], report)).toEqual({ valid: true });
+    expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], {
+      assuranceReport: {
+        ...report.assuranceReport,
+        criterionResults: [
+          report.assuranceReport.criterionResults[0],
+          { criterionId: "criterion-b", status: "not_verified", evidence: [] },
+        ],
+      },
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("not_verified") });
+  });
+
+  it("requires every Mission settlement terminal to inherit baseline assurance from strict upstream Tickets", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 1,
+      objective: "deliver the agreed product",
+      criteria: [
+        { criterionId: "criterion-a", text: "artifact runs" },
+        { criterionId: "criterion-b", text: "behavior matches" },
+      ],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const currentPlan: SharedPlanContext = {
+      planId: "plan-a",
+      version: 1,
+      missionBaseline: baseline,
+      tickets: [],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: [],
+      teamMembers: [],
+    };
+    const terminal = {
+      ...draft("acceptance", "acceptance-v1", ["delivery:accept"]),
+      permissions: { settleMission: true },
+    };
+    const unverified = {
+      additions: [draft("work"), terminal],
+      dependencyAdditions: [{ from: { clientRef: "work" }, to: { clientRef: "acceptance" } }],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "acceptance" }],
+    };
+    const verified = {
+      additions: [
+        draft("work"),
+        {
+          ...draft("assurance-a", "mission-assurance-v1", ["delivery:verify"]),
+          assurance: { missionCriterionIds: ["criterion-a"] },
+        },
+        {
+          ...draft("assurance-b", "mission-assurance-v1", ["delivery:verify"]),
+          assurance: { missionCriterionIds: ["criterion-b"] },
+        },
+        terminal,
+      ],
+      dependencyAdditions: [
+        { from: { clientRef: "work" }, to: { clientRef: "assurance-a" } },
+        { from: { clientRef: "work" }, to: { clientRef: "assurance-b" } },
+        { from: { clientRef: "assurance-a" }, to: { clientRef: "acceptance" } },
+        { from: { clientRef: "assurance-b" }, to: { clientRef: "acceptance" } },
+      ],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "acceptance" }],
+    };
+
+    expect(validateMissionPlanAssurance(baseline, unverified, currentPlan))
+      .toMatchObject({ valid: false, reason: expect.stringContaining("criterion-a") });
+    expect(validateMissionPlanAssurance(baseline, verified, currentPlan)).toEqual({ valid: true });
   });
 
   it("does not impose fixed role names or output schemas on a structurally valid Plan", () => {

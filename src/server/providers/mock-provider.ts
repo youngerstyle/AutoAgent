@@ -42,6 +42,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
   }
   if (ticket.outputSchema === "plan-change-set-v3" && !ticket.settleMission) {
     const sourceTicketId = currentTicketId(instructions);
+    const criterionIds = missionCriterionIds(instructions);
     return {
       status: "completed",
       summary: "已形成执行工单 DAG",
@@ -54,7 +55,10 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
         change: {
           additions: [
             node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
-            node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "qa-report-v1"),
+            {
+              ...node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
+              assurance: { missionCriterionIds: criterionIds },
+            },
             { ...node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"), permissions: { settleMission: true } },
           ],
           dependencyAdditions: [
@@ -68,9 +72,31 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       },
     };
   }
+  if (ticket.outputSchema === "mission-assurance-v1" && !ticket.settleMission) {
+    const criterionIds = missionCriterionIds(instructions);
+    const baselineVersion = missionBaselineVersion(instructions);
+    return {
+      status: "completed",
+      summary: "已逐项验证 Mission 成功标准",
+      evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
+      domainOutcome: {
+        assuranceReport: {
+          baselineVersion,
+          criterionResults: criterionIds.map((criterionId) => ({
+            criterionId,
+            status: "satisfied",
+            evidence: [{ kind: "test", ref: `mock://assurance/${criterionId}` }],
+          })),
+        },
+      },
+    };
+  }
   if (ticket.settleMission) {
-    const criterionIds = [...new Set([...instructions.matchAll(/"criterionId":"([^"]+)"/g)].map((match) => match[1]))];
-    const baselineVersion = Number(instructions.match(/"missionBaseline":\{[^}]*"version":(\d+)/)?.[1] ?? 1);
+    const criterionIds = missionCriterionIds(instructions);
+    const baselineVersion = missionBaselineVersion(instructions);
+    const assuranceTicketIds = completedAssuranceTicketIds(instructions);
     return {
       status: "completed",
       summary: "已依据 Mission 基线完成最终验收",
@@ -84,7 +110,8 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
           criterionResults: criterionIds.map((criterionId) => ({
             criterionId,
             status: "satisfied",
-            evidence: [{ kind: "test", ref: `mock://acceptance/${criterionId}` }],
+            assuranceTicketIds,
+            evidence: [{ kind: "test", ref: `mock://assurance/${criterionId}` }],
           })),
           residualRisks: [],
         },
@@ -119,6 +146,51 @@ function currentTicketId(instructions: string): string {
   const match = instructions.match(/^- ticket:\s*([0-9a-f-]{36})\s*$/im);
   if (!match) throw new Error("Mock planning turn is missing its current Ticket context");
   return match[1];
+}
+
+function missionCriterionIds(instructions: string): string[] {
+  return workContext(instructions).currentPlan?.missionBaseline?.criteria
+    ?.map((criterion) => criterion.criterionId)
+    .filter((criterionId): criterionId is string => typeof criterionId === "string" && criterionId.length > 0) ?? [];
+}
+
+function missionBaselineVersion(instructions: string): number {
+  return workContext(instructions).currentPlan?.missionBaseline?.version ?? 1;
+}
+
+function completedAssuranceTicketIds(instructions: string): string[] {
+  return workContext(instructions).handoffLineage
+    ?.filter((handoff) => handoff.outputContract?.schemaRef === "mission-assurance-v1")
+    .map((handoff) => handoff.ticketId)
+    .filter((ticketId): ticketId is string => typeof ticketId === "string" && ticketId.length > 0) ?? [];
+}
+
+interface MockWorkContext {
+  currentPlan?: {
+    missionBaseline?: {
+      version?: number;
+      criteria?: Array<{ criterionId?: string }>;
+    };
+  };
+  handoffLineage?: Array<{
+    ticketId?: string;
+    outputContract?: { schemaRef?: string };
+  }>;
+}
+
+function workContext(instructions: string): MockWorkContext {
+  const prefix = "当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装，不含其他 Agent 的私有会话）：";
+  const suffix = "。currentPlan 是所有参与者共享的当前执行视图";
+  const start = instructions.lastIndexOf(prefix);
+  if (start < 0) return {};
+  const jsonStart = start + prefix.length;
+  const jsonEnd = instructions.indexOf(suffix, jsonStart);
+  if (jsonEnd < 0) return {};
+  try {
+    return JSON.parse(instructions.slice(jsonStart, jsonEnd)) as MockWorkContext;
+  } catch {
+    return {};
+  }
 }
 
 function node(clientRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
