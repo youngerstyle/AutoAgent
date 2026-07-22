@@ -1,14 +1,14 @@
-import { exec, spawn } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { WorkspaceToolName } from "../../shared/types.js";
 import type { AgentToolDefinition } from "../providers/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 import { assertCommandAllowed } from "../policy/command-policy.js";
 import { resolveToolPath } from "../policy/path-policy.js";
 
-const execAsync = promisify(exec);
+const DEFAULT_SHELL_YIELD_MS = 2_000;
+const MAX_LOG_CHARS = 64_000;
 
 export interface AgentToolIntent {
   tool: WorkspaceToolName;
@@ -29,6 +29,7 @@ export class AgentToolRuntime {
   constructor(
     private readonly policy: EffectivePolicy,
     enabledTools: WorkspaceToolName[],
+    private readonly options: { shellYieldMs?: number } = {},
   ) {
     this.enabled = new Set(enabledTools);
   }
@@ -52,14 +53,7 @@ export class AgentToolRuntime {
       }
       if (intent.tool === "shell") {
         const command = required(intent.command, "command");
-        assertCommandAllowed(this.policy, command);
-        try {
-          const result = await execAsync(command, { cwd: this.policy.workspaceRoot, windowsHide: true, timeout: 600_000 });
-          return { tool: intent.tool, ok: true, command, stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
-        } catch (error) {
-          const failure = error as Error & { stdout?: string; stderr?: string; code?: number };
-          return { tool: intent.tool, ok: false, command, stdout: failure.stdout ?? "", stderr: failure.stderr ?? failure.message, exitCode: failure.code ?? 1 };
-        }
+        return this.runShell(command);
       }
       if (intent.tool === "startService") return this.startService(required(intent.command, "command"));
       return this.pollService(required(intent.serviceId, "serviceId"));
@@ -68,36 +62,121 @@ export class AgentToolRuntime {
     }
   }
 
+  private async runShell(command: string): Promise<AgentToolResult> {
+    assertCommandAllowed(this.policy, command);
+    const processRecord = await this.spawnManaged(command);
+    const exitCode = await Promise.race([
+      processRecord.exit,
+      delay(this.options.shellYieldMs ?? DEFAULT_SHELL_YIELD_MS).then(() => undefined),
+    ]);
+    if (exitCode === undefined) {
+      return {
+        tool: "shell",
+        ok: true,
+        command,
+        serviceId: processRecord.serviceId,
+        pid: processRecord.pid,
+        running: true,
+        stdout: await readLog(processRecord.stdoutPath),
+        stderr: await readLog(processRecord.stderrPath),
+      };
+    }
+    const stdout = await readLog(processRecord.stdoutPath);
+    const stderr = await readLog(processRecord.stderrPath);
+    return { tool: "shell", ok: exitCode === 0, command, stdout, stderr, exitCode, running: false };
+  }
+
   definitions(): AgentToolDefinition[] {
     return [...this.enabled].map(toolDefinition);
   }
 
   private async startService(command: string): Promise<AgentToolResult> {
     assertCommandAllowed(this.policy, command);
-    const serviceId = `agent_svc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const child = spawn(command, {
-      cwd: this.policy.workspaceRoot,
-      shell: true,
-      windowsHide: true,
-      detached: false,
-      stdio: "ignore",
-    });
-    child.unref();
-    const directory = path.join(this.policy.workspaceRoot, ".autoagent", "agent-services");
-    await mkdir(directory, { recursive: true });
-    await writeFile(path.join(directory, `${serviceId}.json`), JSON.stringify({ serviceId, command, pid: child.pid }), "utf8");
-    return { tool: "startService", ok: true, serviceId, command, pid: child.pid, running: Boolean(child.pid) };
+    const processRecord = await this.spawnManaged(command);
+    return {
+      tool: "startService",
+      ok: true,
+      serviceId: processRecord.serviceId,
+      command,
+      pid: processRecord.pid,
+      running: true,
+    };
   }
 
   private async pollService(serviceId: string): Promise<AgentToolResult> {
     if (!/^agent_svc_[a-z0-9_]+$/i.test(serviceId)) throw new Error("serviceId is invalid");
     const file = path.join(this.policy.workspaceRoot, ".autoagent", "agent-services", `${serviceId}.json`);
-    const metadata = JSON.parse(await readFile(file, "utf8")) as { pid?: number; command?: string };
+    const metadata = JSON.parse(await readFile(file, "utf8")) as {
+      pid?: number;
+      command?: string;
+      stdoutPath?: string;
+      stderrPath?: string;
+      exitCode?: number | null;
+    };
     let running = false;
     if (metadata.pid) {
       try { process.kill(metadata.pid, 0); running = true; } catch { running = false; }
     }
-    return { tool: "pollProcess", ok: true, serviceId, command: metadata.command, pid: metadata.pid, running };
+    return {
+      tool: "pollProcess",
+      ok: true,
+      serviceId,
+      command: metadata.command,
+      pid: metadata.pid,
+      running,
+      ...(running ? {} : { exitCode: metadata.exitCode ?? null }),
+      stdout: await readLog(metadata.stdoutPath),
+      stderr: await readLog(metadata.stderrPath),
+    };
+  }
+
+  private async spawnManaged(command: string): Promise<ManagedProcess> {
+    const serviceId = `agent_svc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const directory = path.join(this.policy.workspaceRoot, ".autoagent", "agent-services");
+    await mkdir(directory, { recursive: true });
+    const stdoutPath = path.join(directory, `${serviceId}.stdout.log`);
+    const stderrPath = path.join(directory, `${serviceId}.stderr.log`);
+    const [stdoutHandle, stderrHandle] = await Promise.all([open(stdoutPath, "w"), open(stderrPath, "w")]);
+    const child = spawn(command, {
+      cwd: this.policy.workspaceRoot,
+      shell: true,
+      windowsHide: true,
+      detached: false,
+      stdio: ["ignore", stdoutHandle.fd, stderrHandle.fd],
+    });
+    const exit = new Promise<number>((resolve) => {
+      child.once("error", () => resolve(1));
+      child.once("exit", (code) => resolve(code ?? 1));
+    });
+    await Promise.all([stdoutHandle.close(), stderrHandle.close()]);
+    if (!child.pid) throw new Error("Command process did not start");
+    const metadataPath = path.join(directory, `${serviceId}.json`);
+    const metadata = { serviceId, command, pid: child.pid, stdoutPath, stderrPath, exitCode: null as number | null };
+    await writeFile(metadataPath, JSON.stringify(metadata), "utf8");
+    void exit.then((exitCode) => writeFile(metadataPath, JSON.stringify({ ...metadata, exitCode }), "utf8"));
+    return { serviceId, pid: child.pid, stdoutPath, stderrPath, exit };
+  }
+}
+
+interface ManagedProcess {
+  serviceId: string;
+  pid: number;
+  stdoutPath: string;
+  stderrPath: string;
+  exit: Promise<number>;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readLog(filePath?: string): Promise<string> {
+  if (!filePath) return "";
+  try {
+    const content = await readFile(filePath, "utf8");
+    return content.length > MAX_LOG_CHARS ? content.slice(-MAX_LOG_CHARS) : content;
+  } catch {
+    return "";
   }
 }
 

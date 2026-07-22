@@ -54,7 +54,10 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
         result: { plan: "实现、质量检查、验收" },
         change: {
           additions: [
-            node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
+            {
+              ...node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
+              missionContribution: { missionCriterionIds: criterionIds },
+            },
             {
               ...node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
               assurance: { missionCriterionIds: criterionIds },

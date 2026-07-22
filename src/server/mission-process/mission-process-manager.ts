@@ -29,10 +29,13 @@ import {
   createMissionBaseline,
   missionAssuranceSource,
   validateMissionAssuranceReport,
+  validateMissionCorrectionOwnership,
   validateMissionPlanAssurance,
   validateMissionSettlement,
   validateMissionTicketOutcome,
   type MissionTicketOutcome,
+  type MissionAssuranceSource,
+  type MissionSettlementEvidence,
   type SharedPlanContext,
   missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
@@ -287,6 +290,10 @@ export class MissionProcessManager {
       const assignmentIssue = missingCapabilities.length
         ? `工单 ${link.ticketId} 要求团队中不存在的能力：${missingCapabilities.join("、")}`
         : undefined;
+      const contributedMissionCriteria = (work.definition.missionContribution?.missionCriterionIds ?? []).flatMap((criterionId) => {
+        const criterion = aggregate.record.baseline?.criteria.find((item) => item.criterionId === criterionId);
+        return criterion ? [`Mission 标准 [${criterion.criterionId}]：${criterion.text}`] : [];
+      });
       const prior = await agent.getGoalByStartKey(link.goalStartKey);
       const goal = prior ?? await agent.startGoal({
         agentId: link.agentId,
@@ -300,7 +307,7 @@ export class MissionProcessManager {
             : work.definition.objective,
           successCriteria: assignmentIssue
             ? ["明确记录无法分配的能力", "调用 request_human_input，不伪装完成原工作"]
-            : work.definition.successCriteria,
+            : [...work.definition.successCriteria, ...contributedMissionCriteria],
           contextRefs: [
             { kind: "mission", ref: aggregate.missionId },
             { kind: "plan", ref: link.planId },
@@ -333,11 +340,15 @@ export class MissionProcessManager {
                   objective: work.definition.objective,
                   successCriteria: work.definition.successCriteria,
                   outputContract: work.definition.outputContract,
+                  missionContribution: work.definition.missionContribution,
                   assurance: work.definition.assurance,
                   permissions: work.definition.permissions,
                   reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
                 },
               },
+              work.definition.permissions?.settleMission && aggregate.record.baseline
+                ? await this.missionSettlementEvidence(link.planId, link.ticketId, aggregate.record.baseline)
+                : undefined,
             ),
         createdAt: this.now().toISOString(),
       });
@@ -367,6 +378,7 @@ export class MissionProcessManager {
         objective: work.definition.objective,
         successCriteria: work.definition.successCriteria,
         outputContract: work.definition.outputContract,
+        missionContribution: work.definition.missionContribution,
         assurance: work.definition.assurance,
       }] : []),
       dependencyEdges: plan.graph.dependencyEdges.map((edge) => ({
@@ -408,6 +420,21 @@ export class MissionProcessManager {
       const source = missionAssuranceSource(work.ticket.ticketId, work.ticket.completion.handoff);
       return source ? [source] : [];
     });
+  }
+
+  private async missionSettlementEvidence(planId: PlanId, ticketId: TicketId, baseline: MissionBaseline): Promise<MissionSettlementEvidence> {
+    const sources = await this.listMissionAssuranceSources(planId, ticketId);
+    return {
+      baselineVersion: baseline.version,
+      criteria: baseline.criteria.map((criterion) => ({
+        criterionId: criterion.criterionId,
+        criterionText: criterion.text,
+        assuranceSources: sources.flatMap((source): MissionAssuranceSource[] => {
+          const criterionResults = source.criterionResults.filter((result) => result.criterionId === criterion.criterionId);
+          return criterionResults.length ? [{ ...source, criterionResults }] : [];
+        }),
+      })),
+    };
   }
 
   private async listReworkRequests(planId: PlanId, ticketId: TicketId) {
@@ -513,6 +540,22 @@ export class MissionProcessManager {
     if (!work) throw new Error("Ticket work item is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
     const validation = validateMissionTicketOutcome(schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
+    const correctionTargets = validation.valid && proposal.status === "completed"
+      && proposal.domainOutcome?.disposition === "correction_required"
+      ? await this.listCorrectionTargets(link.planId, link.ticketId)
+      : [];
+    const correctionOwnership = validation.valid
+      ? validateMissionCorrectionOwnership({
+          ticketId: work.ticket.ticketId,
+          title: work.definition.title,
+          objective: work.definition.objective,
+          successCriteria: work.definition.successCriteria,
+          outputContract: work.definition.outputContract,
+          missionContribution: work.definition.missionContribution,
+          assurance: work.definition.assurance,
+          permissions: work.definition.permissions,
+        }, proposal.domainOutcome, correctionTargets)
+      : undefined;
     const planContext = validation.valid && schemaRef === "plan-change-set-v3"
       ? await this.sharedPlanContext(link.planId, aggregate.record.baseline)
       : undefined;
@@ -563,7 +606,9 @@ export class MissionProcessManager {
         if (!settlementValidation.valid) missionContractError = settlementValidation.reason;
       }
     }
-    const correctionReason = validation.valid ? (assignmentError ?? missionContractError) : validation.reason;
+    const correctionReason = validation.valid
+      ? (correctionOwnership && !correctionOwnership.valid ? correctionOwnership.reason : assignmentError ?? missionContractError)
+      : validation.reason;
     if (correctionReason) {
       const decisionId = stableId("invalid_goal_decision", proposalId);
       const settled = await this.settleAgentProposal(
@@ -689,7 +734,7 @@ export class MissionProcessManager {
     return this.updateLink(currentAggregate, dispatchId, nextLink);
   }
 
-  private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string }>> {
+  private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string; missionCriterionIds?: string[] }>> {
     const plan = await this.tickets.getPlan(planId);
     const incoming = new Map<string, TicketId[]>();
     for (const edge of plan.graph.dependencyEdges) {
@@ -705,10 +750,16 @@ export class MissionProcessManager {
       ancestorIds.push(current);
       queue.push(...(incoming.get(String(current)) ?? []));
     }
-    const targets: Array<{ ticketId: TicketId; title: string }> = [];
+    const targets: Array<{ ticketId: TicketId; title: string; missionCriterionIds?: string[] }> = [];
     for (const ancestorId of ancestorIds) {
       const work = await this.tickets.getWorkItem(ancestorId);
-      if (work?.ticket.status === "completed") targets.push({ ticketId: ancestorId, title: work.definition.title });
+      if (work?.ticket.status === "completed") targets.push({
+        ticketId: ancestorId,
+        title: work.definition.title,
+        ...(work.definition.missionContribution
+          ? { missionCriterionIds: work.definition.missionContribution.missionCriterionIds }
+          : {}),
+      });
     }
     return targets;
   }

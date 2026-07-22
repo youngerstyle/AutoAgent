@@ -34,6 +34,46 @@ describe("AgentToolRuntime", () => {
     expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
   });
 
+  it("yields a long-running shell command as a pollable managed process", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-yield-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["shell", "pollProcess"], { shellYieldMs: 30 });
+
+    const started = await runtime.execute({
+      tool: "shell",
+      command: "node -e \"setTimeout(() => console.log('finished'), 150)\"",
+    });
+    expect(started).toMatchObject({ tool: "shell", ok: true, running: true, serviceId: expect.any(String) });
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
+    expect(completed).toMatchObject({ tool: "pollProcess", ok: true, running: false, exitCode: 0 });
+    expect(completed.stdout).toContain("finished");
+  });
+
+  it("settles parallel shell calls even when one command remains running", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-parallel-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["shell"], { shellYieldMs: 200 });
+
+    const [short, long] = await Promise.all([
+      runtime.execute({ tool: "shell", command: "node -e \"console.log('short')\"" }),
+      runtime.execute({ tool: "shell", command: "node -e \"setTimeout(() => {}, 1000)\"" }),
+    ]);
+    expect(short).toMatchObject({ ok: true, running: false, exitCode: 0 });
+    expect(long).toMatchObject({ ok: true, running: true, serviceId: expect.any(String) });
+  });
+
   it("rejects relative and absolute paths outside the workspace when host access is disabled", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-boundary-"));
     const root = path.join(parent, "workspace");

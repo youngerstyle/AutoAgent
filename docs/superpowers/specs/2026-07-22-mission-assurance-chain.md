@@ -46,6 +46,12 @@ natural-language keywords, product features, or domain semantics.
 ## Assurance contract
 
 Planning Tickets may add ordinary work Tickets and Mission-assurance Tickets.
+Every work Ticket that contributes to the Mission declares the criterion ids it
+owns through `missionContribution.missionCriterionIds`. Mission Control injects
+the authoritative baseline text for those ids into that Agent's Goal. This
+prevents a planner from accidentally narrowing a Mission criterion into a
+smaller Ticket criterion that can be completed without delivering the Mission.
+
 An assurance Ticket is identified by the engine-level output contract
 `mission-assurance-v1` and declares the Mission criterion ids it will verify.
 This is a work contract, not a role check: any team member with a matching
@@ -75,20 +81,38 @@ a completed Agent investigation, but it must use the existing correction or
 Plan-change disposition instead of completing the assurance Ticket. Missing
 non-replaceable verification uses the existing human-input tool.
 
+The full assurance scope and one correction's impact scope are different
+contracts. `assuranceReport.criterionResults` always reports every criterion
+declared by the assurance Ticket. A `correction_required` outcome additionally
+uses `correctionMissionCriterionIds` to identify only the criteria affected by
+its single `targetTicketId`. Those ids must be a subset of both the assurance
+scope and the target work Ticket's `missionContribution`. This lets an Agent
+report a complete review while returning one defect to its actual owner; the
+platform validates references but does not infer defects or routing from text.
+
 ## Plan validation
 
 The PM chooses the number of Tickets, topology, owners, milestones, staged
 delivery strategy, and rework strategy. Platform code does not create an
 MVP/Alpha/Beta workflow.
 
-Mission Control validates only that every Mission settlement terminal has an
-ancestor assurance path covering every criterion in the current baseline.
+Mission Control validates that every Mission settlement terminal has a
+traceable path for every current baseline criterion:
+
+`contributing work Ticket -> assurance Ticket -> settlement Ticket`
+
+The contributing Ticket must explicitly own the criterion, and the assurance
+Ticket must be a strict downstream node that verifies the same criterion.
 Therefore a PM may create one verification pass, several milestone reviews, or
 multiple parallel verification Tickets, but cannot connect an implementation
 directly to Mission settlement without a verifiable baseline-coverage path.
 
 When evidence is missing or a check fails, the responsible Agent decides
 whether to request correction, request a Plan change, or request human input.
+An assurance correction must name the failed criterion ids, and its target must
+be an upstream Ticket that owns those ids. If no such Ticket exists, the Plan
+is incomplete and the Agent must request a Plan change instead of repeatedly
+reopening an unrelated Ticket.
 Those existing mechanisms cause another attempt or append more Tickets to the
 same Plan. Ticket Engine does not synthesize the next version.
 
@@ -111,6 +135,16 @@ the settlement only when:
 An arbitrary string, a file that merely exists, an implementation self-report,
 or an unstructured QA summary cannot settle a Mission.
 
+Before starting a settlement Goal, Mission Control projects the authoritative
+completed assurance handoffs into a criterion-scoped evidence matrix. Each
+matrix row contains one baseline criterion and only the assurance Ticket ids,
+statuses, and evidence belonging to that criterion. This is a read model of
+Ticket Engine facts, not a platform acceptance decision: the settlement Agent
+still decides whether the Mission is acceptable, while Mission Control only
+checks that the proposal cites the matrix exactly. Ordinary ancestor handoffs
+remain available for understanding the work, but the Agent never has to copy
+settlement evidence out of unrelated or differently shaped payloads.
+
 ## Multi-stage delivery
 
 There is still one Mission and one Plan. Milestones are ordinary DAG regions.
@@ -132,3 +166,10 @@ work is necessary.
 7. Multiple assurance Tickets may jointly cover the baseline.
 8. No validation branch depends on an Agent role, Ticket title, product type,
    filename, or natural-language keyword.
+9. A Plan with full assurance coverage but missing execution ownership for one
+   Mission criterion is rejected.
+10. A Mission-assurance correction cannot target a Ticket that does not own the
+    failed criterion; that condition requires a Plan change.
+11. A settlement Goal receives a criterion-scoped evidence matrix containing
+    only completed ancestor assurance facts; the matrix itself does not choose
+    the acceptance verdict.

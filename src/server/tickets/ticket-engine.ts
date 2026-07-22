@@ -372,9 +372,11 @@ export class TicketEngine {
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
     if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
     if (command.payload.type === "complete") {
+      const definition = aggregate.definitionsByTicketId[String(command.ticketId)];
       const handoffError = validateCompletionHandoff(
         command.payload.handoff,
-        aggregate.definitionsByTicketId[String(command.ticketId)]?.successCriteria.length ?? 0,
+        (definition?.successCriteria.length ?? 0)
+          + (definition?.missionContribution?.missionCriterionIds.length ?? 0),
       );
       if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
     }

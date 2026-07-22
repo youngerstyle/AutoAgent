@@ -296,6 +296,11 @@ describe("MissionProcessManager", () => {
         change: {
           additions: [
             {
+              clientRef: "work", title: "delivery", objective: "deliver against baseline", successCriteria: ["baseline delivery produced"],
+              assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "result-v1" },
+              missionContribution: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
+            },
+            {
               clientRef: "assure", title: "assurance", objective: "verify against baseline", successCriteria: ["baseline criteria verified"],
               assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "mission-assurance-v1" },
               assurance: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
@@ -307,7 +312,8 @@ describe("MissionProcessManager", () => {
             },
           ],
           dependencyAdditions: [
-            { from: { ticketId: planning.ticketId }, to: { clientRef: "assure" } },
+            { from: { ticketId: planning.ticketId }, to: { clientRef: "work" } },
+            { from: { clientRef: "work" }, to: { clientRef: "assure" } },
             { from: { clientRef: "assure" }, to: { clientRef: "accept" } },
           ],
           cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "accept" }],
@@ -316,9 +322,31 @@ describe("MissionProcessManager", () => {
       createdAt: NOW,
     });
     mission = await fixture.manager.tick();
+    const awaitRunning = async (title: string) => {
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        mission = await fixture.manager.tick();
+        for (const candidate of mission.links.filter((item) => item.status === "running")) {
+          const work = await fixture.tickets.getWorkItem(candidate.ticketId);
+          if (work?.definition.title === title) return candidate;
+        }
+      }
+      const state = await Promise.all(mission.links.map(async (item) => ({
+        status: item.status,
+        title: (await fixture.tickets.getWorkItem(item.ticketId))?.definition.title,
+        ticketId: item.ticketId,
+      })));
+      throw new Error(`Timed out waiting for running Ticket ${title}: ${JSON.stringify(state)}`);
+    };
 
+    const delivery = await awaitRunning("delivery");
+    const deliveryGoal = (await boss.getGoal(delivery.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "delivery-proposal", goalId: deliveryGoal.spec.id, expectedGoalVersion: deliveryGoal.version, resolvingGoalVersion: deliveryGoal.version + 1,
+      status: "completed", summary: "baseline delivery produced", evidence: [], criterionResults: satisfied(deliveryGoal), residualRisks: [],
+      domainOutcome: { result: "delivered" }, createdAt: NOW,
+    });
     mission = await fixture.manager.tick();
-    const assurance = mission.links.find((item) => item.status === "running")!;
+    const assurance = await awaitRunning("assurance");
     const assuranceGoal = (await boss.getGoal(assurance.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "assurance-proposal", goalId: assuranceGoal.spec.id, expectedGoalVersion: assuranceGoal.version, resolvingGoalVersion: assuranceGoal.version + 1,
@@ -336,10 +364,25 @@ describe("MissionProcessManager", () => {
       createdAt: NOW,
     });
     mission = await fixture.manager.tick();
-
-    mission = await fixture.manager.tick();
-    const acceptance = mission.links.find((item) => item.status === "running")!;
+    const acceptance = await awaitRunning("acceptance");
     const acceptanceGoal = (await boss.getGoal(acceptance.agentGoalId!))!;
+    const acceptanceThread = await boss.getThread(acceptance.agentThreadId!);
+    const acceptancePayloads = await boss.getPayloads(acceptanceThread.items.map((item) => item.payloadRef));
+    const settlementInstruction = [...acceptancePayloads.values()].find((value) => (
+      typeof value === "object"
+      && value !== null
+      && "senderPrincipalId" in value
+      && value.senderPrincipalId === "mission-process"
+      && "content" in value
+      && typeof value.content === "string"
+      && value.content.includes("权威验收证据矩阵")
+    ));
+    expect(settlementInstruction).toMatchObject({
+      content: expect.stringContaining(String(assurance.ticketId)),
+    });
+    expect(settlementInstruction).toMatchObject({
+      content: expect.stringContaining(`acceptance://${baseline.criteria[0]!.criterionId}`),
+    });
     await boss.proposeGoalResolution({
       proposalId: "incomplete-acceptance", goalId: acceptanceGoal.spec.id, expectedGoalVersion: acceptanceGoal.version, resolvingGoalVersion: acceptanceGoal.version + 1,
       status: "completed", summary: "accepted without baseline proof", evidence: [], criterionResults: satisfied(acceptanceGoal), residualRisks: [],
@@ -363,8 +406,7 @@ describe("MissionProcessManager", () => {
     mission = await fixture.manager.tick();
     expect(mission.record.status).toBe("linked");
 
-    mission = await fixture.manager.tick();
-    const assuranceRetry = mission.links.find((item) => item.ticketId === assurance.ticketId && item.status === "running")!;
+    const assuranceRetry = await awaitRunning("assurance");
     const assuranceRetryGoal = (await boss.getGoal(assuranceRetry.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "assurance-retry", goalId: assuranceRetryGoal.spec.id, expectedGoalVersion: assuranceRetryGoal.version, resolvingGoalVersion: assuranceRetryGoal.version + 1,
@@ -382,9 +424,7 @@ describe("MissionProcessManager", () => {
       createdAt: NOW,
     });
     mission = await fixture.manager.tick();
-
-    mission = await fixture.manager.tick();
-    const acceptanceRetry = mission.links.find((item) => item.ticketId === acceptance.ticketId && item.status === "running")!;
+    const acceptanceRetry = await awaitRunning("acceptance");
     const retriedGoal = (await boss.getGoal(acceptanceRetry.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "complete-acceptance", goalId: retriedGoal.spec.id, expectedGoalVersion: retriedGoal.version, resolvingGoalVersion: retriedGoal.version + 1,
@@ -404,6 +444,7 @@ describe("MissionProcessManager", () => {
       },
       createdAt: NOW,
     });
+    mission = await fixture.manager.tick();
     mission = await fixture.manager.tick();
     expect(mission.record).toMatchObject({
       status: "completed",

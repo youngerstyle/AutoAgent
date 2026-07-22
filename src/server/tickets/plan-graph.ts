@@ -87,6 +87,9 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
+      ...(addition.missionContribution ? { missionContribution: {
+        missionCriterionIds: addition.missionContribution.missionCriterionIds.map((item) => item.trim()),
+      } } : {}),
       ...(addition.assurance ? { assurance: {
         missionCriterionIds: addition.assurance.missionCriterionIds.map((item) => item.trim()),
       } } : {}),
@@ -220,16 +223,11 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   value.successCriteria.forEach((item, index) => requireText(item, `${label}.successCriteria[${index}]`));
   requireText(value.outputContract.schemaRef, `${label}.outputContract.schemaRef`);
+  if (value.missionContribution !== undefined) {
+    validateCriterionIds(value.missionContribution.missionCriterionIds, `${label}.missionContribution.missionCriterionIds`);
+  }
   if (value.assurance !== undefined) {
-    if (!Array.isArray(value.assurance.missionCriterionIds) || value.assurance.missionCriterionIds.length === 0) {
-      throw new PlanGraphError(`${label}.assurance.missionCriterionIds must be a non-empty array`);
-    }
-    for (const [index, criterionId] of value.assurance.missionCriterionIds.entries()) {
-      requireText(criterionId, `${label}.assurance.missionCriterionIds[${index}]`);
-    }
-    if (new Set(value.assurance.missionCriterionIds).size !== value.assurance.missionCriterionIds.length) {
-      throw new PlanGraphError(`${label}.assurance.missionCriterionIds must not contain duplicates`);
-    }
+    validateCriterionIds(value.assurance.missionCriterionIds, `${label}.assurance.missionCriterionIds`);
   }
   if (value.contextPolicy?.includeOriginalRequest !== undefined && typeof value.contextPolicy.includeOriginalRequest !== "boolean") {
     throw new PlanGraphError(`${label}.contextPolicy.includeOriginalRequest must be a boolean`);
@@ -243,6 +241,14 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   if (value.permissions?.settleMission !== undefined && typeof value.permissions.settleMission !== "boolean") {
     throw new PlanGraphError(`${label}.permissions.settleMission must be a boolean`);
   }
+}
+
+function validateCriterionIds(value: string[], label: string): void {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new PlanGraphError(`${label} must be a non-empty array`);
+  }
+  for (const [index, criterionId] of value.entries()) requireText(criterionId, `${label}[${index}]`);
+  if (new Set(value).size !== value.length) throw new PlanGraphError(`${label} must not contain duplicates`);
 }
 
 function validateUniqueEdges(edges: PlanGraphSnapshot["dependencyEdges"]): void {

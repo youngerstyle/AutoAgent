@@ -68,6 +68,7 @@ describe("append-only Plan graph", () => {
 
   it("preserves Mission assurance declarations as Ticket definition data", () => {
     const input = change(["verification"]);
+    input.additions[0]!.missionContribution = { missionCriterionIds: ["criterion-a"] };
     input.additions[0]!.outputContract = { schemaRef: "mission-assurance-v1" };
     input.additions[0]!.assurance = { missionCriterionIds: ["criterion-a", "criterion-b"] };
 
@@ -75,6 +76,9 @@ describe("append-only Plan graph", () => {
 
     expect(graph.definitionsByTicketId[ids[0]].assurance).toEqual({
       missionCriterionIds: ["criterion-a", "criterion-b"],
+    });
+    expect(graph.definitionsByTicketId[ids[0]].missionContribution).toEqual({
+      missionCriterionIds: ["criterion-a"],
     });
   });
 
