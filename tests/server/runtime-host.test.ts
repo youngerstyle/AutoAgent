@@ -131,10 +131,10 @@ describe("RuntimeHost", () => {
   it("runs a fresh mock mission through ticket DAG and survives host recreation", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-a", title: "演示", objective: "构建演示" });
-    for (let index = 0; index < 12; index += 1) await fixture.host.tick();
+    await waitForTaskStatus(fixture.host, "task-a", "completed");
 
     expect(await fixture.host.listTasks()).toContainEqual(expect.objectContaining({ taskId: "task-a", status: "completed" }));
-    fixture.host.stop();
+    await fixture.host.stop();
 
     const restarted = new RuntimeHost(
       fixture.workspace,
@@ -146,7 +146,7 @@ describe("RuntimeHost", () => {
     );
     await restarted.recover();
     expect(await restarted.listTasks()).toContainEqual(expect.objectContaining({ taskId: "task-a", status: "completed" }));
-    restarted.stop();
+    await restarted.stop();
   });
 
   it("keeps the Mission TeamBinding snapshot unchanged when profiles change before restart", async () => {
@@ -155,7 +155,7 @@ describe("RuntimeHost", () => {
     const before = await fixture.host.context("task-team-snapshot")!.manager.current();
     const beforeHash = before.record.teamBinding.contentHash;
     const beforeDev = before.record.teamBinding.members.find((member) => member.agentId === "wa_dev")!;
-    fixture.host.stop();
+    await fixture.host.stop();
 
     await fixture.profiles.update("prof_dev", { capabilities: ["changed:after-mission-created"] });
     const restarted = new RuntimeHost(
@@ -172,7 +172,7 @@ describe("RuntimeHost", () => {
     expect(after.record.teamBinding.contentHash).toBe(beforeHash);
     expect(after.record.teamBinding.members.find((member) => member.agentId === "wa_dev")?.capabilities)
       .toEqual(beforeDev.capabilities);
-    restarted.stop();
+    await restarted.stop();
   });
 
   it("routes a global human message to the persisted Mission owner instead of a role name", async () => {
@@ -233,7 +233,7 @@ describe("RuntimeHost", () => {
       content: "please inspect independently",
       createdAt: new Date().toISOString(),
     });
-    fixture.host.stop();
+    await fixture.host.stop();
 
     const restarted = new RuntimeHost(
       fixture.workspace,
@@ -250,7 +250,7 @@ describe("RuntimeHost", () => {
     const recoveredThread = await recoveredEngine.getThreadForAgent("wa_architect", "task-idle-message-recovery");
     const turnItems = recoveredThread!.items.filter((item) => item.turnId === "turn_idle_private_message");
     expect(turnItems.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
-    restarted.stop();
+    await restarted.stop();
   });
 
   it("recovers multiple private messages in chronological order after host restart", async () => {
@@ -282,7 +282,7 @@ describe("RuntimeHost", () => {
         createdAt: new Date(Date.now() + index).toISOString(),
       });
     }
-    fixture.host.stop();
+    await fixture.host.stop();
 
     const restarted = new RuntimeHost(
       fixture.workspace,
@@ -300,7 +300,7 @@ describe("RuntimeHost", () => {
     expect(privatePrompts).toHaveLength(2);
     expect(privatePrompts[0]).toContain("first private message");
     expect(privatePrompts[1]).toContain("second private message");
-    restarted.stop();
+    await restarted.stop();
   });
 
   it("projects the original human objective and received Goal before internal Agent instructions", async () => {
@@ -794,7 +794,7 @@ describe("RuntimeHost", () => {
       action: "resume",
       reason: "persisted human message",
     });
-    fixture.host.stop();
+    await fixture.host.stop();
 
     providerAvailable = true;
     const restarted = new RuntimeHost(
@@ -820,7 +820,7 @@ describe("RuntimeHost", () => {
       triggerMessageId: "human-before-runtime-restart",
       status: "running",
     });
-    restarted.stop();
+    await restarted.stop();
   });
 
   it("serves a read-only snapshot while a model turn is still running", async () => {
@@ -881,7 +881,7 @@ describe("RuntimeHost", () => {
   it("starts and stops an unrefed production timer", async () => {
     const fixture = await createFixture();
     await fixture.host.start();
-    fixture.host.stop();
+    await fixture.host.stop();
   });
 
   it("automatically dispatches work made ready by the previous Agent turn", async () => {
@@ -897,7 +897,7 @@ describe("RuntimeHost", () => {
       const mission = await fixture.host.context("task-production-scheduler")!.manager.current();
       return mission.links.some((link) => link.agentId === "wa_pm");
     }, 5_000);
-    fixture.host.stop();
+    await fixture.host.stop();
 
     const mission = await fixture.host.context("task-production-scheduler")!.manager.current();
     expect(mission.links).toEqual(expect.arrayContaining([
@@ -930,8 +930,8 @@ describe("RuntimeHost", () => {
       fixture.host.pauseTask("task-slow-agent").then(() => "paused"),
       new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 250)),
     ]);
-    fixture.host.stop();
     releaseTurn();
+    await fixture.host.stop();
 
     expect(controlResult).toBe("paused");
   });
@@ -980,7 +980,7 @@ describe("RuntimeHost", () => {
 
     releaseFirst();
     await secondStarted;
-    fixture.host.stop();
+    await fixture.host.stop();
 
     expect(maxActiveTurns).toBe(1);
     expect(inputs[1]).toMatchObject({ triggerMessageId: "human-message-during-active-turn" });
@@ -1057,6 +1057,19 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Pr
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Timed out waiting for asynchronous Agent turn");
+}
+
+async function waitForTaskStatus(host: RuntimeHost, taskId: string, status: string, maxTicks = 40): Promise<void> {
+  for (let index = 0; index < maxTicks; index += 1) {
+    await host.tick();
+    if ((await host.listTasks()).some((task) => task.taskId === taskId && task.status === status)) return;
+  }
+  const snapshot = await host.snapshot();
+  throw new Error(`Task ${taskId} did not reach ${status} after ${maxTicks} scheduler ticks: ${JSON.stringify({
+    status: snapshot.status,
+    phase: snapshot.phase,
+    tickets: snapshot.tickets?.map((ticket) => ({ id: ticket.id, status: ticket.status, targetAgentId: ticket.targetAgentId })),
+  })}`);
 }
 
 function missionBaselineOutcome() {

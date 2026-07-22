@@ -8,7 +8,7 @@ import type { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-
 
 describe("V2 runtime public routes", () => {
   let registry: RuntimeHostRegistry | undefined;
-  afterEach(() => registry?.stopAll());
+  afterEach(async () => { await registry?.stopAll(); });
 
   it("starts a ticket-agent task and sends a private message only to the selected Agent", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-api-home-"));

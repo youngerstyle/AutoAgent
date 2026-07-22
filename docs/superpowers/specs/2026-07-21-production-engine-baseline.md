@@ -76,6 +76,21 @@ Task state is derived in this order:
 
 An Agent avatar is green only while its turn is actually executing. It is yellow only when that Agent owns a blocked Ticket or a failed/paused turn requiring an explicit operator action.
 
+## Current Ticket identity
+
+1. Mission Control must attach an explicit machine-readable current-Ticket envelope to every dispatched Goal. At minimum it carries the current output schema and whether this Ticket may settle the Mission.
+2. Providers, test doubles and projections must read the latest current-Ticket envelope. They must not infer current authority by searching the full prompt, historical handoffs or future DAG nodes for role names, schema names or permission fields.
+3. Historical Ticket envelopes remain chronological audit facts. A later envelope supersedes them only for the current turn; it does not rewrite history.
+4. Mock Provider behavior is contract simulation, not business routing. It must follow the same current-Ticket identity as a real provider so deterministic tests cannot pass or loop for reasons that production never sees.
+
+## Graceful runtime shutdown
+
+1. Stopping a RuntimeHost first prevents new scheduler ticks.
+2. It then aborts active Pi sessions and waits for each Agent session to become idle, so a stalled provider request cannot stall process shutdown indefinitely.
+3. After interruption, it drains in-flight scheduler work, queued/running Agent turns and serialized host operations before releasing workspace files and locks.
+4. Registry and process shutdown must await this drain. Fire-and-forget disposal is forbidden because it can corrupt restart recovery and causes Windows file-lock races during cleanup.
+5. Tests wait for durable terminal state rather than assuming a fixed number of scheduler ticks.
+
 ## Release gates
 
 A release is not production-ready until all gates pass:

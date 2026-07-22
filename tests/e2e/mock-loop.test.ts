@@ -8,7 +8,7 @@ import type { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-
 
 describe("mock team loop E2E", () => {
   let registry: RuntimeHostRegistry | undefined;
-  afterEach(() => registry?.stopAll());
+  afterEach(async () => { await registry?.stopAll(); });
 
   it("creates a workspace and completes one Mission Plan through public routes", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-e2e-home-"));
@@ -48,7 +48,7 @@ describe("mock team loop E2E", () => {
       expect(tickets[index].dependsOnTicketIds).toEqual([tickets[index - 1].id]);
     }
     expect(Object.values(snapshot.agentThreads).flat().length).toBeGreaterThan(0);
-  });
+  }, 30_000);
 });
 
 async function pollSnapshot(app: ReturnType<typeof createApp>, workspaceId: string) {

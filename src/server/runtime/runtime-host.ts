@@ -137,12 +137,21 @@ export class RuntimeHost {
     this.timer.unref();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
-    for (const context of this.contexts.values()) {
-      for (const runtime of context.loops.values()) void runtime.dispose?.();
-    }
+
+    await Promise.allSettled(
+      [...this.contexts.values()].flatMap((context) =>
+        [...context.loops.values()].map((runtime) => runtime.dispose?.()),
+      ),
+    );
+
+    const schedulerWork = [this.tickPromise, this.backgroundTickPromise].filter(
+      (pending): pending is Promise<void> => pending !== undefined,
+    );
+    await Promise.allSettled([...schedulerWork, ...this.agentRuns.values()]);
+    await this.operationTail.catch(() => undefined);
   }
 
   private async createTaskUnlocked(input: { taskId: string; title: string; objective: string }): Promise<RuntimeTaskRecord> {

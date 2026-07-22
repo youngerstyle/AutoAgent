@@ -23,8 +23,8 @@ export class MockProvider implements AgentModelProvider {
 }
 
 function mockGoalResolution(instructions: string): Record<string, unknown> {
-  const settlesMission = instructions.includes('\"settleMission\":true') && instructions.includes('\"missionBaseline\"');
-  if (instructions.includes("输出契约 mission-baseline-v1：") && !settlesMission) {
+  const ticket = currentTicketMetadata(instructions);
+  if (ticket.outputSchema === "mission-baseline-v1" && !ticket.settleMission) {
     return {
       status: "completed",
       summary: "已建立 Mission 权威目标基线",
@@ -40,7 +40,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       },
     };
   }
-  if (instructions.includes("输出契约 plan-change-set-v3：") && !settlesMission) {
+  if (ticket.outputSchema === "plan-change-set-v3" && !ticket.settleMission) {
     const sourceTicketId = currentTicketId(instructions);
     return {
       status: "completed",
@@ -68,7 +68,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       },
     };
   }
-  if (settlesMission) {
+  if (ticket.settleMission) {
     const criterionIds = [...new Set([...instructions.matchAll(/"criterionId":"([^"]+)"/g)].map((match) => match[1]))];
     const baselineVersion = Number(instructions.match(/"missionBaseline":\{[^}]*"version":(\d+)/)?.[1] ?? 1);
     return {
@@ -98,6 +98,14 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     criterionResults: completedCriteria(instructions),
     residualRisks: [],
     domainOutcome: { summary: "模拟 Agent 已完成当前目标", ok: true },
+  };
+}
+
+function currentTicketMetadata(instructions: string): { outputSchema?: string; settleMission: boolean } {
+  const block = [...instructions.matchAll(/\[current-ticket\]([\s\S]*?)\[\/current-ticket\]/g)].at(-1)?.[1] ?? "";
+  return {
+    outputSchema: block.match(/^output-schema=(.+)$/m)?.[1]?.trim(),
+    settleMission: block.match(/^settle-mission=(.+)$/m)?.[1]?.trim() === "true",
   };
 }
 

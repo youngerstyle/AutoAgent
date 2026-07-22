@@ -153,6 +153,7 @@ function validateBaselineValue(value: unknown): string | undefined {
 }
 
 export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId, sharedPlanContext?: SharedPlanContext, upstreamDeliveries: readonly UpstreamDeliveryContext[] = [], assignmentContext?: TicketAssignmentContext): string {
+  const currentTicketMetadata = `[current-ticket]\noutput-schema=${schemaRef}\nsettle-mission=${assignmentContext?.ticket.permissions?.settleMission === true}\n[/current-ticket]\n`;
   const targets = correctionTargets.length
     ? `可纠正的已完成上游工单：${correctionTargets.map((item) => `${item.ticketId}（${item.title}）`).join("；")}。correction_required 的 targetTicketId 只能从此列表选择。`
     : "当前没有可纠正的已完成上游工单；不要提交 correction_required。";
@@ -161,7 +162,7 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
     : upstreamDeliveries.length
       ? `当前 Ticket 的交付谱系如下（按 DAG 拓扑顺序，不含其他 Agent 的私有会话）：${JSON.stringify(upstreamDeliveries)}。请基于这些项目事实自行判断当前工作，不要读取平台内部文件猜测上游结果。`
       : "当前 Ticket 没有可用的祖先交付。";
-  const base = `完成或失败当前 Goal 时必须调用 goal_resolution；这次工具调用就是领域交付物的唯一提交入口。把输出契约要求的结果直接放入 domainOutcome，平台接收后负责校验并提交 Ticket 和 Plan；不要寻找或写入另一个提交文件、接口或平台内部状态。status=completed 表示当前 Agent 已完成检查、实现、规划或其他受托工作，不表示被检查对象必然通过；criterionResults 必须如实记录每项 satisfied、not_satisfied 或 not_verified。全部满足时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时，即使 criterionResults 包含不满足项，也应使用 status=completed 与 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 status=completed 与 disposition=plan_change_required 及 reason。Host 返回 correctable 只表示当前提案需要修正并重新提交，应保持原本基于工作事实判断的 Goal 结论；不得仅因提案结构或契约校验被退回就改成 failed。${targets}${workContext}不得根据角色名称或自然语言猜测工单流转。`;
+  const base = `${currentTicketMetadata}完成或失败当前 Goal 时必须调用 goal_resolution；这次工具调用就是领域交付物的唯一提交入口。把输出契约要求的结果直接放入 domainOutcome，平台接收后负责校验并提交 Ticket 和 Plan；不要寻找或写入另一个提交文件、接口或平台内部状态。status=completed 表示当前 Agent 已完成检查、实现、规划或其他受托工作，不表示被检查对象必然通过；criterionResults 必须如实记录每项 satisfied、not_satisfied 或 not_verified。全部满足时使用 disposition=complete 或省略 disposition；发现某张已完成上游工单的交付缺陷时，即使 criterionResults 包含不满足项，也应使用 status=completed 与 disposition=correction_required，并提交真实的 targetTicketId 与 reason；只有需求、范围、成功标准、能力边界或 DAG 结构必须改变时才使用 status=completed 与 disposition=plan_change_required 及 reason。Host 返回 correctable 只表示当前提案需要修正并重新提交，应保持原本基于工作事实判断的 Goal 结论；不得仅因提案结构或契约校验被退回就改成 failed。${targets}${workContext}不得根据角色名称或自然语言猜测工单流转。`;
   if (schemaRef === "mission-baseline-v1") {
     return `${base} 输出契约 mission-baseline-v1：domainOutcome.baseline 必须包含 objective、successCriteria、constraints、assumptions、exclusions。它是团队后续规划和最终验收的权威基线；不得把 human 明确要求降级成第一版、演示版或后续事项。可逆的不确定项应记录为 assumption，不应阻塞。`;
   }

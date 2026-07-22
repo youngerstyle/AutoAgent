@@ -282,10 +282,18 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     }
   }
 
-  dispose(): void {
-    for (const pending of this.sessions.values()) void pending.then(({ session }) => session.dispose());
+  async dispose(): Promise<void> {
+    const pendingSessions = [...this.sessions.values()];
     this.sessions.clear();
     this.turnTails.clear();
+    await Promise.allSettled(pendingSessions.map(async (pending) => {
+      const { session } = await pending;
+      try {
+        await session.abort();
+      } finally {
+        session.dispose();
+      }
+    }));
   }
 
   private requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {

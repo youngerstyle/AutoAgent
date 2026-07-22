@@ -9,7 +9,7 @@ import {
 import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
 
-export type AutoAgentServer = Server & { stopRuntimeHosts(): void };
+export type AutoAgentServer = Server & { stopRuntimeHosts(): Promise<void> };
 
 export async function bootstrapServer(config: AppConfig = loadConfig()): Promise<Express> {
   const policyStore = new PlanPolicyStore(config.autoAgentHome);
@@ -23,7 +23,7 @@ export async function startServer(config: AppConfig = loadConfig()): Promise<Aut
     const server = app.listen(config.port, () => {
       server.off("error", reject);
       resolve(Object.assign(server, {
-        stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll(),
+        stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll() ?? Promise.resolve(),
       }));
     });
     server.once("error", reject);

@@ -79,8 +79,10 @@ export class RuntimeHostRegistry {
     };
   }
 
-  stopAll(): void {
-    for (const host of this.hosts.values()) host.stop();
+  async stopAll(): Promise<void> {
+    const hosts = [...this.hosts.values()];
+    this.hosts.clear();
+    await Promise.allSettled(hosts.map((host) => host.stop()));
   }
 
   private async host(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
