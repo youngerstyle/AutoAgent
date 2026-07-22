@@ -212,6 +212,8 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('"objective"');
     expect(instruction).toContain('"assignment":{"requiredCapabilities"');
     expect(instruction).toContain('"outputContract":{"schemaRef"');
+    expect(instruction).toContain('"outputContract":{"schemaRef":"由验收工作决定的输出契约"},"permissions":{"settleMission":true}');
+    expect(instruction).toContain("permissions 是 additions[] 节点自身的字段，与 assignment 和 outputContract 同级，不能放进 assignment");
     expect(instruction).toContain('{"clientRef":"work"}');
     expect(instruction).toContain('{"ticketId":"');
     expect(instruction).toContain('"ticketId":"ticket-intake"');
@@ -222,7 +224,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("独立质量检查不能代替最终交付验收");
     expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
     expect(instruction).toContain("不规定角色名称、工单数量、能力名称或 schemaRef");
-    expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"review"}]');
+    expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"terminal"}]');
   });
 
   it("validates Plan change shape before invoking Ticket Engine", () => {
