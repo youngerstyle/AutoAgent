@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentHumanInputRequest, GoalResolutionDecision, GoalResolutionProposal, GoalResolutionStatus } from "../../shared/contracts/agent-engine.js";
 import type { ActiveMissionLink, MissionBaseline } from "../../shared/contracts/mission-control.js";
-import type { PlanChangeSet, PlanCommandEnvelope, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
+import type { PlanChangeSet, PlanCommandEnvelope, PlanCommandResult, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
 
 export type MissionTicketOutcome = Record<string, unknown>;
 export interface PlanChangeSetOutcome extends MissionTicketOutcome { result: unknown; change: PlanChangeSet }
@@ -220,6 +220,20 @@ export function ticketResultToGoalDecision<TStatus extends GoalResolutionStatus>
   if (result.code === "stale_authority") return { accepted: false, disposition: "stale_claim", reason: result.reason };
   if (result.code === "plan_terminal") return { accepted: false, disposition: "plan_terminal", reason: result.reason };
   if (result.code === "policy_violation" || result.code === "idempotency_conflict") return { accepted: false, disposition: "host_error", reason: result.reason, incidentId: stableId("mission_incident", `${result.commandId}:${result.code}`) };
+  return { accepted: false, disposition: "correctable", reason: result.reason };
+}
+
+export function planResultToGoalDecision(result: PlanCommandResult): GoalResolutionDecision<GoalResolutionStatus> | undefined {
+  if (result.accepted) return undefined;
+  if (result.code === "plan_terminal") return { accepted: false, disposition: "plan_terminal", reason: result.reason };
+  if (result.code === "policy_violation" || result.code === "idempotency_conflict") {
+    return {
+      accepted: false,
+      disposition: "host_error",
+      reason: result.reason,
+      incidentId: stableId("mission_incident", `${result.commandId}:${result.code}`),
+    };
+  }
   return { accepted: false, disposition: "correctable", reason: result.reason };
 }
 

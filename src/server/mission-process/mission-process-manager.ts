@@ -23,6 +23,7 @@ import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
 import {
   proposalToPlanChangeCommand,
+  planResultToGoalDecision,
   proposalToTicketCommand,
   ticketResultToGoalDecision,
   createMissionBaseline,
@@ -547,9 +548,8 @@ export class MissionProcessManager {
         ?? await this.tickets.applyPlan(planCommand);
       if (!planResult.accepted) {
         const decisionId = stableId("plan_change_rejected", proposalId, planCommand.commandId);
-        const rejection: GoalResolutionDecision<GoalResolutionStatus> = planResult.code === "version_conflict"
-          ? { accepted: false, disposition: "correctable", reason: planResult.reason }
-          : { accepted: false, disposition: "host_error", reason: planResult.reason, incidentId: stableId("mission_incident", planCommand.commandId) };
+        const rejection = planResultToGoalDecision(planResult);
+        if (!rejection) throw new Error("Rejected Plan result must produce a Goal decision");
         const settled = await this.settleAgentProposal(agent, link.agentGoalId, proposalId, decisionId, rejection);
         if (!settled.applied) return aggregate;
         return this.updateLink(aggregate, dispatchId, {

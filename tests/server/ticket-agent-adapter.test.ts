@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
-import type { PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { missionOutcomeInstruction, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
+import { missionOutcomeInstruction, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("keeps PM domain output separate from Plan and Ticket commands", () => {
@@ -355,6 +355,16 @@ describe("Ticket Agent resolution adapter", () => {
     [{ accepted: false, commandId: "c", proposalId: "p", code: "invalid_command", reason: "fix" }, "correctable"],
   ] as Array<[TicketCommandResult, string]>)("maps Ticket rejection to Goal decision", (result, disposition) => {
     expect(ticketResultToGoalDecision(proposal("completed", { ok: true }), result)).toMatchObject({ accepted: false, disposition });
+  });
+
+  it.each([
+    [{ accepted: false, commandId: "c", code: "invalid_command", reason: "unknown Ticket" }, "correctable"],
+    [{ accepted: false, commandId: "c", code: "invalid_definition", reason: "invalid graph" }, "correctable"],
+    [{ accepted: false, commandId: "c", code: "version_conflict", reason: "stale graph" }, "correctable"],
+    [{ accepted: false, commandId: "c", code: "plan_terminal", reason: "done" }, "plan_terminal"],
+    [{ accepted: false, commandId: "c", code: "policy_violation", reason: "denied" }, "host_error"],
+  ] as Array<[PlanCommandResult, string]>)("maps Plan rejection to Goal decision", (result, disposition) => {
+    expect(planResultToGoalDecision(result)).toMatchObject({ accepted: false, disposition });
   });
 });
 

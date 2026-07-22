@@ -126,6 +126,7 @@ Ticket Engine 的拒绝结果必须由 Mission Control 分类：
 
 - `stale_authority`、`workflow_terminal`：终止旧 Goal；
 - 可由重新读取最新 Ticket/Workflow 状态解决的版本冲突：Mission 自行恢复，不调用模型；
+- Plan/Ticket 提案中的 `invalid_command`、`invalid_definition`：保持原 Plan 不变，把精确拒绝原因作为 `correctable` observation 返回同一个 Agent Goal 重新提交；这不是 host 故障，也不得暂停 Agent；
 - 领域输出不符合 output contract：把明确 observation 写回同一 Agent，但没有新事实前不得自动重复调用；
 - host/store/协议故障：暂停 Goal，显示平台故障，不归咎 Agent。
 
