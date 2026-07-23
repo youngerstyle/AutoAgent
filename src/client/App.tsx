@@ -10,13 +10,14 @@ import {
   Cpu,
   DraftingCompass,
   FolderKanban,
-  MessageSquare,
+  ImagePlus,
   Pause,
   Play,
   Send,
   ShieldCheck,
   UserRound,
   Users,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
@@ -618,8 +619,17 @@ export function App() {
                 </aside>
               </section>
 
-              <section className={selectedAgent ? "conversation-dock open" : "conversation-dock"}>
-                <div className="conversation-grip"><MessageSquare size={15} /><span>{selectedAgent ? `${roleLabel(selectedAgent.roleInWorkspace)} 对话` : "选择一位成员开始对话"}</span></div>
+              {selectedAgent ? (
+              <section className="conversation-dock open" role="dialog" aria-label={`${roleLabel(selectedAgent.roleInWorkspace)} 对话`}>
+                <button
+                  type="button"
+                  className="conversation-close"
+                  aria-label="关闭对话"
+                  title="关闭对话"
+                  onClick={() => setSelectedAgentId("")}
+                >
+                  <X size={17} />
+                </button>
                 <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
                   {selectedAgentNeedsReply && humanFlowPrompt ? (
                     <AgentHumanLoopBox
@@ -652,6 +662,7 @@ export function App() {
                   ) : null}
                 </div>
               </section>
+              ) : null}
             </>
           ) : null}
 
@@ -1202,7 +1213,9 @@ function AgentHumanLoopBox(props: {
           }}
           placeholder={props.prompt.placeholder}
         />
-        <button type="submit" disabled={props.disabled}>{props.prompt.submitLabel}</button>
+        <button type="submit" className="chat-send-button" disabled={props.disabled} aria-label={props.prompt.submitLabel} title={props.prompt.submitLabel}>
+          <Send size={18} />
+        </button>
       </div>
     </form>
   );
@@ -1264,7 +1277,9 @@ function AgentDirectChatBox(props: {
           }}
           placeholder={`回复${agentName}`}
         />
-        <button type="submit" disabled={props.disabled}>{props.sending ? "发送中" : "发送"}</button>
+        <button type="submit" className="chat-send-button" disabled={props.disabled} aria-label={props.sending ? "发送中" : "发送"} title={props.sending ? "发送中" : "发送"}>
+          <Send size={18} />
+        </button>
       </div>
     </form>
   );
@@ -1290,7 +1305,8 @@ function ChatAttachmentPicker(props: { files: File[]; onChange: (files: File[]) 
             event.target.value = "";
           }}
         />
-        添加图片
+        <ImagePlus size={17} />
+        <span>图片</span>
       </label>
     </div>
   );
