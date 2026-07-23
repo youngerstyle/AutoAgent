@@ -1802,6 +1802,9 @@ function ProjectTeam(props: {
               <span className="profile-avatar">{profile.identity.avatar}</span>
               <strong>{profile.identity.title}</strong>
               <small>{profile.identity.subtitle}</small>
+              <span className="team-member-capabilities">
+                {profile.capabilities.slice(0, 4).join(" · ") || "尚未标注能力"}
+              </span>
               <em>{profile.statusLabel}</em>
             </button>
           ))}
