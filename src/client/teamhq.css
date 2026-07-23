@@ -1179,8 +1179,50 @@ button {
   height: auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 22px;
+  gap: 12px;
   padding: 0 34px;
+}
+
+.projects-hub .team-directory-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.projects-hub .team-search {
+  width: min(360px, 100%);
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #dce2df;
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fbfcfb;
+  color: #73807b;
+}
+
+.projects-hub .team-search:focus-within {
+  border-color: #8bbdb5;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(26, 137, 125, 0.09);
+}
+
+.projects-hub .team-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 9px 0;
+  background: transparent;
+  outline: none;
+}
+
+.projects-hub .team-count {
+  flex: 0 0 auto;
+  color: #697570;
+  font-size: 12px;
 }
 
 .projects-hub .team-roster {
@@ -1188,6 +1230,40 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   overflow: visible;
+}
+
+.projects-hub .team-directory-empty {
+  grid-column: 1 / -1;
+  min-height: 104px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed #d7ddda;
+  border-radius: 12px;
+  color: #75817c;
+  background: #fafbfa;
+}
+
+.projects-hub .team-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.projects-hub .team-pagination button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.projects-hub .team-pagination span {
+  min-width: 42px;
+  color: #64716c;
+  text-align: center;
+  font-size: 12px;
 }
 
 .projects-hub .team-member {
@@ -1249,6 +1325,7 @@ button {
 }
 
 .projects-hub .agent-detail-panel {
+  margin-top: 10px;
   min-height: 0;
   display: grid;
   gap: 16px;
@@ -1618,6 +1695,20 @@ button {
   .runtime-fields,
   .tool-config-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .projects-hub .team-directory-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .projects-hub .team-search {
+    width: 100%;
+  }
+
+  .projects-hub .team-count {
+    align-self: flex-end;
   }
 
   .projects-hub .team-layout,

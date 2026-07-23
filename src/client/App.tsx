@@ -3,6 +3,8 @@ import {
   Activity,
   Building2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleStop,
   ClipboardList,
   Code2,
@@ -13,6 +15,7 @@ import {
   ImagePlus,
   Pause,
   Play,
+  Search,
   Send,
   ShieldCheck,
   UserRound,
@@ -24,6 +27,7 @@ import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDeb
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../shared/model-context";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
+import { paginateTeamDirectory } from "./team-directory";
 import {
   createModelConfig,
   createWorkspace,
@@ -66,6 +70,7 @@ import {
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
 const LIVE_EVENT_BUFFER_LIMIT = 80;
+const TEAM_DIRECTORY_PAGE_SIZE = 10;
 
 type AppView = "office" | "projects" | "people" | "providers" | "operations";
 
@@ -1743,6 +1748,27 @@ function ProjectTeam(props: {
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
 }) {
+  const [teamQuery, setTeamQuery] = useState("");
+  const [teamPage, setTeamPage] = useState(0);
+  const normalizedQuery = teamQuery.trim().toLocaleLowerCase();
+  const filteredProfiles = normalizedQuery
+    ? props.profiles.filter((profile) =>
+        `${profile.identity.title} ${profile.identity.subtitle} ${profile.identity.scope} ${profile.capabilities.join(" ")}`
+          .toLocaleLowerCase()
+          .includes(normalizedQuery)
+      )
+    : props.profiles;
+  const directoryPage = paginateTeamDirectory(
+    filteredProfiles,
+    teamPage,
+    TEAM_DIRECTORY_PAGE_SIZE
+  );
+  const { items: visibleProfiles, page: currentPage, pageCount } = directoryPage;
+
+  useEffect(() => {
+    setTeamPage(0);
+  }, [teamQuery, props.profiles.length]);
+
   return (
     <section className="management-panel team-workbench">
       <header className="management-header">
@@ -1753,8 +1779,20 @@ function ProjectTeam(props: {
         <button type="button" onClick={props.onRefresh}>刷新团队</button>
       </header>
       <div className="team-layout">
+        <div className="team-directory-toolbar">
+          <label className="team-search">
+            <Search size={16} />
+            <input
+              aria-label="搜索团队成员"
+              placeholder="搜索姓名、岗位或能力"
+              value={teamQuery}
+              onChange={(event) => setTeamQuery(event.target.value)}
+            />
+          </label>
+          <span className="team-count">共 {filteredProfiles.length} 人</span>
+        </div>
         <section className="team-roster" aria-label="项目团队成员">
-          {props.profiles.map((profile) => (
+          {visibleProfiles.map((profile) => (
             <button
               key={profile.id}
               type="button"
@@ -1767,7 +1805,31 @@ function ProjectTeam(props: {
               <em>{profile.statusLabel}</em>
             </button>
           ))}
+          {!visibleProfiles.length ? (
+            <div className="team-directory-empty">没有匹配的团队成员</div>
+          ) : null}
         </section>
+        {pageCount > 1 ? (
+          <nav className="team-pagination" aria-label="团队成员分页">
+            <button
+              type="button"
+              aria-label="上一页成员"
+              disabled={currentPage === 0}
+              onClick={() => setTeamPage((page) => Math.max(0, page - 1))}
+            >
+              <ChevronLeft size={17} />
+            </button>
+            <span>{currentPage + 1} / {pageCount}</span>
+            <button
+              type="button"
+              aria-label="下一页成员"
+              disabled={currentPage >= pageCount - 1}
+              onClick={() => setTeamPage((page) => Math.min(pageCount - 1, page + 1))}
+            >
+              <ChevronRight size={17} />
+            </button>
+          </nav>
+        ) : null}
         <AgentDetailPanel
           profile={props.selectedProfile}
           profileDefinition={props.profileDefinitions.find((profile) => profile.id === props.selectedDraft?.profileId)}
