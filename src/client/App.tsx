@@ -70,6 +70,48 @@ const LIVE_EVENT_BUFFER_LIMIT = 80;
 type AppView = "office" | "projects" | "people" | "providers" | "operations";
 
 type RealProviderName = Exclude<ProviderName, "mock">;
+
+function beginConversationDrag(event: React.PointerEvent<HTMLDivElement>) {
+  if (event.button !== 0 || window.matchMedia("(max-width: 720px)").matches) return;
+  const handle = event.currentTarget;
+  const panel = handle.closest<HTMLElement>(".conversation-dock");
+  const host = panel?.offsetParent as HTMLElement | null;
+  if (!panel || !host) return;
+
+  const panelRect = panel.getBoundingClientRect();
+  const hostRect = host.getBoundingClientRect();
+  const startX = event.clientX;
+  const startY = event.clientY;
+  const initialLeft = panelRect.left - hostRect.left;
+  const initialTop = panelRect.top - hostRect.top;
+  const margin = 10;
+
+  handle.setPointerCapture(event.pointerId);
+  panel.classList.add("dragging");
+
+  const move = (pointerEvent: PointerEvent) => {
+    const maxLeft = Math.max(margin, host.clientWidth - panel.offsetWidth - margin);
+    const maxTop = Math.max(margin, host.clientHeight - panel.offsetHeight - margin);
+    const left = Math.min(maxLeft, Math.max(margin, initialLeft + pointerEvent.clientX - startX));
+    const top = Math.min(maxTop, Math.max(margin, initialTop + pointerEvent.clientY - startY));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+  };
+
+  const finish = () => {
+    panel.classList.remove("dragging");
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", finish);
+    handle.removeEventListener("pointercancel", finish);
+  };
+
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", finish);
+  handle.addEventListener("pointercancel", finish);
+}
+
 type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
   provider: RealProviderName;
   apiKey: string;
@@ -621,6 +663,12 @@ export function App() {
 
               {selectedAgent ? (
               <section className="conversation-dock open" role="dialog" aria-label={`${roleLabel(selectedAgent.roleInWorkspace)} 对话`}>
+                <div
+                  className="conversation-drag-surface"
+                  title="拖动对话窗口"
+                  aria-label="拖动对话窗口"
+                  onPointerDown={beginConversationDrag}
+                />
                 <button
                   type="button"
                   className="conversation-close"
