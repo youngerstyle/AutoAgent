@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { paginateTeamDirectory } from "../../src/client/team-directory";
+import { paginateTeamDirectory, TEAM_DIRECTORY_PAGE_SIZE } from "../../src/client/team-directory";
 
 describe("team directory", () => {
-  it("keeps a large team bounded to ten members per page", () => {
+  it("keeps a large team bounded to the visible directory page", () => {
     const members = Array.from({ length: 25 }, (_, index) => `member-${index + 1}`);
 
-    expect(paginateTeamDirectory(members, 0, 10)).toEqual({
-      items: members.slice(0, 10),
+    expect(paginateTeamDirectory(members, 0, TEAM_DIRECTORY_PAGE_SIZE)).toEqual({
+      items: members.slice(0, 8),
       page: 0,
-      pageCount: 3,
+      pageCount: 4,
       total: 25
     });
-    expect(paginateTeamDirectory(members, 2, 10)).toEqual({
-      items: members.slice(20),
-      page: 2,
-      pageCount: 3,
+    expect(paginateTeamDirectory(members, 3, TEAM_DIRECTORY_PAGE_SIZE)).toEqual({
+      items: members.slice(24),
+      page: 3,
+      pageCount: 4,
       total: 25
     });
   });

@@ -5,6 +5,8 @@ export interface TeamDirectoryPage<T> {
   total: number;
 }
 
+export const TEAM_DIRECTORY_PAGE_SIZE = 8;
+
 export function paginateTeamDirectory<T>(
   items: T[],
   requestedPage: number,

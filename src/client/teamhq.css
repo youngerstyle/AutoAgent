@@ -1186,9 +1186,17 @@ button {
 .projects-hub .team-layout {
   height: auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(260px, 30%) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
   padding: 0 34px;
+}
+
+.projects-hub .team-directory-pane {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
 }
 
 .projects-hub .team-directory-toolbar {
@@ -1278,7 +1286,7 @@ button {
 }
 
 .projects-hub .team-member {
-  min-height: 86px;
+  min-height: 80px;
   grid-template-columns: 40px minmax(0, 1fr) auto;
   grid-template-areas:
     "avatar title status"
@@ -1348,7 +1356,7 @@ button {
 }
 
 .projects-hub .agent-detail-panel {
-  margin-top: 10px;
+  margin-top: 0;
   min-height: 0;
   display: grid;
   gap: 16px;
@@ -1564,6 +1572,12 @@ button {
 
   .office-main {
     grid-template-columns: minmax(500px, 1fr) 300px;
+  }
+}
+
+@media (max-width: 1050px) {
+  .projects-hub .team-layout {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
