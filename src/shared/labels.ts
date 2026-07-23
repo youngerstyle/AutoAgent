@@ -55,6 +55,13 @@ export function statusLabel(status: EntityStatus | string): string {
     idle: "空闲",
     waiting: "等你回复",
     running: "运行中",
+    accepted: "已接受",
+    queued: "排队中",
+    claimed: "已领取",
+    yielded: "已保存进度",
+    rework: "返工中",
+    cancelled: "已取消",
+    system_note: "系统记录",
     completed: "已完成",
     failed: "失败",
     blocked: "受阻",
@@ -111,6 +118,9 @@ export function displayText(text: string | undefined): string | undefined {
   if (translatedCapability === "Task run created") return "任务运行已创建";
   if (translatedCapability === "Task completed") return "任务已完成";
   if (translatedCapability === "Task failed") return "任务失败";
+  if (["accepted", "queued", "claimed", "yielded", "rework", "cancelled", "system_note"].includes(translatedCapability)) {
+    return statusLabel(translatedCapability);
+  }
   if (translatedCapability === "QA requested implementation changes") return "测试要求开发返工";
   if (translatedCapability.startsWith("Boss requested specialist: ")) return translatedCapability.replace("Boss requested specialist: ", "老板发起专家招聘：");
   if (translatedCapability.startsWith("Boss hired ") && translatedCapability.endsWith(" specialist")) {

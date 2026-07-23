@@ -89,12 +89,12 @@ export interface TaskSubmitView {
 
 const ROLE_ORDER = ["boss", "pm", "architect", "dev", "specialist", "qa"];
 const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
-  boss: { x: 50, y: 12 },
-  pm: { x: 28, y: 36 },
-  architect: { x: 72, y: 36 },
-  dev: { x: 20, y: 68 },
-  specialist: { x: 50, y: 68 },
-  qa: { x: 80, y: 68 }
+  boss: { x: 22, y: 25 },
+  pm: { x: 23, y: 53 },
+  architect: { x: 76, y: 25 },
+  dev: { x: 21, y: 80 },
+  specialist: { x: 76, y: 80 },
+  qa: { x: 76, y: 53 }
 };
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {

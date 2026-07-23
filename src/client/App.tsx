@@ -1,4 +1,24 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  Building2,
+  ChevronDown,
+  CircleStop,
+  ClipboardList,
+  Code2,
+  Crown,
+  Cpu,
+  DraftingCompass,
+  FolderKanban,
+  MessageSquare,
+  Pause,
+  Play,
+  Send,
+  ShieldCheck,
+  UserRound,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../shared/model-context";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
@@ -31,7 +51,7 @@ import {
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
-import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentProfileView } from "./view-model";
+import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentNodeView, type AgentProfileView } from "./view-model";
 import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
 import {
@@ -44,19 +64,7 @@ import {
 } from "./agent-thread";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
 
-const AGENT_PANEL_MIN_HEIGHT = 180;
-const AGENT_PANEL_MAX_HEIGHT = 560;
-const AGENT_PANEL_DEFAULT_HEIGHT = 300;
-const WORKSPACE_PANEL_MIN_WIDTH = 220;
-const WORKSPACE_PANEL_MAX_WIDTH = 440;
-const EVENT_PANEL_MIN_WIDTH = 260;
-const EVENT_PANEL_MAX_WIDTH = 520;
 const LIVE_EVENT_BUFFER_LIMIT = 80;
-
-type RunLayoutWidths = {
-  workspace: number;
-  events: number;
-};
 
 type AppView = "office" | "projects" | "people" | "providers" | "operations";
 
@@ -111,8 +119,6 @@ export function App() {
   const [taskSubmitting, setTaskSubmitting] = useState(false);
   const [agentMessageSubmitting, setAgentMessageSubmitting] = useState(false);
   const [deleteDialog, setDeleteDialog] = useState<DeleteWorkspaceDialogState>();
-  const [agentPanelHeight, setAgentPanelHeight] = useState(() => initialAgentPanelHeight());
-  const [runLayoutWidths, setRunLayoutWidths] = useState<RunLayoutWidths>(() => initialRunLayoutWidths());
   const rightPanelRef = useRef<HTMLElement | null>(null);
   const selectedWorkspaceIdRef = useRef(selectedId);
   const selectedAgentIdRef = useRef(selectedAgentId);
@@ -194,14 +200,6 @@ export function App() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [rightPanelScrollKey]);
-
-  useEffect(() => {
-    window.localStorage.setItem("autoagent.agentPanelHeight", String(agentPanelHeight));
-  }, [agentPanelHeight]);
-
-  useEffect(() => {
-    window.localStorage.setItem("autoagent.runLayoutWidths", JSON.stringify(runLayoutWidths));
-  }, [runLayoutWidths]);
 
   async function refreshWorkspaces(preferredWorkspaceId = selectedId) {
     try {
@@ -330,59 +328,6 @@ export function App() {
     }
   }
 
-  function startAgentPanelResize(event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    const startY = event.clientY;
-    const startHeight = agentPanelHeight;
-    const onMove = (moveEvent: PointerEvent) => {
-      const nextHeight = startHeight - (moveEvent.clientY - startY);
-      setAgentPanelHeight(clamp(nextHeight, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
-  }
-
-  function resizeAgentPanelWithKeyboard(event: React.KeyboardEvent<HTMLButtonElement>) {
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-    event.preventDefault();
-    const delta = event.key === "ArrowUp" ? 24 : -24;
-    setAgentPanelHeight((current) => clamp(current + delta, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT));
-  }
-
-  function startColumnResize(column: keyof RunLayoutWidths, event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidths = runLayoutWidths;
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientX - startX;
-      setRunLayoutWidths({
-        ...startWidths,
-        [column]: clampColumnWidth(column, startWidths[column] + (column === "events" ? -delta : delta))
-      });
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
-  }
-
-  function resizeColumnWithKeyboard(column: keyof RunLayoutWidths, event: React.KeyboardEvent<HTMLButtonElement>) {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    const direction = event.key === "ArrowRight" ? 24 : -24;
-    const delta = column === "events" ? -direction : direction;
-    setRunLayoutWidths((current) => ({
-      ...current,
-      [column]: clampColumnWidth(column, current[column] + delta)
-    }));
-  }
-
   async function saveAgent(agent: WorkspaceAgentConfig) {
     if (!selectedId) return;
     try {
@@ -508,14 +453,14 @@ export function App() {
     }
   }
 
-  const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId) ?? snapshot?.agents[0];
+  const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId);
   const selectedProfile = profiles.find((profile) => profile.id === selectedAgentId) ?? profiles[0];
   const selectedDraft = selectedProfile ? agents.find((agent) => agent.id === selectedProfile.id) : undefined;
   const selectedCatalogProfile = catalogProfiles.find((profile) => profile.id === selectedProfileId) ?? catalogProfiles[0];
   const selectedCatalogDefinition = agentProfiles.find((profile) => profile.id === selectedCatalogProfile?.id) ?? agentProfiles[0];
   const hasActiveFlow = mode === "running" || mode === "paused" || mode === "blocked";
   const taskInputLabel = hasActiveFlow ? "全局补充" : "项目目标";
-  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续 Agent 上下文；和单个 Agent 沟通请点击对应头像" : "描述这个项目要交给团队完成的目标";
+  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续智能体上下文；和单个智能体沟通请点击对应头像" : "描述这个项目要交给团队完成的目标";
   const taskSubmitView = buildTaskSubmitView({
     mode,
     hasWorkspace: Boolean(selectedId),
@@ -547,222 +492,168 @@ export function App() {
   const agentMessageDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent || (!agentMessage.trim() && agentMessageFiles.length === 0);
   const agentActionDisabled = agentMessageSubmitting || taskIsTerminal || !selectedId || !snapshot?.activeTask || !selectedAgent;
 
+  const currentWorkspace = workspaces.find((workspace) => workspace.id === selectedId);
+  const completedTicketCount = snapshot?.tickets?.filter((ticket) => ticket.status === "completed").length ?? 0;
+
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand-lockup">
-          <span className="brand-mark">T</span>
-          <div>
-            <h1>TEAMHQ</h1>
-            <span>自动化团队工作空间</span>
-          </div>
-        </div>
-        <nav className="topnav">
-          <button className={view === "office" ? "selected" : ""} onClick={() => setView("office")}>办公室</button>
-          <button className={view === "projects" ? "selected" : ""} onClick={() => setView("projects")}>项目</button>
-          <button className={view === "people" ? "selected" : ""} onClick={() => setView("people")}>人才中心</button>
-          <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
-          <button className={view === "operations" ? "selected" : ""} onClick={() => setView("operations")}>系统运营</button>
+    <main className="hq-shell">
+      <aside className="hq-rail" aria-label="TEAMHQ 主导航">
+        <button className="hq-logo" type="button" onClick={() => setView("office")} aria-label="TEAMHQ 办公室">T</button>
+        <nav>
+          <button className={view === "office" ? "selected" : ""} onClick={() => setView("office")} title="办公室">
+            <Building2 size={20} /><span>办公室</span>
+          </button>
+          <button className={view === "projects" ? "selected" : ""} onClick={() => setView("projects")} title="项目">
+            <FolderKanban size={20} /><span>项目</span>
+          </button>
+          <button className={view === "people" ? "selected" : ""} onClick={() => setView("people")} title="人才中心">
+            <Users size={20} /><span>人才</span>
+          </button>
+          <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")} title="模型服务">
+            <Cpu size={20} /><span>模型</span>
+          </button>
+          <button className={view === "operations" ? "selected" : ""} onClick={() => setView("operations")} title="系统运营">
+            <Activity size={20} /><span>运营</span>
+          </button>
         </nav>
-        <strong className={`status-pill ${displayedStatus}`}>{statusLabel(displayedStatus)}</strong>
-      </header>
-      <section
-        className={view === "office" ? "workspace-shell" : "workspace-shell management-mode"}
-        style={view === "office" ? { gridTemplateColumns: `${runLayoutWidths.workspace}px 8px minmax(0, 1fr)` } : undefined}
-      >
-        {view === "office" ? (
-          <>
-            <aside className="workspace-list office-sidebar">
-              <div className="office-project-switcher">
-                <span className="section-kicker">当前项目</span>
-                <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} aria-label="切换当前项目">
-                  {workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>{displayWorkspaceName(workspace.name)}</option>
-                  ))}
-                </select>
-                <strong>{displayWorkspaceName(workspaces.find((workspace) => workspace.id === selectedId)?.name ?? "尚未选择项目")}</strong>
-                <small>{workspaces.find((workspace) => workspace.id === selectedId)?.rootPath ?? "请先在项目页创建项目"}</small>
-              </div>
+        <div className={`rail-health ${displayedStatus}`} title={statusLabel(displayedStatus)}>
+          <span /><small>{statusLabel(displayedStatus)}</small>
+        </div>
+      </aside>
 
-              <section className="office-nav-section">
-                <span className="section-kicker">当前工作</span>
-                <div className="office-work-summary">
-                  <strong>{snapshot?.activeTask?.title ?? "暂无 Mission"}</strong>
-                  <span>{phaseLabel(snapshot?.phase ?? "idle")} · {ticketItems.length} 张工单</span>
+      <section className="hq-stage">
+        <header className="hq-context-bar">
+          <div className="context-project">
+            <span className="context-label">当前项目</span>
+            <label>
+              <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} aria-label="切换当前项目">
+                {workspaces.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>{displayWorkspaceName(workspace.name)}</option>
+                ))}
+              </select>
+              <ChevronDown size={15} />
+            </label>
+          </div>
+          <div className="context-mission">
+            <span>{snapshot?.activeTask ? "当前任务" : "团队工作空间"}</span>
+            <strong>{snapshot?.activeTask?.title ?? "发布目标，让团队开始工作"}</strong>
+          </div>
+          <div className="context-status">
+            <span className={`live-indicator ${displayedStatus}`} />
+            <div><small>{phaseLabel(snapshot?.phase ?? "idle")}</small><strong>{statusLabel(displayedStatus)}</strong></div>
+          </div>
+        </header>
+
+        <section className={view === "office" ? `office-view ${selectedAgent ? "chat-open" : ""}` : "management-region"}>
+          {view === "office" ? (
+            <>
+              <section className="mission-brief">
+                <div className="mission-brief-title">
+                  <span className="section-kicker">任务控制</span>
+                  <h2>{primaryPanelTitle}</h2>
+                  <p>{mode === "blocked" ? blockedPanelCopy.hint : currentWorkspace?.rootPath ?? "先创建项目，再发布第一条任务。"}</p>
                 </div>
-              </section>
-
-              <section className="office-task-control">
-                <h2>{primaryPanelTitle}</h2>
-                {mode === "blocked" ? <p>{blockedPanelCopy.hint}</p> : null}
-                <form onSubmit={submitTask}>
-                  <label>
-                    <span>{taskInputLabel}</span>
-                    <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} />
-                  </label>
-                  <button type="submit" className="primary-action" disabled={taskSubmitView.disabled}>{taskSubmitView.label}</button>
+                <div className="mission-progress" aria-label="工单完成进度">
+                  <div><span>计划</span><strong>{snapshot?.mission ? `v${snapshot.mission.planVersion}` : "—"}</strong></div>
+                  <div><span>工单</span><strong>{completedTicketCount}/{ticketItems.length}</strong></div>
+                  <div><span>成员</span><strong>{nodes.length}</strong></div>
+                </div>
+                <form className="mission-command" onSubmit={submitTask}>
+                  <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} aria-label={taskInputLabel} />
+                  <button type="submit" className="mission-send" disabled={taskSubmitView.disabled} title={taskSubmitView.label}>
+                    <Send size={17} /><span>{taskSubmitView.label}</span>
+                  </button>
                 </form>
-                <div className="control-row">
-                  <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
-                  <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"}>继续</button>
-                  <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"}>停止</button>
+                <div className="mission-controls">
+                  <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"} title="暂停任务"><Pause size={16} /></button>
+                  <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"} title="继续任务"><Play size={16} /></button>
+                  <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"} title="停止任务"><CircleStop size={16} /></button>
                 </div>
                 {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
                 {error ? <p className="error-text">{error}</p> : null}
               </section>
 
-              <section className="office-nav-section office-team-list">
-                <span className="section-kicker">团队</span>
-                {nodes.map((node) => (
-                  <button key={node.id} type="button" className={selectedAgentId === node.id ? "selected" : ""} onClick={() => setSelectedAgentId(node.id)}>
-                    <span className={`presence-dot ${node.active ? "running" : node.needsAttention ? "waiting" : node.status}`} />
-                    <span>{node.label}</span>
-                    <small>{node.needsAttention ? "等待你" : statusLabel(node.status)}</small>
-                  </button>
-                ))}
+              <section className="office-main">
+                <div className="office-floor">
+                  <div className="floor-heading">
+                    <div><span>团队办公室</span><strong>{displayWorkspaceName(currentWorkspace?.name ?? "办公室")}</strong></div>
+                    <div className="floor-legend"><span className="online" />运行中 <span className="attention" />需要你 <span className="offline" />空闲</div>
+                  </div>
+                  <div className="team-canvas">
+                    <div className="office-ambient" aria-hidden="true">
+                      <span className="ambient-label ambient-lounge">休息区</span>
+                      <span className="ambient-label ambient-meeting">协作桌</span>
+                      <span className="ambient-label ambient-coffee">咖啡角</span>
+                    </div>
+                    {nodes.map((node) => (
+                      <AgentStation
+                        key={node.id}
+                        node={node}
+                        selected={selectedAgentId === node.id}
+                        onSelect={() => setSelectedAgentId(node.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <aside className="activity-panel" ref={rightPanelRef}>
+                  <header>
+                    <div><span className="section-kicker">实时动态</span><h2>工作动态</h2></div>
+                    <div className="activity-tabs" role="tablist" aria-label="办公室动态视图">
+                      <button type="button" role="tab" aria-selected={rightPanelView === "events"} className={rightPanelView === "events" ? "selected" : ""} onClick={() => setRightPanelView("events")} title="运行记录">
+                        <Activity size={16} />
+                      </button>
+                      <button type="button" role="tab" aria-selected={rightPanelView === "tickets"} className={rightPanelView === "tickets" ? "selected" : ""} onClick={() => setRightPanelView("tickets")} title="原始工单">
+                        <FolderKanban size={16} />
+                      </button>
+                    </div>
+                  </header>
+                  <div className="activity-content">
+                    {rightPanelView === "events" ? (
+                      eventGroups.map((group) => <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} />)
+                    ) : (
+                      <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
+                    )}
+                  </div>
+                </aside>
               </section>
-            </aside>
-            <button
-              type="button"
-              role="separator"
-              className="column-resizer"
-              aria-label="调整办公室导航宽度"
-              aria-orientation="vertical"
-              aria-valuemin={WORKSPACE_PANEL_MIN_WIDTH}
-              aria-valuemax={WORKSPACE_PANEL_MAX_WIDTH}
-              aria-valuenow={runLayoutWidths.workspace}
-              onPointerDown={(event) => startColumnResize("workspace", event)}
-              onKeyDown={(event) => resizeColumnWithKeyboard("workspace", event)}
-              title="拖动调整办公室导航宽度"
-            />
-          </>
-        ) : null}
-        <section
-          className={view === "office" ? "console-region" : "management-region"}
-          style={view === "office" ? { gridTemplateColumns: `minmax(0, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
-        >
-          {view === "office" ? <>
-            <section className="canvas-panel" style={{ gridTemplateRows: `minmax(220px, 1fr) 8px ${agentPanelHeight}px` }}>
-            <div className="team-canvas">
-              <div className="canvas-phase">{phaseLabel(snapshot?.phase ?? "idle")}</div>
-              <div className="office-zone office-zone-leadership"><span>管理区</span></div>
-              <div className="office-zone office-zone-collaboration"><span>协作区</span></div>
-              <div className="office-zone office-zone-delivery"><span>交付区</span></div>
-              {nodes.map((node) => (
-                <button
-                  key={node.id}
-                  className={`${node.active ? "agent-node active" : `agent-node ${node.status}`} ${node.needsAttention ? "needs-attention" : ""}`}
-                  style={{ left: `${node.x}%`, top: `${node.y}%` }}
-                  onClick={() => setSelectedAgentId(node.id)}
-                  title={node.currentStepTitle ?? node.currentStep ?? statusLabel(node.status)}
-                >
-                  <span className="avatar">{initials(node.label)}</span>
-                  {node.needsAttention ? <span className="attention-badge">!</span> : null}
-                  <strong>{node.label}</strong>
-                  <small className={node.currentStep ? "agent-step-bubble" : undefined}>{node.currentStep ?? statusLabel(node.status)}</small>
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              role="separator"
-              className="canvas-resizer"
-              aria-label="调整 Agent 对话区高度"
-              aria-orientation="horizontal"
-              aria-valuemin={AGENT_PANEL_MIN_HEIGHT}
-              aria-valuemax={AGENT_PANEL_MAX_HEIGHT}
-              aria-valuenow={agentPanelHeight}
-              onPointerDown={startAgentPanelResize}
-              onKeyDown={resizeAgentPanelWithKeyboard}
-              title="拖动调整 Agent 对话区高度"
-            />
-            <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
-              {selectedAgentNeedsReply && humanFlowPrompt ? (
-                <AgentHumanLoopBox
-                  agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
-                  prompt={humanFlowPrompt}
-                  bubbles={selectedAgentThreadBubbles}
-                  value={agentMessage}
-                  disabled={agentMessageDisabled}
-                  actionDisabled={agentActionDisabled}
-                  onChange={setAgentMessage}
-                  files={agentMessageFiles}
-                  workspaceId={selectedId}
-                  onFilesChange={setAgentMessageFiles}
-                  onUseSuggestion={() => setAgentMessage(suggestedFollowup)}
-                  onSend={(message) => void sendSelectedAgentMessage(message)}
-                />
-              ) : selectedAgent ? (
-                <AgentDirectChatBox
-                  agent={selectedAgent}
-                  bubbles={selectedAgentThreadBubbles}
-                  value={agentMessage}
-                  disabled={agentMessageDisabled}
-                  sending={agentMessageSubmitting}
-                  onChange={setAgentMessage}
-                  files={agentMessageFiles}
-                  workspaceId={selectedId}
-                  onFilesChange={setAgentMessageFiles}
-                  onSend={(message) => void sendSelectedAgentMessage(message)}
-                />
-              ) : (
-                <>
-                  <strong>未选择成员</strong>
-                  <span>空闲</span>
-                  <p>创建项目后会生成固定团队。</p>
-                </>
-              )}
-            </div>
-            </section>
 
-            <button
-              type="button"
-              role="separator"
-              className="column-resizer"
-              aria-label="调整运行记录宽度"
-              aria-orientation="vertical"
-              aria-valuemin={EVENT_PANEL_MIN_WIDTH}
-              aria-valuemax={EVENT_PANEL_MAX_WIDTH}
-              aria-valuenow={runLayoutWidths.events}
-              onPointerDown={(event) => startColumnResize("events", event)}
-              onKeyDown={(event) => resizeColumnWithKeyboard("events", event)}
-              title="拖动调整运行记录宽度"
-            />
-
-            <aside className="event-panel" ref={rightPanelRef}>
-              <div className="right-panel-tabs" role="tablist" aria-label="办公室右侧视图">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPanelView === "events"}
-                  className={rightPanelView === "events" ? "selected" : ""}
-                  onClick={() => setRightPanelView("events")}
-                >
-                  运行记录
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={rightPanelView === "tickets"}
-                  className={rightPanelView === "tickets" ? "selected" : ""}
-                  onClick={() => setRightPanelView("tickets")}
-                >
-                  原始工单
-                </button>
-              </div>
-              {rightPanelView === "events" ? (
-                <div className="event-panel-content">
-                  {eventGroups.map((group) => (
-                    <EventTimelineGroupCard key={group.id} group={group} debugLog={loopDebugLog} />
-                  ))}
+              <section className={selectedAgent ? "conversation-dock open" : "conversation-dock"}>
+                <div className="conversation-grip"><MessageSquare size={15} /><span>{selectedAgent ? `${roleLabel(selectedAgent.roleInWorkspace)} 对话` : "选择一位成员开始对话"}</span></div>
+                <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
+                  {selectedAgentNeedsReply && humanFlowPrompt ? (
+                    <AgentHumanLoopBox
+                      agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
+                      prompt={humanFlowPrompt}
+                      bubbles={selectedAgentThreadBubbles}
+                      value={agentMessage}
+                      disabled={agentMessageDisabled}
+                      actionDisabled={agentActionDisabled}
+                      onChange={setAgentMessage}
+                      files={agentMessageFiles}
+                      workspaceId={selectedId}
+                      onFilesChange={setAgentMessageFiles}
+                      onUseSuggestion={() => setAgentMessage(suggestedFollowup)}
+                      onSend={(message) => void sendSelectedAgentMessage(message)}
+                    />
+                  ) : selectedAgent ? (
+                    <AgentDirectChatBox
+                      agent={selectedAgent}
+                      bubbles={selectedAgentThreadBubbles}
+                      value={agentMessage}
+                      disabled={agentMessageDisabled}
+                      sending={agentMessageSubmitting}
+                      onChange={setAgentMessage}
+                      files={agentMessageFiles}
+                      workspaceId={selectedId}
+                      onFilesChange={setAgentMessageFiles}
+                      onSend={(message) => void sendSelectedAgentMessage(message)}
+                    />
+                  ) : null}
                 </div>
-              ) : (
-                <div className="event-panel-content">
-                  <TicketInspector items={ticketItems} onShowRaw={setRawTicketDialog} />
-                </div>
-              )}
-            </aside>
-          </> : null}
+              </section>
+            </>
+          ) : null}
 
           {view === "people" ? (
             <AgentHub
@@ -964,6 +855,48 @@ function EventTimelineCard(props: { event: AutoAgentEvent; debugLog: LoopDebugLo
   );
 }
 
+const AGENT_ROLE_ICONS: Record<string, LucideIcon> = {
+  boss: Crown,
+  pm: ClipboardList,
+  architect: DraftingCompass,
+  dev: Code2,
+  specialist: UserRound,
+  qa: ShieldCheck,
+};
+
+function AgentStation(props: {
+  node: AgentNodeView;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const Icon = AGENT_ROLE_ICONS[props.node.role] ?? UserRound;
+  const stateClass = props.node.active ? "active" : props.node.needsAttention ? "needs-attention" : props.node.status;
+  const stateCopy = props.node.needsAttention
+    ? "需要你回复"
+    : props.node.currentStep ?? statusLabel(props.node.status);
+  return (
+    <button
+      type="button"
+      className={`agent-station ${stateClass} ${props.selected ? "selected" : ""}`}
+      data-role={props.node.role}
+      style={{ left: `${props.node.x}%`, top: `${props.node.y}%` }}
+      onClick={props.onSelect}
+      title={props.node.currentStepTitle ?? props.node.currentStep ?? statusLabel(props.node.status)}
+    >
+      <span className="agent-status-bubble">
+        <strong>{props.node.label}</strong>
+        <small>{stateCopy}</small>
+      </span>
+      <span className="agent-person" aria-hidden="true">
+        <span className="agent-avatar"><Icon size={21} strokeWidth={1.8} /></span>
+        <span className="agent-body" />
+        <span className="agent-state-dot" />
+      </span>
+      {props.node.needsAttention ? <span className="attention-badge">!</span> : null}
+    </button>
+  );
+}
+
 function EventTimelineGroupCard(props: { group: EventTimelineGroup; debugLog: LoopDebugLog }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -1153,38 +1086,6 @@ function ManualTestActionCard(props: {
   );
 }
 
-function initialAgentPanelHeight(): number {
-  if (typeof window === "undefined") return AGENT_PANEL_DEFAULT_HEIGHT;
-  const saved = Number(window.localStorage.getItem("autoagent.agentPanelHeight"));
-  return clamp(Number.isFinite(saved) ? saved : AGENT_PANEL_DEFAULT_HEIGHT, AGENT_PANEL_MIN_HEIGHT, AGENT_PANEL_MAX_HEIGHT);
-}
-
-function initialRunLayoutWidths(): RunLayoutWidths {
-  const fallback: RunLayoutWidths = { workspace: 310, events: 340 };
-  if (typeof window === "undefined") return fallback;
-  try {
-    const saved = JSON.parse(window.localStorage.getItem("autoagent.runLayoutWidths") ?? "") as Partial<RunLayoutWidths>;
-    return {
-      workspace: clampColumnWidth("workspace", Number(saved.workspace) || fallback.workspace),
-      events: clampColumnWidth("events", Number(saved.events) || fallback.events)
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-function clampColumnWidth(column: keyof RunLayoutWidths, value: number): number {
-  const limits: Record<keyof RunLayoutWidths, { min: number; max: number }> = {
-    workspace: { min: WORKSPACE_PANEL_MIN_WIDTH, max: WORKSPACE_PANEL_MAX_WIDTH },
-    events: { min: EVENT_PANEL_MIN_WIDTH, max: EVENT_PANEL_MAX_WIDTH }
-  };
-  return clamp(value, limits[column].min, limits[column].max);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
 function useChatThreadAutoScroll(scrollKey: string) {
   const threadRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -1341,7 +1242,7 @@ function AgentDirectChatBox(props: {
           <AgentThreadBubbleView key={bubble.id} bubble={bubble} workspaceId={props.workspaceId} />
         )) : (
           <article className="chat-message agent">
-            <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个 Agent 留补充信息。"}</p>
+            <p className="agent-plain-message">{statusText || "当前没有正在执行的步骤。你可以直接给这个智能体留补充信息。"}</p>
           </article>
         )}
       </div>
@@ -1438,7 +1339,7 @@ function AgentHub(props: {
         <div>
           <span className="section-kicker">组织与能力</span>
           <h2>人才中心</h2>
-          <p>管理长期存在的 Agent 员工档案：Soul、Identity、Agent 能力、默认 Skill、模型和工具权限。项目实例继承档案，并可显式覆盖。</p>
+          <p>管理长期存在的智能体员工档案：灵魂、身份、能力、默认技能、模型和工具权限。项目实例继承档案，并可显式覆盖。</p>
         </div>
       </header>
       <div className="studio-layout">
@@ -1611,12 +1512,12 @@ function AgentDefinitionEditor(props: {
         <h4>默认权限与工具</h4>
         <input
           className="skill-search"
-          aria-label="搜索 Skill"
-          placeholder="搜索 Skill"
+          aria-label="搜索技能"
+          placeholder="搜索技能"
           value={skillQuery}
           onChange={(event) => setSkillQuery(event.target.value)}
         />
-        <div className="skill-picker" aria-label="默认 Skill">
+        <div className="skill-picker" aria-label="默认技能">
           {filteredSkills.length ? filteredSkills.map((skill) => {
             const checked = (props.profile.defaultSkills ?? []).includes(skill.name);
             return (
@@ -1634,7 +1535,7 @@ function AgentDefinitionEditor(props: {
                 <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
               </label>
             );
-          }) : <small>{props.availableSkills.length ? "没有匹配的 Skill。" : "未发现可用 Skill。请在 ~/.agents/skills 中安装符合 Agent Skills 规范的 Skill。"}</small>}
+          }) : <small>{props.availableSkills.length ? "没有匹配的技能。" : "未发现可用技能。请在 ~/.agents/skills 中安装符合智能体技能规范的技能。"}</small>}
         </div>
         <div className="policy-grid">
           <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => updateDefaultPolicy({ canReadWorkspace: checked })} />
@@ -1689,7 +1590,7 @@ function ProjectsHub(props: {
         <header>
           <span className="section-kicker">项目目录</span>
           <h2>项目</h2>
-          <p>Workspace 是团队长期工作的边界。创建空项目后，再进入办公室发布 Mission。</p>
+          <p>项目空间是团队长期工作的边界。创建空项目后，再进入办公室发布任务。</p>
         </header>
         <form className="project-create-form" onSubmit={props.onCreateWorkspace}>
           <label>
@@ -1735,9 +1636,9 @@ function ProjectsHub(props: {
         {selectedWorkspace ? (
           <>
             <section className="project-metrics" aria-label="项目概览">
-              <div><span>当前 Mission</span><strong>{props.snapshot?.activeTask?.title ?? "尚未发布"}</strong></div>
-              <div><span>Plan</span><strong>{props.snapshot?.mission ? `v${props.snapshot.mission.planVersion} · ${props.snapshot.mission.planStatus}` : "尚未创建"}</strong></div>
-              <div><span>Ticket</span><strong>{completedTickets} / {totalTickets}</strong></div>
+              <div><span>当前任务</span><strong>{props.snapshot?.activeTask?.title ?? "尚未发布"}</strong></div>
+              <div><span>计划</span><strong>{props.snapshot?.mission ? `v${props.snapshot.mission.planVersion} · ${statusLabel(props.snapshot.mission.planStatus)}` : "尚未创建"}</strong></div>
+              <div><span>工单</span><strong>{completedTickets} / {totalTickets}</strong></div>
               <div><span>团队成员</span><strong>{props.snapshot?.agents.length ?? props.profiles.length}</strong></div>
             </section>
             <ProjectTeam
@@ -1757,7 +1658,7 @@ function ProjectsHub(props: {
         ) : (
           <div className="project-empty-state">
             <strong>这里还没有项目</strong>
-            <p>创建 Workspace 后，可以配置团队实例并进入办公室发布第一条 Mission。</p>
+            <p>创建项目空间后，可以配置团队实例并进入办公室发布第一条任务。</p>
           </div>
         )}
       </section>
@@ -1783,7 +1684,7 @@ function ProjectTeam(props: {
       <header className="management-header">
         <div>
           <h2>项目团队实例</h2>
-          <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目可按需覆盖模型、Skill 和工具权限。</p>
+          <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目可按需覆盖模型、技能和工具权限。</p>
         </div>
         <button type="button" onClick={props.onRefresh}>刷新团队</button>
       </header>
@@ -1968,22 +1869,22 @@ function InstanceSkillConfig(props: {
   return (
     <div className="instance-skill-config">
       <Toggle
-        label="继承档案默认 Skill"
+        label="继承档案默认技能"
         checked={inheritsDefaults}
         onChange={(checked) => props.onChange({
           ...props.draft,
           skillOverrides: checked ? undefined : [...enabledSkills],
         })}
       />
-      <small>{inheritsDefaults ? "当前随智能体档案更新。" : "当前使用这个项目的专属 Skill 配置。"}</small>
+      <small>{inheritsDefaults ? "当前随智能体档案更新。" : "当前使用这个项目的专属技能配置。"}</small>
       <input
         className="skill-search"
-        aria-label="搜索项目 Skill"
-        placeholder="搜索 Skill"
+        aria-label="搜索项目技能"
+        placeholder="搜索技能"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
       />
-      <div className="skill-picker" aria-label="项目 Skill">
+      <div className="skill-picker" aria-label="项目技能">
         {filteredSkills.length ? filteredSkills.map((skill) => (
           <label key={skill.name} className="skill-option" title={skill.filePath}>
             <input
@@ -1999,7 +1900,7 @@ function InstanceSkillConfig(props: {
             />
             <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
           </label>
-        )) : <small>{props.availableSkills.length ? "没有匹配的 Skill。" : "未发现可用 Skill。"}</small>}
+        )) : <small>{props.availableSkills.length ? "没有匹配的技能。" : "未发现可用技能。"}</small>}
       </div>
     </div>
   );
@@ -2035,38 +1936,38 @@ function OperationsHub(props: {
         <div>
           <span className="section-kicker">平台态势</span>
           <h2>系统运营</h2>
-          <p>这里汇总三大 Engine 的真实运行事实，只负责观察、检索和进入现场，不参与业务流转。</p>
+          <p>这里汇总三大引擎的真实运行事实，只负责观察、检索和进入现场，不参与业务流转。</p>
         </div>
         <button type="button" className="primary-action" onClick={props.onOpenOffice}>返回办公室</button>
       </header>
 
       <section className="operations-metrics" aria-label="系统运行概览">
-        <div><span>项目</span><strong>{props.workspaces.length}</strong><small>已登记 Workspace</small></div>
-        <div><span>运行成员</span><strong>{runningAgents}</strong><small>正在执行 Turn</small></div>
+        <div><span>项目</span><strong>{props.workspaces.length}</strong><small>已登记项目空间</small></div>
+        <div><span>运行成员</span><strong>{runningAgents}</strong><small>正在执行工作轮次</small></div>
         <div><span>等待处理</span><strong>{attentionAgents}</strong><small>等待、受阻或失败</small></div>
-        <div><span>当前工单</span><strong>{props.ticketCount}</strong><small>当前项目 Ticket</small></div>
+        <div><span>当前工单</span><strong>{props.ticketCount}</strong><small>当前项目工单</small></div>
       </section>
 
       <div className="operations-grid">
         <section className="engine-health">
           <header>
-            <h3>Engine 状态</h3>
+            <h3>引擎状态</h3>
             <span>{props.snapshot ? "数据连接正常" : "尚未选择项目"}</span>
           </header>
           <div className="engine-health-row">
             <span className="engine-monogram">A</span>
-            <div><strong>Agent Engine</strong><small>Thread、Goal、Turn、Skill 与工具执行</small></div>
+            <div><strong>智能体引擎</strong><small>对话线程、目标、工作轮次、技能与工具执行</small></div>
             <em>{runningAgents ? `${runningAgents} 运行中` : "就绪"}</em>
           </div>
           <div className="engine-health-row">
             <span className="engine-monogram">T</span>
-            <div><strong>Ticket Engine</strong><small>DAG、依赖、状态和工作交接</small></div>
+            <div><strong>工单引擎</strong><small>任务图、依赖、状态和工作交接</small></div>
             <em>{props.ticketCount ? `${props.ticketCount} 张工单` : "就绪"}</em>
           </div>
           <div className="engine-health-row">
             <span className="engine-monogram">M</span>
-            <div><strong>Mission Control</strong><small>Mission、Plan、Ticket 与 Agent 协调</small></div>
-            <em>{props.snapshot?.mission?.planStatus ?? "就绪"}</em>
+            <div><strong>任务控制</strong><small>任务、计划、工单与智能体协调</small></div>
+            <em>{props.snapshot?.mission?.planStatus ? statusLabel(props.snapshot.mission.planStatus) : "就绪"}</em>
           </div>
         </section>
 
