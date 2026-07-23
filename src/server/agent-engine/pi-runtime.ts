@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -12,14 +12,23 @@ import {
   createAgentSession,
   defineTool,
   type AgentSession,
+  type Skill,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { AGENT_HUMAN_INPUT_KINDS, type AgentGoal, type AgentHumanInputKind, type AgentHumanInputRequest, type GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
+import {
+  AGENT_HUMAN_INPUT_KINDS,
+  type AgentGoal,
+  type AgentHumanInputKind,
+  type AgentHumanInputRequest,
+  type AgentThreadSnapshot,
+  type GoalResolutionProposal,
+} from "../../shared/contracts/agent-engine.js";
 import type { ProviderName, WorkspaceToolName } from "../../shared/types.js";
 import { effectiveAgentSkills } from "../agents/skill-config.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
+import { isInside } from "../policy/path-policy.js";
 import type { AgentModelHistoryItem, AgentModelTurnResult } from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
@@ -110,7 +119,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     if (input.goalId && !persistedGoal) throw new Error("Goal does not exist");
     const goal = persistedGoal?.status === "active" ? persistedGoal : undefined;
     const thread = await this.engine.getThread(input.threadId);
-    const pending = await pendingThreadInput(thread, this.store);
+    const pending = await pendingThreadInput(thread, this.store, false, false, input.goalId);
     const turnId = input.turnId ?? (pending?.kind === "message" ? pending.turnId : undefined)
       ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
     const triggerMessageId = input.triggerMessageId ?? (pending?.kind === "message" ? pending.itemId : undefined);
@@ -221,14 +230,19 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       state.safety.blockedReason ??= reason;
       void state.session.abort();
     };
-    const activeTools = [
-      ...this.tools.definitions().map((tool) => tool.name).filter((name) => name !== "readImage" || input.supportsImages),
-      ...(goal ? ["goal_resolution", "request_human_input"] : [])
-    ];
+    const activeTools = activePiToolNames(
+      this.tools.definitions().map((tool) => tool.name),
+      Boolean(input.supportsImages),
+      Boolean(goal),
+    );
     state.session.setActiveToolsByName(activeTools);
 
     try {
       let prompt = normalizePrompt(await this.nextPrompt(input, goal, state, pending, triggerMessageId));
+      if (goal && !state.goalIds.has(goal.spec.id)) {
+        state.session.sessionManager.appendCustomEntry("autoagent_goal_prompted", { goalId: goal.spec.id });
+        state.goalIds.add(goal.spec.id);
+      }
       let continuation = 0;
       let toolCallsBeforePrompt = toolCalls;
       while (true) {
@@ -312,7 +326,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   }
 
   private requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
-    const key = input.threadId;
+    const key = piWorkSessionKey(input.threadId, input.goalId);
     const existing = this.sessions.get(key);
     if (existing) return existing;
     const pending = this.createSession(input);
@@ -321,7 +335,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   }
 
   private async createSession(input: AgentExecutionSliceInput): Promise<SessionState> {
-    const sessionDir = path.join(this.workspaceRoot, ".autoagent", "pi-sessions", safeKey(input.agent.id), safeKey(input.threadId));
+    const sessionDir = piWorkSessionDirectory(
+      this.workspaceRoot,
+      input.agent.id,
+      input.threadId,
+      input.goalId,
+    );
     await mkdir(sessionDir, { recursive: true });
     const sessionManager = SessionManager.continueRecent(this.workspaceRoot, sessionDir);
     const auth = AuthStorage.inMemory();
@@ -361,12 +380,20 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       },
     });
     await loader.reload();
-    const skillNames = loader.getSkills().skills.map((skill) => skill.name);
+    const skills = loader.getSkills().skills;
+    const skillNames = skills.map((skill) => skill.name);
     if (!sessionManager.getEntries().some((entry) => entry.type === "message" || entry.type === "compaction")) {
       const thread = await this.engine.getThread(input.threadId);
-      const triggerIndex = input.triggerMessageId
+      let triggerIndex = input.triggerMessageId
         ? thread.items.findIndex((item) => item.itemId === input.triggerMessageId)
         : -1;
+      if (triggerIndex < 0 && input.goalId) {
+        const payloads = await this.store.payloads(thread.items.map((item) => item.payloadRef));
+        triggerIndex = thread.items.findIndex((item) => {
+          const payload = payloads.get(item.payloadRef);
+          return item.kind === "message" && isRecord(payload) && payload.goalId === input.goalId;
+        });
+      }
       const historyThread = triggerIndex >= 0
         ? { ...thread, items: thread.items.slice(0, triggerIndex), version: Math.max(0, thread.items[triggerIndex]!.sequence - 1) }
         : thread;
@@ -388,7 +415,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       consecutiveIdleResponses: 0,
       unproductiveToolCalls: 0,
     };
-    const customTools = [...workspaceTools(this.tools), goalTool(resolution, this.now), humanInputTool(resolution, this.now)];
+    const customTools = [
+      ...workspaceTools(this.tools),
+      piReadTool(this.tools, skills),
+      goalTool(resolution, this.now),
+      humanInputTool(resolution, this.now),
+    ];
     const { session } = await createAgentSession({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
@@ -404,12 +436,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       thinkingLevel: input.supportsReasoning ? (input.thinkingLevel ?? "medium") : "off",
     });
     session.setAutoCompactionEnabled(true);
-    const goalIds = new Set(sessionManager.getEntries()
-      .flatMap((entry) => entry.type === "custom" && entry.customType === "autoagent_goal" ? [entry.data] : [])
-      .map((data) => (data as { goalId?: string } | undefined)?.goalId)
-      .filter((value): value is string => Boolean(value)));
+    const goalIds = promptedGoalIds(sessionManager.getEntries());
     await this.traces.append({
-      traceId: stableId("trace", input.threadId, "skills", skillNames.join(",")),
+      traceId: piSessionSkillsTraceId(
+        input.threadId,
+        input.goalId,
+        input.turnId,
+        skillNames,
+      ),
       agentId: input.agent.id,
       threadId: input.threadId,
       goalId: input.goalId,
@@ -429,10 +463,6 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     triggerMessageId: string | undefined,
   ): Promise<AgentPrompt> {
     const isNewGoal = Boolean(goal && !state.goalIds.has(goal.spec.id));
-    if (goal && isNewGoal) {
-      state.session.sessionManager.appendCustomEntry("autoagent_goal", { goalId: goal.spec.id });
-      state.goalIds.add(goal.spec.id);
-    }
     if (triggerMessageId) {
       const thread = await this.engine.getThread(input.threadId);
       const item = thread.items.find((candidate) => candidate.itemId === triggerMessageId);
@@ -454,6 +484,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       if (content) {
         if (!isNewGoal) return { text: content, images: [] };
         return `${activeGoalPrompt(goal!)}\n\n## 本轮按时间序收到的消息\n${content}`;
+      }
+    }
+    if (goal && isNewGoal) {
+      const thread = await this.engine.getThread(input.threadId);
+      const payloads = await this.store.payloads(thread.items.map((item) => item.payloadRef));
+      const initial = initialGoalMessage(thread, payloads, goal.spec.id);
+      if (initial) {
+        return `${activeGoalPrompt(goal)}\n\n## 恢复的正式任务消息\n${initial}`;
       }
     }
     if (pending?.kind === "correction") return `Host 对目标结算的决定：${pending.content}`;
@@ -524,11 +562,37 @@ function activeGoalPrompt(goal: AgentGoal): string {
   ].filter(Boolean).join("\n");
 }
 
+export function initialGoalMessage(
+  thread: AgentThreadSnapshot,
+  payloads: ReadonlyMap<string, unknown>,
+  goalId: string,
+): string | undefined {
+  for (const item of thread.items) {
+    if (item.kind !== "message") continue;
+    const payload = payloads.get(item.payloadRef);
+    if (!isRecord(payload) || payload.goalId !== goalId || typeof payload.content !== "string") continue;
+    const content = payload.content.trim();
+    if (content) return content;
+  }
+  return undefined;
+}
+
+export function promptedGoalIds(entries: readonly unknown[]): Set<string> {
+  const goalIds = new Set<string>();
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry.type !== "custom" || entry.customType !== "autoagent_goal_prompted") continue;
+    if (!isRecord(entry.data) || typeof entry.data.goalId !== "string" || !entry.data.goalId) continue;
+    goalIds.add(entry.data.goalId);
+  }
+  return goalIds;
+}
+
 async function pendingThreadInput(
   thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>,
   store: AgentStore,
   humanOnly = false,
   earliest = false,
+  goalId?: string,
 ): Promise<PendingThreadInput | undefined> {
   const payloads = await store.payloads(thread.items.map((item) => item.payloadRef));
   const indexes = earliest
@@ -537,6 +601,7 @@ async function pendingThreadInput(
   for (const index of indexes) {
     const item = thread.items[index]!;
     const payload = payloads.get(item.payloadRef);
+    if (goalId && (!isRecord(payload) || payload.goalId !== goalId)) continue;
     if (item.kind === "message" && isRecord(payload) && typeof payload.content === "string") {
       if (humanOnly && (payload.senderPrincipalId !== "human" || payload.deliveryKind === "context")) continue;
       const turnId = item.turnId ?? stableId("turn", thread.threadId, item.itemId);
@@ -587,11 +652,65 @@ function workspaceTools(runtime: AgentToolRuntime): ToolDefinition[] {
   }));
 }
 
+function piReadTool(runtime: AgentToolRuntime, skills: Skill[]): ToolDefinition {
+  return defineTool({
+    name: "read",
+    label: "读取文件或 Skill 文档",
+    description: "读取工作区文件，或读取当前 Agent 已启用 Skill 目录中的说明与引用文件。",
+    parameters: Type.Object({ path: Type.String() }),
+    async execute(_callId, params) {
+      const requestedPath = (params as { path: string }).path;
+      const skillFile = await resolveEnabledSkillFile(requestedPath, skills);
+      if (skillFile) {
+        const content = await readFile(skillFile, "utf8");
+        return {
+          content: [{ type: "text", text: content }],
+          details: { ok: true, source: "skill", path: skillFile },
+        };
+      }
+
+      const result = await runtime.execute({ tool: "readFile", path: requestedPath });
+      if (!result.ok) throw new Error(failureMessage(result));
+      return {
+        content: [{ type: "text", text: String(result.content ?? "") }],
+        details: { ok: true, source: "workspace", path: String(result.path ?? requestedPath) },
+      };
+    },
+  });
+}
+
+export async function resolveEnabledSkillFile(requestedPath: string, skills: Skill[]): Promise<string | undefined> {
+  if (!path.isAbsolute(requestedPath)) return undefined;
+  let target: string;
+  try {
+    target = await realpath(requestedPath);
+  } catch {
+    return undefined;
+  }
+  for (const skill of skills) {
+    const root = await realpath(skill.baseDir);
+    if (isInside(root, target)) return target;
+  }
+  return undefined;
+}
+
+export function activePiToolNames(
+  workspaceToolNames: string[],
+  supportsImages: boolean,
+  hasGoal: boolean,
+): string[] {
+  return [...new Set([
+    "read",
+    ...workspaceToolNames.filter((name) => name !== "readImage" || supportsImages),
+    ...(hasGoal ? ["goal_resolution", "request_human_input"] : []),
+  ])];
+}
+
 function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作，criterionResults 应如实记录满足、不满足或未验证；被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
+    description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作。顶层 criterionResults 只对应当前 Goal 提示中的 successCriteria，按 0 到 N-1 各提交一次；Mission、QA 或其他领域交付物自己的验收项属于 domainOutcome，不得混入顶层 criterionResults。被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
     parameters: Type.Object({
       status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),
@@ -602,7 +721,7 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
         evidence: Type.Array(Type.Object({ kind: Type.String(), ref: Type.String() })),
         note: Type.Optional(Type.String()),
       })),
-      residualRisks: Type.Array(Type.String()),
+      residualRisks: Type.Optional(Type.Array(Type.String())),
       domainOutcome: Type.Unknown(),
     }),
     async execute(_callId, params) {
@@ -615,16 +734,17 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
           terminate: true,
         };
       }
+      const normalizedParams = withDefaultResidualRisks(params);
       const submitted = binding.mock
         ? {
-            ...params,
+            ...normalizedParams,
             criterionResults: binding.goal.spec.successCriteria.map((_criterion, criterionIndex) => ({
               criterionIndex,
               status: "satisfied" as const,
               evidence: [],
             })),
           }
-        : params;
+        : normalizedParams;
       const parsed = parseResolutionProposal(submitted, binding.goal, binding.turnId, now().toISOString());
       if (!parsed.ok) {
         if (process.env.AUTOAGENT_DEBUG_PI === "1") console.error("Pi goal_resolution rejected", parsed.reason, params);
@@ -640,6 +760,51 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
       };
     },
   });
+}
+
+export function piSessionSkillsTraceId(
+  threadId: string,
+  goalId: string | undefined,
+  turnId: string | undefined,
+  skillNames: readonly string[],
+): string {
+  return stableId(
+    "trace",
+    threadId,
+    goalId ?? "no-goal",
+    turnId ?? "session-resources",
+    "skills",
+    skillNames.join(","),
+  );
+}
+
+export function piWorkSessionKey(threadId: string, goalId?: string): string {
+  return `${threadId}\u0000${goalId ?? "conversation"}`;
+}
+
+export function piWorkSessionDirectory(
+  workspaceRoot: string,
+  agentId: string,
+  threadId: string,
+  goalId?: string,
+): string {
+  return path.join(
+    workspaceRoot,
+    ".autoagent",
+    "pi-sessions",
+    safeKey(agentId),
+    safeKey(threadId),
+    safeKey(goalId ?? "conversation"),
+  );
+}
+
+export function withDefaultResidualRisks<T extends object>(
+  params: T & { residualRisks?: string[] },
+): T & { residualRisks: string[] } {
+  return {
+    ...params,
+    residualRisks: params.residualRisks ?? [],
+  };
 }
 
 function humanInputTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {

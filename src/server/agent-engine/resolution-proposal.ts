@@ -30,7 +30,11 @@ export function parseResolutionProposal(
     }
     const criterionIndex = item.criterionIndex as number;
     if (criterionIndex < 0 || criterionIndex >= goal.spec.successCriteria.length || seen.has(criterionIndex)) {
-      return { ok: false, reason: `criterionResults[${index}].criterionIndex 无效或重复` };
+      const expected = goal.spec.successCriteria.map((_criterion, expectedIndex) => expectedIndex);
+      return {
+        ok: false,
+        reason: `criterionResults[${index}].criterionIndex 无效或重复；顶层 criterionResults 只对应当前 Goal 的成功标准，必须分别使用索引 ${expected.join(", ")} 且每个索引只出现一次；领域交付物内部的验收项请放入 domainOutcome`,
+      };
     }
     seen.add(criterionIndex);
     if (item.evidence.some((entry) => !isEvidence(entry))) {

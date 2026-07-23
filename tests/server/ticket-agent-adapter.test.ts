@@ -380,6 +380,52 @@ describe("Ticket Agent resolution adapter", () => {
     })).toMatchObject({ valid: false, reason: expect.stringContaining("not_verified") });
   });
 
+  it("describes the exact mission assurance result shape", () => {
+    const instruction = missionOutcomeInstruction(
+      "mission-assurance-v1",
+      [],
+      [],
+      undefined,
+      {
+        planId: "plan-a",
+        version: 1,
+        tickets: [],
+        dependencyEdges: [],
+        requiredTerminalTicketIds: [],
+        missionBaseline: {
+          baselineId: "baseline-a",
+          version: 3,
+          establishedByTicketId: "intake-a" as TicketId,
+          establishedAt: NOW,
+          objective: "deliver",
+          criteria: [{ criterionId: "criterion-a", text: "artifact runs" }],
+          constraints: [],
+          assumptions: [],
+          exclusions: [],
+        },
+        teamMembers: [],
+      },
+      [],
+      {
+        ticket: {
+          ticketId: "assurance-a" as TicketId,
+          title: "verify",
+          objective: "verify the artifact",
+          successCriteria: ["produce a reproducible conclusion"],
+          outputContract: { schemaRef: "mission-assurance-v1" },
+          assurance: { missionCriterionIds: ["criterion-a"] },
+        },
+      },
+    );
+
+    expect(instruction).toContain("domainOutcome.assuranceReport");
+    expect(instruction).toContain("baselineVersion:3");
+    expect(instruction).toContain('criterionId:"<Mission criterionId>"');
+    expect(instruction).toContain('["criterion-a"]');
+    expect(instruction).toContain("goal_resolution 顶层 criterionResults");
+    expect(instruction).toContain("criterionIndex");
+  });
+
   it("requires every Mission settlement terminal to inherit baseline assurance from strict upstream Tickets", () => {
     const baseline = {
       baselineId: "baseline-a",

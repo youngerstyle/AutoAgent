@@ -5,13 +5,20 @@ import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
-import { projectTicketBlocker, RuntimeHost } from "../../src/server/runtime/runtime-host.js";
+import { projectTicketBlocker, queuedMessageRoute, RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("RuntimeHost", () => {
+  it("never delivers a queued private message into a later Goal", () => {
+    expect(queuedMessageRoute("goal-a", "goal-a")).toBe("active_goal");
+    expect(queuedMessageRoute("goal-a", "goal-b")).toBe("defer");
+    expect(queuedMessageRoute(undefined, "goal-b")).toBe("defer");
+    expect(queuedMessageRoute("goal-a", undefined)).toBe("idle");
+  });
+
   it("projects typed manual-test input into the QA human-loop contract", () => {
     expect(projectTicketBlocker("QA 缺少浏览器环境", {
       kind: "manual_test",
@@ -359,7 +366,10 @@ describe("RuntimeHost", () => {
     await fixture.host.tick();
 
     expect(histories.length).toBeGreaterThanOrEqual(1);
-    expect(histories[0]).toContainEqual({ type: "user_message", content: objective });
+    expect(histories[0]).toContainEqual(expect.objectContaining({
+      type: "user_message",
+      content: expect.stringContaining(objective),
+    }));
     expect(instructions[0]).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
   });
 

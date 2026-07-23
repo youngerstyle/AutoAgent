@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentToolRuntime } from "../../src/server/agent-engine/tool-runtime.js";
+import { AgentToolRuntime, agentCommandEnvironment } from "../../src/server/agent-engine/tool-runtime.js";
 
 describe("AgentToolRuntime", () => {
   it("uses explicit configured tools instead of role routing", async () => {
@@ -32,6 +32,24 @@ describe("AgentToolRuntime", () => {
 
     const result = await runtime.execute({ tool: "shell", command: "node -e \"process.exit(3)\"" });
     expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
+  });
+
+  it("exposes platform-installed Skill CLIs inside workspace shell commands", async () => {
+    const environment = agentCommandEnvironment({ PATH: "host-bin" }, "C:\\platform");
+    expect(environment.PATH).toBe(["C:\\platform", "node_modules", ".bin"].join(path.sep) + path.delimiter + "host-bin");
+
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-skill-cli-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["shell"]);
+
+    const result = await runtime.execute({ tool: "shell", command: "agent-browser --version" });
+    expect(result).toMatchObject({ tool: "shell", ok: true, exitCode: 0 });
+    expect(String(result.stdout)).toMatch(/\d+\.\d+\.\d+/);
   });
 
   it("yields a long-running shell command as a pollable managed process", async () => {

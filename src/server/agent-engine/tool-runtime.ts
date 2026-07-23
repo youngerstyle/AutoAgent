@@ -148,6 +148,7 @@ export class AgentToolRuntime {
     const [stdoutHandle, stderrHandle] = await Promise.all([open(stdoutPath, "w"), open(stderrPath, "w")]);
     const child = spawn(command, {
       cwd: this.policy.workspaceRoot,
+      env: agentCommandEnvironment(),
       shell: true,
       windowsHide: true,
       detached: false,
@@ -165,6 +166,17 @@ export class AgentToolRuntime {
     void exit.then((exitCode) => writeFile(metadataPath, JSON.stringify({ ...metadata, exitCode }), "utf8"));
     return { serviceId, pid: child.pid, stdoutPath, stderrPath, exit };
   }
+}
+
+export function agentCommandEnvironment(
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+  platformRoot = process.cwd(),
+): NodeJS.ProcessEnv {
+  const environment = { ...baseEnvironment };
+  const pathKey = Object.keys(environment).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const platformBin = path.join(platformRoot, "node_modules", ".bin");
+  environment[pathKey] = [platformBin, environment[pathKey]].filter(Boolean).join(path.delimiter);
+  return environment;
 }
 
 interface ManagedProcess {

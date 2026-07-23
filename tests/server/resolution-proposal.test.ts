@@ -80,6 +80,42 @@ describe("parseResolutionProposal", () => {
     });
   });
 
+  it("explains the Goal criterion index boundary instead of returning an opaque error", () => {
+    const goal = {
+      version: 1,
+      spec: {
+        id: "goal",
+        threadId: "thread",
+        objective: "完成复核",
+        successCriteria: ["形成结论", "记录缺陷", "提供证据"],
+        contextRefs: [],
+        createdAt: "2026-07-16T00:00:00.000Z",
+      },
+    } as any;
+
+    const result = parseResolutionProposal({
+      status: "completed",
+      summary: "复核完成",
+      evidence: [],
+      criterionResults: [
+        { criterionIndex: 0, status: "satisfied", evidence: [] },
+        { criterionIndex: 1, status: "satisfied", evidence: [] },
+        { criterionIndex: 2, status: "satisfied", evidence: [] },
+        { criterionIndex: 3, status: "not_satisfied", evidence: [] },
+      ],
+      residualRisks: [],
+      domainOutcome: { assuranceReport: { criterionResults: [] } },
+    }, goal, "turn", "2026-07-16T00:01:00.000Z");
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("必须分别使用索引 0, 1, 2"),
+    });
+    expect(result).toMatchObject({
+      reason: expect.stringContaining("领域交付物内部的验收项请放入 domainOutcome"),
+    });
+  });
+
   it("allows a completed review to report unmet criteria for a correction outcome", () => {
     const goal = {
       version: 1,

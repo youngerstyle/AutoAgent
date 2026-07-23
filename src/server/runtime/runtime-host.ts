@@ -104,7 +104,7 @@ export class RuntimeHost {
       return { accepted, canRunNow: record?.status === "active", snapshot: await this.snapshotUnlocked() };
     });
     if (result.accepted.appended && result.canRunNow) {
-      void this.enqueueAgentMessageTurn(taskId, agentId, result.accepted.turnId, messageId)
+      void this.enqueueAgentMessageTurn(taskId, agentId, result.accepted.turnId, messageId, result.accepted.goalId)
         .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error, result.accepted.turnId)).catch(() => undefined));
     }
     return result.snapshot;
@@ -259,7 +259,13 @@ export class RuntimeHost {
     }
   }
 
-  private async appendAgentMessageUnlocked(taskId: string, agentId: string, message: string, messageId: string, attachments: AgentMessageAttachment[] = []): Promise<{ appended: boolean; turnId: string }> {
+  private async appendAgentMessageUnlocked(
+    taskId: string,
+    agentId: string,
+    message: string,
+    messageId: string,
+    attachments: AgentMessageAttachment[] = [],
+  ): Promise<{ appended: boolean; turnId: string; goalId?: string }> {
     if (attachments.length > 4) throw new Error("单条消息最多附加 4 张图片");
     const context = await this.requireContext(taskId);
     const engine = context.engines.get(agentId);
@@ -268,21 +274,22 @@ export class RuntimeHost {
       ?? await engine.ensureThread({ agentId, scopeId: context.record.missionId, idempotencyKey: stableId("thread", context.record.missionId, agentId) });
     const turnId = stableId("turn", thread.threadId, messageId);
     const createdAt = this.now().toISOString();
+    const link = await this.activeLink(context, agentId);
+    const goalId = link?.agentGoalId;
     const appended = await engine.sendMessage({
       messageId,
       turnId,
       threadId: thread.threadId,
-      goalId: (await this.activeLink(context, agentId))?.agentGoalId,
+      goalId,
       senderPrincipalId: "human",
       deliveryKind: "turn",
       content: message,
       attachments,
       createdAt,
     });
-    if (!appended) return { appended: false, turnId };
-    const link = await this.activeLink(context, agentId);
-    if (link?.agentGoalId) {
-      const goal = await engine.getGoal(link.agentGoalId);
+    if (!appended) return { appended: false, turnId, goalId };
+    if (goalId) {
+      const goal = await engine.getGoal(goalId);
       if (goal && (goal.status === "paused" || goal.status === "blocked" || goal.status === "usage_limited")) {
         await engine.controlGoal({
           requestId: stableId("human_resume", taskId, agentId, goal.spec.id, messageId),
@@ -294,17 +301,24 @@ export class RuntimeHost {
         if (link.status === "blocked") await context.manager.resumeBlockedAgent(agentId);
       }
     }
-    return { appended: true, turnId };
+    return { appended: true, turnId, goalId };
   }
 
-  private async continueAfterAgentMessageUnlocked(taskId: string, agentId: string, turnId: string, triggerMessageId: string): Promise<void> {
+  private async continueAfterAgentMessageUnlocked(
+    taskId: string,
+    agentId: string,
+    turnId: string,
+    triggerMessageId: string,
+    sourceGoalId?: string,
+  ): Promise<void> {
     const context = await this.requireContext(taskId);
     const thread = await context.engines.get(agentId)?.getThreadForAgent(agentId, context.record.missionId);
     if (!thread) return;
     const resumedLink = await this.activeLink(context, agentId);
-    if (resumedLink?.status === "running") {
+    const route = queuedMessageRoute(sourceGoalId, resumedLink?.agentGoalId);
+    if (route === "active_goal" && resumedLink?.status === "running") {
       await this.runAgentSlice(context, resumedLink, turnId, triggerMessageId);
-    } else if (!resumedLink) {
+    } else if (route === "idle") {
       await context.loops.get(agentId)?.runSlice(await this.sliceInputForAgent(context, agentId, thread.threadId, undefined, turnId, triggerMessageId));
     }
     await context.manager.tick();
@@ -699,11 +713,23 @@ export class RuntimeHost {
     return this.trackAgentRun(key, this.runAgentSlice(context, link));
   }
 
-  private enqueueAgentMessageTurn(taskId: string, agentId: string, turnId: string, triggerMessageId: string): Promise<void> {
+  private enqueueAgentMessageTurn(
+    taskId: string,
+    agentId: string,
+    turnId: string,
+    triggerMessageId: string,
+    sourceGoalId?: string,
+  ): Promise<void> {
     const key = `${taskId}:${agentId}`;
     const active = this.agentRuns.get(key);
     const pending = (active ? active.catch(() => undefined) : Promise.resolve())
-      .then(() => this.exclusive(() => this.continueAfterAgentMessageUnlocked(taskId, agentId, turnId, triggerMessageId)));
+      .then(() => this.exclusive(() => this.continueAfterAgentMessageUnlocked(
+        taskId,
+        agentId,
+        turnId,
+        triggerMessageId,
+        sourceGoalId,
+      )));
     return this.trackAgentRun(key, pending);
   }
 
@@ -837,6 +863,14 @@ export class RuntimeHost {
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+export function queuedMessageRoute(
+  sourceGoalId: string | undefined,
+  currentGoalId: string | undefined,
+): "active_goal" | "idle" | "defer" {
+  if (!currentGoalId) return "idle";
+  return sourceGoalId === currentGoalId ? "active_goal" : "defer";
 }
 
 function projectThread(
