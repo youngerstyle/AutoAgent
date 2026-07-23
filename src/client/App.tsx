@@ -390,6 +390,7 @@ export function App() {
       await updateAgent(selectedId, agent.id, {
         provider: agent.provider ?? "mock",
         model: agent.model ?? "",
+        skillOverrides: agent.skillOverrides ?? null,
         policyOverride: normalizePolicy(agent.policyOverride)
       });
       await refreshAgents(selectedId);
@@ -793,7 +794,9 @@ export function App() {
           {view === "team" ? (
             <ProjectTeam
               profiles={profiles}
+              profileDefinitions={agentProfiles}
               modelConfigs={modelConfigs}
+              availableSkills={availableSkills}
               selectedId={selectedProfile?.id}
               selectedProfile={selectedProfile}
               selectedDraft={selectedDraft}
@@ -1654,7 +1657,9 @@ function AgentDefinitionEditor(props: {
 
 function ProjectTeam(props: {
   profiles: AgentProfileView[];
+  profileDefinitions: AgentProfile[];
   modelConfigs: ModelConfig[];
+  availableSkills: AvailableSkill[];
   selectedId?: string;
   selectedProfile?: AgentProfileView;
   selectedDraft?: WorkspaceAgentConfig;
@@ -1668,7 +1673,7 @@ function ProjectTeam(props: {
       <header className="management-header">
         <div>
           <h2>项目团队实例</h2>
-          <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目只覆盖模型、权限和当前状态。</p>
+          <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目可按需覆盖模型、Skill 和工具权限。</p>
         </div>
         <button type="button" onClick={props.onRefresh}>刷新团队</button>
       </header>
@@ -1690,8 +1695,10 @@ function ProjectTeam(props: {
         </section>
         <AgentDetailPanel
           profile={props.selectedProfile}
+          profileDefinition={props.profileDefinitions.find((profile) => profile.id === props.selectedDraft?.profileId)}
           draft={props.selectedDraft}
           modelConfigs={props.modelConfigs}
+          availableSkills={props.availableSkills}
           onDraftChange={props.onDraftChange}
           onSave={props.onSave}
         />
@@ -1702,8 +1709,10 @@ function ProjectTeam(props: {
 
 function AgentDetailPanel(props: {
   profile?: AgentProfileView;
+  profileDefinition?: AgentProfile;
   draft?: WorkspaceAgentConfig;
   modelConfigs: ModelConfig[];
+  availableSkills: AvailableSkill[];
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
 }) {
@@ -1800,6 +1809,12 @@ function AgentDetailPanel(props: {
                 <input value={draft.model ?? ""} onChange={(event) => props.onDraftChange({ ...draft, model: event.target.value })} />
               </label>
             </div>
+            <InstanceSkillConfig
+              draft={draft}
+              defaultSkills={props.profileDefinition?.defaultSkills ?? []}
+              availableSkills={props.availableSkills}
+              onChange={props.onDraftChange}
+            />
             <div className="policy-grid">
               <Toggle label="读项目" checked={policy.canReadWorkspace} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canReadWorkspace: checked } })} />
               <Toggle label="写项目" checked={policy.canWriteWorkspace} onChange={(checked) => props.onDraftChange({ ...draft, policyOverride: { ...policy, canWriteWorkspace: checked } })} />
@@ -1823,6 +1838,60 @@ function AgentDetailPanel(props: {
         )}
       </section>
     </aside>
+  );
+}
+
+function InstanceSkillConfig(props: {
+  draft: WorkspaceAgentConfig;
+  defaultSkills: string[];
+  availableSkills: AvailableSkill[];
+  onChange: (agent: WorkspaceAgentConfig) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const inheritsDefaults = props.draft.skillOverrides === undefined;
+  const enabledSkills = new Set(props.draft.skillOverrides ?? props.defaultSkills);
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredSkills = normalizedQuery
+    ? props.availableSkills.filter((skill) => `${skill.name} ${skill.description}`.toLocaleLowerCase().includes(normalizedQuery))
+    : props.availableSkills;
+
+  return (
+    <div className="instance-skill-config">
+      <Toggle
+        label="继承档案默认 Skill"
+        checked={inheritsDefaults}
+        onChange={(checked) => props.onChange({
+          ...props.draft,
+          skillOverrides: checked ? undefined : [...enabledSkills],
+        })}
+      />
+      <small>{inheritsDefaults ? "当前随智能体档案更新。" : "当前使用这个项目的专属 Skill 配置。"}</small>
+      <input
+        className="skill-search"
+        aria-label="搜索项目 Skill"
+        placeholder="搜索 Skill"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <div className="skill-picker" aria-label="项目 Skill">
+        {filteredSkills.length ? filteredSkills.map((skill) => (
+          <label key={skill.name} className="skill-option" title={skill.filePath}>
+            <input
+              type="checkbox"
+              checked={enabledSkills.has(skill.name)}
+              disabled={inheritsDefaults}
+              onChange={(event) => {
+                const next = new Set(enabledSkills);
+                if (event.target.checked) next.add(skill.name);
+                else next.delete(skill.name);
+                props.onChange({ ...props.draft, skillOverrides: Array.from(next) });
+              }}
+            />
+            <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+          </label>
+        )) : <small>{props.availableSkills.length ? "没有匹配的 Skill。" : "未发现可用 Skill。"}</small>}
+      </div>
+    </div>
   );
 }
 

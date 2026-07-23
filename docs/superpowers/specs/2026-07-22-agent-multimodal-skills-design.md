@@ -73,8 +73,9 @@ Skill 解释“如何完成某类工作”；Tool 提供“实际能执行什么
 
 - 使用 Pi `loadSkills` / `DefaultResourceLoader`，遵循 Agent Skills 标准。
 - 平台扫描全局 `~/.agents/skills` 和工作区 `.agents/skills`，展示名称、描述、来源和诊断。
-- Agent 档案保存 `defaultSkills: string[]`，Agent 实例可在后续增加覆盖配置。
-- 只把档案显式启用的 Skill 传给 Pi；不默认把机器上的全部 Skill 注入所有 Agent。
+- Agent 档案保存 `defaultSkills: string[]`；项目 Agent 实例保存可选的 `skillOverrides: string[]`。
+- 实例未设置 `skillOverrides` 时继承档案默认值；显式空数组表示该项目禁用全部 Skill；非空数组表示项目专属集合。
+- 只把实例覆盖或档案默认中显式启用的 Skill 传给 Pi；不默认把机器上的全部 Skill 注入所有 Agent。
 - Pi 在 system prompt 中只放 Skill 名称、描述和文件位置，模型需要时再读取 `SKILL.md`，避免完整内容常驻上下文。
 
 ### 2.3 信任和审计

@@ -56,6 +56,7 @@ export interface WorkspaceAgent {
   status: EntityStatus;
   provider?: ProviderName;
   model?: string;
+  skillOverrides?: string[];
   policyOverride?: Partial<AgentPolicy>;
 }
 

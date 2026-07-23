@@ -2079,6 +2079,23 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.instance-skill-config {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px 0;
+  border-top: 1px solid #e3e8ed;
+  border-bottom: 1px solid #e3e8ed;
+}
+
+.instance-skill-config > small {
+  color: #607080;
+}
+
+.instance-skill-config .skill-picker {
+  max-height: 240px;
+}
+
 .skill-option {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -2087,6 +2104,11 @@ button:disabled {
   padding: 8px;
   border: 1px solid #d7dde5;
   border-radius: 6px;
+}
+
+.skill-option:has(input:disabled) {
+  background: #f7f9fb;
+  color: #6d7986;
 }
 
 .skill-option span,

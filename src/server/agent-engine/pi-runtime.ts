@@ -18,6 +18,7 @@ import { createAssistantMessageEventStream, type AssistantMessage, type Context,
 import { Type } from "typebox";
 import { AGENT_HUMAN_INPUT_KINDS, type AgentGoal, type AgentHumanInputKind, type AgentHumanInputRequest, type GoalResolutionProposal } from "../../shared/contracts/agent-engine.js";
 import type { ProviderName, WorkspaceToolName } from "../../shared/types.js";
+import { effectiveAgentSkills } from "../agents/skill-config.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import type { AgentModelHistoryItem, AgentModelTurnResult } from "../providers/types.js";
 import type { AgentEngine } from "./agent-engine.js";
@@ -342,11 +343,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         : { enabled: true, maxRetries: 3, baseDelayMs: 2_000 },
       shellPath: process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : undefined,
     }, { projectTrusted: true });
+    const enabledSkillNames = effectiveAgentSkills(input.profile, input.agent);
     const loader = new DefaultResourceLoader({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
       settingsManager: settings,
-      additionalSkillPaths: configuredSkillPaths(this.workspaceRoot, input.profile.defaultSkills ?? []),
+      additionalSkillPaths: configuredSkillPaths(this.workspaceRoot, enabledSkillNames),
       noExtensions: true,
       noSkills: false,
       noPromptTemplates: true,
@@ -354,7 +356,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       noContextFiles: true,
       systemPrompt: stableSystemPrompt(input),
       skillsOverride: (base) => {
-        const enabled = new Set(input.profile.defaultSkills ?? []);
+        const enabled = new Set(enabledSkillNames);
         return { ...base, skills: base.skills.filter((skill) => enabled.has(skill.name)) };
       },
     });

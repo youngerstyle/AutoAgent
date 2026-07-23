@@ -137,7 +137,7 @@ export function profileMetadata(agent: WorkspaceAgent, profiles = CORE_AGENT_PRO
 export async function updateWorkspaceAgent(
   workspace: Workspace,
   workspaceAgentId: string,
-  patch: Partial<Pick<WorkspaceAgent, "provider" | "model" | "policyOverride">>
+  patch: Partial<Pick<WorkspaceAgent, "provider" | "model" | "policyOverride">> & { skillOverrides?: string[] | null }
 ): Promise<WorkspaceAgent> {
   const existing = await readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, workspaceAgentId), undefined);
   if (!existing) throw new Error(`Workspace agent not found: ${workspaceAgentId}`);
@@ -145,6 +145,7 @@ export async function updateWorkspaceAgent(
     ...existing,
     provider: patch.provider ?? existing.provider,
     model: patch.model ?? existing.model,
+    ...(patch.skillOverrides !== undefined ? { skillOverrides: patch.skillOverrides ?? undefined } : {}),
     policyOverride: patch.policyOverride ?? existing.policyOverride
   };
   await writeJson(workspaceAgentFile(workspace.rootPath, workspaceAgentId), updated);

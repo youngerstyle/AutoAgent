@@ -23,9 +23,11 @@ export function createAgentRouter(workspaceStore: WorkspaceStore, profileStore?:
     await ensureCoreTeam(workspace, profiles);
     const provider = req.body.provider === undefined ? undefined : assertProvider(String(req.body.provider));
     const policyOverride = req.body.policyOverride === undefined ? undefined : sanitizePolicy(req.body.policyOverride as Record<string, unknown>);
+    const skillOverrides = req.body.skillOverrides === undefined ? undefined : sanitizeSkillOverrides(req.body.skillOverrides);
     const agent = await updateWorkspaceAgent(workspace, String(req.params.agentId), {
       provider,
       model: req.body.model === undefined ? undefined : String(req.body.model),
+      skillOverrides,
       policyOverride
     });
     res.json({ agent: { ...agent, ...profileMetadata(agent, profiles) } });
@@ -37,6 +39,12 @@ export function createAgentRouter(workspaceStore: WorkspaceStore, profileStore?:
 function assertProvider(provider: string): ProviderName {
   if (provider === "mock" || provider === "openai" || provider === "anthropic") return provider;
   throw new HttpError(400, `Invalid provider: ${provider}`, "INVALID_PROVIDER");
+}
+
+function sanitizeSkillOverrides(input: unknown): string[] | null {
+  if (input === null) return null;
+  if (!Array.isArray(input)) throw new HttpError(400, "skillOverrides must be an array or null", "INVALID_SKILL_OVERRIDES");
+  return [...new Set(input.map(String).map((skill) => skill.trim()).filter(Boolean))];
 }
 
 function sanitizePolicy(input: Record<string, unknown>): Partial<AgentPolicy> {

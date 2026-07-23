@@ -88,7 +88,7 @@ export function listAgents(workspaceId: string): Promise<{ agents: WorkspaceAgen
 export function updateAgent(
   workspaceId: string,
   agentId: string,
-  input: { provider: ProviderName; model: string; policyOverride: Partial<AgentPolicy> }
+  input: { provider: ProviderName; model: string; skillOverrides: string[] | null; policyOverride: Partial<AgentPolicy> }
 ): Promise<{ agent: WorkspaceAgentConfig }> {
   return api(`/api/workspaces/${workspaceId}/agents/${agentId}`, { method: "PATCH", body: JSON.stringify(input) });
 }

@@ -37,6 +37,7 @@ describe("agents route", () => {
       .send({
         provider: "openai",
         model: "gpt-test",
+        skillOverrides: ["agent-browser", "agent-browser", " chrome-devtools "],
         policyOverride: {
           canReadWorkspace: true,
           canWriteWorkspace: true,
@@ -49,10 +50,35 @@ describe("agents route", () => {
 
     expect(updated.body.agent.provider).toBe("openai");
     expect(updated.body.agent.model).toBe("gpt-test");
+    expect(updated.body.agent.skillOverrides).toEqual(["agent-browser", "chrome-devtools"]);
     const raw = JSON.parse(await readFile(path.join(rootPath, ".autoagent", "agents", dev.id, "agent.json"), "utf8"));
     expect(raw.provider).toBe("openai");
+    expect(raw.skillOverrides).toEqual(["agent-browser", "chrome-devtools"]);
     expect(raw.policyOverride.canExecuteCommands).toBe(false);
     expect(raw.policyOverride.enabledTools).toEqual(["readFile"]);
+
+    await request(app)
+      .patch(`/api/workspaces/${workspaceId}/agents/${dev.id}`)
+      .send({ skillOverrides: null })
+      .expect(200);
+    const inheritedRaw = JSON.parse(await readFile(path.join(rootPath, ".autoagent", "agents", dev.id, "agent.json"), "utf8"));
+    expect(inheritedRaw.skillOverrides).toBeUndefined();
+  });
+
+  it("rejects malformed workspace skill overrides", async () => {
+    const app = createApp();
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-skills-ws-"));
+    const created = await request(app)
+      .post("/api/workspaces")
+      .send({ name: "Agent skills", rootPath, policyProfile: "development" })
+      .expect(201);
+    const workspaceId = created.body.workspace.id as string;
+    const listed = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
+
+    await request(app)
+      .patch(`/api/workspaces/${workspaceId}/agents/${listed.body.agents[0].id}`)
+      .send({ skillOverrides: "agent-browser" })
+      .expect(400);
   });
 
   it("seeds workspace agents from editable global agent profile defaults", async () => {
