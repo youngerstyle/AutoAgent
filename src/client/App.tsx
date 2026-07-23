@@ -16,6 +16,7 @@ import {
   listWorkspaces,
   pauseTask,
   resumeTask,
+  agentProfileUpdateInput,
   sendAgentMessage,
   sendTaskFollowup,
   setDefaultModelConfig,
@@ -499,16 +500,7 @@ export function App() {
 
   async function saveAgentProfile(profile: AgentProfile) {
     try {
-      const result = await updateAgentProfile(profile.id, {
-        name: profile.name,
-        identity: profile.identity,
-        soul: profile.soul,
-        agentMd: profile.agentMd,
-        capabilities: profile.capabilities,
-        defaultProvider: profile.defaultProvider,
-        defaultModel: profile.defaultModel,
-        defaultPolicy: profile.defaultPolicy
-      });
+      const result = await updateAgentProfile(profile.id, agentProfileUpdateInput(profile));
       setAgentProfiles((current) => current.map((item) => item.id === result.profile.id ? result.profile : item));
       setError("");
     } catch (err) {

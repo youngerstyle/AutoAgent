@@ -107,7 +107,23 @@ export function listAvailableSkills(): Promise<{ skills: AvailableSkill[]; diagn
   return api("/api/agent-profiles/skills");
 }
 
-export function updateAgentProfile(profileId: string, input: Partial<Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultSkills" | "defaultProvider" | "defaultModel" | "defaultPolicy">>): Promise<{ profile: AgentProfile }> {
+export type AgentProfileUpdateInput = Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultSkills" | "defaultProvider" | "defaultModel" | "defaultPolicy">;
+
+export function agentProfileUpdateInput(profile: AgentProfile): AgentProfileUpdateInput {
+  return {
+    name: profile.name,
+    identity: profile.identity,
+    soul: profile.soul,
+    agentMd: profile.agentMd,
+    capabilities: profile.capabilities,
+    defaultSkills: profile.defaultSkills,
+    defaultProvider: profile.defaultProvider,
+    defaultModel: profile.defaultModel,
+    defaultPolicy: profile.defaultPolicy,
+  };
+}
+
+export function updateAgentProfile(profileId: string, input: Partial<AgentProfileUpdateInput>): Promise<{ profile: AgentProfile }> {
   return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 

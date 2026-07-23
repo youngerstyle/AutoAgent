@@ -195,4 +195,31 @@ describe("agent profiles route", () => {
     expect(raw.soul).toBeUndefined();
     expect(raw.loopDefinition).toBeUndefined();
   });
+
+  it("persists selected and explicitly cleared default skills", async () => {
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const pm = listed.body.profiles.find((profile: { role: string }) => profile.role === "pm");
+
+    await request(app)
+      .patch(`/api/agent-profiles/${pm.id}`)
+      .send({ defaultSkills: ["agent-browser"] })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.profile.defaultSkills).toEqual(["agent-browser"]);
+      });
+
+    const selected = await request(app).get("/api/agent-profiles").expect(200);
+    expect(selected.body.profiles.find((profile: { id: string }) => profile.id === pm.id).defaultSkills)
+      .toEqual(["agent-browser"]);
+
+    await request(app)
+      .patch(`/api/agent-profiles/${pm.id}`)
+      .send({ defaultSkills: [] })
+      .expect(200);
+
+    const cleared = await request(app).get("/api/agent-profiles").expect(200);
+    expect(cleared.body.profiles.find((profile: { id: string }) => profile.id === pm.id).defaultSkills)
+      .toEqual([]);
+  });
 });
