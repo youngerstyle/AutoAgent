@@ -49,17 +49,16 @@ const AGENT_PANEL_MAX_HEIGHT = 560;
 const AGENT_PANEL_DEFAULT_HEIGHT = 300;
 const WORKSPACE_PANEL_MIN_WIDTH = 220;
 const WORKSPACE_PANEL_MAX_WIDTH = 440;
-const TASK_PANEL_MIN_WIDTH = 220;
-const TASK_PANEL_MAX_WIDTH = 420;
 const EVENT_PANEL_MIN_WIDTH = 260;
 const EVENT_PANEL_MAX_WIDTH = 520;
 const LIVE_EVENT_BUFFER_LIMIT = 80;
 
 type RunLayoutWidths = {
   workspace: number;
-  task: number;
   events: number;
 };
+
+type AppView = "office" | "projects" | "people" | "providers" | "operations";
 
 type RealProviderName = Exclude<ProviderName, "mock">;
 type ModelConfigDraft = Pick<ModelConfig, "name" | "model"> & {
@@ -89,7 +88,7 @@ export function App() {
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
-  const [view, setView] = useState<"run" | "studio" | "team" | "providers">("run");
+  const [view, setView] = useState<AppView>("office");
   const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
   const [rawTicketDialog, setRawTicketDialog] = useState<TicketInspectorItem>();
   const [loopDebugLog, setLoopDebugLog] = useState<LoopDebugLog>({ entries: [] });
@@ -551,117 +550,104 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
-          <h1>AutoAgent</h1>
-          <span>本地自动化团队平台</span>
+        <div className="brand-lockup">
+          <span className="brand-mark">T</span>
+          <div>
+            <h1>TEAMHQ</h1>
+            <span>自动化团队工作空间</span>
+          </div>
         </div>
         <nav className="topnav">
-          <button className={view === "run" ? "selected" : ""} onClick={() => setView("run")}>运行台</button>
-          <button className={view === "studio" ? "selected" : ""} onClick={() => setView("studio")}>智能体档案库</button>
-          <button className={view === "team" ? "selected" : ""} onClick={() => setView("team")}>项目团队实例</button>
+          <button className={view === "office" ? "selected" : ""} onClick={() => setView("office")}>办公室</button>
+          <button className={view === "projects" ? "selected" : ""} onClick={() => setView("projects")}>项目</button>
+          <button className={view === "people" ? "selected" : ""} onClick={() => setView("people")}>人才中心</button>
           <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")}>模型服务</button>
+          <button className={view === "operations" ? "selected" : ""} onClick={() => setView("operations")}>系统运营</button>
         </nav>
         <strong className={`status-pill ${displayedStatus}`}>{statusLabel(displayedStatus)}</strong>
       </header>
       <section
-        className="workspace-shell"
-        style={{ gridTemplateColumns: `${runLayoutWidths.workspace}px 8px minmax(0, 1fr)` }}
+        className={view === "office" ? "workspace-shell" : "workspace-shell management-mode"}
+        style={view === "office" ? { gridTemplateColumns: `${runLayoutWidths.workspace}px 8px minmax(0, 1fr)` } : undefined}
       >
-        <aside className="workspace-list">
-          <form className="workspace-form" onSubmit={submitWorkspace}>
-            <label>
-              <span>项目名称</span>
-              <input value={workspaceForm.name} onChange={(event) => setWorkspaceForm({ ...workspaceForm, name: event.target.value })} />
-            </label>
-            <label>
-              <span>项目路径</span>
-              <input value={workspaceForm.rootPath} onChange={(event) => setWorkspaceForm({ ...workspaceForm, rootPath: event.target.value })} placeholder="C:\\项目\\路径" />
-            </label>
-            <label>
-              <span>安全策略</span>
-              <select value={workspaceForm.policyProfile} onChange={(event) => setWorkspaceForm({ ...workspaceForm, policyProfile: event.target.value as Workspace["policyProfile"] })}>
-                <option value="production">生产：限制在项目内</option>
-                <option value="development">开发：允许本机访问</option>
-              </select>
-            </label>
-            <button type="submit">创建项目</button>
-          </form>
-          <div className="workspace-items">
-            {workspaces.map((workspace) => (
-              <article key={workspace.id} className={workspace.id === selectedId ? "workspace-item selected" : "workspace-item"}>
-                <button type="button" className="workspace-select" onClick={() => setSelectedId(workspace.id)}>
-                  <strong>{displayWorkspaceName(workspace.name)}</strong>
-                  <span>{workspace.rootPath}</span>
-                </button>
-                <button
-                  type="button"
-                  className="workspace-delete"
-                  aria-label={`删除项目 ${displayWorkspaceName(workspace.name)}`}
-                  title="删除项目"
-                  onClick={() => setDeleteDialog({ workspace, deleteLocalFolder: false, busy: false })}
-                >
-                  删除
-                </button>
-              </article>
-            ))}
-          </div>
-        </aside>
-        <button
-          type="button"
-          role="separator"
-          className="column-resizer"
-          aria-label="调整项目列表宽度"
-          aria-orientation="vertical"
-          aria-valuemin={WORKSPACE_PANEL_MIN_WIDTH}
-          aria-valuemax={WORKSPACE_PANEL_MAX_WIDTH}
-          aria-valuenow={runLayoutWidths.workspace}
-          onPointerDown={(event) => startColumnResize("workspace", event)}
-          onKeyDown={(event) => resizeColumnWithKeyboard("workspace", event)}
-          title="拖动调整项目列表宽度"
-        />
-        <section
-          className={view === "run" ? "console-region" : "management-region"}
-          style={view === "run" ? { gridTemplateColumns: `${runLayoutWidths.task}px 8px minmax(0, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
-        >
-          {view === "run" ? <>
-            <section className="task-panel">
-            <h2 className="task-panel-title">{primaryPanelTitle}</h2>
-            {mode === "blocked" ? (
-              <p className="task-panel-hint">{blockedPanelCopy.hint}</p>
-            ) : null}
-            <form onSubmit={submitTask}>
-              <label>
-                <span>{taskInputLabel}</span>
-                <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} />
-              </label>
-              <button type="submit" disabled={taskSubmitView.disabled}>{taskSubmitView.label}</button>
-            </form>
-            <div className="control-row">
-              <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
-              <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"}>继续</button>
-              <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"}>停止</button>
-            </div>
-            {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
-            {error ? <p className="error-text">{error}</p> : null}
-            </section>
+        {view === "office" ? (
+          <>
+            <aside className="workspace-list office-sidebar">
+              <div className="office-project-switcher">
+                <span className="section-kicker">当前项目</span>
+                <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)} aria-label="切换当前项目">
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>{displayWorkspaceName(workspace.name)}</option>
+                  ))}
+                </select>
+                <strong>{displayWorkspaceName(workspaces.find((workspace) => workspace.id === selectedId)?.name ?? "尚未选择项目")}</strong>
+                <small>{workspaces.find((workspace) => workspace.id === selectedId)?.rootPath ?? "请先在项目页创建项目"}</small>
+              </div>
 
+              <section className="office-nav-section">
+                <span className="section-kicker">当前工作</span>
+                <div className="office-work-summary">
+                  <strong>{snapshot?.activeTask?.title ?? "暂无 Mission"}</strong>
+                  <span>{phaseLabel(snapshot?.phase ?? "idle")} · {ticketItems.length} 张工单</span>
+                </div>
+              </section>
+
+              <section className="office-task-control">
+                <h2>{primaryPanelTitle}</h2>
+                {mode === "blocked" ? <p>{blockedPanelCopy.hint}</p> : null}
+                <form onSubmit={submitTask}>
+                  <label>
+                    <span>{taskInputLabel}</span>
+                    <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} />
+                  </label>
+                  <button type="submit" className="primary-action" disabled={taskSubmitView.disabled}>{taskSubmitView.label}</button>
+                </form>
+                <div className="control-row">
+                  <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"}>暂停</button>
+                  <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"}>继续</button>
+                  <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"}>停止</button>
+                </div>
+                {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
+                {error ? <p className="error-text">{error}</p> : null}
+              </section>
+
+              <section className="office-nav-section office-team-list">
+                <span className="section-kicker">团队</span>
+                {nodes.map((node) => (
+                  <button key={node.id} type="button" className={selectedAgentId === node.id ? "selected" : ""} onClick={() => setSelectedAgentId(node.id)}>
+                    <span className={`presence-dot ${node.active ? "running" : node.needsAttention ? "waiting" : node.status}`} />
+                    <span>{node.label}</span>
+                    <small>{node.needsAttention ? "等待你" : statusLabel(node.status)}</small>
+                  </button>
+                ))}
+              </section>
+            </aside>
             <button
               type="button"
               role="separator"
               className="column-resizer"
-              aria-label="调整任务控制区宽度"
+              aria-label="调整办公室导航宽度"
               aria-orientation="vertical"
-              aria-valuemin={TASK_PANEL_MIN_WIDTH}
-              aria-valuemax={TASK_PANEL_MAX_WIDTH}
-              aria-valuenow={runLayoutWidths.task}
-              onPointerDown={(event) => startColumnResize("task", event)}
-              onKeyDown={(event) => resizeColumnWithKeyboard("task", event)}
-              title="拖动调整任务控制区宽度"
+              aria-valuemin={WORKSPACE_PANEL_MIN_WIDTH}
+              aria-valuemax={WORKSPACE_PANEL_MAX_WIDTH}
+              aria-valuenow={runLayoutWidths.workspace}
+              onPointerDown={(event) => startColumnResize("workspace", event)}
+              onKeyDown={(event) => resizeColumnWithKeyboard("workspace", event)}
+              title="拖动调整办公室导航宽度"
             />
-
+          </>
+        ) : null}
+        <section
+          className={view === "office" ? "console-region" : "management-region"}
+          style={view === "office" ? { gridTemplateColumns: `minmax(0, 1fr) 8px ${runLayoutWidths.events}px` } : undefined}
+        >
+          {view === "office" ? <>
             <section className="canvas-panel" style={{ gridTemplateRows: `minmax(220px, 1fr) 8px ${agentPanelHeight}px` }}>
             <div className="team-canvas">
               <div className="canvas-phase">{phaseLabel(snapshot?.phase ?? "idle")}</div>
+              <div className="office-zone office-zone-leadership"><span>管理区</span></div>
+              <div className="office-zone office-zone-collaboration"><span>协作区</span></div>
+              <div className="office-zone office-zone-delivery"><span>交付区</span></div>
               {nodes.map((node) => (
                 <button
                   key={node.id}
@@ -744,7 +730,7 @@ export function App() {
             />
 
             <aside className="event-panel" ref={rightPanelRef}>
-              <div className="right-panel-tabs" role="tablist" aria-label="运行台右侧视图">
+              <div className="right-panel-tabs" role="tablist" aria-label="办公室右侧视图">
                 <button
                   type="button"
                   role="tab"
@@ -778,7 +764,7 @@ export function App() {
             </aside>
           </> : null}
 
-          {view === "studio" ? (
+          {view === "people" ? (
             <AgentHub
               profileViews={catalogProfiles}
               profiles={agentProfiles}
@@ -791,15 +777,23 @@ export function App() {
             />
           ) : null}
 
-          {view === "team" ? (
-            <ProjectTeam
+          {view === "projects" ? (
+            <ProjectsHub
+              workspaces={workspaces}
+              selectedId={selectedId}
+              workspaceForm={workspaceForm}
+              snapshot={snapshot}
               profiles={profiles}
               profileDefinitions={agentProfiles}
               modelConfigs={modelConfigs}
               availableSkills={availableSkills}
-              selectedId={selectedProfile?.id}
+              selectedAgentId={selectedProfile?.id}
               selectedProfile={selectedProfile}
               selectedDraft={selectedDraft}
+              onWorkspaceFormChange={setWorkspaceForm}
+              onCreateWorkspace={submitWorkspace}
+              onSelectWorkspace={setSelectedId}
+              onDeleteWorkspace={(workspace) => setDeleteDialog({ workspace, deleteLocalFolder: false, busy: false })}
               onSelect={setSelectedAgentId}
               onRefresh={() => void refreshAgents()}
               onDraftChange={(next) => setAgents((current) => current.map((item) => item.id === next.id ? next : item))}
@@ -817,6 +811,16 @@ export function App() {
               onChange={(next) => setModelConfigs((current) => current.map((item) => item.id === next.id ? next : item))}
               onSave={(config) => void saveModelConfig(config)}
               onSetDefault={(configId) => void makeDefaultModelConfig(configId)}
+            />
+          ) : null}
+
+          {view === "operations" ? (
+            <OperationsHub
+              workspaces={workspaces}
+              snapshot={snapshot}
+              events={events}
+              ticketCount={ticketItems.length}
+              onOpenOffice={() => setView("office")}
             />
           ) : null}
         </section>
@@ -848,7 +852,7 @@ function DeleteWorkspaceDialog(props: {
       <section className="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-workspace-title">
         <header>
           <h2 id="delete-workspace-title">删除项目</h2>
-          <p>你正在删除 AutoAgent 里的项目：{workspaceName}</p>
+          <p>你正在删除 TEAMHQ 里的项目：{workspaceName}</p>
         </header>
         <div className="delete-dialog-path">
           <span>本地路径</span>
@@ -866,7 +870,7 @@ function DeleteWorkspaceDialog(props: {
         <p className={props.state.deleteLocalFolder ? "delete-warning active" : "delete-warning"}>
           {props.state.deleteLocalFolder
             ? "会递归删除上面的本地目录，项目代码和 .autoagent 状态都会被删除。"
-            : "默认只从 AutoAgent 项目列表移除，不删除本地文件夹。"}
+            : "默认只从 TEAMHQ 项目列表移除，不删除本地文件夹。"}
         </p>
         <footer>
           <button type="button" onClick={props.onCancel} disabled={props.state.busy}>取消</button>
@@ -1156,13 +1160,12 @@ function initialAgentPanelHeight(): number {
 }
 
 function initialRunLayoutWidths(): RunLayoutWidths {
-  const fallback: RunLayoutWidths = { workspace: 310, task: 280, events: 340 };
+  const fallback: RunLayoutWidths = { workspace: 310, events: 340 };
   if (typeof window === "undefined") return fallback;
   try {
     const saved = JSON.parse(window.localStorage.getItem("autoagent.runLayoutWidths") ?? "") as Partial<RunLayoutWidths>;
     return {
       workspace: clampColumnWidth("workspace", Number(saved.workspace) || fallback.workspace),
-      task: clampColumnWidth("task", Number(saved.task) || fallback.task),
       events: clampColumnWidth("events", Number(saved.events) || fallback.events)
     };
   } catch {
@@ -1173,7 +1176,6 @@ function initialRunLayoutWidths(): RunLayoutWidths {
 function clampColumnWidth(column: keyof RunLayoutWidths, value: number): number {
   const limits: Record<keyof RunLayoutWidths, { min: number; max: number }> = {
     workspace: { min: WORKSPACE_PANEL_MIN_WIDTH, max: WORKSPACE_PANEL_MAX_WIDTH },
-    task: { min: TASK_PANEL_MIN_WIDTH, max: TASK_PANEL_MAX_WIDTH },
     events: { min: EVENT_PANEL_MIN_WIDTH, max: EVENT_PANEL_MAX_WIDTH }
   };
   return clamp(value, limits[column].min, limits[column].max);
@@ -1434,8 +1436,9 @@ function AgentHub(props: {
     <section className="management-panel agent-studio">
       <header className="management-header">
         <div>
-          <h2>智能体档案库</h2>
-          <p>这里编辑全局灵魂特质、岗位契约、能力手册和默认模型；项目团队只引用这些档案，不在这里产生项目状态。</p>
+          <span className="section-kicker">组织与能力</span>
+          <h2>人才中心</h2>
+          <p>管理长期存在的 Agent 员工档案：Soul、Identity、Agent 能力、默认 Skill、模型和工具权限。项目实例继承档案，并可显式覆盖。</p>
         </div>
       </header>
       <div className="studio-layout">
@@ -1652,6 +1655,113 @@ function AgentDefinitionEditor(props: {
         <button type="button" onClick={() => props.onSave(props.profile)}>保存智能体档案</button>
       </section>
     </aside>
+  );
+}
+
+function ProjectsHub(props: {
+  workspaces: Workspace[];
+  selectedId: string;
+  workspaceForm: { name: string; rootPath: string; policyProfile: Workspace["policyProfile"] };
+  snapshot?: WorkspaceSnapshot;
+  profiles: AgentProfileView[];
+  profileDefinitions: AgentProfile[];
+  modelConfigs: ModelConfig[];
+  availableSkills: AvailableSkill[];
+  selectedAgentId?: string;
+  selectedProfile?: AgentProfileView;
+  selectedDraft?: WorkspaceAgentConfig;
+  onWorkspaceFormChange: (form: { name: string; rootPath: string; policyProfile: Workspace["policyProfile"] }) => void;
+  onCreateWorkspace: (event: React.FormEvent) => void;
+  onSelectWorkspace: (id: string) => void;
+  onDeleteWorkspace: (workspace: Workspace) => void;
+  onSelect: (id: string) => void;
+  onRefresh: () => void;
+  onDraftChange: (agent: WorkspaceAgentConfig) => void;
+  onSave: (agent: WorkspaceAgentConfig) => void;
+}) {
+  const selectedWorkspace = props.workspaces.find((workspace) => workspace.id === props.selectedId);
+  const completedTickets = props.snapshot?.tickets?.filter((ticket) => ticket.status === "completed").length ?? 0;
+  const totalTickets = props.snapshot?.tickets?.length ?? 0;
+
+  return (
+    <section className="projects-hub">
+      <aside className="project-catalog">
+        <header>
+          <span className="section-kicker">项目目录</span>
+          <h2>项目</h2>
+          <p>Workspace 是团队长期工作的边界。创建空项目后，再进入办公室发布 Mission。</p>
+        </header>
+        <form className="project-create-form" onSubmit={props.onCreateWorkspace}>
+          <label>
+            <span>项目名称</span>
+            <input value={props.workspaceForm.name} onChange={(event) => props.onWorkspaceFormChange({ ...props.workspaceForm, name: event.target.value })} />
+          </label>
+          <label>
+            <span>工作目录</span>
+            <input value={props.workspaceForm.rootPath} onChange={(event) => props.onWorkspaceFormChange({ ...props.workspaceForm, rootPath: event.target.value })} placeholder="C:\\项目\\路径" />
+          </label>
+          <label>
+            <span>安全策略</span>
+            <select value={props.workspaceForm.policyProfile} onChange={(event) => props.onWorkspaceFormChange({ ...props.workspaceForm, policyProfile: event.target.value as Workspace["policyProfile"] })}>
+              <option value="production">生产：限制在项目内</option>
+              <option value="development">开发：允许本机访问</option>
+            </select>
+          </label>
+          <button type="submit" className="primary-action">创建空项目</button>
+        </form>
+        <div className="project-catalog-list">
+          {props.workspaces.map((workspace) => (
+            <article key={workspace.id} className={workspace.id === props.selectedId ? "project-catalog-item selected" : "project-catalog-item"}>
+              <button type="button" onClick={() => props.onSelectWorkspace(workspace.id)}>
+                <strong>{displayWorkspaceName(workspace.name)}</strong>
+                <span>{workspace.rootPath}</span>
+              </button>
+              <button type="button" className="workspace-delete" onClick={() => props.onDeleteWorkspace(workspace)}>删除</button>
+            </article>
+          ))}
+        </div>
+      </aside>
+
+      <section className="project-workspace">
+        <header className="project-overview-header">
+          <div>
+            <span className="section-kicker">当前项目</span>
+            <h2>{selectedWorkspace ? displayWorkspaceName(selectedWorkspace.name) : "尚未选择项目"}</h2>
+            <p>{selectedWorkspace?.rootPath ?? "从左侧创建或选择一个项目。"}</p>
+          </div>
+          {selectedWorkspace ? <span className={`project-state ${props.snapshot?.status ?? "idle"}`}>{statusLabel(props.snapshot?.status ?? "idle")}</span> : null}
+        </header>
+
+        {selectedWorkspace ? (
+          <>
+            <section className="project-metrics" aria-label="项目概览">
+              <div><span>当前 Mission</span><strong>{props.snapshot?.activeTask?.title ?? "尚未发布"}</strong></div>
+              <div><span>Plan</span><strong>{props.snapshot?.mission ? `v${props.snapshot.mission.planVersion} · ${props.snapshot.mission.planStatus}` : "尚未创建"}</strong></div>
+              <div><span>Ticket</span><strong>{completedTickets} / {totalTickets}</strong></div>
+              <div><span>团队成员</span><strong>{props.snapshot?.agents.length ?? props.profiles.length}</strong></div>
+            </section>
+            <ProjectTeam
+              profiles={props.profiles}
+              profileDefinitions={props.profileDefinitions}
+              modelConfigs={props.modelConfigs}
+              availableSkills={props.availableSkills}
+              selectedId={props.selectedAgentId}
+              selectedProfile={props.selectedProfile}
+              selectedDraft={props.selectedDraft}
+              onSelect={props.onSelect}
+              onRefresh={props.onRefresh}
+              onDraftChange={props.onDraftChange}
+              onSave={props.onSave}
+            />
+          </>
+        ) : (
+          <div className="project-empty-state">
+            <strong>这里还没有项目</strong>
+            <p>创建 Workspace 后，可以配置团队实例并进入办公室发布第一条 Mission。</p>
+          </div>
+        )}
+      </section>
+    </section>
   );
 }
 
@@ -1907,6 +2017,115 @@ function thinkingLevelOptions(): Array<{ value: ModelConfig["thinkingLevel"]; la
   ];
 }
 
+function OperationsHub(props: {
+  workspaces: Workspace[];
+  snapshot?: WorkspaceSnapshot;
+  events: AutoAgentEvent[];
+  ticketCount: number;
+  onOpenOffice: () => void;
+}) {
+  const runningAgents = props.snapshot?.agents.filter((agent) => agent.status === "running").length ?? 0;
+  const attentionAgents = props.snapshot?.agents.filter((agent) => agent.status === "waiting" || agent.status === "blocked" || agent.status === "failed").length ?? 0;
+  const failedEvents = props.events.filter((event) => event.type.endsWith(".failed") || event.type === "run.failed");
+  const recentEvents = props.events.slice(-12).reverse();
+
+  return (
+    <section className="operations-hub">
+      <header className="management-header">
+        <div>
+          <span className="section-kicker">平台态势</span>
+          <h2>系统运营</h2>
+          <p>这里汇总三大 Engine 的真实运行事实，只负责观察、检索和进入现场，不参与业务流转。</p>
+        </div>
+        <button type="button" className="primary-action" onClick={props.onOpenOffice}>返回办公室</button>
+      </header>
+
+      <section className="operations-metrics" aria-label="系统运行概览">
+        <div><span>项目</span><strong>{props.workspaces.length}</strong><small>已登记 Workspace</small></div>
+        <div><span>运行成员</span><strong>{runningAgents}</strong><small>正在执行 Turn</small></div>
+        <div><span>等待处理</span><strong>{attentionAgents}</strong><small>等待、受阻或失败</small></div>
+        <div><span>当前工单</span><strong>{props.ticketCount}</strong><small>当前项目 Ticket</small></div>
+      </section>
+
+      <div className="operations-grid">
+        <section className="engine-health">
+          <header>
+            <h3>Engine 状态</h3>
+            <span>{props.snapshot ? "数据连接正常" : "尚未选择项目"}</span>
+          </header>
+          <div className="engine-health-row">
+            <span className="engine-monogram">A</span>
+            <div><strong>Agent Engine</strong><small>Thread、Goal、Turn、Skill 与工具执行</small></div>
+            <em>{runningAgents ? `${runningAgents} 运行中` : "就绪"}</em>
+          </div>
+          <div className="engine-health-row">
+            <span className="engine-monogram">T</span>
+            <div><strong>Ticket Engine</strong><small>DAG、依赖、状态和工作交接</small></div>
+            <em>{props.ticketCount ? `${props.ticketCount} 张工单` : "就绪"}</em>
+          </div>
+          <div className="engine-health-row">
+            <span className="engine-monogram">M</span>
+            <div><strong>Mission Control</strong><small>Mission、Plan、Ticket 与 Agent 协调</small></div>
+            <em>{props.snapshot?.mission?.planStatus ?? "就绪"}</em>
+          </div>
+        </section>
+
+        <section className="operations-activity">
+          <header>
+            <h3>最近活动</h3>
+            <span>{failedEvents.length ? `${failedEvents.length} 条失败事件` : "未发现失败事件"}</span>
+          </header>
+          <div className="operations-activity-list">
+            {recentEvents.length ? recentEvents.map((event) => {
+              const item = buildEventTimelineItem(event);
+              const copy = operationsActivityCopy(item.title, item.detail, item.actor, event.type);
+              return (
+                <article key={event.id} className={item.tone === "danger" ? "failed" : ""}>
+                  <time>{new Date(event.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+                  <div><strong>{copy.title}</strong><small>{copy.detail}</small></div>
+                </article>
+              );
+            }) : <p className="operations-empty">当前项目还没有运行记录。</p>}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function operationsActivityCopy(title: string, detail: string | undefined, actor: string, eventType: AutoAgentEvent["type"]) {
+  const translatedTitles: Record<string, string> = {
+    accepted: "目标结论已接受",
+    running: "开始执行",
+    waiting: "等待下一步",
+    system_note: "系统记录",
+    ticket_received: "收到工单"
+  };
+  const translatedTitle = translatedTitles[title] ?? title;
+  const isInternalPayload = (value: string) => (
+    value.length > 180
+    || value.includes("[current-ticket]")
+    || value.includes("goal_resolution")
+    || value.includes("domainOutcome")
+    || value.includes("output-schema=")
+    || value.trimStart().startsWith("{")
+  );
+  const safeActor = isInternalPayload(actor) ? "Agent" : actor;
+  if (isInternalPayload(title)) {
+    return { title: "已组装任务上下文", detail: `${safeActor}已接收当前工单和执行约束` };
+  }
+  if (actor.includes("proposalSubmitted") || detail?.includes("proposalSubmitted")) {
+    return { title: translatedTitle, detail: "Agent 提交了目标处理结论" };
+  }
+  if (detail?.includes("[current-ticket]")) {
+    return { title: translatedTitle, detail: `${safeActor}提交了当前工单处理结论` };
+  }
+  if (detail && isInternalPayload(detail)) {
+    return { title: translatedTitle, detail: `${safeActor}完成了一次运行处理，原始数据可在运行记录中查看` };
+  }
+  return { title: translatedTitle, detail: detail ?? `${safeActor} · ${eventType}` };
+}
+
 function ModelConfigLibrary(props: {
   configs: ModelConfig[];
   draft: ModelConfigDraft;
@@ -1921,7 +2140,8 @@ function ModelConfigLibrary(props: {
     <section className="management-panel model-config-library">
       <header className="management-header">
         <div>
-          <h2>模型配置库</h2>
+          <span className="section-kicker">推理基础设施</span>
+          <h2>模型服务</h2>
           <p>添加多个模型服务配置，给每个配置命名，并指定团队默认模型。默认配置会作为未特别指定时的优先选择。</p>
         </div>
         <button type="button" onClick={props.onRefresh}>刷新配置</button>
