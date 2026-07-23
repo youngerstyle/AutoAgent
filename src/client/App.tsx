@@ -1753,7 +1753,7 @@ function ProjectTeam(props: {
         <button type="button" onClick={props.onRefresh}>刷新团队</button>
       </header>
       <div className="team-layout">
-        <section className="team-roster">
+        <section className="team-roster" aria-label="项目团队成员">
           {props.profiles.map((profile) => (
             <button
               key={profile.id}
@@ -1826,42 +1826,59 @@ function AgentDetailPanel(props: {
           <p>{props.profile.identity.subtitle}</p>
           <small>{props.profile.identity.scope}</small>
         </div>
+        <span className="agent-runtime-status">{props.profile.statusLabel}</span>
       </header>
 
-      <section className="agent-section">
-        <h4>灵魂特质</h4>
-        <p>{props.profile.soul}</p>
-      </section>
+      <details className="agent-profile-disclosure">
+        <summary>
+          <span>
+            <strong>继承的智能体档案</strong>
+            <small>灵魂、岗位、能力手册与运行边界</small>
+          </span>
+          <ChevronDown size={18} />
+        </summary>
+        <div className="agent-profile-facts">
+          <section className="agent-section">
+            <h4>灵魂特质</h4>
+            <p>{props.profile.soul}</p>
+          </section>
 
-      <section className="agent-section">
-        <h4>岗位契约</h4>
-        <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle}智能体。</p>
-      </section>
+          <section className="agent-section">
+            <h4>岗位契约</h4>
+            <p>{props.profile.identity.title}是当前项目团队里的{props.profile.identity.subtitle}智能体。</p>
+          </section>
 
-      <section className="agent-section">
-        <h4>能力手册</h4>
-        <pre className="agent-md-preview">{props.profile.agentMd}</pre>
-      </section>
+          <section className="agent-section agent-capability-manual">
+            <h4>能力手册</h4>
+            <pre className="agent-md-preview">{props.profile.agentMd}</pre>
+          </section>
 
-      <section className="agent-section">
-        <h4>工具权限</h4>
-        <div className="tool-list">
-          {props.profile.toolGroups.map((tool) => (
-            <span key={tool.label} className={tool.enabled ? "tool-pill enabled" : "tool-pill"}>
-              {tool.label}：{tool.description}
-            </span>
-          ))}
+          <section className="agent-section">
+            <h4>默认工具</h4>
+            <div className="tool-list">
+              {props.profile.toolGroups.map((tool) => (
+                <span key={tool.label} className={tool.enabled ? "tool-pill enabled" : "tool-pill"}>
+                  {tool.label}：{tool.description}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <section className="agent-section">
+            <h4>记忆与状态</h4>
+            <p>{props.profile.memory.sessionLabel}，{props.profile.memory.workspaceLabel}</p>
+            <code>{props.profile.memory.statePath}</code>
+          </section>
         </div>
-      </section>
-
-      <section className="agent-section">
-        <h4>记忆与状态</h4>
-        <p>{props.profile.memory.sessionLabel}，{props.profile.memory.workspaceLabel}</p>
-        <code>{props.profile.memory.statePath}</code>
-      </section>
+      </details>
 
       <section className="agent-section runtime-config">
-        <h4>模型与项目权限</h4>
+        <header className="runtime-config-header">
+          <div>
+            <h4>项目运行配置</h4>
+            <p>只覆盖当前项目，不会改写全局智能体档案。</p>
+          </div>
+        </header>
         {draft ? (
           <>
             <div className="runtime-fields">
@@ -1906,7 +1923,7 @@ function AgentDetailPanel(props: {
                 />
               ))}
             </div>
-            <button type="button" onClick={() => props.onSave(draft)}>保存项目覆盖</button>
+            <button type="button" className="primary-action agent-save" onClick={() => props.onSave(draft)}>保存项目配置</button>
           </>
         ) : (
           <p>团队配置加载后可编辑项目级覆盖。</p>

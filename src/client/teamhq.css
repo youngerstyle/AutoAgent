@@ -1143,6 +1143,9 @@ button {
 }
 
 .project-workspace {
+  display: block;
+  overflow: auto;
+  padding: 0;
   background: #fff;
 }
 
@@ -1159,6 +1162,232 @@ button {
 
 .team-workbench {
   border: 0;
+}
+
+.projects-hub .team-workbench {
+  padding: 0 0 40px;
+  overflow: visible;
+}
+
+.projects-hub .team-workbench > .management-header {
+  margin: 0;
+  padding: 34px 34px 18px;
+  border-bottom: 0;
+}
+
+.projects-hub .team-layout {
+  height: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 22px;
+  padding: 0 34px;
+}
+
+.projects-hub .team-roster {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  overflow: visible;
+}
+
+.projects-hub .team-member {
+  min-height: 104px;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "avatar title status"
+    "avatar subtitle subtitle";
+  gap: 5px 10px;
+  padding: 14px;
+  border-color: #e0e4e2;
+  border-radius: 12px;
+  background: #fbfcfb;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.projects-hub .team-member:hover {
+  border-color: #b7c7c1;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(34, 47, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.projects-hub .team-member.selected {
+  border-color: var(--hq-teal);
+  background: #eef9f6;
+  box-shadow: inset 0 0 0 1px rgba(26, 137, 125, 0.08);
+}
+
+.projects-hub .team-member strong {
+  align-self: center;
+  font-size: 15px;
+}
+
+.projects-hub .team-member small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #66736e;
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.projects-hub .team-member em {
+  align-self: center;
+  color: #65736e;
+  font-size: 11px;
+}
+
+.projects-hub .management-header > button {
+  flex: 0 0 auto;
+  min-width: 92px;
+  white-space: nowrap;
+}
+
+.projects-hub .agent-detail-panel {
+  min-height: 0;
+  display: grid;
+  gap: 16px;
+  overflow: visible;
+  border: 1px solid #dfe4e1;
+  border-radius: 14px;
+  padding: 0;
+  background: #fff;
+}
+
+.projects-hub .agent-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 24px;
+  border-bottom: 1px solid #e7ebe8;
+  background: #fafcfb;
+}
+
+.projects-hub .agent-hero h3 {
+  font-size: 20px;
+}
+
+.projects-hub .agent-hero .profile-avatar.large {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+}
+
+.agent-runtime-status {
+  align-self: start;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #edf2ef;
+  color: #5e6c67;
+  font-size: 12px;
+}
+
+.agent-profile-disclosure {
+  margin: 0 24px;
+  border: 1px solid #e0e5e2;
+  border-radius: 10px;
+  background: #fbfcfb;
+}
+
+.agent-profile-disclosure > summary {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-profile-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-profile-disclosure > summary span {
+  display: grid;
+  gap: 3px;
+}
+
+.agent-profile-disclosure > summary small {
+  color: #6d7975;
+}
+
+.agent-profile-disclosure > summary svg {
+  flex: 0 0 auto;
+  color: #6d7975;
+  transition: transform 150ms ease;
+}
+
+.agent-profile-disclosure[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.agent-profile-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 22px;
+  padding: 4px 16px 16px;
+  border-top: 1px solid #e6eae8;
+}
+
+.agent-profile-facts .agent-section {
+  padding: 16px 0;
+}
+
+.agent-profile-facts .agent-capability-manual {
+  grid-column: 1 / -1;
+}
+
+.projects-hub .runtime-config {
+  gap: 16px;
+  margin: 0 24px 24px;
+  padding: 20px;
+  border: 1px solid #dfe4e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.runtime-config-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.runtime-config-header h4,
+.runtime-config-header p {
+  margin: 0;
+}
+
+.runtime-config-header h4 {
+  font-size: 16px;
+}
+
+.runtime-config-header p {
+  margin-top: 4px;
+  color: #6b7773;
+  font-size: 12px;
+}
+
+.projects-hub .instance-skill-config {
+  margin: 0;
+  padding: 16px 0;
+}
+
+.projects-hub .skill-picker {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.projects-hub .agent-save {
+  min-height: 42px;
 }
 
 .management-panel,
@@ -1298,6 +1527,10 @@ button {
   .projects-hub {
     grid-template-columns: 270px minmax(0, 1fr);
   }
+
+  .projects-hub .team-roster {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -1334,6 +1567,17 @@ button {
     border-radius: 16px;
   }
 
+  .projects-hub .team-roster,
+  .projects-hub .skill-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .projects-hub .team-layout,
+  .projects-hub .team-workbench > .management-header {
+    padding-right: 22px;
+    padding-left: 22px;
+  }
+
   .conversation-drag-surface {
     cursor: default;
   }
@@ -1352,11 +1596,39 @@ button {
   }
 
   .projects-hub {
-    grid-template-columns: minmax(0, 1fr);
+    height: 100%;
+    display: block;
+    overflow: auto;
   }
 
   .project-catalog {
+    max-height: none;
+    overflow: visible;
     border-right: 0;
     border-bottom: 1px solid var(--hq-line);
+  }
+
+  .project-workspace {
+    overflow: visible;
+  }
+
+  .projects-hub .team-roster,
+  .projects-hub .skill-picker,
+  .agent-profile-facts,
+  .runtime-fields,
+  .tool-config-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .projects-hub .team-layout,
+  .projects-hub .team-workbench > .management-header {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .agent-profile-disclosure,
+  .projects-hub .runtime-config {
+    margin-right: 16px;
+    margin-left: 16px;
   }
 }
