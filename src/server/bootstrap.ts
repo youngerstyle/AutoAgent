@@ -14,7 +14,9 @@ export type AutoAgentServer = Server & { stopRuntimeHosts(): Promise<void> };
 export async function bootstrapServer(config: AppConfig = loadConfig()): Promise<Express> {
   const policyStore = new PlanPolicyStore(config.autoAgentHome);
   await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-  return createApp(config);
+  const app = createApp(config);
+  await (app.locals.runtimeHostRegistry as RuntimeHostRegistry).startAll();
+  return app;
 }
 
 export async function startServer(config: AppConfig = loadConfig()): Promise<AutoAgentServer> {

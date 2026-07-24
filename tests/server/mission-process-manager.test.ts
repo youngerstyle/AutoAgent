@@ -292,18 +292,20 @@ describe("MissionProcessManager", () => {
       proposalId: "plan-assured-delivery", goalId: planningGoal.spec.id, expectedGoalVersion: planningGoal.version, resolvingGoalVersion: planningGoal.version + 1,
       status: "completed", summary: "planned verified settlement", evidence: [], criterionResults: satisfied(planningGoal), residualRisks: [],
       domainOutcome: {
-        result: { summary: "verified delivery chain" },
+        result: planningResult("verified delivery chain"),
         change: {
           additions: [
             {
               clientRef: "work", title: "delivery", objective: "deliver against baseline", successCriteria: ["baseline delivery produced"],
               assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "result-v1" },
               missionContribution: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
+              deliveryIncrement: TEST_INCREMENT,
             },
             {
               clientRef: "assure", title: "assurance", objective: "verify against baseline", successCriteria: ["baseline criteria verified"],
               assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "mission-assurance-v1" },
               assurance: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
+              deliveryIncrement: TEST_INCREMENT,
             },
             {
               clientRef: "accept", title: "acceptance", objective: "accept against verified baseline", successCriteria: ["acceptance decided"],
@@ -357,7 +359,8 @@ describe("MissionProcessManager", () => {
           criterionResults: baseline.criteria.map((item) => ({
             criterionId: item.criterionId,
             status: "satisfied",
-            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+            evidence: [{ evidenceId: `ev-acceptance-${item.criterionId}` }],
+            anchorResults: anchorResults(item),
           })),
         },
       },
@@ -381,7 +384,7 @@ describe("MissionProcessManager", () => {
       content: expect.stringContaining(String(assurance.ticketId)),
     });
     expect(settlementInstruction).toMatchObject({
-      content: expect.stringContaining(`acceptance://${baseline.criteria[0]!.criterionId}`),
+      content: expect.stringContaining(`ev-acceptance-${baseline.criteria[0]!.criterionId}`),
     });
     await boss.proposeGoalResolution({
       proposalId: "incomplete-acceptance", goalId: acceptanceGoal.spec.id, expectedGoalVersion: acceptanceGoal.version, resolvingGoalVersion: acceptanceGoal.version + 1,
@@ -406,7 +409,42 @@ describe("MissionProcessManager", () => {
     mission = await fixture.manager.tick();
     expect(mission.record.status).toBe("linked");
 
-    const assuranceRetry = await awaitRunning("assurance");
+    const amendment = await awaitRunning("计划修订");
+    const amendmentEngine = fixture.engines.get("pm")!;
+    const amendmentGoal = (await amendmentEngine.getGoal(amendment.agentGoalId!))!;
+    await amendmentEngine.proposeGoalResolution({
+      proposalId: "plan-fresh-assurance", goalId: amendmentGoal.spec.id, expectedGoalVersion: amendmentGoal.version, resolvingGoalVersion: amendmentGoal.version + 1,
+      status: "completed", summary: "append fresh assurance and acceptance", evidence: [], criterionResults: satisfied(amendmentGoal), residualRisks: [],
+      domainOutcome: {
+        result: planningResult("fresh verification planned"),
+        change: {
+          additions: [
+            {
+              clientRef: "assure-fresh", title: "assurance retry", objective: "repeat verification against baseline",
+              successCriteria: ["baseline criteria verified again"], assignment: { principalId: "principal-boss" },
+              outputContract: { schemaRef: "mission-assurance-v1" },
+              assurance: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
+              deliveryIncrement: TEST_INCREMENT,
+            },
+            {
+              clientRef: "accept-fresh", title: "acceptance retry", objective: "accept fresh assurance",
+              successCriteria: ["acceptance decided again"], assignment: { principalId: "principal-boss" },
+              outputContract: { schemaRef: "acceptance-v1" }, permissions: { settleMission: true },
+            },
+          ],
+          dependencyAdditions: [
+            { from: { ticketId: amendment.ticketId }, to: { clientRef: "assure-fresh" } },
+            { from: { ticketId: delivery.ticketId }, to: { clientRef: "assure-fresh" } },
+            { from: { clientRef: "assure-fresh" }, to: { clientRef: "accept-fresh" } },
+          ],
+          cancelTicketIds: [acceptance.ticketId],
+          requiredTerminalRefs: [{ clientRef: "accept-fresh" }],
+        },
+      },
+      createdAt: NOW,
+    });
+    await fixture.manager.tick();
+    const assuranceRetry = await awaitRunning("assurance retry");
     const assuranceRetryGoal = (await boss.getGoal(assuranceRetry.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "assurance-retry", goalId: assuranceRetryGoal.spec.id, expectedGoalVersion: assuranceRetryGoal.version, resolvingGoalVersion: assuranceRetryGoal.version + 1,
@@ -417,14 +455,15 @@ describe("MissionProcessManager", () => {
           criterionResults: baseline.criteria.map((item) => ({
             criterionId: item.criterionId,
             status: "satisfied",
-            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+            evidence: [{ evidenceId: `ev-acceptance-${item.criterionId}` }],
+            anchorResults: anchorResults(item),
           })),
         },
       },
       createdAt: NOW,
     });
     mission = await fixture.manager.tick();
-    const acceptanceRetry = await awaitRunning("acceptance");
+    const acceptanceRetry = await awaitRunning("acceptance retry");
     const retriedGoal = (await boss.getGoal(acceptanceRetry.agentGoalId!))!;
     await boss.proposeGoalResolution({
       proposalId: "complete-acceptance", goalId: retriedGoal.spec.id, expectedGoalVersion: retriedGoal.version, resolvingGoalVersion: retriedGoal.version + 1,
@@ -437,7 +476,8 @@ describe("MissionProcessManager", () => {
             criterionId: item.criterionId,
             status: "satisfied",
             assuranceTicketIds: [assuranceRetry.ticketId],
-            evidence: [{ kind: "test", ref: `acceptance://${item.criterionId}` }],
+            evidence: [{ evidenceId: `ev-acceptance-${item.criterionId}` }],
+            anchorResults: anchorResults(item),
           })),
           residualRisks: [],
         },
@@ -448,7 +488,7 @@ describe("MissionProcessManager", () => {
     mission = await fixture.manager.tick();
     expect(mission.record).toMatchObject({
       status: "completed",
-      settlement: { acceptedByTicketId: acceptance.ticketId, baselineVersion: 1 },
+      settlement: { acceptedByTicketId: acceptanceRetry.ticketId, baselineVersion: 1 },
     });
     expect((await fixture.tickets.getPlan(mission.record.planId)).status).toBe("completed");
   });
@@ -853,7 +893,7 @@ describe("MissionProcessManager", () => {
     });
   });
 
-  it("settles one QA attempt, runs correction, then starts a new attempt for the same QA Ticket", async () => {
+  it("preserves old QA and DEV attempts while PM appends fresh correction and verification Tickets", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
       missionId: "mission-a",
@@ -908,16 +948,45 @@ describe("MissionProcessManager", () => {
     expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "pending" });
 
     mission = await fixture.manager.tick();
-    const correctionLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running" && item.ticketId === devLink.ticketId && item.dispatchId !== devLink.dispatchId)!;
+    const amendmentLink = mission.links.find((item) => item.agentId === "pm" && item.status === "running")!;
+    const pmEngine = fixture.engines.get("pm")!;
+    const amendmentGoal = (await pmEngine.getGoal(amendmentLink.agentGoalId!))!;
+    await pmEngine.proposeGoalResolution({
+      proposalId: "append-correction-work", goalId: amendmentGoal.spec.id, expectedGoalVersion: amendmentGoal.version, resolvingGoalVersion: amendmentGoal.version + 1,
+      status: "completed", summary: "追加新的修复和复验工单", evidence: [], criterionResults: satisfied(amendmentGoal), residualRisks: [],
+      domainOutcome: {
+        result: planningResult("correction planned"),
+        change: {
+          additions: [
+            { clientRef: "fix", title: "修复碰撞", objective: "修复碰撞失效", successCriteria: ["碰撞恢复"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
+            { clientRef: "recheck", title: "重新质量检查", objective: "复验碰撞", successCriteria: ["碰撞质量通过"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
+            { clientRef: "accept", title: "重新验收", objective: "验收修复结果", successCriteria: ["修复结果可接受"], assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "result-v1" }, permissions: { settleMission: true } },
+          ],
+          dependencyAdditions: [
+            { from: { ticketId: amendmentLink.ticketId }, to: { clientRef: "fix" } },
+            { from: { clientRef: "fix" }, to: { clientRef: "recheck" } },
+            { from: { clientRef: "recheck" }, to: { clientRef: "accept" } },
+          ],
+          cancelTicketIds: [qaLink.ticketId],
+          requiredTerminalRefs: [{ clientRef: "accept" }],
+        },
+      },
+      createdAt: NOW,
+    });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const correctionLink = mission.links.find((item) => item.agentId === "dev" && item.status === "running" && item.ticketId !== devLink.ticketId)!;
     const correctionGoal = (await devEngine.getGoal(correctionLink.agentGoalId!))!;
     await devEngine.proposeGoalResolution({ proposalId: "correction-complete", goalId: correctionGoal.spec.id, expectedGoalVersion: correctionGoal.version, resolvingGoalVersion: correctionGoal.version + 1, status: "completed", summary: "缺陷已修复", evidence: [], criterionResults: satisfied(correctionGoal), residualRisks: [], domainOutcome: { result: "fixed" }, createdAt: NOW });
     await fixture.manager.tick();
 
     mission = await fixture.manager.tick();
-    const qaRetry = mission.links.find((item) => item.agentId === "qa" && item.status === "running" && item.ticketId === qaLink.ticketId)!;
+    const qaRetry = mission.links.find((item) => item.agentId === "qa" && item.status === "running" && item.ticketId !== qaLink.ticketId)!;
     expect(qaRetry.dispatchId).not.toBe(qaLink.dispatchId);
     expect(qaRetry.agentGoalId).not.toBe(qaLink.agentGoalId);
-    expect(qaRetry.ticketVersion).toBeGreaterThan(qaLink.ticketVersion);
+    expect(await fixture.tickets.getTicket(devLink.ticketId)).toMatchObject({ status: "completed", attempts: [{ attemptNumber: 1, status: "completed" }] });
+    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "cancelled", attempts: [{ attemptNumber: 1, status: "returned" }] });
   });
 });
 
@@ -931,11 +1000,41 @@ function baselineOutcome(): MissionTicketOutcome {
     baseline: {
       objective: "build the agreed product",
       successCriteria: ["the agreed product is delivered and verified"],
+      verificationPlan: [{
+        criterionIndex: 0,
+        anchors: [{ observableOutcome: "the agreed product is observable", evidenceRequirements: ["traceable tool evidence"] }],
+      }],
       constraints: [],
       assumptions: [],
       exclusions: [],
     },
   };
+}
+
+const TEST_INCREMENT = {
+  incrementId: "increment-1",
+  sequence: 1,
+  title: "可验证交付",
+  objective: "形成可运行并经独立验证的交付",
+};
+
+function planningResult(summary: string) {
+  return {
+    summary,
+    deliveryStrategy: {
+      mode: "single_increment" as const,
+      rationale: "测试场景可在一个可验证增量内完成",
+      increments: [TEST_INCREMENT],
+    },
+  };
+}
+
+function anchorResults(criterion: { criterionId: string; verification: { anchors: unknown[] } }) {
+  return criterion.verification.anchors.map((_, anchorIndex) => ({
+    anchorIndex,
+    status: "satisfied" as const,
+    evidence: [{ evidenceId: `ev-acceptance-${criterion.criterionId}` }],
+  }));
 }
 
 async function createFixture(clock = { now: new Date(NOW) }) {

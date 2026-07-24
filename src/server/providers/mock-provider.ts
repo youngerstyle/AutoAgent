@@ -10,19 +10,34 @@ export class MockProvider implements AgentModelProvider {
         usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
       };
     }
+    const ticket = currentTicketMetadata(input.instructions);
+    const evidenceIds = toolEvidenceIds(input.history);
+    if (ticket.outputSchema === "mission-assurance-v1"
+      && evidenceIds.length === 0
+      && input.tools.some((tool) => tool.name === "listFiles")) {
+      return {
+        items: [{
+          type: "tool_call",
+          callId: `mock-observe-${input.history.length}`,
+          name: "listFiles",
+          arguments: { path: "." },
+        }],
+        usage: { inputTokens: 16, outputTokens: 8, totalTokens: 24 },
+      };
+    }
     return {
       items: [{
         type: "tool_call",
         callId: `mock-goal-${input.history.length}`,
         name: "goal_resolution",
-        arguments: mockGoalResolution(input.instructions),
+        arguments: mockGoalResolution(input.instructions, evidenceIds),
       }],
       usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
     };
   }
 }
 
-function mockGoalResolution(instructions: string): Record<string, unknown> {
+function mockGoalResolution(instructions: string, toolEvidence: string[] = []): Record<string, unknown> {
   const ticket = currentTicketMetadata(instructions);
   if (ticket.outputSchema === "mission-baseline-v1" && !ticket.settleMission) {
     return {
@@ -35,6 +50,10 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
         baseline: {
           objective: "完成 human 已明确要求的产品目标",
           successCriteria: ["真实交付物可运行并通过独立验收"],
+          verificationPlan: [{
+            criterionIndex: 0,
+            anchors: [{ observableOutcome: "真实交付物可运行且关键结果可观察", evidenceRequirements: ["工具产生的可追溯验收证据"] }],
+          }],
           constraints: [], assumptions: [], exclusions: [],
         },
       },
@@ -51,7 +70,14 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
       residualRisks: [],
       domainOutcome: {
         summary: "已形成执行工单 DAG",
-        result: { plan: "实现、质量检查、验收" },
+        result: {
+          plan: "实现、质量检查、验收",
+          deliveryStrategy: {
+            mode: "single_increment",
+            rationale: "mock 目标使用一个可验证增量",
+            increments: [MOCK_INCREMENT],
+          },
+        },
         change: {
           additions: [
             {
@@ -78,6 +104,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
   if (ticket.outputSchema === "mission-assurance-v1" && !ticket.settleMission) {
     const criterionIds = missionCriterionIds(instructions);
     const baselineVersion = missionBaselineVersion(instructions);
+    const evidence = toolEvidence.map((evidenceId) => ({ evidenceId }));
     return {
       status: "completed",
       summary: "已逐项验证 Mission 成功标准",
@@ -90,7 +117,8 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
           criterionResults: criterionIds.map((criterionId) => ({
             criterionId,
             status: "satisfied",
-            evidence: [{ kind: "test", ref: `mock://assurance/${criterionId}` }],
+            evidence,
+            anchorResults: [{ anchorIndex: 0, status: "satisfied", evidence }],
           })),
         },
       },
@@ -100,6 +128,7 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     const criterionIds = missionCriterionIds(instructions);
     const baselineVersion = missionBaselineVersion(instructions);
     const assuranceTicketIds = completedAssuranceTicketIds(instructions);
+    const evidence = completedAssuranceEvidenceIds(instructions).map((evidenceId) => ({ evidenceId }));
     return {
       status: "completed",
       summary: "已依据 Mission 基线完成最终验收",
@@ -114,7 +143,8 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
             criterionId,
             status: "satisfied",
             assuranceTicketIds,
-            evidence: [{ kind: "test", ref: `mock://assurance/${criterionId}` }],
+            evidence,
+            anchorResults: [{ anchorIndex: 0, status: "satisfied", evidence }],
           })),
           residualRisks: [],
         },
@@ -129,6 +159,37 @@ function mockGoalResolution(instructions: string): Record<string, unknown> {
     residualRisks: [],
     domainOutcome: { summary: "模拟 Agent 已完成当前目标", ok: true },
   };
+}
+
+function toolEvidenceIds(history: AgentModelTurnInput["history"]): string[] {
+  const ids = new Set<string>();
+  for (const item of history) {
+    if (item.type !== "tool_result" || item.isError) continue;
+    try {
+      collectEvidenceIds(JSON.parse(item.content), ids);
+    } catch {
+      // Mock observations without structured tool output do not constitute evidence.
+    }
+  }
+  return [...ids];
+}
+
+function completedAssuranceEvidenceIds(instructions: string): string[] {
+  const ids = new Set<string>();
+  collectEvidenceIds(workContext(instructions).handoffLineage ?? [], ids);
+  return [...ids];
+}
+
+function collectEvidenceIds(value: unknown, ids: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectEvidenceIds(item, ids);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "evidenceId" && typeof item === "string" && item) ids.add(item);
+    else collectEvidenceIds(item, ids);
+  }
 }
 
 function currentTicketMetadata(instructions: string): { outputSchema?: string; settleMission: boolean } {
@@ -178,6 +239,7 @@ interface MockWorkContext {
   handoffLineage?: Array<{
     ticketId?: string;
     outputContract?: { schemaRef?: string };
+    handoff?: unknown;
   }>;
 }
 
@@ -204,5 +266,13 @@ function node(clientRef: string, title: string, objective: string, requiredCapab
     successCriteria: [`${title}达到验收标准`],
     assignment: { requiredCapabilities },
     outputContract: { schemaRef },
+    deliveryIncrement: MOCK_INCREMENT,
   };
 }
+
+const MOCK_INCREMENT = {
+  incrementId: "increment-1",
+  sequence: 1,
+  title: "可验证交付",
+  objective: "形成可运行并经独立验收的结果",
+};

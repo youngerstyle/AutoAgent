@@ -8,8 +8,41 @@ export interface OutputContract {
 }
 
 export interface EvidenceRef {
-  kind: string;
-  ref: string;
+  evidenceId: string;
+}
+
+export type EvidenceKind =
+  | "file_read"
+  | "file_write"
+  | "command"
+  | "service"
+  | "image"
+  | "browser"
+  | "tool";
+
+export interface EvidenceArtifactFact {
+  path: string;
+  size: number;
+  modifiedAt: string;
+  sha256: string;
+}
+
+export interface EvidenceFact {
+  evidenceId: string;
+  agentId: string;
+  threadId: string;
+  goalId?: string;
+  attemptId?: string;
+  turnId: string;
+  toolCallId: string;
+  toolName: string;
+  kind: EvidenceKind;
+  status: "succeeded" | "failed" | "running";
+  workspaceRoot: string;
+  createdAt: string;
+  input: unknown;
+  result: unknown;
+  artifact?: EvidenceArtifactFact;
 }
 
 export type AgentThreadItemKind =
@@ -52,6 +85,10 @@ export interface AgentGoalSpec {
   contextRefs: ContextRef[];
   outputContract?: OutputContract;
   externalRef?: string;
+  attemptId?: string;
+  evidencePolicy?: {
+    inheritedEvidenceIds: string[];
+  };
   createdAt: string;
 }
 

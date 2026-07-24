@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import { realpath } from "node:fs/promises";
 import type {
   AgentGoal,
+  EvidenceFact,
+  EvidenceRef,
   GoalResolutionAttemptResult,
   GoalResolutionPort,
   GoalResolutionProposal,
   GoalResolutionStatus,
 } from "../../shared/contracts/agent-engine.js";
+import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { isWorkspacePath } from "../policy/path-policy.js";
 import type { MissionTicketOutcome } from "./ticket-agent-adapter.js";
 import { validateMissionTicketOutcome } from "./ticket-agent-adapter.js";
-import { isWorkspacePath } from "../policy/path-policy.js";
 
 export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTicketOutcome> {
   constructor(
@@ -27,19 +31,23 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     if (outcomeError) {
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: outcomeError } };
     }
-    const evidenceError = this.workspaceRoot
-      ? validateWorkspaceEvidence(this.workspaceRoot, proposal)
-      : undefined;
-    if (evidenceError) {
-      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
+    if (this.workspaceRoot) {
+      const evidenceError = await validateEvidenceFacts(
+        this.workspaceRoot,
+        this.agentId,
+        goal,
+        proposal,
+      );
+      if (evidenceError) {
+        return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
+      }
     }
-    const evidenceFactError = this.workspaceRoot
-      ? await validateWorkspaceEvidenceFacts(this.workspaceRoot, proposal)
-      : undefined;
-    if (evidenceFactError) {
-      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceFactError } };
-    }
-    const validation = validateMissionTicketOutcome(goal.spec.outputContract?.schemaRef, proposal.status, proposal.domainOutcome, proposal.humanInputRequest);
+    const validation = validateMissionTicketOutcome(
+      goal.spec.outputContract?.schemaRef,
+      proposal.status,
+      proposal.domainOutcome,
+      proposal.humanInputRequest,
+    );
     if (!validation.valid) {
       return {
         settle: true,
@@ -66,56 +74,73 @@ function validateSuccessfulOutcomeCriteria(proposal: GoalResolutionProposal): st
   return `正常完成 Ticket 时成功标准必须全部满足；未满足或未验证 criterionIndex: ${incomplete.map((item) => item.criterionIndex).join(", ")}。若事实要求纠正上游或修改计划，请提交对应 disposition`;
 }
 
-export function validateWorkspaceEvidence(
+export async function validateEvidenceFacts(
   workspaceRoot: string,
-  proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults">,
-): string | undefined {
-  const evidence = [
-    ...proposal.evidence,
-    ...proposal.criterionResults.flatMap((item) => item.evidence),
-  ];
-  for (const item of evidence) {
-    if (!isFilesystemEvidence(item.kind, item.ref)) continue;
-    const absolute = path.isAbsolute(item.ref)
-      ? path.resolve(item.ref)
-      : path.resolve(workspaceRoot, item.ref);
-    if (!isWorkspacePath(workspaceRoot, absolute)) {
-      return `交付证据不属于当前项目：${item.ref}。外部文件可以作为参考，但不能证明当前 Ticket 已经交付。`;
-    }
-  }
-  return undefined;
-}
-
-export async function validateWorkspaceEvidenceFacts(
-  workspaceRoot: string,
-  proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults">,
+  agentId: string,
+  goal: AgentGoal,
+  proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults" | "domainOutcome">,
 ): Promise<string | undefined> {
-  const root = await realpath(workspaceRoot);
-  const evidence = [
+  const direct = [
     ...proposal.evidence,
     ...proposal.criterionResults.flatMap((item) => item.evidence),
   ];
-  for (const item of evidence) {
-    if (!isFilesystemEvidence(item.kind, item.ref)) continue;
-    const absolute = path.isAbsolute(item.ref)
-      ? path.resolve(item.ref)
-      : path.resolve(workspaceRoot, item.ref);
-    let resolved: string;
-    try {
-      resolved = await realpath(absolute);
-    } catch {
-      return `交付证据不存在：${item.ref}`;
+  const domain = collectEvidenceRefs(proposal.domainOutcome);
+  const all = uniqueEvidenceRefs([...direct, ...domain]);
+  if (!all.length) return undefined;
+
+  const ledger = new EvidenceLedger(workspaceRoot);
+  const facts = await ledger.getMany(all.map((item) => item.evidenceId));
+  const directIds = new Set(direct.map((item) => item.evidenceId));
+  const inheritedIds = new Set(goal.spec.evidencePolicy?.inheritedEvidenceIds ?? []);
+
+  for (const ref of all) {
+    const fact = facts.get(ref.evidenceId);
+    if (!fact) return `证据不存在或不是平台工具生成的事实：${ref.evidenceId}`;
+    if (path.resolve(fact.workspaceRoot) !== path.resolve(workspaceRoot)) {
+      return `证据不属于当前工作区：${ref.evidenceId}`;
     }
-    if (!isWorkspacePath(root, resolved)) {
-      return `交付证据解析后不属于当前项目：${item.ref}`;
+    if (fact.status !== "succeeded") {
+      return `证据尚未成功完成：${ref.evidenceId} (${fact.status})`;
     }
+    const mustBelongToCurrentGoal = directIds.has(ref.evidenceId) || !inheritedIds.has(ref.evidenceId);
+    if (mustBelongToCurrentGoal && (fact.agentId !== agentId || fact.goalId !== goal.spec.id)) {
+      return `证据不属于当前 Agent Goal：${ref.evidenceId}`;
+    }
+    if (mustBelongToCurrentGoal && goal.spec.attemptId && fact.attemptId !== goal.spec.attemptId) {
+      return `证据不属于当前 Ticket Attempt：${ref.evidenceId}`;
+    }
+    const freshnessError = await validateArtifactFreshness(workspaceRoot, fact);
+    if (freshnessError) return freshnessError;
   }
   return undefined;
 }
 
-function isFilesystemEvidence(kind: string, ref: string): boolean {
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref)) return false;
-  return ["file", "document", "artifact"].includes(kind.trim().toLowerCase());
+async function validateArtifactFreshness(workspaceRoot: string, fact: EvidenceFact): Promise<string | undefined> {
+  if (!fact.artifact) return undefined;
+  const root = await realpath(workspaceRoot);
+  const target = path.resolve(root, fact.artifact.path);
+  if (!isWorkspacePath(root, target)) return `证据产物不属于当前工作区：${fact.evidenceId}`;
+  let content: Buffer;
+  try {
+    content = await readFile(target);
+  } catch {
+    return `证据产物已经不存在：${fact.artifact.path}`;
+  }
+  const currentHash = createHash("sha256").update(content).digest("hex");
+  return currentHash === fact.artifact.sha256
+    ? undefined
+    : `证据产物在取证后已发生变化：${fact.artifact.path}`;
+}
+
+function collectEvidenceRefs(value: unknown): EvidenceRef[] {
+  if (Array.isArray(value)) return value.flatMap(collectEvidenceRefs);
+  if (!isRecord(value)) return [];
+  const current = typeof value.evidenceId === "string" ? [{ evidenceId: value.evidenceId }] : [];
+  return [...current, ...Object.values(value).flatMap(collectEvidenceRefs)];
+}
+
+function uniqueEvidenceRefs(refs: EvidenceRef[]): EvidenceRef[] {
+  return [...new Map(refs.map((item) => [item.evidenceId, item])).values()];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

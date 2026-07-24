@@ -86,6 +86,12 @@ export class RuntimeHostRegistry {
     await Promise.allSettled(hosts.map((host) => host.stop()));
   }
 
+  async startAll(): Promise<void> {
+    for (const workspace of await this.workspaces.list()) {
+      await this.host(workspace.id, true);
+    }
+  }
+
   private async host(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
     const existing = this.hosts.get(workspaceId);
     if (existing) {

@@ -300,6 +300,38 @@ describe("AgentEngine", () => {
     expect(projection.payloads.size).toBe(2);
   });
 
+  it("recognizes an unclosed running turn as recoverable after process interruption", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    await fixture.engine.appendToolItem({
+      itemId: "interrupted-turn:started",
+      turnId: "interrupted-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: { turnId: "interrupted-turn", status: "running" },
+      createdAt: T1,
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "interrupted-turn:tool",
+      turnId: "interrupted-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "tool",
+      value: {
+        type: "tool_call",
+        callId: "call-1",
+        name: "readFile",
+        arguments: { path: "README.md" },
+      },
+      createdAt: T1,
+    });
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "interrupted_turn",
+    });
+  });
+
   it("makes duplicate appends no-ops and rejects conflicting reuse", async () => {
     const fixture = await createFixture();
     const thread = await fixture.engine.ensureThread({
@@ -521,8 +553,8 @@ function proposalFor(goal: AgentGoal): GoalResolutionProposal<"completed"> {
     resolvingGoalVersion: goal.version + 1,
     status: "completed",
     summary: "修复完成",
-    evidence: [{ kind: "file", ref: "src/main.ts" }],
-    criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ kind: "file", ref: "src/main.ts" }] }],
+    evidence: [{ evidenceId: "ev-main-ts" }],
+    criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ evidenceId: "ev-main-ts" }] }],
     residualRisks: [],
     createdAt: T1,
   };

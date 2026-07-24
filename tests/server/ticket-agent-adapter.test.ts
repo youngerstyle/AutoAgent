@@ -22,6 +22,37 @@ describe("Ticket Agent resolution adapter", () => {
       .not.toBe(proposalToTicketCommand(proposalValue, { ...link, ticketVersion: link.ticketVersion + 1 }, NOW).commandId);
   });
 
+  it("uses the delivery strategy as the single source of increment metadata", () => {
+    const outcome = {
+      result: planResult(),
+      change: {
+        additions: [{
+          ...draft("dev"),
+          deliveryIncrement: {
+            incrementId: TEST_INCREMENT.incrementId,
+            sequence: 99,
+            title: "duplicated stale title",
+            objective: "duplicated stale objective",
+          },
+        }],
+        dependencyAdditions: [],
+        cancelTicketIds: [],
+        requiredTerminalRefs: [{ clientRef: "dev" }],
+      },
+    };
+
+    expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", outcome)).toEqual({ valid: true });
+    const command = proposalToPlanChangeCommand(proposal("completed", outcome), link, 4, NOW);
+    expect(command?.payload).toMatchObject({
+      type: "apply_change",
+      change: {
+        additions: [{
+          deliveryIncrement: TEST_INCREMENT,
+        }],
+      },
+    });
+  });
+
   it("never exposes internal command names to the Agent", () => {
     const targetTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
     const sourceTicketId = "ce699a21-cdbc-4612-91f9-b607970668a6" as TicketId;
@@ -132,7 +163,7 @@ describe("Ticket Agent resolution adapter", () => {
           schemaVersion: 1,
           summary: "实现了核心玩法",
           output: { artifact: "src/game.ts" },
-          evidence: [{ kind: "file", ref: "src/game.ts" }],
+          evidence: [{ evidenceId: "ev-game-ts" }],
           criterionResults: [],
           residualRisks: [],
         },
@@ -201,7 +232,23 @@ describe("Ticket Agent resolution adapter", () => {
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
       planId: "plan-a",
       version: 3,
-      tickets: [{ ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标", successCriteria: ["形成共识"], outputContract: { schemaRef: "brief-v1" } }],
+      tickets: [
+        { ticketId: "ticket-intake", status: "completed", title: "需求接收", objective: "确认目标", successCriteria: ["形成共识"], outputContract: { schemaRef: "brief-v1" } },
+        {
+          ticketId: "ticket-implementation",
+          status: "completed",
+          title: "实现",
+          objective: "实现基线",
+          successCriteria: ["形成可运行交付"],
+          outputContract: { schemaRef: "delivery-v1" },
+          deliveryIncrement: {
+            incrementId: "baseline",
+            sequence: 1,
+            title: "可运行基线",
+            objective: "形成可运行基线并完成独立验证",
+          },
+        },
+      ],
       dependencyEdges: [],
       requiredTerminalTicketIds: ["ticket-planning"],
       requiredTerminalCapabilities: ["delivery:accept"],
@@ -223,16 +270,35 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("delivery:accept");
     expect(instruction).toContain("独立质量检查不能代替最终交付验收");
     expect(instruction).toContain("无需读取工作区文件来猜测 Plan 或 Ticket 状态");
-    expect(instruction).toContain("不规定角色名称、工单数量、能力名称或业务内容");
+    expect(instruction).toContain("不规定角色名称、工单数量、能力名称、增量名称或业务内容");
+    expect(instruction).toContain('"incrementId":"baseline"');
+    expect(instruction).toContain("incrementId 是 Plan 内稳定身份");
+    expect(instruction).toContain("若复用已有 incrementId");
+    expect(instruction).toContain("当前 Plan 中尚未出现的新 incrementId");
+    expect(instruction).not.toContain('"incrementId":"increment-1"');
     expect(instruction).toContain('"requiredTerminalRefs":[{"clientRef":"terminal"}]');
   });
 
   it("validates Plan change shape before invoking Ticket Engine", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", { result: {} })).toMatchObject({ valid: false });
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
-      result: {},
+      result: planResult(),
       change: deliveryClosure(),
     })).toEqual({ valid: true });
+    expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
+      result: { summary: "缺少交付策略" },
+      change: deliveryClosure(),
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("deliveryStrategy") });
+    expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
+      result: {
+        deliveryStrategy: {
+          mode: "multi_increment",
+          rationale: "范围较大，需要逐步交付",
+          increments: [TEST_INCREMENT],
+        },
+      },
+      change: deliveryClosure(),
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("至少两个增量") });
   });
 
   it("requires a structured authoritative Mission baseline", () => {
@@ -240,6 +306,10 @@ describe("Ticket Agent resolution adapter", () => {
       baseline: {
         objective: "1:1 复刻目标产品",
         successCriteria: ["核心行为和视觉可按证据验收"],
+        verificationPlan: [{
+          criterionIndex: 0,
+          anchors: [{ observableOutcome: "核心行为与视觉均可观察", evidenceRequirements: ["浏览器交互记录与截图"] }],
+        }],
         constraints: ["在当前工作区交付"],
         assumptions: [],
         exclusions: [],
@@ -249,6 +319,23 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionTicketOutcome("mission-baseline-v1", "completed", {
       baseline: { objective: "先做个简版", successCriteria: [] },
     })).toMatchObject({ valid: false, reason: expect.stringContaining("successCriteria") });
+    expect(validateMissionTicketOutcome("mission-baseline-v1", "completed", {
+      baseline: {
+        objective: "1:1 复刻目标产品",
+        successCriteria: ["核心行为和视觉可按证据验收"],
+        constraints: [],
+        assumptions: [],
+        exclusions: [],
+      },
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("verificationPlan") });
+  });
+
+  it("keeps intake Ticket completion separate from final Mission acceptance", () => {
+    const instruction = missionOutcomeInstruction("mission-baseline-v1");
+
+    expect(instruction).toContain("当前需求接收 Ticket 的流程标准");
+    expect(instruction).toContain("最终交付给 human 的产品或业务结果");
+    expect(instruction).toContain("严禁");
   });
 
   it("accepts Mission settlement only with exact current baseline coverage", () => {
@@ -257,8 +344,8 @@ describe("Ticket Agent resolution adapter", () => {
       version: 2,
       objective: "deliver the agreed product",
       criteria: [
-        { criterionId: "criterion-a", text: "artifact runs" },
-        { criterionId: "criterion-b", text: "behavior is verified" },
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior is verified"),
       ],
       constraints: [], assumptions: [], exclusions: [],
       establishedByTicketId: "ticket-intake" as TicketId,
@@ -271,7 +358,8 @@ describe("Ticket Agent resolution adapter", () => {
         criterionId,
         status: "satisfied" as const,
         assuranceTicketIds: [`assurance-${criterionId}`],
-        evidence: [{ kind: "test", ref: `acceptance://${criterionId}` }],
+        evidence: [{ evidenceId: `ev-acceptance-${criterionId}` }],
+        anchorResults: [anchorResult(`ev-acceptance-${criterionId}`)],
       })),
       residualRisks: [],
     };
@@ -282,7 +370,8 @@ describe("Ticket Agent resolution adapter", () => {
       criterionResults: [{
         criterionId,
         status: "satisfied" as const,
-        evidence: [{ kind: "test", ref: `acceptance://${criterionId}` }],
+        evidence: [{ evidenceId: `ev-acceptance-${criterionId}` }],
+        anchorResults: [anchorResult(`ev-acceptance-${criterionId}`)],
       }],
     }));
 
@@ -325,13 +414,15 @@ describe("Ticket Agent resolution adapter", () => {
         criteria: [{
           criterionId: "criterion-a",
           criterionText: "可运行",
+          verification: baselineCriterion("criterion-a", "可运行").verification,
           assuranceSources: [{
             ticketId: "qa-a" as TicketId,
             baselineVersion: 2,
             criterionResults: [{
               criterionId: "criterion-a",
               status: "satisfied",
-              evidence: [{ kind: "shell", ref: "npm test" }],
+              evidence: [{ evidenceId: "ev-npm-test" }],
+              anchorResults: [anchorResult("ev-npm-test")],
             }],
           }],
         }],
@@ -341,7 +432,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("权威验收证据矩阵");
     expect(instruction).toContain('\"ticketId\":\"qa-a\"');
     expect(instruction).toContain('\"criterionId\":\"criterion-a\"');
-    expect(instruction).toContain('\"ref\":\"npm test\"');
+    expect(instruction).toContain('\"evidenceId\":\"ev-npm-test\"');
     expect(instruction).toContain("不替你作出验收判断");
   });
 
@@ -351,8 +442,8 @@ describe("Ticket Agent resolution adapter", () => {
       version: 3,
       objective: "deliver the agreed product",
       criteria: [
-        { criterionId: "criterion-a", text: "artifact runs" },
-        { criterionId: "criterion-b", text: "behavior matches" },
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior matches"),
       ],
       constraints: [], assumptions: [], exclusions: [],
       establishedByTicketId: "ticket-intake" as TicketId,
@@ -362,8 +453,8 @@ describe("Ticket Agent resolution adapter", () => {
       assuranceReport: {
         baselineVersion: 3,
         criterionResults: [
-          { criterionId: "criterion-a", status: "satisfied", evidence: [{ kind: "browser", ref: "run://a" }] },
-          { criterionId: "criterion-b", status: "satisfied", evidence: [{ kind: "browser", ref: "run://b" }] },
+          { criterionId: "criterion-a", status: "satisfied", evidence: [{ evidenceId: "ev-browser-a" }], anchorResults: [anchorResult("ev-browser-a")] },
+          { criterionId: "criterion-b", status: "satisfied", evidence: [{ evidenceId: "ev-browser-b" }], anchorResults: [anchorResult("ev-browser-b")] },
         ],
       },
     };
@@ -374,10 +465,19 @@ describe("Ticket Agent resolution adapter", () => {
         ...report.assuranceReport,
         criterionResults: [
           report.assuranceReport.criterionResults[0],
-          { criterionId: "criterion-b", status: "not_verified", evidence: [] },
+          { criterionId: "criterion-b", status: "not_verified", evidence: [], anchorResults: [] },
         ],
       },
     })).toMatchObject({ valid: false, reason: expect.stringContaining("not_verified") });
+    expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], {
+      assuranceReport: {
+        ...report.assuranceReport,
+        criterionResults: report.assuranceReport.criterionResults.map((item) => ({
+          ...item,
+          anchorResults: [],
+        })),
+      },
+    })).toMatchObject({ valid: false, reason: expect.stringContaining("anchorResults") });
   });
 
   it("describes the exact mission assurance result shape", () => {
@@ -398,7 +498,7 @@ describe("Ticket Agent resolution adapter", () => {
           establishedByTicketId: "intake-a" as TicketId,
           establishedAt: NOW,
           objective: "deliver",
-          criteria: [{ criterionId: "criterion-a", text: "artifact runs" }],
+          criteria: [baselineCriterion("criterion-a", "artifact runs")],
           constraints: [],
           assumptions: [],
           exclusions: [],
@@ -432,8 +532,8 @@ describe("Ticket Agent resolution adapter", () => {
       version: 1,
       objective: "deliver the agreed product",
       criteria: [
-        { criterionId: "criterion-a", text: "artifact runs" },
-        { criterionId: "criterion-b", text: "behavior matches" },
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior matches"),
       ],
       constraints: [], assumptions: [], exclusions: [],
       establishedByTicketId: "ticket-intake" as TicketId,
@@ -495,8 +595,8 @@ describe("Ticket Agent resolution adapter", () => {
       version: 1,
       objective: "deliver the agreed product",
       criteria: [
-        { criterionId: "criterion-a", text: "artifact runs" },
-        { criterionId: "criterion-b", text: "behavior matches" },
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior matches"),
       ],
       constraints: [], assumptions: [], exclusions: [],
       establishedByTicketId: "ticket-intake" as TicketId,
@@ -540,7 +640,7 @@ describe("Ticket Agent resolution adapter", () => {
 
   it("does not impose fixed role names or output schemas on a structurally valid Plan", () => {
     expect(validateMissionTicketOutcome("plan-change-set-v3", "completed", {
-      result: {},
+      result: planResult(),
       change: {
         additions: [
           draft("dev", "delivery-v1", ["delivery:implement"]),
@@ -670,7 +770,39 @@ describe("Ticket Agent resolution adapter", () => {
 });
 
 const NOW = "2026-07-14T00:00:00.000Z";
-function draft(clientRef: string, schemaRef = "result-v1", requiredCapabilities: string[] = []) { return { clientRef, title: clientRef, objective: `完成 ${clientRef}`, successCriteria: ["完成"], assignment: { requiredCapabilities }, outputContract: { schemaRef } }; }
+const TEST_INCREMENT = { incrementId: "increment-1", sequence: 1, title: "可验证交付", objective: "形成可运行且可验收的结果" };
+function baselineCriterion(criterionId: string, text: string) {
+  return {
+    criterionId,
+    text,
+    verification: {
+      anchors: [{ observableOutcome: text, evidenceRequirements: ["可追溯工具证据"] }],
+    },
+  };
+}
+function anchorResult(evidenceId: string) {
+  return { anchorIndex: 0, status: "satisfied" as const, evidence: [{ evidenceId }] };
+}
+function planResult() {
+  return {
+    deliveryStrategy: {
+      mode: "single_increment",
+      rationale: "测试使用单个可验证增量",
+      increments: [TEST_INCREMENT],
+    },
+  };
+}
+function draft(clientRef: string, schemaRef = "result-v1", requiredCapabilities: string[] = []) {
+  return {
+    clientRef,
+    title: clientRef,
+    objective: `完成 ${clientRef}`,
+    successCriteria: ["完成"],
+    assignment: { requiredCapabilities },
+    outputContract: { schemaRef },
+    deliveryIncrement: TEST_INCREMENT,
+  };
+}
 function deliveryClosure() {
   return {
     additions: [

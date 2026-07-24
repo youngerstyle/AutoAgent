@@ -146,4 +146,37 @@ describe("parseResolutionProposal", () => {
       value: { status: "completed", domainOutcome: { disposition: "correction_required" } },
     });
   });
+
+  it("derives proposal evidence from criterion results when the redundant top-level field is omitted", () => {
+    const goal = {
+      version: 1,
+      spec: {
+        id: "goal",
+        threadId: "thread",
+        objective: "verify delivery",
+        successCriteria: ["record evidence"],
+        contextRefs: [],
+        createdAt: "2026-07-16T00:00:00.000Z",
+      },
+    } as any;
+
+    const result = parseResolutionProposal({
+      status: "completed",
+      summary: "verified",
+      criterionResults: [{
+        criterionIndex: 0,
+        status: "satisfied",
+        evidence: [{ evidenceId: "ev-1" }, { evidenceId: "ev-1" }],
+      }],
+      residualRisks: [],
+      domainOutcome: { result: "verified" },
+    }, goal, "turn", "2026-07-16T00:01:00.000Z");
+
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        evidence: [{ evidenceId: "ev-1" }],
+      },
+    });
+  });
 });

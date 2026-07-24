@@ -13,8 +13,13 @@ export function parseResolutionProposal(
   }
   const summary = resolutionSummary(value);
   if (!summary) return { ok: false, reason: "summary 必须是非空字符串" };
-  if (!Array.isArray(value.evidence)) return { ok: false, reason: "evidence 必须是数组" };
-  for (const [index, item] of value.evidence.entries()) {
+  if (value.evidence !== undefined && !Array.isArray(value.evidence)) {
+    return { ok: false, reason: "evidence 必须是数组" };
+  }
+  const submittedEvidence = Array.isArray(value.evidence)
+    ? value.evidence
+    : collectCriterionEvidence(value.criterionResults);
+  for (const [index, item] of submittedEvidence.entries()) {
     if (!isEvidence(item)) return { ok: false, reason: `evidence[${index}] 必须是包含 kind 和 ref 字符串的对象` };
   }
   if (!Array.isArray(value.criterionResults)) return { ok: false, reason: "criterionResults 必须是数组" };
@@ -43,7 +48,7 @@ export function parseResolutionProposal(
     criterionResults.push({
       criterionIndex,
       status: item.status as "satisfied" | "not_satisfied" | "not_verified",
-      evidence: item.evidence.map((entry) => ({ kind: entry.kind as string, ref: entry.ref as string })),
+      evidence: item.evidence.map((entry) => ({ evidenceId: entry.evidenceId as string })),
       ...(typeof item.note === "string" ? { note: item.note } : {}),
     });
   }
@@ -72,13 +77,26 @@ export function parseResolutionProposal(
       resolvingGoalVersion: goal.version + 1,
       status: value.status as "completed" | "failed",
       summary,
-      evidence: value.evidence.map((item) => ({ kind: item.kind as string, ref: item.ref as string })),
+      evidence: submittedEvidence.map((item) => ({ evidenceId: item.evidenceId as string })),
       criterionResults,
       residualRisks: [...value.residualRisks] as string[],
       domainOutcome: value.domainOutcome,
       createdAt,
     },
   };
+}
+
+function collectCriterionEvidence(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  const unique = new Map<string, unknown>();
+  for (const criterion of value) {
+    if (!isRecord(criterion) || !Array.isArray(criterion.evidence)) continue;
+    for (const evidence of criterion.evidence) {
+      if (!isEvidence(evidence)) continue;
+      unique.set(evidence.evidenceId, evidence);
+    }
+  }
+  return [...unique.values()];
 }
 
 export function createHumanInputProposal(
@@ -111,8 +129,8 @@ function resolutionSummary(value: Record<string, unknown>): string | undefined {
     ?.trim();
 }
 
-function isEvidence(value: unknown): value is Record<string, unknown> & { kind: string; ref: string } {
-  return isRecord(value) && typeof value.kind === "string" && typeof value.ref === "string";
+function isEvidence(value: unknown): value is Record<string, unknown> & { evidenceId: string } {
+  return isRecord(value) && typeof value.evidenceId === "string" && Boolean(value.evidenceId.trim());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

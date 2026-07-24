@@ -344,6 +344,13 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
     if (!thread) throw new Error("Goal thread does not exist");
     const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    const latestControlStatus = [...thread.items].reverse()
+      .filter((item) => item.kind === "control")
+      .map((item) => payloadControlStatus(payloads, item.payloadRef, goalId))
+      .find((status): status is string => Boolean(status));
+    if (latestControlStatus === "running") {
+      return { ready: true, reason: "interrupted_turn" };
+    }
     let lastAgentOutputIndex = -1;
     for (let index = thread.items.length - 1; index >= 0; index -= 1) {
       const item = thread.items[index]!;
@@ -680,6 +687,18 @@ function correctionReason(payloads: ReadonlyMap<string, unknown>, payloadRef: st
   if (!decision || typeof decision !== "object" || Array.isArray(decision)) return undefined;
   const reason = (decision as Record<string, unknown>).reason;
   return typeof reason === "string" ? reason : undefined;
+}
+
+function payloadControlStatus(
+  payloads: ReadonlyMap<string, unknown>,
+  payloadRef: string,
+  goalId: string,
+): string | undefined {
+  const value = payloads.get(payloadRef);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.goalId !== goalId || typeof record.status !== "string") return undefined;
+  return record.status;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

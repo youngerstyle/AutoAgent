@@ -252,6 +252,7 @@ export class MissionProcessManager {
         ...link,
         status: "starting",
         ticketVersion: claim.ticketVersion,
+        attemptId: claim.attemptId,
         authority: { kind: "claim", claimId: claim.claimId, fencingToken: claim.fencingToken },
         claimLeaseUntil: claim.leaseUntil,
         updatedAt: this.now().toISOString(),
@@ -292,8 +293,10 @@ export class MissionProcessManager {
         : undefined;
       const contributedMissionCriteria = (work.definition.missionContribution?.missionCriterionIds ?? []).flatMap((criterionId) => {
         const criterion = aggregate.record.baseline?.criteria.find((item) => item.criterionId === criterionId);
-        return criterion ? [`Mission 标准 [${criterion.criterionId}]：${criterion.text}`] : [];
+        return criterion ? [`Mission 标准 [${criterion.criterionId}]：${criterion.text}；验收锚点：${JSON.stringify(criterion.verification.anchors)}`] : [];
       });
+      const upstreamDeliveries = await this.listUpstreamDeliveries(link.planId, link.ticketId);
+      const inheritedEvidenceIds = collectEvidenceIds(upstreamDeliveries);
       const prior = await agent.getGoalByStartKey(link.goalStartKey);
       const goal = prior ?? await agent.startGoal({
         agentId: link.agentId,
@@ -315,6 +318,8 @@ export class MissionProcessManager {
           ],
           outputContract: work.definition.outputContract,
           externalRef: link.ticketId,
+          attemptId: link.attemptId,
+          ...(inheritedEvidenceIds.length ? { evidencePolicy: { inheritedEvidenceIds } } : {}),
           createdAt: this.now().toISOString(),
         },
       });
@@ -332,15 +337,16 @@ export class MissionProcessManager {
               await this.listCorrectionTargets(link.planId, link.ticketId),
               link.ticketId,
               await this.sharedPlanContext(link.planId, aggregate.record.baseline),
-              await this.listUpstreamDeliveries(link.planId, link.ticketId),
+              upstreamDeliveries,
               {
                 ticket: {
                   ticketId: work.ticket.ticketId,
                   title: work.definition.title,
                   objective: work.definition.objective,
-                  successCriteria: work.definition.successCriteria,
-                  outputContract: work.definition.outputContract,
-                  missionContribution: work.definition.missionContribution,
+                   successCriteria: work.definition.successCriteria,
+                   outputContract: work.definition.outputContract,
+                   deliveryIncrement: work.definition.deliveryIncrement,
+                   missionContribution: work.definition.missionContribution,
                   assurance: work.definition.assurance,
                   permissions: work.definition.permissions,
                   reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
@@ -378,6 +384,7 @@ export class MissionProcessManager {
         objective: work.definition.objective,
         successCriteria: work.definition.successCriteria,
         outputContract: work.definition.outputContract,
+        deliveryIncrement: work.definition.deliveryIncrement,
         missionContribution: work.definition.missionContribution,
         assurance: work.definition.assurance,
       }] : []),
@@ -407,6 +414,7 @@ export class MissionProcessManager {
       successCriteria: work.definition.successCriteria,
       outputContract: work.definition.outputContract,
       handoff: work.ticket.completion.handoff,
+      ...(work.ticket.attempts.at(-1)?.changeSet ? { changeSet: work.ticket.attempts.at(-1)!.changeSet } : {}),
     }] : []);
   }
 
@@ -429,6 +437,7 @@ export class MissionProcessManager {
       criteria: baseline.criteria.map((criterion) => ({
         criterionId: criterion.criterionId,
         criterionText: criterion.text,
+        verification: criterion.verification,
         assuranceSources: sources.flatMap((source): MissionAssuranceSource[] => {
           const criterionResults = source.criterionResults.filter((result) => result.criterionId === criterion.criterionId);
           return criterionResults.length ? [{ ...source, criterionResults }] : [];
@@ -685,7 +694,18 @@ export class MissionProcessManager {
         const resolution = (proposal.domainOutcome as MissionTicketOutcome).missionResolution as {
           baselineVersion: number;
           summary: string;
-          criterionResults: Array<{ criterionId: string; status: "satisfied"; assuranceTicketIds: TicketId[]; evidence: Array<{ kind: string; ref: string; note?: string }> }>;
+          criterionResults: Array<{
+            criterionId: string;
+            status: "satisfied";
+            assuranceTicketIds: TicketId[];
+            evidence: Array<{ evidenceId: string }>;
+            anchorResults: Array<{
+              anchorIndex: number;
+              status: "satisfied";
+              evidence: Array<{ evidenceId: string }>;
+              note?: string;
+            }>;
+          }>;
           residualRisks: string[];
         };
         const linkedAt = "linkedAt" in currentAggregate.record ? currentAggregate.record.linkedAt : this.now().toISOString();
@@ -921,6 +941,23 @@ function membersForAssignment(team: TeamBinding, assignment: { principalId?: str
     : team.members;
   const required = assignment.requiredCapabilities ?? [];
   return candidates.filter((member) => required.every((capability) => member.capabilities.includes(capability)));
+}
+
+function collectEvidenceIds(value: unknown): string[] {
+  const ids = new Set<string>();
+  const visit = (item: unknown): void => {
+    if (Array.isArray(item)) {
+      for (const entry of item) visit(entry);
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    for (const [key, entry] of Object.entries(item)) {
+      if (key === "evidenceId" && typeof entry === "string" && entry) ids.add(entry);
+      else visit(entry);
+    }
+  };
+  visit(value);
+  return [...ids];
 }
 
 function isActiveLink(link: MissionLink): link is ActiveMissionLink {

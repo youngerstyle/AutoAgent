@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
-import { projectTicketBlocker, queuedMessageRoute, RuntimeHost } from "../../src/server/runtime/runtime-host.js";
+import {
+  planAllowsActiveAgentExecution,
+  projectTicketBlocker,
+  queuedMessageRoute,
+  RuntimeHost,
+} from "../../src/server/runtime/runtime-host.js";
 import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
@@ -17,6 +22,15 @@ describe("RuntimeHost", () => {
     expect(queuedMessageRoute("goal-a", "goal-b")).toBe("defer");
     expect(queuedMessageRoute(undefined, "goal-b")).toBe("defer");
     expect(queuedMessageRoute("goal-a", undefined)).toBe("idle");
+  });
+
+  it("keeps an active Agent runnable while its Plan waits on the same blocked Ticket", () => {
+    expect(planAllowsActiveAgentExecution("active")).toBe(true);
+    expect(planAllowsActiveAgentExecution("blocked")).toBe(true);
+    expect(planAllowsActiveAgentExecution("paused")).toBe(false);
+    expect(planAllowsActiveAgentExecution("completed")).toBe(false);
+    expect(planAllowsActiveAgentExecution("failed")).toBe(false);
+    expect(planAllowsActiveAgentExecution("cancelled")).toBe(false);
   });
 
   it("projects typed manual-test input into the QA human-loop contract", () => {
@@ -459,6 +473,65 @@ describe("RuntimeHost", () => {
     expect(second).toBe(first);
     await Promise.all([first, second]);
     expect(modelTurns).toBe(3);
+  });
+
+  it("atomically reserves an Agent turn when a private message races the scheduler", async () => {
+    const fixture = await createFixture();
+    let providerAvailable = false;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        if (!providerAvailable) throw new ProviderError("provider unavailable", false, "OPENAI_ERROR");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-after-private-message",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "需求接收完成",
+              evidence: [],
+              criterionResults: Array.from(
+                { length: 3 },
+                (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] }),
+              ),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+    await fixture.host.createTask({
+      taskId: "task-private-message-race",
+      title: "演示",
+      objective: "构建演示",
+    });
+    await fixture.host.tick();
+    const context = fixture.host.context("task-private-message-race")!;
+    const engine = context.engines.get("wa_boss")!;
+    const thread = (await engine.getThreadForAgent("wa_boss", "task-private-message-race"))!;
+    const startsBefore = thread.items.filter((item) => item.itemId.endsWith(":started")).length;
+
+    providerAvailable = true;
+    const message = fixture.host.sendAgentMessage(
+      "task-private-message-race",
+      "wa_boss",
+      "继续",
+      "private-message-race",
+    );
+    const timerTick = fixture.host.tick();
+    await Promise.all([message, timerTick]);
+    await waitFor(async () => {
+      const updated = await engine.getThread(thread.threadId);
+      return updated.items.filter((item) => item.itemId.endsWith(":started")).length > startsBefore;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const updated = await engine.getThread(thread.threadId);
+    const startsAfter = updated.items.filter((item) => item.itemId.endsWith(":started")).length;
+    expect(startsAfter - startsBefore).toBe(1);
   });
 
   it("does not spend another model turn on the same correction without new input", async () => {
@@ -1087,6 +1160,10 @@ function missionBaselineOutcome() {
     baseline: {
       objective: "完成当前 human 目标",
       successCriteria: ["形成可验证的真实交付"],
+      verificationPlan: [{
+        criterionIndex: 0,
+        anchors: [{ observableOutcome: "真实交付可观察", evidenceRequirements: ["可追溯工具证据"] }],
+      }],
       constraints: [],
       assumptions: [],
       exclusions: [],

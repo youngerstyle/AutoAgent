@@ -16,13 +16,19 @@ export interface TicketOutputContract {
 }
 
 export interface TicketEvidenceRef {
-  kind: string;
-  ref: string;
+  evidenceId: string;
 }
 
 export interface PlannedTicketAssignment {
   principalId?: string;
   requiredCapabilities?: string[];
+}
+
+export interface TicketDeliveryIncrement {
+  incrementId: string;
+  sequence: number;
+  title: string;
+  objective: string;
 }
 
 export interface TicketDefinition {
@@ -32,6 +38,7 @@ export interface TicketDefinition {
   successCriteria: string[];
   assignment: PlannedTicketAssignment;
   outputContract: TicketOutputContract;
+  deliveryIncrement?: TicketDeliveryIncrement;
   missionContribution?: {
     missionCriterionIds: string[];
   };
@@ -218,6 +225,30 @@ export type TicketAttemptStatus =
   | "released"
   | "cancelled";
 
+export interface TicketAttemptWorkspaceBaseline {
+  baselineId: string;
+  capturedAt: string;
+  artifactVersion: string;
+  manifestRef: string;
+}
+
+export interface TicketAttemptArtifactChange {
+  path: string;
+  beforeSha256?: string;
+  afterSha256?: string;
+}
+
+export interface TicketAttemptChangeSet {
+  baselineId: string;
+  capturedAt: string;
+  completedAt: string;
+  artifactVersion: string;
+  manifestRef: string;
+  added: TicketAttemptArtifactChange[];
+  modified: TicketAttemptArtifactChange[];
+  deleted: TicketAttemptArtifactChange[];
+}
+
 export interface TicketAttempt {
   attemptId: string;
   attemptNumber: number;
@@ -230,6 +261,8 @@ export interface TicketAttempt {
   reason?: string;
   requiredInput?: TicketRequiredInput;
   evidence?: TicketEvidenceRef[];
+  workspaceBaseline?: TicketAttemptWorkspaceBaseline;
+  changeSet?: TicketAttemptChangeSet;
 }
 
 export type TicketRequiredInputKind =
@@ -438,7 +471,6 @@ export type TicketAggregateEventPayload =
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput: TicketRequiredInput }
   | { type: "TicketRetryQueued"; prerequisiteTicketId: TicketId }
-  | { type: "TicketReopened"; returnedByTicketId: TicketId; attemptNumber: number }
   | {
       type: "TicketTerminal";
       status: "completed" | "returned" | "failed" | "cancelled";

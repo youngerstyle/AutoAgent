@@ -7,6 +7,8 @@ import {
   activePiToolNames,
   initialGoalMessage,
   promptedGoalIds,
+  promptedGoalVersions,
+  latestCorrectableDecision,
   piSessionSkillsTraceId,
   piWorkSessionDirectory,
   piWorkSessionKey,
@@ -81,6 +83,38 @@ describe("Pi Skill read boundary", () => {
       { type: "custom", customType: "autoagent_goal", data: { goalId: "legacy-premature" } },
       { type: "custom", customType: "autoagent_goal_prompted", data: { goalId: "goal-a" } },
     ])).toEqual(new Set(["goal-a"]));
+  });
+
+  it("tracks the latest prompted version for each Goal", () => {
+    expect(promptedGoalVersions([
+      { type: "custom", customType: "autoagent_goal_prompted", data: { goalId: "goal-a", goalVersion: 2 } },
+      { type: "custom", customType: "autoagent_goal_prompted", data: { goalId: "goal-a", goalVersion: 5 } },
+      { type: "custom", customType: "autoagent_goal_prompted", data: { goalId: "legacy-goal" } },
+    ])).toEqual(new Map([
+      ["goal-a", 5],
+      ["legacy-goal", 0],
+    ]));
+  });
+
+  it("selects the latest Host correction for the current Goal only", () => {
+    const thread = {
+      threadId: "thread-a",
+      agentId: "wa_qa",
+      scopeId: "scope-a",
+      version: 3,
+      items: [
+        { itemId: "old", sequence: 1, kind: "control" as const, createdAt: "2026-07-24T00:00:00.000Z", payloadRef: "old" },
+        { itemId: "other", sequence: 2, kind: "control" as const, createdAt: "2026-07-24T00:00:01.000Z", payloadRef: "other" },
+        { itemId: "latest", sequence: 3, kind: "control" as const, createdAt: "2026-07-24T00:00:02.000Z", payloadRef: "latest" },
+      ],
+    };
+    const payloads = new Map<string, unknown>([
+      ["old", { type: "goal_resolution_decision", status: "correctable", goalId: "goal-a", decision: { reason: "old" } }],
+      ["other", { type: "goal_resolution_decision", status: "correctable", goalId: "goal-b", decision: { reason: "other" } }],
+      ["latest", { type: "goal_resolution_decision", status: "correctable", goalId: "goal-a", decision: { reason: "latest" } }],
+    ]);
+
+    expect(latestCorrectableDecision(thread, payloads, "goal-a")).toEqual({ reason: "latest" });
   });
 
   it("treats only files below an enabled Skill root as Skill resources", async () => {

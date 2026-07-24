@@ -87,6 +87,12 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
+      ...(addition.deliveryIncrement ? { deliveryIncrement: {
+        incrementId: addition.deliveryIncrement.incrementId.trim(),
+        sequence: addition.deliveryIncrement.sequence,
+        title: addition.deliveryIncrement.title.trim(),
+        objective: addition.deliveryIncrement.objective.trim(),
+      } } : {}),
       ...(addition.missionContribution ? { missionContribution: {
         missionCriterionIds: addition.missionContribution.missionCriterionIds.map((item) => item.trim()),
       } } : {}),
@@ -126,6 +132,7 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
   if (dependencyEdges.length > limits.maxEdges) throw new PlanGraphError(`Plan exceeds ${limits.maxEdges} dependencies`);
   validateUniqueEdges(dependencyEdges);
   validateAcyclic(ticketIds, dependencyEdges);
+  validateDeliveryIncrements(definitions, dependencyEdges);
 
   for (const ticketId of input.change.cancelTicketIds) {
     if (!known.has(String(ticketId))) throw new PlanGraphError(`Cannot cancel unknown Ticket ${ticketId}`);
@@ -226,6 +233,14 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   if (value.missionContribution !== undefined) {
     validateCriterionIds(value.missionContribution.missionCriterionIds, `${label}.missionContribution.missionCriterionIds`);
   }
+  if (value.deliveryIncrement !== undefined) {
+    requireIdentifier(value.deliveryIncrement.incrementId, `${label}.deliveryIncrement.incrementId`);
+    if (!Number.isSafeInteger(value.deliveryIncrement.sequence) || value.deliveryIncrement.sequence <= 0) {
+      throw new PlanGraphError(`${label}.deliveryIncrement.sequence must be a positive integer`);
+    }
+    requireText(value.deliveryIncrement.title, `${label}.deliveryIncrement.title`);
+    requireText(value.deliveryIncrement.objective, `${label}.deliveryIncrement.objective`);
+  }
   if (value.assurance !== undefined) {
     validateCriterionIds(value.assurance.missionCriterionIds, `${label}.assurance.missionCriterionIds`);
   }
@@ -258,6 +273,33 @@ function validateUniqueEdges(edges: PlanGraphSnapshot["dependencyEdges"]): void 
     const key = `${edge.fromTicketId}\u0000${edge.toTicketId}`;
     if (seen.has(key)) throw new PlanGraphError("Duplicate dependency edge");
     seen.add(key);
+  }
+}
+
+function validateDeliveryIncrements(
+  definitions: Readonly<Record<string, TicketDefinition>>,
+  edges: PlanGraphSnapshot["dependencyEdges"],
+): void {
+  const canonical = new Map<string, NonNullable<TicketDefinition["deliveryIncrement"]>>();
+  for (const definition of Object.values(definitions)) {
+    const increment = definition.deliveryIncrement;
+    if (!increment) continue;
+    const previous = canonical.get(increment.incrementId);
+    if (previous && (
+      previous.sequence !== increment.sequence
+      || previous.title !== increment.title
+      || previous.objective !== increment.objective
+    )) {
+      throw new PlanGraphError(`Delivery increment ${increment.incrementId} has conflicting definitions`);
+    }
+    canonical.set(increment.incrementId, increment);
+  }
+  for (const edge of edges) {
+    const from = definitions[String(edge.fromTicketId)]?.deliveryIncrement;
+    const to = definitions[String(edge.toTicketId)]?.deliveryIncrement;
+    if (from && to && from.sequence > to.sequence) {
+      throw new PlanGraphError(`Delivery increment dependency cannot move backward from ${from.incrementId} to ${to.incrementId}`);
+    }
   }
 }
 

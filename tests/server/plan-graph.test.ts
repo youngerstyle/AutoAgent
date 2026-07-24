@@ -82,6 +82,44 @@ describe("append-only Plan graph", () => {
     });
   });
 
+  it("preserves PM-defined delivery increments without creating another workflow engine", () => {
+    const input = change(["build", "verify"]);
+    const increment = {
+      incrementId: "playable-baseline",
+      sequence: 1,
+      title: "可玩基线",
+      objective: "形成可运行且可验证的第一份交付",
+    };
+    input.additions[0]!.deliveryIncrement = increment;
+    input.additions[1]!.deliveryIncrement = increment;
+    let index = 0;
+
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[index++]! });
+
+    expect(graph.definitionsByTicketId[ids[0]].deliveryIncrement).toEqual(increment);
+    expect(graph.definitionsByTicketId[ids[1]].deliveryIncrement).toEqual(increment);
+  });
+
+  it("rejects a dependency that moves backward across PM-defined increments", () => {
+    const input = change(["later", "earlier"]);
+    input.additions[0]!.deliveryIncrement = {
+      incrementId: "polish",
+      sequence: 2,
+      title: "质量提升",
+      objective: "提升完整度",
+    };
+    input.additions[1]!.deliveryIncrement = {
+      incrementId: "baseline",
+      sequence: 1,
+      title: "可玩基线",
+      objective: "形成可运行结果",
+    };
+    let index = 0;
+
+    expect(() => materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[index++]! }))
+      .toThrow(/cannot move backward/);
+  });
+
   it("appends new Tickets without changing historical Ticket identity", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
     const second = materializePlanGraph({

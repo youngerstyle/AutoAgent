@@ -20,6 +20,7 @@ import type {
   PlanDefinition,
   PlanId,
   PlanSnapshot,
+  TicketEvidenceRef,
 } from "./ticket-engine.js";
 
 export type { AgentPort, GoalResolutionPort } from "./agent-engine.js";
@@ -76,6 +77,12 @@ interface MissionRecordBase {
 export interface MissionBaselineCriterion {
   criterionId: string;
   text: string;
+  verification: {
+    anchors: Array<{
+      observableOutcome: string;
+      evidenceRequirements: string[];
+    }>;
+  };
 }
 
 export interface MissionBaseline {
@@ -99,7 +106,13 @@ export interface MissionSettlement {
     criterionId: string;
     status: "satisfied";
     assuranceTicketIds: TicketId[];
-    evidence: Array<{ kind: string; ref: string; note?: string }>;
+    evidence: TicketEvidenceRef[];
+    anchorResults: Array<{
+      anchorIndex: number;
+      status: "satisfied";
+      evidence: TicketEvidenceRef[];
+      note?: string;
+    }>;
   }>;
   residualRisks: string[];
   settledAt: string;
@@ -117,6 +130,7 @@ interface MissionLinkBase {
   planId: PlanId;
   ticketId: TicketId;
   ticketVersion: number;
+  attemptId?: string;
   agentId: string;
   agentPrincipalId: string;
   claimRequestId: string;

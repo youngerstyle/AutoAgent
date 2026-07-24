@@ -60,8 +60,8 @@ describe("TicketEngine single Plan flow", () => {
         schemaVersion: 1,
         summary: "目标已经确认",
         output: { brief: "accepted" },
-        evidence: [{ kind: "document", ref: "brief.md" }],
-        criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ kind: "document", ref: "brief.md" }] }],
+        evidence: [{ evidenceId: "ev-brief" }],
+        criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ evidenceId: "ev-brief" }] }],
         residualRisks: [],
       },
     }));
@@ -74,8 +74,8 @@ describe("TicketEngine single Plan flow", () => {
           schemaVersion: 1,
           summary: "目标已经确认",
           output: { brief: "accepted" },
-          evidence: [{ kind: "document", ref: "brief.md" }],
-          criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ kind: "document", ref: "brief.md" }] }],
+          evidence: [{ evidenceId: "ev-brief" }],
+          criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [{ evidenceId: "ev-brief" }] }],
           residualRisks: [],
         },
         actorPrincipalId: "planner",
@@ -96,37 +96,31 @@ describe("TicketEngine single Plan flow", () => {
     expect((await fixture.engine.getTicket(first))?.status).toBe("completed");
   });
 
-  it("reopens the original Ticket with a new Attempt and retries the verifier without changing the Plan", async () => {
+  it("preserves completed history and queues a planner amendment for correction work", async () => {
     const fixture = await createExecutionFixture();
     const qaClaim = await fixture.engine.claimReady({ requestId: "claim-qa", planId: fixture.planId, ticketId: fixture.qa, expectedTicketVersion: 2, principalId: "qa", leaseDurationMs: 60_000 });
     const result = await fixture.engine.applyTicket(ticketCommand(fixture.planId, fixture.qa, qaClaim!, "correction-1", {
       type: "request_correction",
       targetTicketId: fixture.dev,
       reason: "射击碰撞没有生效",
-      evidence: [{ kind: "test", ref: "qa://failure/1" }],
+      evidence: [{ evidenceId: "ev-qa-failure-1" }],
     }));
 
-    expect(result).toMatchObject({ accepted: true, ticketStatus: "pending", planStatus: "active" });
+    expect(result).toMatchObject({ accepted: true, ticketStatus: "pending", planStatus: "blocked" });
     const plan = await fixture.engine.getPlan(fixture.planId);
-    expect(plan.graph.ticketIds).toHaveLength(4);
-    expect(plan.graph.dependencyEdges).toEqual(fixture.plan.graph.dependencyEdges);
-    expect(await fixture.engine.getTicket(fixture.dev)).toMatchObject({ status: "ready", attempts: [{ status: "completed", attemptNumber: 1 }] });
+    expect(plan.graph.ticketIds).toHaveLength(5);
+    const amendmentId = plan.graph.ticketIds.find((ticketId) => !fixture.plan.graph.ticketIds.includes(ticketId))!;
+    expect(plan.graph.dependencyEdges).toContainEqual({ fromTicketId: amendmentId, toTicketId: fixture.qa });
+    expect(await fixture.engine.getTicket(fixture.dev)).toMatchObject({ status: "completed", attempts: [{ status: "completed", attemptNumber: 1 }] });
     expect(await fixture.engine.getTicket(fixture.qa)).toMatchObject({ status: "pending", attempts: [{ status: "returned", attemptNumber: 1, reason: "射击碰撞没有生效" }] });
     expect(await fixture.engine.getTicket(fixture.qa)).not.toHaveProperty("activeAuthority");
     expect(await fixture.engine.getTicket(fixture.acceptance)).toMatchObject({ status: "pending" });
+    expect(await fixture.engine.getTicket(amendmentId)).toMatchObject({ status: "ready", attempts: [] });
     expect(plan.completionPolicy.requiredTerminalTicketIds).toEqual([fixture.acceptance]);
-
-    const reopenedDev = await fixture.engine.getTicket(fixture.dev);
-    const correctionClaim = await fixture.engine.claimReady({ requestId: "claim-correction", planId: fixture.planId, ticketId: fixture.dev, expectedTicketVersion: reopenedDev!.version, principalId: "dev", leaseDurationMs: 60_000 });
-    await fixture.engine.applyTicket(ticketCommand(fixture.planId, fixture.dev, correctionClaim!, "complete-correction", completePayload()));
-    expect(await fixture.engine.getTicket(fixture.dev)).toMatchObject({ status: "completed", attempts: [{ attemptNumber: 1 }, { attemptNumber: 2, status: "completed" }] });
-    expect(await fixture.engine.getTicket(fixture.qa)).toMatchObject({ status: "ready" });
-    expect(await fixture.engine.getTicket(fixture.acceptance)).toMatchObject({ status: "pending" });
 
     const events = await fixture.engine.readEvents({ planId: fixture.planId, limit: 100 });
     expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "TicketCorrectionRequested")).toBe(true);
-    expect(events.events.some((event) => event.aggregateType === "ticket" && event.payload.type === "TicketReopened")).toBe(true);
-    expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "PlanAmendmentRequested")).toBe(false);
+    expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "PlanAmendmentRequested")).toBe(true);
   });
 
   it("reopens only the returned path and preserves completed parallel work", async () => {
@@ -170,11 +164,14 @@ describe("TicketEngine single Plan flow", () => {
     const qaAClaim = await fixture.engine.claimReady({ requestId: "claim-qa-a", planId: fixture.planId, ticketId: qaA!, expectedTicketVersion: (await fixture.engine.getTicket(qaA!))!.version, principalId: "qa", leaseDurationMs: 60_000 });
     await fixture.engine.applyTicket(ticketCommand(fixture.planId, qaA!, qaAClaim!, "return-a", { type: "request_correction", targetTicketId: devA!, reason: "A 分支缺陷", evidence: [] }));
 
-    expect(await fixture.engine.getTicket(devA!)).toMatchObject({ status: "ready" });
+    expect(await fixture.engine.getTicket(devA!)).toMatchObject({ status: "completed" });
     expect(await fixture.engine.getTicket(qaA!)).toMatchObject({ status: "pending" });
     expect(await fixture.engine.getTicket(devB!)).toMatchObject({ status: "completed" });
     expect(await fixture.engine.getTicket(qaB!)).toEqual(qaBBefore);
     expect(await fixture.engine.getTicket(acceptance!)).toMatchObject({ status: "pending" });
+    const changedPlan = await fixture.engine.getPlan(fixture.planId);
+    const amendmentId = changedPlan.graph.ticketIds.find((ticketId) => ![planning, devA, qaA, devB, qaB, acceptance].includes(ticketId))!;
+    expect(await fixture.engine.getTicket(amendmentId)).toMatchObject({ status: "ready" });
   });
 
   it("rejects a correction target that is not a completed strict ancestor", async () => {

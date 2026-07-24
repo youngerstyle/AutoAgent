@@ -36,6 +36,7 @@ import { resolvePolicy } from "../policy/policy.js";
 import { toolsForPolicy } from "../../shared/tool-catalog.js";
 import { TicketEngine } from "../tickets/ticket-engine.js";
 import { TicketStore } from "../tickets/ticket-store.js";
+import { WorkspaceSnapshotStore } from "../tickets/workspace-snapshot-store.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import { RuntimeHostStore, type RuntimeTaskRecord } from "./runtime-host-store.js";
 
@@ -98,13 +99,23 @@ export class RuntimeHost {
         throw new Error("附件元数据与工作区存储不一致");
       }
     }));
+    let queuedTurn: Promise<void> | undefined;
     const result = await this.exclusive(async () => {
       const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId, attachments);
       const record = await this.store.get(taskId);
-      return { accepted, canRunNow: record?.status === "active", snapshot: await this.snapshotUnlocked() };
+      if (accepted.appended && record?.status === "active") {
+        queuedTurn = this.enqueueAgentMessageTurn(
+          taskId,
+          agentId,
+          accepted.turnId,
+          messageId,
+          accepted.goalId,
+        );
+      }
+      return { accepted, snapshot: await this.snapshotUnlocked() };
     });
-    if (result.accepted.appended && result.canRunNow) {
-      void this.enqueueAgentMessageTurn(taskId, agentId, result.accepted.turnId, messageId, result.accepted.goalId)
+    if (queuedTurn) {
+      void queuedTurn
         .catch((error) => this.exclusive(() => this.recordAgentTurnErrorUnlocked(taskId, agentId, error, result.accepted.turnId)).catch(() => undefined));
     }
     return result.snapshot;
@@ -620,7 +631,7 @@ export class RuntimeHost {
   private async tickTask(context: RuntimeContext, awaitAgentRuns = true): Promise<void> {
     let mission = await context.manager.tick();
     const planBeforeRuns = await context.tickets.getPlan(mission.record.planId);
-    if (planBeforeRuns.status !== "active") {
+    if (!planAllowsActiveAgentExecution(planBeforeRuns.status)) {
       await this.syncTaskStatus(context, planBeforeRuns.status, mission.record.status);
       return;
     }
@@ -778,7 +789,11 @@ export class RuntimeHost {
     const tickets = new TicketEngine(
       new TicketStore(this.workspace.rootPath, record.taskId, record.runId),
       this.policyStore,
-      { teamBindingIds: [team.teamBindingId], now: () => this.now() },
+      {
+        teamBindingIds: [team.teamBindingId],
+        now: () => this.now(),
+        workspacePort: new WorkspaceSnapshotStore(this.workspace.rootPath, () => this.now()),
+      },
     );
     const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();
     const loops = new Map<string, AgentExecutionRuntime>();
@@ -837,10 +852,26 @@ export class RuntimeHost {
   }
 
   private async sliceInput(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string) {
-    return this.sliceInputForAgent(context, link.agentId, link.agentThreadId, link.agentGoalId, turnId, triggerMessageId);
+    return this.sliceInputForAgent(
+      context,
+      link.agentId,
+      link.agentThreadId,
+      link.agentGoalId,
+      turnId,
+      triggerMessageId,
+      link.attemptId,
+    );
   }
 
-  private async sliceInputForAgent(context: RuntimeContext, agentId: string, threadId: string, goalId?: string, turnId?: string, triggerMessageId?: string) {
+  private async sliceInputForAgent(
+    context: RuntimeContext,
+    agentId: string,
+    threadId: string,
+    goalId?: string,
+    turnId?: string,
+    triggerMessageId?: string,
+    attemptId?: string,
+  ) {
     const agent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
     const provider = agent.provider ?? profile.defaultProvider;
@@ -851,6 +882,7 @@ export class RuntimeHost {
       turnId,
       triggerMessageId,
       goalId,
+      attemptId,
       profile,
       agent,
       policy: resolvePolicy(this.workspace, agent),
@@ -976,6 +1008,10 @@ function presentationStatus(plan: string, mission: string): EntityStatus {
   if (plan === "failed") return "failed";
   if (plan === "cancelled") return "interrupted";
   return "running";
+}
+
+export function planAllowsActiveAgentExecution(planStatus: string): boolean {
+  return planStatus === "active" || planStatus === "blocked";
 }
 
 function hasEligibleMember(team: TeamBinding, assignment: { principalId?: string; requiredCapabilities?: string[] }): boolean {

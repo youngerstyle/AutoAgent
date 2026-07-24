@@ -33,16 +33,23 @@ import type { AgentModelHistoryItem, AgentModelTurnResult } from "../providers/t
 import type { AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentStore } from "./agent-store.js";
+import { AgentGoalTransitionError } from "./goal-state.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceInput, AgentExecutionSliceResult } from "./runtime.js";
 import { createHumanInputProposal, parseResolutionProposal } from "./resolution-proposal.js";
 import type { AgentTraceStore } from "./trace-store.js";
-import { AgentToolRuntime, type AgentToolIntent } from "./tool-runtime.js";
+import {
+  AgentToolRuntime,
+  type AgentToolExecutionContext,
+  type AgentToolIntent,
+  type AgentToolResult as WorkspaceAgentToolResult,
+} from "./tool-runtime.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
 
 interface SessionState {
   session: AgentSession;
-  goalIds: Set<string>;
+  goalVersions: Map<string, number>;
   resolution: ResolutionBinding;
+  toolExecution: ToolExecutionBinding;
   safety: RunSafetyBinding;
 }
 
@@ -60,6 +67,14 @@ interface ResolutionToolDetails {
   ok: boolean;
   reason: string;
   proposal: GoalResolutionProposal | null;
+}
+
+interface ToolExecutionBinding {
+  agentId: string;
+  threadId: string;
+  goalId?: string;
+  attemptId?: string;
+  turnId?: string;
 }
 
 interface RunSafetyBinding {
@@ -124,10 +139,20 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
     const triggerMessageId = input.triggerMessageId ?? (pending?.kind === "message" ? pending.itemId : undefined);
     const state = await this.requireSession({ ...input, triggerMessageId });
+    // RuntimeHost owns cross-turn ordering. Pi's follow-up queue is only for
+    // steering one in-flight Pi run and must never bridge two Ticket turns.
+    await state.session.waitForIdle();
+    state.toolExecution.goalId = goal?.spec.id;
+    state.toolExecution.attemptId = input.attemptId ?? goal?.spec.attemptId;
+    state.toolExecution.turnId = turnId;
     let toolCalls = 0;
     let proposal: GoalResolutionProposal | undefined;
     let eventSequence = 0;
     const toolInputs = new Map<string, { name: string; args: unknown }>();
+    let resolveTerminalProviderError: ((message: string) => void) | undefined;
+    const terminalProviderError = new Promise<string>((resolve) => {
+      resolveTerminalProviderError = resolve;
+    });
     let eventWrites: Promise<void> = Promise.resolve();
     const persistEvent = (operation: () => Promise<unknown>): void => {
       eventWrites = eventWrites.then(async () => { await operation(); });
@@ -185,7 +210,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             callId: event.toolCallId,
             name: event.toolName,
             content: toolResultText(event.result),
-            details: event.result,
+            details: compactPiToolEventDetails(event.result),
             isError: event.isError,
           }, createdAt: this.now().toISOString(),
         }));
@@ -213,6 +238,13 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           content, createdAt: this.now().toISOString(),
         }));
       }
+      if (event.type === "agent_end" && !event.willRetry) {
+        const assistant = [...event.messages].reverse()
+          .find((message): message is AssistantMessage => message.role === "assistant");
+        if (assistant?.stopReason === "error") {
+          resolveTerminalProviderError?.(assistant.errorMessage || "模型调用失败");
+        }
+      }
     });
 
     state.resolution.goal = goal;
@@ -239,9 +271,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
 
     try {
       let prompt = normalizePrompt(await this.nextPrompt(input, goal, state, pending, triggerMessageId));
-      if (goal && !state.goalIds.has(goal.spec.id)) {
-        state.session.sessionManager.appendCustomEntry("autoagent_goal_prompted", { goalId: goal.spec.id });
-        state.goalIds.add(goal.spec.id);
+      if (goal && state.goalVersions.get(goal.spec.id) !== goal.version) {
+        state.session.sessionManager.appendCustomEntry("autoagent_goal_prompted", {
+          goalId: goal.spec.id,
+          goalVersion: goal.version,
+        });
+        state.goalVersions.set(goal.spec.id, goal.version);
       }
       let continuation = 0;
       let toolCallsBeforePrompt = toolCalls;
@@ -253,19 +288,51 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           persistent: Boolean(state.session.sessionFile),
           continuation,
         });
-        await state.session.prompt(prompt.text, {
+        const promptRun = state.session.prompt(prompt.text, {
           images: prompt.images,
           expandPromptTemplates: false,
-          streamingBehavior: "followUp",
           source: "rpc",
         });
-        await state.session.waitForIdle();
+        const promptOutcome = await awaitPiPromptOutcome(
+          promptRun,
+          terminalProviderError,
+          () => state.session.waitForIdle(),
+        );
+        if (promptOutcome.kind === "provider_error") {
+          state.session.agent.abort();
+          this.sessions.delete(piWorkSessionKey(input.threadId, input.goalId));
+          void promptRun.finally(() => state.session.dispose()).catch(() => undefined);
+          await eventWrites;
+          return this.block(turnId, input, toolCalls, goal, "provider_error", promptOutcome.message);
+        }
         await eventWrites;
         if (state.safety.blockedReason) {
           return this.block(turnId, input, toolCalls, goal, "no_progress", state.safety.blockedReason);
         }
         if (proposal) {
-          const attempted = await this.engine.proposeGoalResolution(proposal);
+          let attempted: Awaited<ReturnType<AgentEngine<any>["proposeGoalResolution"]>>;
+          try {
+            attempted = await this.engine.proposeGoalResolution(proposal);
+          } catch (error) {
+            if (!(error instanceof AgentGoalTransitionError) || error.code !== "version_conflict") throw error;
+            const currentGoal = await this.engine.getGoal(proposal.goalId);
+            await this.engine.appendToolItem({
+              itemId: `${turnId}:stale-goal`,
+              turnId,
+              threadId: input.threadId,
+              goalId: input.goalId,
+              kind: "control",
+              value: {
+                turnId,
+                status: "stale_goal",
+                message: "本轮结论基于旧版 Goal，已丢弃；将基于 Host 的最新反馈继续。",
+                expectedGoalVersion: proposal.expectedGoalVersion,
+                currentGoalVersion: currentGoal?.version,
+              },
+              createdAt: this.now().toISOString(),
+            });
+            return { turnId, status: "yielded", toolCalls, goal: currentGoal };
+          }
           await this.trace(turnId, input, "settlement", attempted);
           return { turnId, status: "resolution_proposed", toolCalls, goal: attempted.goal };
         }
@@ -408,6 +475,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       await restoreSessionHistory(sessionManager, assembled.history, model, this.workspaceRoot);
     }
     const resolution: ResolutionBinding = {};
+    const toolExecution: ToolExecutionBinding = {
+      agentId: input.agent.id,
+      threadId: input.threadId,
+    };
     const safety: RunSafetyBinding = {
       failures: new Map(),
       seenUsefulToolSignatures: new Set(),
@@ -416,8 +487,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       unproductiveToolCalls: 0,
     };
     const customTools = [
-      ...workspaceTools(this.tools),
-      piReadTool(this.tools, skills),
+      ...workspaceTools(this.tools, toolExecution),
+      piReadTool(this.tools, skills, toolExecution),
       goalTool(resolution, this.now),
       humanInputTool(resolution, this.now),
     ];
@@ -436,7 +507,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       thinkingLevel: input.supportsReasoning ? (input.thinkingLevel ?? "medium") : "off",
     });
     session.setAutoCompactionEnabled(true);
-    const goalIds = promptedGoalIds(sessionManager.getEntries());
+    const goalVersions = promptedGoalVersions(sessionManager.getEntries());
     await this.traces.append({
       traceId: piSessionSkillsTraceId(
         input.threadId,
@@ -452,7 +523,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       createdAt: this.now().toISOString(),
       data: { enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics },
     });
-    return { session, goalIds, resolution, safety };
+    return { session, goalVersions, resolution, toolExecution, safety };
   }
 
   private async nextPrompt(
@@ -462,7 +533,13 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     pending: PendingThreadInput | undefined,
     triggerMessageId: string | undefined,
   ): Promise<AgentPrompt> {
-    const isNewGoal = Boolean(goal && !state.goalIds.has(goal.spec.id));
+    const isNewGoalVersion = Boolean(goal && state.goalVersions.get(goal.spec.id) !== goal.version);
+    const goalUpdate = goal && isNewGoalVersion
+      ? await this.goalUpdatePrompt(input.threadId, goal)
+      : undefined;
+    if (goal && !isNewGoalVersion && !triggerMessageId && !pending) {
+      return "上一轮执行因进程中断而没有形成结论。请基于当前 Goal、已有会话历史和工具结果继续工作；先核对当前工作区事实，再从未完成处推进，不要重复已经完成且已有证据的步骤。";
+    }
     if (triggerMessageId) {
       const thread = await this.engine.getThread(input.threadId);
       const item = thread.items.find((candidate) => candidate.itemId === triggerMessageId);
@@ -479,23 +556,34 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       }));
       if (images.length) {
         const text = content || "请查看本轮发送的图片。";
-        return { text: isNewGoal ? `${activeGoalPrompt(goal!)}\n\n## 本轮按时间顺序收到的消息\n${text}` : text, images };
+        return { text: goalUpdate ? `${goalUpdate}\n\n## 本轮按时间顺序收到的消息\n${text}` : text, images };
       }
       if (content) {
-        if (!isNewGoal) return { text: content, images: [] };
-        return `${activeGoalPrompt(goal!)}\n\n## 本轮按时间序收到的消息\n${content}`;
+        if (!goalUpdate) return { text: content, images: [] };
+        return `${goalUpdate}\n\n## 本轮按时间序收到的消息\n${content}`;
       }
     }
-    if (goal && isNewGoal) {
+    if (goal && isNewGoalVersion) {
       const thread = await this.engine.getThread(input.threadId);
       const payloads = await this.store.payloads(thread.items.map((item) => item.payloadRef));
       const initial = initialGoalMessage(thread, payloads, goal.spec.id);
       if (initial) {
-        return `${activeGoalPrompt(goal)}\n\n## 恢复的正式任务消息\n${initial}`;
+        return `${goalUpdate}\n\n## 恢复的正式任务消息\n${initial}`;
       }
+      return goalUpdate!;
     }
     if (pending?.kind === "correction") return `Host 对目标结算的决定：${pending.content}`;
     throw new Error("Agent turn 没有新的按时间序输入");
+  }
+
+  private async goalUpdatePrompt(threadId: string, goal: AgentGoal): Promise<string> {
+    const thread = await this.engine.getThread(threadId);
+    const payloads = await this.store.payloads(thread.items.map((item) => item.payloadRef));
+    const decision = latestCorrectableDecision(thread, payloads, goal.spec.id);
+    return [
+      activeGoalPrompt(goal),
+      decision ? `\n## Host 对上一份结论的最新决定\n${JSON.stringify(decision)}` : undefined,
+    ].filter(Boolean).join("\n");
   }
 
   private async block(
@@ -517,6 +605,17 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       threadId: input.threadId, goalId: input.goalId, turnId, kind, createdAt: this.now().toISOString(), data,
     });
   }
+}
+
+export async function awaitPiPromptOutcome(
+  promptRun: Promise<void>,
+  terminalProviderError: Promise<string>,
+  waitForIdle: () => Promise<void> = async () => undefined,
+): Promise<{ kind: "settled" } | { kind: "provider_error"; message: string }> {
+  return Promise.race([
+    promptRun.then(waitForIdle).then(() => ({ kind: "settled" as const })),
+    terminalProviderError.then((message) => ({ kind: "provider_error" as const, message })),
+  ]);
 }
 
 type PendingThreadInput =
@@ -577,14 +676,21 @@ export function initialGoalMessage(
   return undefined;
 }
 
-export function promptedGoalIds(entries: readonly unknown[]): Set<string> {
-  const goalIds = new Set<string>();
+export function promptedGoalVersions(entries: readonly unknown[]): Map<string, number> {
+  const goalVersions = new Map<string, number>();
   for (const entry of entries) {
     if (!isRecord(entry) || entry.type !== "custom" || entry.customType !== "autoagent_goal_prompted") continue;
     if (!isRecord(entry.data) || typeof entry.data.goalId !== "string" || !entry.data.goalId) continue;
-    goalIds.add(entry.data.goalId);
+    const version = Number.isInteger(entry.data.goalVersion) && Number(entry.data.goalVersion) > 0
+      ? Number(entry.data.goalVersion)
+      : 0;
+    goalVersions.set(entry.data.goalId, version);
   }
-  return goalIds;
+  return goalVersions;
+}
+
+export function promptedGoalIds(entries: readonly unknown[]): Set<string> {
+  return new Set(promptedGoalVersions(entries).keys());
 }
 
 async function pendingThreadInput(
@@ -625,18 +731,34 @@ function isCorrectableDecision(value: unknown): value is Record<string, unknown>
   return isRecord(value) && value.type === "goal_resolution_decision" && value.status === "correctable" && "decision" in value;
 }
 
+export function latestCorrectableDecision(
+  thread: AgentThreadSnapshot,
+  payloads: ReadonlyMap<string, unknown>,
+  goalId: string,
+): unknown {
+  for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+    const payload = payloads.get(thread.items[index]!.payloadRef);
+    if (!isCorrectableDecision(payload) || payload.goalId !== goalId) continue;
+    return payload.decision;
+  }
+  return undefined;
+}
+
 function isRunningPayload(value: unknown): boolean {
   return isRecord(value) && value.status === "running";
 }
 
-function workspaceTools(runtime: AgentToolRuntime): ToolDefinition[] {
+function workspaceTools(runtime: AgentToolRuntime, binding: ToolExecutionBinding): ToolDefinition[] {
   return runtime.definitions().map((definition) => defineTool({
     name: definition.name,
     label: definition.name,
     description: definition.description,
     parameters: toolParameters(definition.name as WorkspaceToolName),
-    async execute(_callId, params) {
-      const result = await runtime.execute({ tool: definition.name as WorkspaceToolName, ...(params as Omit<AgentToolIntent, "tool">) });
+    async execute(callId, params) {
+      const result = await runtime.execute(
+        { tool: definition.name as WorkspaceToolName, ...(params as Omit<AgentToolIntent, "tool">) },
+        toolExecutionContext(binding, callId),
+      );
       if (!result.ok) throw new Error(failureMessage(result));
       if (result.tool === "readImage" && typeof result.data === "string" && typeof result.mimeType === "string") {
         return {
@@ -647,36 +769,69 @@ function workspaceTools(runtime: AgentToolRuntime): ToolDefinition[] {
           details: { ...result, data: undefined },
         };
       }
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        details: compactToolResultDetails(result),
+      };
     },
   }));
 }
 
-function piReadTool(runtime: AgentToolRuntime, skills: Skill[]): ToolDefinition {
+function piReadTool(runtime: AgentToolRuntime, skills: Skill[], binding: ToolExecutionBinding): ToolDefinition {
   return defineTool({
     name: "read",
     label: "读取文件或 Skill 文档",
     description: "读取工作区文件，或读取当前 Agent 已启用 Skill 目录中的说明与引用文件。",
-    parameters: Type.Object({ path: Type.String() }),
-    async execute(_callId, params) {
-      const requestedPath = (params as { path: string }).path;
+    parameters: Type.Object({
+      path: Type.String(),
+      offset: Type.Optional(Type.Integer({ minimum: 0 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 64_000 })),
+    }),
+    async execute(callId, params) {
+      const { path: requestedPath, offset, limit } = params as { path: string; offset?: number; limit?: number };
       const skillFile = await resolveEnabledSkillFile(requestedPath, skills);
       if (skillFile) {
         const content = await readFile(skillFile, "utf8");
         return {
           content: [{ type: "text", text: content }],
-          details: { ok: true, source: "skill", path: skillFile },
+          details: { ok: true, source: "skill", path: skillFile } as Record<string, unknown>,
         };
       }
 
-      const result = await runtime.execute({ tool: "readFile", path: requestedPath });
+      const result = await runtime.execute(
+        { tool: "readFile", path: requestedPath, offset, limit },
+        toolExecutionContext(binding, callId),
+      );
       if (!result.ok) throw new Error(failureMessage(result));
       return {
-        content: [{ type: "text", text: String(result.content ?? "") }],
-        details: { ok: true, source: "workspace", path: String(result.path ?? requestedPath) },
+        content: [{
+          type: "text",
+          text: `${String(result.content ?? "")}\n\n[evidenceId: ${String(result.evidenceId)}]`,
+        }],
+        details: {
+          ok: true,
+          source: "workspace",
+          path: String(result.path ?? requestedPath),
+          offset: result.offset,
+          totalChars: result.totalChars,
+          truncated: result.truncated,
+          nextOffset: result.nextOffset,
+        } as Record<string, unknown>,
       };
     },
   });
+}
+
+function toolExecutionContext(binding: ToolExecutionBinding, toolCallId: string): AgentToolExecutionContext {
+  if (!binding.turnId) throw new Error("Tool execution is not bound to an active turn");
+  return {
+    agentId: binding.agentId,
+    threadId: binding.threadId,
+    goalId: binding.goalId,
+    attemptId: binding.attemptId,
+    turnId: binding.turnId,
+    toolCallId,
+  };
 }
 
 export async function resolveEnabledSkillFile(requestedPath: string, skills: Skill[]): Promise<string | undefined> {
@@ -710,15 +865,15 @@ function goalTool(binding: ResolutionBinding, now: () => Date): ToolDefinition {
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作。顶层 criterionResults 只对应当前 Goal 提示中的 successCriteria，按 0 到 N-1 各提交一次；Mission、QA 或其他领域交付物自己的验收项属于 domainOutcome，不得混入顶层 criterionResults。被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
+    description: "提交当前 Goal 的工作结论。status=completed 表示本 Agent 已完成受托工作。顶层 criterionResults 只对应当前 Goal 提示中的 successCriteria，按 0 到 N-1 各提交一次；Mission、QA 或其他领域交付物自己的验收项属于 domainOutcome，不得混入顶层 criterionResults。evidenceId 只能填写本 Goal 内工具调用真实返回的 evidenceId；没有工具证据的认知型交付填写空数组，禁止虚构 ID 或读取平台内部状态寻找 ID。被检查对象不通过时通过 domainOutcome 的 correction_required 或 plan_change_required 表达。Host 会校验并提交 Ticket/Plan。普通回复不会改变 Goal 或 Ticket 状态。",
     parameters: Type.Object({
       status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),
-      evidence: Type.Array(Type.Object({ kind: Type.String(), ref: Type.String() })),
+      evidence: Type.Optional(Type.Array(Type.Object({ evidenceId: Type.String() }))),
       criterionResults: Type.Array(Type.Object({
         criterionIndex: Type.Integer({ minimum: 0 }),
         status: Type.Union([Type.Literal("satisfied"), Type.Literal("not_satisfied"), Type.Literal("not_verified")]),
-        evidence: Type.Array(Type.Object({ kind: Type.String(), ref: Type.String() })),
+        evidence: Type.Array(Type.Object({ evidenceId: Type.String() })),
         note: Type.Optional(Type.String()),
       })),
       residualRisks: Type.Optional(Type.Array(Type.String())),
@@ -864,9 +1019,33 @@ function failureMessage(details: unknown): string {
 
 function toolParameters(name: WorkspaceToolName) {
   if (name === "writeFile") return Type.Object({ path: Type.String(), content: Type.String() });
-  if (name === "readFile" || name === "readImage" || name === "listFiles") return Type.Object({ path: Type.Optional(Type.String()) });
+  if (name === "readFile") {
+    return Type.Object({
+      path: Type.String(),
+      offset: Type.Optional(Type.Integer({ minimum: 0 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 64_000 })),
+    });
+  }
+  if (name === "readImage" || name === "listFiles") return Type.Object({ path: Type.Optional(Type.String()) });
   if (name === "pollProcess") return Type.Object({ serviceId: Type.String() });
+  if (name === "browser") return Type.Object({ browserArgs: Type.Array(Type.String(), { minItems: 1 }) });
   return Type.Object({ command: Type.String() });
+}
+
+function compactToolResultDetails(result: WorkspaceAgentToolResult): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(result).filter(([key]) =>
+    !["content", "data", "stdout", "stderr"].includes(key)));
+}
+
+export function compactPiToolEventDetails(result: unknown): Record<string, unknown> {
+  if (!isRecord(result)) return {};
+  const compact = Object.fromEntries(Object.entries(result).filter(([key]) =>
+    !["content", "data", "stdout", "stderr", "details"].includes(key)));
+  if (isRecord(result.details)) {
+    compact.details = Object.fromEntries(Object.entries(result.details).filter(([key]) =>
+      !["content", "data", "stdout", "stderr", "details"].includes(key)));
+  }
+  return compact;
 }
 
 async function configureModel(
@@ -1111,7 +1290,7 @@ function stableSystemPrompt(input: AgentExecutionSliceInput): string {
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
       : "",
-    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。完成或失败时必须调用 goal_resolution，把输出契约要求的领域交付物直接放入 domainOutcome；缺少不可替代的 human 输入时必须调用 request_human_input。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
+    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。完成或失败时必须调用 goal_resolution，把输出契约要求的领域交付物直接放入 domainOutcome；其中 evidenceId 只能引用本 Goal 工具调用真实返回的 ID，没有工具证据时使用空数组，不得虚构或从平台账本中寻找。缺少不可替代的 human 输入时必须调用 request_human_input。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
   ].filter(Boolean).join("\n\n");
 }
 

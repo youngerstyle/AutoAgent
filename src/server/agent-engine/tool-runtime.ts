@@ -1,30 +1,51 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { EvidenceArtifactFact, EvidenceKind } from "../../shared/contracts/agent-engine.js";
 import type { WorkspaceToolName } from "../../shared/types.js";
 import type { AgentToolDefinition } from "../providers/types.js";
 import type { EffectivePolicy } from "../policy/policy.js";
 import { assertCommandAllowed } from "../policy/command-policy.js";
 import { resolveToolPath } from "../policy/path-policy.js";
+import { EvidenceLedger } from "./evidence-ledger.js";
 
 const DEFAULT_SHELL_YIELD_MS = 2_000;
 const MAX_LOG_CHARS = 64_000;
+const DEFAULT_FILE_READ_CHARS = 32_000;
+const MAX_FILE_READ_CHARS = 64_000;
+const PLATFORM_STATE_DIRECTORY = ".autoagent";
 
 export interface AgentToolIntent {
   tool: WorkspaceToolName;
   path?: string;
   content?: string;
+  offset?: number;
+  limit?: number;
   command?: string;
   serviceId?: string;
+  browserArgs?: string[];
 }
 
 export interface AgentToolResult extends Record<string, unknown> {
   tool: WorkspaceToolName;
   ok: boolean;
+  evidenceId?: string;
+}
+
+export interface AgentToolExecutionContext {
+  agentId: string;
+  threadId: string;
+  goalId?: string;
+  attemptId?: string;
+  turnId: string;
+  toolCallId: string;
 }
 
 export class AgentToolRuntime {
   private readonly enabled: Set<WorkspaceToolName>;
+  private readonly evidence: EvidenceLedger;
 
   constructor(
     private readonly policy: EffectivePolicy,
@@ -32,21 +53,63 @@ export class AgentToolRuntime {
     private readonly options: { shellYieldMs?: number } = {},
   ) {
     this.enabled = new Set(enabledTools);
+    this.evidence = new EvidenceLedger(policy.workspaceRoot);
   }
 
-  async execute(intent: AgentToolIntent): Promise<AgentToolResult> {
+  async execute(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
+    const result = await this.executeRaw(intent, context);
+    if (!context) return result;
+    const fact = await this.evidence.append({
+      ...context,
+      toolName: intent.tool,
+      kind: evidenceKind(intent.tool),
+      status: !result.ok ? "failed" : result.running === true ? "running" : "succeeded",
+      workspaceRoot: this.policy.workspaceRoot,
+      createdAt: new Date().toISOString(),
+      input: structuredClone(intent),
+      result: evidenceResult(result),
+      artifact: await this.artifactFact(intent, result),
+    });
+    return { ...result, evidenceId: fact.evidenceId };
+  }
+
+  private async executeRaw(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
     if (!this.enabled.has(intent.tool)) return { tool: intent.tool, ok: false, error: "工具未配置" };
     try {
       if (intent.tool === "listFiles") {
         const target = resolveToolPath(this.policy, intent.path ?? ".", "read");
-        return { tool: intent.tool, ok: true, path: intent.path ?? ".", files: await readdir(target) };
+        assertAgentVisiblePath(this.policy.workspaceRoot, target);
+        const files = await readdir(target);
+        return {
+          tool: intent.tool,
+          ok: true,
+          path: intent.path ?? ".",
+          files: isWorkspaceRoot(this.policy.workspaceRoot, target)
+            ? files.filter((entry) => entry.toLowerCase() !== PLATFORM_STATE_DIRECTORY)
+            : files,
+        };
       }
       if (intent.tool === "readFile") {
         const target = resolveToolPath(this.policy, required(intent.path, "path"), "read");
-        return { tool: intent.tool, ok: true, path: intent.path, content: await readFile(target, "utf8") };
+        assertAgentVisiblePath(this.policy.workspaceRoot, target);
+        const content = await readFile(target, "utf8");
+        const offset = normalizeReadOffset(intent.offset, content.length);
+        const limit = normalizeReadLimit(intent.limit);
+        const end = Math.min(content.length, offset + limit);
+        return {
+          tool: intent.tool,
+          ok: true,
+          path: intent.path,
+          content: content.slice(offset, end),
+          offset,
+          totalChars: content.length,
+          truncated: end < content.length,
+          ...(end < content.length ? { nextOffset: end } : {}),
+        };
       }
       if (intent.tool === "readImage") {
         const target = resolveToolPath(this.policy, required(intent.path, "path"), "read");
+        assertAgentVisiblePath(this.policy.workspaceRoot, target);
         const mimeType = imageMimeType(target);
         if (!mimeType) throw new Error("readImage 只支持 PNG、JPEG、WebP 和 GIF");
         const data = await readFile(target);
@@ -55,18 +118,43 @@ export class AgentToolRuntime {
       }
       if (intent.tool === "writeFile") {
         const target = resolveToolPath(this.policy, required(intent.path, "path"), "write");
+        assertAgentVisiblePath(this.policy.workspaceRoot, target);
         await mkdir(path.dirname(target), { recursive: true });
         await writeFile(target, intent.content ?? "", "utf8");
         return { tool: intent.tool, ok: true, path: intent.path };
       }
       if (intent.tool === "shell") {
         const command = required(intent.command, "command");
+        assertCommandDoesNotAccessPlatformState(command);
         return this.runShell(command);
       }
-      if (intent.tool === "startService") return this.startService(required(intent.command, "command"));
-      return this.pollService(required(intent.serviceId, "serviceId"));
+      if (intent.tool === "startService") {
+        const command = required(intent.command, "command");
+        assertCommandDoesNotAccessPlatformState(command);
+        return this.startService(command);
+      }
+      if (intent.tool === "pollProcess") return this.pollService(required(intent.serviceId, "serviceId"));
+      return this.runBrowser(requiredBrowserArgs(intent.browserArgs), context);
     } catch (error) {
       return { tool: intent.tool, ok: false, error: (error as Error).message };
+    }
+  }
+
+  private async artifactFact(intent: AgentToolIntent, result: AgentToolResult): Promise<EvidenceArtifactFact | undefined> {
+    if (!result.ok || !intent.path || !["readFile", "readImage", "writeFile"].includes(intent.tool)) return undefined;
+    const access = intent.tool === "writeFile" ? "write" : "read";
+    const absolute = resolveToolPath(this.policy, intent.path, access);
+    try {
+      const [info, content] = await Promise.all([stat(absolute), readFile(absolute)]);
+      if (!info.isFile()) return undefined;
+      return {
+        path: path.relative(this.policy.workspaceRoot, absolute).replaceAll("\\", "/"),
+        size: info.size,
+        modifiedAt: info.mtime.toISOString(),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      };
+    } catch {
+      return undefined;
     }
   }
 
@@ -139,6 +227,33 @@ export class AgentToolRuntime {
     };
   }
 
+  private async runBrowser(args: string[], context?: AgentToolExecutionContext): Promise<AgentToolResult> {
+    const sessionSeed = [
+      path.resolve(this.policy.workspaceRoot),
+      context?.agentId ?? "agent",
+      context?.attemptId ?? context?.goalId ?? context?.threadId ?? "thread",
+    ].join("\u0000");
+    const session = `autoagent_${createHash("sha256").update(sessionSeed).digest("hex").slice(0, 20)}`;
+    const executable = resolveAgentBrowserEntry();
+    const result = await runExecutable(process.execPath, [
+      executable,
+      "--session",
+      session,
+      "--screenshot-dir",
+      path.join(this.policy.workspaceRoot, ".autoagent", "browser", session),
+      ...args,
+    ], this.policy.workspaceRoot);
+    return {
+      tool: "browser",
+      ok: result.exitCode === 0,
+      session,
+      args,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+    };
+  }
+
   private async spawnManaged(command: string): Promise<ManagedProcess> {
     const serviceId = `agent_svc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const directory = path.join(this.policy.workspaceRoot, ".autoagent", "agent-services");
@@ -166,6 +281,24 @@ export class AgentToolRuntime {
     void exit.then((exitCode) => writeFile(metadataPath, JSON.stringify({ ...metadata, exitCode }), "utf8"));
     return { serviceId, pid: child.pid, stdoutPath, stderrPath, exit };
   }
+}
+
+function evidenceKind(tool: WorkspaceToolName): EvidenceKind {
+  if (tool === "writeFile") return "file_write";
+  if (tool === "readFile" || tool === "listFiles") return "file_read";
+  if (tool === "readImage") return "image";
+  if (tool === "shell") return "command";
+  if (tool === "startService" || tool === "pollProcess") return "service";
+  if (tool === "browser") return "browser";
+  return "tool";
+}
+
+function evidenceResult(result: AgentToolResult): unknown {
+  return JSON.parse(JSON.stringify(result, (key, value) => {
+    if (key === "data") return undefined;
+    if (typeof value === "string" && value.length > 16_000) return `${value.slice(0, 16_000)}\n...[truncated]`;
+    return value;
+  }));
 }
 
 export function agentCommandEnvironment(
@@ -199,6 +332,24 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isWorkspaceRoot(workspaceRoot: string, targetPath: string): boolean {
+  return path.resolve(workspaceRoot).toLowerCase() === path.resolve(targetPath).toLowerCase();
+}
+
+function assertAgentVisiblePath(workspaceRoot: string, targetPath: string): void {
+  const relative = path.relative(path.resolve(workspaceRoot), path.resolve(targetPath));
+  const firstSegment = relative.split(/[\\/]/, 1)[0]?.toLowerCase();
+  if (firstSegment === PLATFORM_STATE_DIRECTORY) {
+    throw new Error(".autoagent 是平台内部状态目录；Agent 应使用已注入的 Goal、handoff 和 Plan 上下文");
+  }
+}
+
+function assertCommandDoesNotAccessPlatformState(command: string): void {
+  if (/(^|[\\/\s"'`])\.autoagent(?:[\\/\s"'`]|$)/i.test(command)) {
+    throw new Error(".autoagent 是平台内部状态目录；命令只能操作项目交付文件");
+  }
+}
+
 async function readLog(filePath?: string): Promise<string> {
   if (!filePath) return "";
   try {
@@ -229,7 +380,11 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     readFile: {
       name,
       description: "读取工作区内的 UTF-8 文本文件",
-      inputSchema: objectSchema({ path: { type: "string" } }, ["path"]),
+      inputSchema: objectSchema({
+        path: { type: "string" },
+        offset: { type: "integer", minimum: 0 },
+        limit: { type: "integer", minimum: 1, maximum: MAX_FILE_READ_CHARS },
+      }, ["path"]),
     },
     readImage: {
       name,
@@ -256,6 +411,22 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
       description: "查询由 startService 启动的服务状态",
       inputSchema: objectSchema({ serviceId: { type: "string" } }, ["serviceId"]),
     },
+    browser: {
+      name,
+      description: "在当前 Agent 与 Ticket Attempt 隔离的真实浏览器会话中执行一次 agent-browser 命令。browserArgs 是参数数组，例如 [\"open\",\"http://127.0.0.1:3000\"]、[\"snapshot\",\"-i\"]、[\"press\",\"Enter\"]、[\"screenshot\",\"result.png\"]。每次只执行一个命令，先观察结果再决定下一步。",
+      inputSchema: {
+        type: "object",
+        properties: {
+          browserArgs: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 1,
+          },
+        },
+        required: ["browserArgs"],
+        additionalProperties: false,
+      },
+    },
   };
   return schemas[name];
 }
@@ -279,4 +450,54 @@ function objectSchema(
 function required(value: string | undefined, name: string): string {
   if (!value?.trim()) throw new Error(`${name} is required`);
   return value;
+}
+
+function normalizeReadOffset(value: number | undefined, totalChars: number): number {
+  if (value === undefined) return 0;
+  if (!Number.isInteger(value) || value < 0) throw new Error("offset must be a non-negative integer");
+  return Math.min(value, totalChars);
+}
+
+function normalizeReadLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_FILE_READ_CHARS;
+  if (!Number.isInteger(value) || value <= 0) throw new Error("limit must be a positive integer");
+  return Math.min(value, MAX_FILE_READ_CHARS);
+}
+
+function requiredBrowserArgs(value: string[] | undefined): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error("browserArgs is required");
+  }
+  return value;
+}
+
+function resolveAgentBrowserEntry(): string {
+  const require = createRequire(import.meta.url);
+  const packageJson = require.resolve("agent-browser/package.json");
+  return path.join(path.dirname(packageJson), "bin", "agent-browser.js");
+}
+
+async function runExecutable(
+  executable: string,
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    const child = spawn(executable, args, {
+      cwd,
+      env: agentCommandEnvironment(),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout = `${stdout}${String(chunk)}`.slice(-MAX_LOG_CHARS);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr = `${stderr}${String(chunk)}`.slice(-MAX_LOG_CHARS);
+    });
+    child.once("error", (error) => resolve({ stdout, stderr: `${stderr}${error.message}`, exitCode: 1 }));
+    child.once("exit", (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
+  });
 }

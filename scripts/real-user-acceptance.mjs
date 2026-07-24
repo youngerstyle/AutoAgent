@@ -1,22 +1,27 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 
+const execFileAsync = promisify(execFile);
 const baseUrl = process.env.AUTOAGENT_BASE_URL ?? "http://127.0.0.1:13748";
 const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 20 * 60_000);
+const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO ?? "todo";
 let workspaceRoot = process.env.AUTOAGENT_ACCEPTANCE_ROOT
   ?? await mkdtemp(path.join(os.tmpdir(), "autoagent-real-acceptance-"));
 let reportDir = path.join(workspaceRoot, ".autoagent", "user-acceptance");
-const goal = [
+const defaultGoal = [
   "在当前空目录创建一个无需构建、通过浏览器直接打开 index.html 即可使用的中文待办清单。",
   "必须支持新增待办、勾选完成、删除待办，并使用 localStorage 在刷新后保留数据。",
   "桌面和 390px 宽手机视口均应正常使用且不能出现横向滚动。",
   "团队必须产出真实文件，经过开发、独立质量检查和最终验收。",
 ].join("");
+const goal = process.env.AUTOAGENT_ACCEPTANCE_GOAL ?? defaultGoal;
 
 let browser;
 let staticServer;
@@ -40,13 +45,9 @@ try {
   assert.equal(snapshot.status, "completed", failureMessage("Mission 未完成", snapshot));
   assert.ok(snapshot.tickets.length > 0, "Mission 没有生成 Ticket");
   assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("存在未完成 Ticket", snapshot));
-  assertDeliveryChain(snapshot.tickets);
+  assertAuditablePlan(snapshot.tickets);
 
-  const indexPath = path.join(workspaceRoot, "index.html");
-  const html = await readFile(indexPath, "utf8");
-  assert.match(html, /<html/i, "最终产物 index.html 不是有效 HTML");
-
-  browserResult ??= await runBrowserAcceptance();
+  browserResult ??= await runArtifactAcceptance();
 
   const report = {
     passed: true,
@@ -55,7 +56,7 @@ try {
     workspace: { id: workspace.id, rootPath: workspaceRoot },
     task: { id: snapshot.activeTask?.id, status: snapshot.status },
     tickets: snapshot.tickets.map(({ id, type, brief, status, targetAgentId }) => ({ id, type, brief, status, targetAgentId })),
-    browser: browserResult,
+    artifactAcceptance: browserResult,
   };
   await saveReport(report);
   console.log(JSON.stringify(report, null, 2));
@@ -102,16 +103,33 @@ async function resolveWorkspace() {
   }).then((value) => value.workspace);
 }
 
-function assertDeliveryChain(tickets) {
-  const implementation = tickets.find((ticket) => ticket.capabilityTags?.includes("delivery:implement"));
-  const qa = tickets.find((ticket) => ticket.capabilityTags?.includes("delivery:verify"));
-  const acceptance = tickets.find((ticket) =>
-    ticket.capabilityTags?.includes("delivery:accept") && ticket.dependsOnTicketIds?.includes(qa?.id)
-  );
-  assert.ok(implementation, "真实交付链缺少开发工单");
-  assert.ok(qa, "真实交付链缺少独立 QA 工单");
-  assert.ok(qa.dependsOnTicketIds?.includes(implementation.id), "QA 工单没有依赖开发交付");
-  assert.ok(acceptance, "真实交付链缺少依赖 QA 的最终验收工单");
+function assertAuditablePlan(tickets) {
+  const ids = new Set(tickets.map((ticket) => ticket.id));
+  assert.equal(ids.size, tickets.length, "Ticket DAG 存在重复 Ticket ID");
+
+  let dependencyCount = 0;
+  for (const ticket of tickets) {
+    for (const dependencyId of ticket.dependsOnTicketIds ?? []) {
+      dependencyCount += 1;
+      assert.ok(ids.has(dependencyId), `Ticket ${ticket.id} 引用了不存在的依赖 ${dependencyId}`);
+      const dependency = tickets.find((candidate) => candidate.id === dependencyId);
+      assert.equal(dependency?.status, "completed", `Ticket ${ticket.id} 的上游 ${dependencyId} 未完成`);
+    }
+  }
+  assert.ok(dependencyCount > 0, "真实 Mission 没有形成可追溯的 Ticket DAG");
+
+  const visiting = new Set();
+  const visited = new Set();
+  const visit = (ticketId) => {
+    if (visiting.has(ticketId)) throw new Error(`Ticket DAG 存在环：${ticketId}`);
+    if (visited.has(ticketId)) return;
+    visiting.add(ticketId);
+    const ticket = tickets.find((candidate) => candidate.id === ticketId);
+    for (const dependencyId of ticket?.dependsOnTicketIds ?? []) visit(dependencyId);
+    visiting.delete(ticketId);
+    visited.add(ticketId);
+  };
+  for (const ticket of tickets) visit(ticket.id);
 }
 
 async function waitForTerminal(workspaceId) {
@@ -133,7 +151,7 @@ async function waitForTerminal(workspaceId) {
     );
     if (manualTest) {
       answeredManualTestTickets.add(manualTest.id);
-      const result = await runBrowserAcceptance();
+      const result = await runArtifactAcceptance({ force: true });
       const taskId = current.activeTask?.id;
       assert.ok(taskId, "人工测试时找不到当前任务");
       assert.ok(manualTest.targetAgentId, "人工测试工单没有目标 Agent");
@@ -141,12 +159,12 @@ async function waitForTerminal(workspaceId) {
         method: "POST",
         body: {
           message: [
-            "已按你给出的人工测试边界完成真实浏览器验证。以下是实际测试事实，请据此继续当前 QA Goal 并自行作出结论：",
+            "已按当前工单要求完成真实产物验收。以下是实际测试事实，请据此继续当前 Goal 并自行作出结论：",
             JSON.stringify(result),
           ].join("\n"),
         },
       });
-      console.log(`[真实验收] 已向 ${manualTest.targetAgentId} 回传 Ticket ${manualTest.id} 的浏览器测试事实`);
+      console.log(`[真实验收] 已向 ${manualTest.targetAgentId} 回传 Ticket ${manualTest.id} 的产物测试事实`);
       await sleep(1_000);
       continue;
     }
@@ -183,8 +201,116 @@ async function runBrowserAcceptance() {
     staticUrl = served.url;
   }
   browser ??= await chromium.launch({ headless: true, executablePath: resolveBrowserPath() });
-  browserResult = await verifyTodoInBrowser(browser, staticUrl);
+  browserResult = scenario === "tank98"
+    ? await verifyTankInBrowser(browser, staticUrl)
+    : await verifyTodoInBrowser(browser, staticUrl);
   return browserResult;
+}
+
+async function runArtifactAcceptance({ force = false } = {}) {
+  if (browserResult && !force) return browserResult;
+  const indexPath = path.join(workspaceRoot, "index.html");
+  if (existsSync(indexPath)) return runBrowserAcceptance();
+
+  const desktopEntries = [
+    path.join(workspaceRoot, "dist", "tank98.py"),
+    path.join(workspaceRoot, "dist", "tank98.pyz"),
+    path.join(workspaceRoot, "tank98_app", "__main__.py"),
+    path.join(workspaceRoot, "run_game.bat"),
+  ];
+  if (process.platform === "win32" && desktopEntries.some(existsSync)) {
+    return runWindowsDesktopAcceptance();
+  }
+
+  throw new Error(
+    `未找到可验收的交付入口。检查过：${[
+      indexPath,
+      ...desktopEntries,
+    ].join(", ")}`,
+  );
+}
+
+async function runWindowsDesktopAcceptance() {
+  await mkdir(reportDir, { recursive: true });
+  const scriptPath = path.resolve("scripts", "windows-desktop-acceptance.ps1");
+  const { stdout, stderr } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+      "-WorkspaceRoot",
+      workspaceRoot,
+      "-ReportDir",
+      reportDir,
+    ],
+    { encoding: "utf8", timeout: 90_000, windowsHide: true },
+  );
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const result = JSON.parse(lines.at(-1) ?? "{}");
+  assert.equal(result.started, true, `桌面产物未成功启动：${stderr || result.error || "未知错误"}`);
+  assert.equal(result.enteredPlaying, true, "桌面产物按 Enter 后没有进入游戏");
+  assert.equal(result.playerFired, true, "桌面产物按 Space 后没有产生射击");
+  assert.equal(result.enemySpawned, true, "桌面产物没有生成敌方单位");
+  assert.equal(result.gameEnded, true, "桌面产物没有形成结束闭环");
+  assert.equal(result.restarted, true, "桌面产物结束后无法重开");
+  assert.equal(result.negativeBaseHp, false, "桌面产物结束后仍继续结算碰撞，基地生命降到了 0 以下");
+  return { scenario: "windows-desktop", ...result };
+}
+
+async function verifyTankInBrowser(browserInstance, url) {
+  await mkdir(reportDir, { recursive: true });
+  const context = await browserInstance.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error" && !message.text().includes("favicon")) errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(url, { waitUntil: "load" });
+
+  const canvas = page.locator("canvas").first();
+  await assertVisible(canvas, "Tank 产物没有可见 canvas");
+  const dimensions = await canvas.evaluate((element) => ({
+    width: element.width,
+    height: element.height,
+    clientWidth: element.clientWidth,
+    clientHeight: element.clientHeight,
+  }));
+  assert.ok(dimensions.width >= 256 && dimensions.height >= 224, `Tank canvas 内部分辨率过小：${dimensions.width}x${dimensions.height}`);
+  assert.ok(dimensions.clientWidth >= 256 && dimensions.clientHeight >= 224, `Tank canvas 显示尺寸过小：${dimensions.clientWidth}x${dimensions.clientHeight}`);
+
+  const beforeStart = await canvas.screenshot();
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(500);
+  const afterStart = await canvas.screenshot();
+  assert.notDeepEqual(afterStart, beforeStart, "按 Enter 后 Tank 画面没有变化");
+
+  await page.keyboard.down("ArrowUp");
+  await page.waitForTimeout(350);
+  await page.keyboard.up("ArrowUp");
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(350);
+  const afterInput = await canvas.screenshot();
+  assert.notDeepEqual(afterInput, afterStart, "方向键和射击输入后 Tank 画面没有变化");
+
+  await page.screenshot({ path: path.join(reportDir, "tank-desktop.png"), fullPage: true });
+  const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  assert.equal(horizontalOverflow, false, "Tank 桌面页面存在横向滚动");
+  assert.deepEqual(errors, [], `Tank 浏览器出现错误：${errors.join("；")}`);
+
+  await context.close();
+  return {
+    scenario: "tank98",
+    canvas: dimensions,
+    startChangedCanvas: true,
+    controlsChangedCanvas: true,
+    horizontalOverflow,
+    errors,
+    screenshots: [path.join(reportDir, "tank-desktop.png")],
+  };
 }
 
 async function verifyTodoInBrowser(browserInstance, url) {

@@ -13,7 +13,7 @@ export type EntityStatus =
 
 export type AgentRole = "boss" | "pm" | "architect" | "dev" | "qa" | "specialist";
 export type ProviderName = "mock" | "openai" | "anthropic";
-export type WorkspaceToolName = "listFiles" | "readFile" | "readImage" | "writeFile" | "shell" | "startService" | "pollProcess";
+export type WorkspaceToolName = "listFiles" | "readFile" | "readImage" | "writeFile" | "shell" | "startService" | "pollProcess" | "browser";
 
 export interface Workspace {
   id: string;

@@ -65,6 +65,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     category: "process",
     observation: true,
     promptExample: "{\"toolIntents\":[{\"tool\":\"pollProcess\",\"serviceId\":\"svc_xxx\"}]}"
+  },
+  {
+    name: "browser",
+    label: "浏览器",
+    description: "使用隔离的真实浏览器会话打开、观察和操作项目页面",
+    category: "process",
+    observation: true,
+    promptExample: "{\"toolIntents\":[{\"tool\":\"browser\",\"browserArgs\":[\"open\",\"http://127.0.0.1:3000\"]}]}"
   }
 ];
 
