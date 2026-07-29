@@ -1,7 +1,7 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 5;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 7;
 
 export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, originalRequest: string): PlanDefinition {
   if (!originalRequest.trim()) throw new Error("Mission original request is required");
@@ -27,22 +27,25 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
             "只有缺少凭证、授权、不可逆操作确认或真实安全边界等不可替代输入时才阻塞",
           ],
           assignment: { requiredCapabilities: ["mission:intake"] },
-          outputContract: { schemaRef: "mission-baseline-v1" },
+          outputContract: { schemaRef: "mission-baseline-v2" },
           contextPolicy: { includeOriginalRequest: true, establishesMissionBaseline: true },
         },
         {
           clientRef: "planning",
           title: "计划拆解",
-          objective: "根据需求接收工单的正式交付，把已对齐目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan。不得重新使用 human 原始诉求覆盖正式 handoff。",
+          objective: "根据需求接收工单的正式交付，把已对齐目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan。正式 handoff 是执行权威；human 原始诉求是不可变的来源审计材料，只用于核对正式 handoff 是否无依据地遗漏、缩小或改写了明确目标，不得用它绕过或覆盖已经记录的澄清、假设与决策。",
           successCriteria: [
+            "逐项核对正式 handoff 与 human 原始诉求中的明确目标；若发现无已记录澄清、假设或排除依据的遗漏、缩小或语义降级，先把需求接收工单作为 correction_required 目标，不得继续生成失真的执行计划",
             "新增实际执行工单，形成完成 Mission 所需的真实交付链",
             "不能把启动骨架（intake → planning）当作完整计划",
             "每个新增节点都有成功标准、负责人能力要求和输出契约",
             "新增交付链包含实现、必要验证和最终可验收终点",
+            "提交前按目标规模、不确定性、依赖和验收风险审查交付策略；单次增量必须说明为何可可靠交付，否则拆成按依赖自动衔接、各自可验证的多个增量",
             "DAG 无环，requiredTerminalRefs 指向新增交付链的真实终点",
           ],
           assignment: { requiredCapabilities: ["plan:plan"] },
           outputContract: { schemaRef: "plan-change-set-v3" },
+          contextPolicy: { includeOriginalRequest: true, requiresMissionBaseline: true },
           permissions: { amendPlan: true },
         },
       ],

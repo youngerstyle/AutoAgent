@@ -28,6 +28,14 @@
 - `codex-rs/core/src/stream_events_utils.rs`：先持久化结构化工具调用，再执行；无效调用以工具结果/错误返回模型，不从助手文本猜测。
 - `codex-rs/core/src/context_manager/history.rs`：持久化历史和模型可见历史分离；发送前进行规范化，并保持工具调用与结果配对。
 
+## 单线程执行不变量
+
+- 同一个 Agent thread 任意时刻只能有一个 active turn。human 私聊、调度 tick 和 proposal wake 只能排队，不能并发启动第二轮。
+- turn 结束不仅要求 Provider/模型会话进入 idle，还要求这一轮发出的所有工具调用均已返回，并且调用、结果与模型消息已经持久化。
+- `tool_execution_start` 与 `tool_execution_end` 形成运行时屏障；屏障未归零时，`runSlice` 不得返回，下一 turn 不得获得执行权。
+- Mission Control 使用 Agent Engine 的最新 Goal 版本执行暂停或恢复；不能使用 turn 开始时捕获的旧版本覆盖结算后的状态。
+- UI 的 `running` 来自同一执行权事实，不从最后一条自然语言消息或角色名称推断。
+
 AutoAgent 不照搬 Codex 的 Rust 类型，但采用同一控制边界。
 
 ## 3. Engine 边界保持不变
@@ -161,6 +169,9 @@ control fact
 - 工具参数错误：写入 tool_result error，并允许模型在同一 turn 修正。
 - `goal_resolution` 缺少输出契约要求的 `domainOutcome` 属于工具参数错误；必须在同一 turn 把错误返回模型修正，不能先把无效结果提交给 Mission Control 再阻塞整个 Ticket。
 - 工具执行错误：写入 tool_result error，并允许模型决定重试、换方案、调用 `request_human_input` 或通过 `goal_resolution` 提交 failed。
+- 失败的工具调用永远不算“取得进展”。尤其是 `goal_resolution`、`report_goal_correction`、`request_goal_plan_change`、`request_human_input` 这类终局提交工具，只有 Host 接受后才算有效提交。
+- 同一 turn 连续多次提交不符合契约的终局工具参数，属于协议层无进展，而不是业务工作量上限。Runtime 必须在有限次数后停止该 turn，保留完整错误并显示可诊断的阻塞原因，避免模型通过微调无效 JSON 无限消耗。
+- 上述保护不得限制正常文件读取、实现、测试等工作步数；长时间工作依靠真实进展继续，而不是依靠一个任意的全局工具调用额度。
 - Provider 返回普通文本但活动 Goal 未结算：当前 turn 正常结束，Goal 保持 active；由 Goal runner 在存在新的可执行事实时继续，不能把同一旧响应无限重放。
 - Provider 违反原生协议：明确记录 protocol error，不从文本降级解析控制命令。
 

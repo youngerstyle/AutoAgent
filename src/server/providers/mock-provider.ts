@@ -39,6 +39,28 @@ export class MockProvider implements AgentModelProvider {
 
 function mockGoalResolution(instructions: string, toolEvidence: string[] = []): Record<string, unknown> {
   const ticket = currentTicketMetadata(instructions);
+  if (ticket.outputSchema === "mission-baseline-v2" && !ticket.settleMission) {
+    return {
+      status: "completed",
+      summary: "已建立 Mission 权威目标基线",
+      evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
+      domainOutcome: {
+        objective: "完成人类已明确要求的产品目标",
+        criteria: [{
+          text: "真实交付物可运行并通过独立验收",
+          anchors: [{
+            observableOutcome: "真实交付物可运行且关键结果可观察",
+            evidenceRequirements: ["工具产生的可追溯验收证据"],
+          }],
+        }],
+        constraints: [],
+        assumptions: [],
+        exclusions: [],
+      },
+    };
+  }
   if (ticket.outputSchema === "mission-baseline-v1" && !ticket.settleMission) {
     return {
       status: "completed",
@@ -95,6 +117,7 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
             { from: { clientRef: "implementation" }, to: { clientRef: "qa" } },
             { from: { clientRef: "qa" }, to: { clientRef: "acceptance" } },
           ],
+          failureResolutions: [],
           cancelTicketIds: [],
           requiredTerminalRefs: [{ clientRef: "acceptance" }],
         },
@@ -118,7 +141,14 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
             criterionId,
             status: "satisfied",
             evidence,
-            anchorResults: [{ anchorIndex: 0, status: "satisfied", evidence }],
+            anchorResults: [{
+              anchorIndex: 0,
+              status: "satisfied",
+              evidence,
+              verificationBasis: { summary: "按 Mission baseline 验收锚点判断", evidence },
+              observations: ["mock 工具证据与验收锚点一致"],
+              deviations: [],
+            }],
           })),
         },
       },
@@ -144,7 +174,14 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
             status: "satisfied",
             assuranceTicketIds,
             evidence,
-            anchorResults: [{ anchorIndex: 0, status: "satisfied", evidence }],
+            anchorResults: [{
+              anchorIndex: 0,
+              status: "satisfied",
+              evidence,
+              verificationBasis: { summary: "按 Mission baseline 验收锚点判断", evidence },
+              observations: ["mock 工具证据与验收锚点一致"],
+              deviations: [],
+            }],
           })),
           residualRisks: [],
         },
@@ -264,9 +301,9 @@ function node(clientRef: string, title: string, objective: string, requiredCapab
     title,
     objective,
     successCriteria: [`${title}达到验收标准`],
-    assignment: { requiredCapabilities },
+    assignment: { requiredCapabilities, requiredTools: [] },
     outputContract: { schemaRef },
-    deliveryIncrement: MOCK_INCREMENT,
+    deliveryIncrement: { incrementId: MOCK_INCREMENT.incrementId },
   };
 }
 

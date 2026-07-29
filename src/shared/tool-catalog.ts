@@ -56,7 +56,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     description: "启动 dev server 等长驻服务",
     category: "process",
     observation: false,
-    promptExample: "{\"toolIntents\":[{\"tool\":\"startService\",\"command\":\"npm run dev\"}]}"
+    promptExample: "{\"toolIntents\":[{\"tool\":\"startService\",\"command\":\"npm run dev -- --port 4173\",\"port\":4173}]}"
   },
   {
     name: "pollProcess",
@@ -72,7 +72,7 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     description: "使用隔离的真实浏览器会话打开、观察和操作项目页面",
     category: "process",
     observation: true,
-    promptExample: "{\"toolIntents\":[{\"tool\":\"browser\",\"browserArgs\":[\"open\",\"http://127.0.0.1:3000\"]}]}"
+    promptExample: "{\"toolIntents\":[{\"tool\":\"browser\",\"browserArgs\":[\"open\",\"http://127.0.0.1:<受管服务端口>\"]}]}"
   }
 ];
 
@@ -111,7 +111,7 @@ export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "
   if (tools.some((tool) => tool.category === "command" || tool.category === "process")) {
     lines.push("命令边界：shell 用于会结束的命令；npm run dev、vite、next dev、http-server、live-server 等长驻服务必须用 startService。工具会返回 serviceId、pid、日志路径和可能的 URL；需要继续观察时用 pollProcess，不能等待长驻命令自然退出。");
   } else {
-    lines.push("命令边界：当前没有启用命令类工具，禁止返回 shell、startService 或 pollProcess。需要运行服务、测试或浏览器验证时，把它拆给有权限的工单；如果当前工单已经进入人工测试边界，返回 manual_test_required。");
+    lines.push("命令边界：当前没有启用命令类工具，禁止返回 shell、startService 或 pollProcess。需要运行服务、测试或浏览器验证时，把它拆给有权限的工单；如果当前工单确实需要不可替代的人工测试，调用 request_human_input(kind=\"manual_test\")，不得输出自定义状态字符串代替工具调用。");
   }
   return lines.join("\n");
 }

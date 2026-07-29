@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -10,7 +10,7 @@ import { chromium } from "playwright-core";
 
 const execFileAsync = promisify(execFile);
 const baseUrl = process.env.AUTOAGENT_BASE_URL ?? "http://127.0.0.1:13748";
-const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 20 * 60_000);
+const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 2 * 60 * 60_000);
 const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO ?? "todo";
 let workspaceRoot = process.env.AUTOAGENT_ACCEPTANCE_ROOT
   ?? await mkdtemp(path.join(os.tmpdir(), "autoagent-real-acceptance-"));
@@ -28,10 +28,12 @@ let staticServer;
 let staticUrl;
 let snapshot;
 let browserResult;
+let acceptanceLock;
 const answeredManualTestTickets = new Set();
 const resumedProviderFailures = new Set();
 
 try {
+  acceptanceLock = await acquireAcceptanceLock();
   await preflight();
   const workspace = await resolveWorkspace();
   if (!process.env.AUTOAGENT_ACCEPTANCE_WORKSPACE_ID) {
@@ -76,6 +78,39 @@ try {
 } finally {
   await browser?.close().catch(() => undefined);
   await new Promise((resolve) => staticServer?.close(resolve) ?? resolve());
+  await acceptanceLock?.handle.close().catch(() => undefined);
+  if (acceptanceLock) await rm(acceptanceLock.file, { force: true }).catch(() => undefined);
+}
+
+async function acquireAcceptanceLock() {
+  await mkdir(reportDir, { recursive: true });
+  const file = path.join(reportDir, "driver.lock");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(file, "wx");
+      await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+      return { file, handle };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      const owner = await readFile(file, "utf8")
+        .then((value) => JSON.parse(value))
+        .catch(() => ({}));
+      if (Number.isInteger(owner.pid) && isProcessAlive(owner.pid)) {
+        throw new Error(`同一验收目录已有运行中的驱动进程（PID ${owner.pid}）：${workspaceRoot}`);
+      }
+      await rm(file, { force: true });
+    }
+  }
+  throw new Error(`无法取得验收目录锁：${workspaceRoot}`);
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function preflight() {

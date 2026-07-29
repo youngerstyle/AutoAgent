@@ -21,6 +21,8 @@ describe("tool catalog", () => {
     expect(toolsForPolicy(devPolicy).map((tool) => tool.name)).toEqual(["readFile"]);
     expect(toolProtocolFor(pmPolicy)).toContain("\"tool\":\"readFile\"");
     expect(toolProtocolFor(pmPolicy)).not.toContain("\"tool\":\"startService\"");
+    expect(toolProtocolFor(pmPolicy)).toContain('request_human_input(kind="manual_test")');
+    expect(toolProtocolFor(pmPolicy)).not.toContain("返回 manual_test_required");
   });
 
   it("does not infer tools when a policy has no explicit tool configuration", () => {

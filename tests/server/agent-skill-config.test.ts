@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { effectiveAgentSkills } from "../../src/server/agents/skill-config";
+import {
+  effectiveAgentSkills,
+  skillRuntimeAdapterInstructions,
+  toolsRequiredBySkills,
+} from "../../src/server/agents/skill-config";
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types";
 
 const profile = {
@@ -31,5 +35,32 @@ describe("effective agent skills", () => {
     expect(effectiveAgentSkills(profile, { ...agent, skillOverrides: ["chrome-devtools"] }))
       .toEqual(["chrome-devtools"]);
     expect(effectiveAgentSkills(profile, { ...agent, skillOverrides: [] })).toEqual([]);
+  });
+});
+
+describe("skill tool requirements", () => {
+  it("adds the dedicated tool required by a skill without removing explicit tools", () => {
+    expect(toolsRequiredBySkills(["agent-browser"], ["readFile", "shell"]))
+      .toEqual(["readFile", "shell", "browser"]);
+  });
+
+  it("does not infer tools from roles or unrelated skills", () => {
+    expect(toolsRequiredBySkills(["custom-skill"], ["readFile"]))
+      .toEqual(["readFile"]);
+  });
+
+  it("adapts agent-browser CLI instructions to the dedicated browser tool", () => {
+    const instructions = skillRuntimeAdapterInstructions(
+      ["agent-browser"],
+      ["readFile", "browser"],
+    );
+
+    expect(instructions).toContain("一级 `browser` 工具");
+    expect(instructions).toContain("公网 HTTP/HTTPS 页面");
+    expect(instructions).toContain("不得通过 shell");
+  });
+
+  it("does not advertise a runtime adapter when its required tool is unavailable", () => {
+    expect(skillRuntimeAdapterInstructions(["agent-browser"], ["readFile"])).toBe("");
   });
 });

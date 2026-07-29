@@ -138,7 +138,20 @@ export class AgentStore {
       info = await stat(this.file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return this.withLock(() => this.loadRolloutFromDisk());
+        const queuedWrite = queues.get(this.file.toLowerCase());
+        if (queuedWrite) {
+          await queuedWrite.catch(() => undefined);
+          return this.read();
+        }
+        try {
+          await stat(this.legacyFile);
+          return this.withLock(() => this.loadRolloutFromDisk());
+        } catch (legacyError) {
+          if ((legacyError as NodeJS.ErrnoException).code !== "ENOENT") throw legacyError;
+        }
+        const aggregate = emptyAggregate(this.agentId);
+        this.cached = { size: 0, mtimeMs: 0, aggregate };
+        return aggregate;
       }
       throw error;
     }
@@ -167,9 +180,15 @@ export class AgentStore {
       let position = outbox.at(-1)?.position ?? 0;
       for (const event of pendingEvents) outbox.push({ position: ++position, event: structuredClone(event) });
       const { pendingEvents: _pendingEvents, ...persisted } = proposed;
-      const aggregate: AgentStoreAggregate = { ...persisted, outbox };
-      validateAggregate(aggregate, this.agentId);
-      const commit = createCommit(current, aggregate);
+      const candidate = { ...persisted, outbox };
+      validateAggregate(candidate, this.agentId);
+      // Canonicalize only the incremental commit. Re-serializing the complete
+      // aggregate on every append makes a long-running thread progressively
+      // slower and causes quadratic work. Applying the canonical commit keeps
+      // the hot projection byte-equivalent to a projection recovered from JSONL.
+      const commit = JSON.parse(JSON.stringify(createCommit(current, candidate))) as AgentStoreCommit;
+      validateCommit(commit, this.agentId, current.aggregateVersion + 1);
+      const aggregate = applyCommit(current, commit);
       await this.appendCommit(commit);
       const info = await stat(this.file);
       this.cached = { size: info.size, mtimeMs: info.mtimeMs, aggregate };
@@ -220,6 +239,9 @@ export class AgentStore {
   private async loadRolloutFromDisk(): Promise<AgentStoreAggregate> {
     try {
       const info = await stat(this.file);
+      if (this.cached?.size === info.size && this.cached.mtimeMs === info.mtimeMs) {
+        return this.cached.aggregate;
+      }
       return this.loadRollout(info.size, info.mtimeMs);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -292,6 +314,14 @@ export class AgentStore {
       occurredAt: new Date().toISOString(),
       aggregate,
     };
+    await this.writeSnapshot(snapshot, aggregate);
+    return aggregate;
+  }
+
+  private async writeSnapshot(
+    snapshot: AgentStoreSnapshot,
+    aggregate: AgentStoreAggregate,
+  ): Promise<void> {
     await mkdir(path.dirname(this.file), { recursive: true });
     const handle = await open(this.file, "wx", 0o600);
     try {
@@ -302,7 +332,6 @@ export class AgentStore {
     }
     const info = await stat(this.file);
     this.cached = { size: info.size, mtimeMs: info.mtimeMs, aggregate };
-    return aggregate;
   }
 
   private async appendCommit(commit: AgentStoreCommit): Promise<void> {
@@ -339,11 +368,24 @@ export class AgentStore {
         return token;
       } catch (error) {
         await handle?.close().catch(() => undefined);
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (!await this.isLockContention(error)) throw error;
       }
       if (await this.recoverStaleLock()) continue;
       if (Date.now() >= deadline) throw new Error(`Timed out waiting for Agent lock ${this.agentId}`);
       await delay(this.options.lockRetryMs);
+    }
+  }
+
+  private async isLockContention(error: unknown): Promise<boolean> {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") return true;
+    if (code !== "EPERM" && code !== "EACCES") return false;
+    try {
+      await stat(this.lockFile);
+      return true;
+    } catch (statError) {
+      if ((statError as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw statError;
     }
   }
 
@@ -363,10 +405,17 @@ export class AgentStore {
   }
 
   private async releaseLock(token: string): Promise<void> {
-    try {
-      if (parseLock(await readFile(this.lockFile, "utf8"))?.token === token) await rm(this.lockFile);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const deadline = Date.now() + this.options.lockWaitTimeoutMs;
+    while (true) {
+      try {
+        if (parseLock(await readFile(this.lockFile, "utf8"))?.token === token) await rm(this.lockFile);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return;
+        if ((code !== "EPERM" && code !== "EACCES") || Date.now() >= deadline) throw error;
+        await delay(this.options.lockRetryMs);
+      }
     }
   }
 }
@@ -466,7 +515,12 @@ function applyCommit(current: AgentStoreAggregate, commit: AgentStoreCommit): Ag
     goals,
     goalStartKeys: [...current.goalStartKeys, ...structuredClone(commit.goalStartKeys)],
     proposals: [...current.proposals, ...structuredClone(commit.proposals)],
-    decisions: [...current.decisions, ...structuredClone(commit.decisions)],
+    decisions: mergeExactDuplicates(
+      current.decisions,
+      structuredClone(commit.decisions),
+      (item) => item.decisionId,
+      "decisionId",
+    ),
     controls: [...current.controls, ...structuredClone(commit.controls)],
     outbox: [...current.outbox, ...structuredClone(commit.outbox)],
   };
@@ -532,7 +586,7 @@ function validateAggregate(value: unknown, agentId: string): asserts value is Ag
   const goalIds = unique(aggregate.goals.map((item) => item.spec.id), "goalId");
   unique(aggregate.goalStartKeys.map((item) => item.idempotencyKey), "goal idempotency key");
   const proposalIds = unique(aggregate.proposals.map((item) => item.proposalId), "proposalId");
-  unique(aggregate.decisions.map((item) => item.decisionId), "decisionId");
+  exactDuplicateKeys(aggregate.decisions, (item) => item.decisionId, "decisionId");
   unique(aggregate.controls.map((item) => item.requestId), "control requestId");
   for (const thread of aggregate.threads) {
     if (thread.agentId !== agentId || !threadIds.has(thread.threadId)) throw new AgentStoreCorruptionError("Thread identity is invalid");
@@ -549,10 +603,42 @@ function validateAggregate(value: unknown, agentId: string): asserts value is Ag
     if (!goalIds.has(proposal.goalId)) throw new AgentStoreCorruptionError("Proposal goal is invalid");
   }
   let position = 0;
-  const eventIds = new Set<string>();
+  const eventsById = new Map<string, AgentEvent>();
   for (const entry of aggregate.outbox) {
-    if (entry.position !== ++position || eventIds.has(entry.event.eventId)) throw new AgentStoreCorruptionError("Agent outbox is invalid");
-    eventIds.add(entry.event.eventId);
+    if (entry.position !== ++position) throw new AgentStoreCorruptionError("Agent outbox is invalid");
+    const previous = eventsById.get(entry.event.eventId);
+    if (previous && !same(previous, entry.event)) throw new AgentStoreCorruptionError("Agent outbox eventId conflicts");
+    eventsById.set(entry.event.eventId, entry.event);
+  }
+}
+
+function mergeExactDuplicates<T>(
+  current: T[],
+  appendedItems: T[],
+  key: (value: T) => string,
+  label: string,
+): T[] {
+  const merged = structuredClone(current);
+  const byKey = new Map(merged.map((item) => [key(item), item]));
+  for (const item of appendedItems) {
+    const previous = byKey.get(key(item));
+    if (previous) {
+      if (!same(previous, item)) throw new AgentStoreCorruptionError(`Duplicate ${label} conflicts`);
+      continue;
+    }
+    merged.push(item);
+    byKey.set(key(item), item);
+  }
+  return merged;
+}
+
+function exactDuplicateKeys<T>(items: T[], key: (value: T) => string, label: string): void {
+  const byKey = new Map<string, T>();
+  for (const item of items) {
+    const id = key(item);
+    const previous = byKey.get(id);
+    if (previous && !same(previous, item)) throw new AgentStoreCorruptionError(`Duplicate ${label} conflicts`);
+    byKey.set(id, item);
   }
 }
 
@@ -572,6 +658,7 @@ function changedByKey<T>(current: T[], next: T[], key: (value: T) => string, lab
 }
 
 function same(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
   return JSON.stringify(left) === JSON.stringify(right);
 }
 

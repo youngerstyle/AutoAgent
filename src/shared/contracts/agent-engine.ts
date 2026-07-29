@@ -5,6 +5,9 @@ export interface ContextRef {
 
 export interface OutputContract {
   schemaRef: string;
+  completionOutcomeSchema?: Record<string, unknown>;
+  correctionOutcomeSchema?: Record<string, unknown>;
+  planChangeOutcomeSchema?: Record<string, unknown>;
 }
 
 export interface EvidenceRef {
@@ -254,7 +257,8 @@ export type AgentThreadEventPayload =
 
 export type AgentGoalEventPayload =
   | { type: "GoalStatusChanged"; goalId: string; status: AgentGoalStatus }
-  | { type: "GoalProposalCreated"; goalId: string; proposalId: string };
+  | { type: "GoalProposalCreated"; goalId: string; proposalId: string }
+  | { type: "GoalSettlementRequested"; goalId: string; proposalId: string };
 
 export interface AgentEventPayloadByAggregate {
   agent_thread: AgentThreadEventPayload;
@@ -307,6 +311,10 @@ export interface AgentPort<TDomainOutcome = unknown> {
   getProposal(
     proposalId: string,
   ): Promise<GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined>;
+  hasPendingHumanTurn?(goalId: string, excludingTurnId?: string): Promise<boolean>;
+  retryProposalResolution(
+    proposalId: string,
+  ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }>;
   getThread(threadId: string): Promise<AgentThreadSnapshot>;
   sendMessage(input: SendAgentMessageRequest): Promise<boolean>;
   controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal>;

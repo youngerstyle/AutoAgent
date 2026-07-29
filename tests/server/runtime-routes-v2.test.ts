@@ -2,8 +2,9 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrapServer } from "../../src/server/bootstrap.js";
+import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import type { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
 
 describe("V2 runtime public routes", () => {
@@ -36,6 +37,50 @@ describe("V2 runtime public routes", () => {
     expect(messageResponse.body.snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "human_message")).toBe(true);
     const snapshot = await pollSnapshot(app, workspaceId, (value) => value.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message"));
     expect(snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message")).toBe(true);
+  });
+
+  it("creates only one RuntimeHost when the same workspace is opened concurrently", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-host-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-host-ws-"));
+    const app = await bootstrapServer({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0 });
+    registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
+    const workspaceResponse = await request(app).post("/api/workspaces").send({
+      name: "Concurrent host",
+      rootPath: root,
+      policyProfile: "development",
+    }).expect(201);
+    const workspaceId = workspaceResponse.body.workspace.id as string;
+    const hydrate = vi.spyOn(RuntimeHost.prototype, "hydrate");
+
+    const snapshots = await Promise.all(
+      Array.from({ length: 12 }, () => registry!.snapshotByWorkspace(workspaceId)),
+    );
+
+    expect(snapshots).toHaveLength(12);
+    expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops and unregisters a RuntimeHost before deleting its workspace", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-delete-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-v2-delete-ws-"));
+    const app = await bootstrapServer({ port: 0, autoAgentHome: home, useMockProvider: true, providerRetryCount: 0 });
+    registry = app.locals.runtimeHostRegistry as RuntimeHostRegistry;
+    const workspaceResponse = await request(app).post("/api/workspaces").send({
+      name: "Disposable host",
+      rootPath: root,
+      policyProfile: "development",
+    }).expect(201);
+    const workspaceId = workspaceResponse.body.workspace.id as string;
+    await registry.snapshotByWorkspace(workspaceId);
+    const stop = vi.spyOn(RuntimeHost.prototype, "stop");
+
+    await request(app)
+      .delete(`/api/workspaces/${workspaceId}`)
+      .send({ deleteLocalFolder: false })
+      .expect(200);
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(404);
   });
 });
 

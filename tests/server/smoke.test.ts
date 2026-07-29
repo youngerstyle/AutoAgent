@@ -9,7 +9,11 @@ describe("health", () => {
   it("returns AutoAgent health", async () => {
     const response = await request(createApp()).get("/api/health").expect(200);
 
-    expect(response.body).toEqual({ ok: true, name: "AutoAgent" });
+    expect(response.body).toEqual({
+      ok: true,
+      name: "AutoAgent",
+      runtimeHosts: { status: "not_started" },
+    });
   });
 
   it("does not choose source client files without an index entry", async () => {

@@ -52,16 +52,25 @@ export function createApp(config: AppConfig = loadConfig()) {
     providerRegistry,
     policyStore,
     policyRef,
+    config.runtimeRestoreConcurrency,
   );
   app.locals.runtimeHostRegistry = mission;
+  app.locals.runtimeHostRestoration = { status: "not_started" };
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, name: "AutoAgent" });
+    res.json({
+      ok: true,
+      name: "AutoAgent",
+      runtimeHosts: app.locals.runtimeHostRestoration,
+    });
   });
   app.use("/api/agent-profiles", createAgentProfileRouter(profileStore));
   app.use("/api/providers", createProviderRouter(providerRegistry));
-  app.use("/api/workspaces", createWorkspaceRouter(workspaceStore));
+  app.use("/api/workspaces", createWorkspaceRouter(
+    workspaceStore,
+    (workspaceId, options) => mission.removeWorkspace(workspaceId, options),
+  ));
   app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));

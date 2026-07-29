@@ -60,7 +60,11 @@ export class AgentContextAssembler {
     const stable = truncateToTokenBudget(stableSection(input), Math.floor(maxInputTokens * 0.55), "SIA 与工具配置");
     const goal = truncateToTokenBudget(goalSection(input.goal), Math.floor(maxInputTokens * 0.2), "当前 Goal");
     const instructions = [stable.text, goal.text].join("\n\n");
-    const projected = await this.projectHistory(input.thread, Math.max(1, Math.floor(maxInputTokens * 0.25)));
+    const projected = await this.projectHistory(
+      input.thread,
+      Math.max(1, Math.floor(maxInputTokens * 0.25)),
+      input.goal?.spec.id,
+    );
     const renderedHistory = projected.history.map(renderHistoryItem).join("\n");
     const prompt = `${instructions}\n\n## Thread（严格时间序）\n${renderedHistory || "无历史消息"}`;
     return {
@@ -92,7 +96,7 @@ export class AgentContextAssembler {
     const suffix = checkpoint
       ? items.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
       : items.filter((item) => item.kind !== "compaction");
-    const entries: SequencedHistoryItem[] = [
+    const entries: SequencedHistoryItem[] = sanitizeRejectedToolInteractions([
       ...(checkpoint?.replacementHistory ?? []).map((historyItem) => ({
         historyItem,
         sequence: checkpoint!.replacedThroughSequence,
@@ -101,7 +105,7 @@ export class AgentContextAssembler {
         historyItem,
         sequence: item.sequence,
       }))),
-    ];
+    ]);
     const history = entries.map((item) => item.historyItem);
     const maxChars = Math.max(1, Math.floor(maxInputTokens * 0.25) * 4);
     if (JSON.stringify(history).length <= maxChars) return undefined;
@@ -136,6 +140,7 @@ export class AgentContextAssembler {
   private async projectHistory(
     thread: AgentThreadSnapshot,
     maxTokens: number,
+    goalId?: string,
   ): Promise<{
     history: AgentModelHistoryItem[];
     compactedItems: number;
@@ -145,14 +150,22 @@ export class AgentContextAssembler {
   }> {
     const items = [...thread.items].sort((left, right) => left.sequence - right.sequence);
     const payloads = await this.store.payloads(items.map((item) => item.payloadRef));
-    const checkpoint = latestCompaction(items, payloads);
+    const scopedItems = goalId
+      ? items.filter((item) => belongsToGoalContext(payloads.get(item.payloadRef), goalId))
+      : items;
+    const omittedPriorGoalItems = items.length - scopedItems.length;
+    const checkpoint = goalId ? undefined : latestCompaction(scopedItems, payloads);
     const suffix = checkpoint
-      ? items.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
-      : items.filter((item) => item.kind !== "compaction");
-    const projected = [
+      ? scopedItems.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
+      : scopedItems.filter((item) => item.kind !== "compaction");
+    const projected = sanitizeRejectedToolHistory([
+      ...(omittedPriorGoalItems > 0 ? [{
+        type: "user_message" as const,
+        content: `[Goal 上下文隔离：${omittedPriorGoalItems} 条其他 Goal 的原始消息、工具调用与观察结果仅保留审计，未注入当前 Goal；跨工单事实以 Mission Control 的正式 handoff 为准。]`,
+      }] : []),
       ...(checkpoint?.replacementHistory ?? []),
       ...suffix.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef))),
-    ];
+    ]);
     const compaction = checkpoint
       ? {
           compacted: true,
@@ -196,6 +209,11 @@ export class AgentContextAssembler {
   }
 }
 
+function belongsToGoalContext(value: unknown, goalId: string): boolean {
+  if (!isRecord(value) || typeof value.goalId !== "string") return true;
+  return value.goalId === goalId;
+}
+
 interface SequencedHistoryItem {
   historyItem: AgentModelHistoryItem;
   sequence: number;
@@ -223,6 +241,53 @@ function sequencedHistoryGroups(entries: SequencedHistoryItem[]): SequencedHisto
     }
   }
   return groups;
+}
+
+function sanitizeRejectedToolInteractions(entries: SequencedHistoryItem[]): SequencedHistoryItem[] {
+  const sanitized = sanitizeRejectedToolHistory(entries.map((entry) => entry.historyItem));
+  return sanitized.map((historyItem, index) => ({
+    historyItem,
+    sequence: entries[index]!.sequence,
+  }));
+}
+
+export function sanitizeRejectedToolHistory(history: AgentModelHistoryItem[]): AgentModelHistoryItem[] {
+  const rejectedCallIds = new Set(history.flatMap((item) => (
+    item.type === "tool_result" && item.isError && isToolSchemaValidationError(item.content)
+      ? [item.callId]
+      : []
+  )));
+  if (rejectedCallIds.size === 0) return history;
+  return history.map((item) => {
+    if (item.type === "tool_call" && rejectedCallIds.has(item.callId)) {
+      return {
+        ...item,
+        arguments: {
+          rejected: true,
+          reason: "schema_validation_failed",
+          note: "Rejected arguments are available in the audit record and are not replayed to the model.",
+        },
+      };
+    }
+    if (item.type === "tool_result" && rejectedCallIds.has(item.callId)) {
+      return { ...item, content: compactToolSchemaValidationError(item.content) };
+    }
+    return item;
+  });
+}
+
+function isToolSchemaValidationError(content: string): boolean {
+  return content.startsWith("Validation failed for tool ");
+}
+
+export function compactToolSchemaValidationError(content: string): string {
+  const receivedArguments = content.indexOf("\n\nReceived arguments:");
+  const validation = receivedArguments >= 0 ? content.slice(0, receivedArguments).trim() : content.trim();
+  const maxChars = 4_000;
+  const compacted = validation.length <= maxChars
+    ? validation
+    : `${validation.slice(0, maxChars)}\n...[validation details truncated]`;
+  return `${compacted}\n\n[Rejected arguments omitted from model context; full call remains in the audit record.]`;
 }
 
 interface StoredCompaction {

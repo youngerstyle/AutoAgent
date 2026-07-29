@@ -28,6 +28,8 @@ import type {
 import {
   DEFAULT_GRAPH_LIMITS,
   evaluatePlanOutcome,
+  findUnresolvedRequiredFailures,
+  isTicketDependencySatisfied,
   materializePlanGraph,
   PlanGraphError,
   type MaterializedPlanGraph,
@@ -119,7 +121,7 @@ export class TicketEngine {
     try {
       const materialized = materializePlanGraph({ planId: command.planId, change: command.payload.definition.initialChange });
       const tickets = createTickets(materialized, command.planId);
-      initializeReady(tickets, materialized.graph.dependencyEdges);
+      initializeReady(tickets, materialized.graph);
       const plan = {
         planId: command.planId,
         missionId: command.payload.missionId,
@@ -212,6 +214,20 @@ export class TicketEngine {
           if (materialized.addedTicketIds.some((ticketId) => !isStrictAncestor(materialized.graph, payload.sourceTicketId, ticketId))) {
             throw new PlanGraphError("Every appended Ticket must have the source Ticket as an ancestor");
           }
+          const unresolvedHistoricalTickets = findUnresolvedRequiredFailures({
+            graph: materialized.graph,
+            completionPolicy: materialized.completionPolicy,
+            ticketStatuses: statusMap(current.tickets),
+          });
+          if (unresolvedHistoricalTickets.length > 0) {
+            throw new PlanGraphError(
+              `Required delivery closure contains terminal unsuccessful Tickets: ${unresolvedHistoricalTickets.join(", ")}. `
+              + "Do not cancel, reopen, depend on, or reuse those historical Tickets. "
+              + "Start the replacement work from the current planning Ticket, add a new assurance Ticket after that work, "
+              + "and declare each historical failure in change.failureResolutions as "
+              + '{"failedTicketId":"<historical Ticket UUID>","resolvedBy":{"clientRef":"<new assurance clientRef>"}}.',
+            );
+          }
           const added = createTickets(materialized, command.planId).filter((ticket) => materialized.addedTicketIds.includes(ticket.ticketId));
           const cancellationIds = new Set(payload.change.cancelTicketIds.map(String));
           const cancelled = tickets
@@ -219,7 +235,7 @@ export class TicketEngine {
             .map((ticket) => cancelTicket(ticket, command.issuedAt, "Cancelled by Plan change"));
           const cancelledById = new Map(cancelled.map((ticket) => [String(ticket.ticketId), ticket]));
           tickets = [...tickets.map((ticket) => cancelledById.get(String(ticket.ticketId)) ?? ticket), ...added];
-          initializeReady(tickets, materialized.graph.dependencyEdges);
+          initializeReady(tickets, materialized.graph);
           plan = { ...plan, status: "active", graph: materialized.graph, completionPolicy: materialized.completionPolicy };
           definitions = { ...materialized.definitionsByTicketId };
           pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [...materialized.addedTicketIds] }, command.issuedAt));
@@ -380,12 +396,7 @@ export class TicketEngine {
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
     if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
     if (command.payload.type === "complete") {
-      const definition = aggregate.definitionsByTicketId[String(command.ticketId)];
-      const handoffError = validateCompletionHandoff(
-        command.payload.handoff,
-        (definition?.successCriteria.length ?? 0)
-          + (definition?.missionContribution?.missionCriterionIds.length ?? 0),
-      );
+      const handoffError = validateCompletionHandoff(command.payload.handoff);
       if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
     }
     if (command.payload.type === "request_correction") {
@@ -407,7 +418,7 @@ export class TicketEngine {
       if (command.payload.type === "complete") status = "completed";
       else if (command.payload.type === "block") status = "blocked";
       else if (command.payload.type === "fail") status = "failed";
-      else status = "pending";
+      else status = "returned";
       const ownership: BlockedOwnershipReceipt | undefined = status === "blocked" ? {
         ownershipId: randomUUID(), planId: command.planId, ticketId: command.ticketId,
         ticketVersion: currentTicket.version + 1, principalId: command.actorPrincipalId,
@@ -440,7 +451,10 @@ export class TicketEngine {
       let completionPolicy = current.plan.completionPolicy;
       let definitionsByTicketId = current.definitionsByTicketId;
       let appendedTicket: TicketSnapshot | undefined;
-      if (command.payload.type === "request_correction" || command.payload.type === "request_plan_change") {
+      const requiresPlanResolution = command.payload.type === "fail"
+        && current.plan.completionPolicy.failurePolicy === "require_resolution";
+      const failureReason = command.payload.type === "fail" ? command.payload.reason : undefined;
+      if (command.payload.type === "request_correction" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
         if (graph.ticketIds.length + 1 > DEFAULT_GRAPH_LIMITS.maxTickets || graph.dependencyEdges.length + 1 > DEFAULT_GRAPH_LIMITS.maxEdges) {
           throw new PlanGraphError("Plan cannot append another amendment Ticket within graph limits");
         }
@@ -457,7 +471,7 @@ export class TicketEngine {
         graph = {
           ...graph,
           ticketIds: [...graph.ticketIds, amendmentId],
-          dependencyEdges: [...graph.dependencyEdges, { fromTicketId: amendmentId, toTicketId: command.ticketId }],
+          dependencyEdges: [...graph.dependencyEdges],
         };
         definitionsByTicketId = {
           ...definitionsByTicketId,
@@ -466,7 +480,9 @@ export class TicketEngine {
             title: current.plan.amendmentTemplate.title,
             objective: command.payload.type === "request_correction"
               ? `处理工单 ${command.ticketId} 对已完成上游工单 ${correctionTargetId} 提出的交付缺陷：${command.payload.reason}`
-              : `处理工单 ${command.ticketId} 提出的计划结构问题：${command.payload.reason}`,
+              : command.payload.type === "request_plan_change"
+                ? `处理工单 ${command.ticketId} 提出的计划结构问题：${command.payload.reason}`
+                : `处理工单 ${command.ticketId} 的失败事实并修订 Plan：${failureReason}`,
             successCriteria: [...current.plan.amendmentTemplate.successCriteria],
             assignment: structuredClone(current.plan.plannerAssignment),
             outputContract: structuredClone(current.plan.amendmentTemplate.outputContract),
@@ -474,16 +490,18 @@ export class TicketEngine {
           },
         };
       }
-      const changed = unlockReady(tickets, graph.dependencyEdges);
+      const changed = unlockReady(tickets, graph);
       tickets = changed.tickets;
       const statuses = statusMap(tickets);
       let planStatus = evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses });
-      if (status === "blocked" || command.payload.type === "request_correction" || command.payload.type === "request_plan_change") planStatus = "blocked";
+      if (status === "blocked" || command.payload.type === "request_correction" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
+        planStatus = "blocked";
+      }
       const plan = { ...current.plan, version: current.plan.version + 1, status: planStatus, graph, completionPolicy };
       const settled = tickets.find((item) => item.ticketId === command.ticketId)!;
       const result: TicketCommandResult = {
         accepted: true, commandId: command.commandId, proposalId: command.proposalId,
-        ticketStatus: status as "pending" | "blocked" | "completed" | "failed",
+        ticketStatus: status as "blocked" | "completed" | "returned" | "failed",
         ticketVersion: settled.version, planStatus: plan.status, planVersion: plan.version,
         ...(ownership ? { nextAuthority: settled.activeAuthority } : {}),
       };
@@ -491,9 +509,7 @@ export class TicketEngine {
         settled,
         command.payload.type === "block"
           ? { type: "TicketBlocked", requiredInput: structuredClone(command.payload.requiredInput) }
-          : status === "pending"
-            ? { type: "TicketRetryQueued", prerequisiteTicketId: appendedTicket!.ticketId }
-            : { type: "TicketTerminal", status: status as "completed" | "failed" },
+          : { type: "TicketTerminal", status: status as "completed" | "returned" | "failed" },
         command.issuedAt,
       )];
       for (const ready of changed.ready) pendingEvents.push(ticketEvent(ready, { type: "TicketReady", ticketVersion: ready.version }, command.issuedAt));
@@ -503,6 +519,9 @@ export class TicketEngine {
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
       } else if (command.payload.type === "request_plan_change") {
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));
+        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
+      } else if (requiresPlanResolution) {
+        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: failureReason! }, command.issuedAt));
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
       }
       if (plan.status !== current.plan.status) pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
@@ -601,7 +620,7 @@ function cancelTicket(ticket: TicketSnapshot, endedAt: string, reason: string): 
   };
 }
 
-function validateCompletionHandoff(handoff: TicketHandoff, criterionCount: number): string | undefined {
+function validateCompletionHandoff(handoff: TicketHandoff): string | undefined {
   if (handoff.schemaVersion !== 1 || !handoff.summary.trim()) return "Completion handoff must have schemaVersion 1 and a summary";
   if (!Array.isArray(handoff.evidence) || handoff.evidence.some((ref) => !ref?.evidenceId?.trim())) {
     return "Completion handoff evidence is invalid";
@@ -609,16 +628,16 @@ function validateCompletionHandoff(handoff: TicketHandoff, criterionCount: numbe
   if (!Array.isArray(handoff.residualRisks) || handoff.residualRisks.some((risk) => typeof risk !== "string")) {
     return "Completion handoff residualRisks must be strings";
   }
-  if (!Array.isArray(handoff.criterionResults) || handoff.criterionResults.length !== criterionCount) {
-    return `Completion handoff must report all ${criterionCount} success criteria`;
-  }
+  if (!Array.isArray(handoff.criterionResults)) return "Completion handoff criterionResults must be an array";
   const indexes = new Set<number>();
   for (const result of handoff.criterionResults) {
-    if (!Number.isSafeInteger(result.criterionIndex) || result.criterionIndex < 0 || result.criterionIndex >= criterionCount || indexes.has(result.criterionIndex)) {
-      return "Completion handoff criterion indexes must uniquely cover the Ticket success criteria";
+    if (!Number.isSafeInteger(result.criterionIndex) || result.criterionIndex < 0 || indexes.has(result.criterionIndex)) {
+      return "Completion handoff criterion indexes must be unique non-negative integers";
     }
     indexes.add(result.criterionIndex);
-    if (result.status !== "satisfied") return "A Ticket cannot complete while a success criterion is unsatisfied or unverified";
+    if (!["satisfied", "not_satisfied", "not_verified"].includes(result.status)) {
+      return "Completion handoff criterion status is invalid";
+    }
     if (!Array.isArray(result.evidence) || result.evidence.some((ref) => !ref?.evidenceId?.trim())) {
       return "Completion handoff criterion evidence is invalid";
     }
@@ -626,18 +645,21 @@ function validateCompletionHandoff(handoff: TicketHandoff, criterionCount: numbe
   return undefined;
 }
 
-function initializeReady(tickets: TicketSnapshot[], edges: MaterializedPlanGraph["graph"]["dependencyEdges"]): void {
-  const incoming = new Set(edges.map((edge) => String(edge.toTicketId)));
+function initializeReady(tickets: TicketSnapshot[], graph: MaterializedPlanGraph["graph"]): void {
+  const incoming = new Set(graph.dependencyEdges.map((edge) => String(edge.toTicketId)));
   for (const ticket of tickets) if (ticket.status === "pending" && !incoming.has(String(ticket.ticketId))) ticket.status = "ready";
 }
-function unlockReady(tickets: TicketSnapshot[], edges: MaterializedPlanGraph["graph"]["dependencyEdges"]): { tickets: TicketSnapshot[]; ready: TicketSnapshot[] } {
+function unlockReady(tickets: TicketSnapshot[], graph: MaterializedPlanGraph["graph"]): { tickets: TicketSnapshot[]; ready: TicketSnapshot[] } {
   const byId = new Map(tickets.map((ticket) => [String(ticket.ticketId), ticket]));
+  const statuses = statusMap(tickets);
   const incoming = new Map<string, TicketId[]>();
-  for (const edge of edges) incoming.set(String(edge.toTicketId), [...(incoming.get(String(edge.toTicketId)) ?? []), edge.fromTicketId]);
+  for (const edge of graph.dependencyEdges) incoming.set(String(edge.toTicketId), [...(incoming.get(String(edge.toTicketId)) ?? []), edge.fromTicketId]);
   const ready: TicketSnapshot[] = [];
   const next = tickets.map((ticket) => {
     if (ticket.status !== "pending") return ticket;
-    if ((incoming.get(String(ticket.ticketId)) ?? []).every((id) => byId.get(String(id))?.status === "completed")) {
+    if ((incoming.get(String(ticket.ticketId)) ?? []).every((id) => (
+      byId.has(String(id)) && isTicketDependencySatisfied(graph, statuses, id)
+    ))) {
       const value = { ...ticket, status: "ready" as const, version: ticket.version + 1 };
       ready.push(value);
       return value;

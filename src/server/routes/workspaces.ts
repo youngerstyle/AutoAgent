@@ -3,7 +3,13 @@ import { asyncHandler } from "../errors.js";
 import { loadConfig } from "../config.js";
 import { WorkspaceStore } from "../storage/workspace-store.js";
 
-export function createWorkspaceRouter(store = new WorkspaceStore(loadConfig().autoAgentHome)) {
+export function createWorkspaceRouter(
+  store = new WorkspaceStore(loadConfig().autoAgentHome),
+  removeWorkspace?: (
+    workspaceId: string,
+    options: { deleteLocalFolder?: boolean },
+  ) => ReturnType<WorkspaceStore["remove"]>,
+) {
   const router = Router();
 
   router.get("/", asyncHandler(async (_req, res) => {
@@ -20,7 +26,8 @@ export function createWorkspaceRouter(store = new WorkspaceStore(loadConfig().au
   }));
 
   router.delete("/:workspaceId", asyncHandler(async (req, res) => {
-    const workspace = await store.remove(String(req.params.workspaceId), {
+    const remove = removeWorkspace ?? ((workspaceId, options) => store.remove(workspaceId, options));
+    const workspace = await remove(String(req.params.workspaceId), {
       deleteLocalFolder: req.body?.deleteLocalFolder === true
     });
     res.json({ workspace });

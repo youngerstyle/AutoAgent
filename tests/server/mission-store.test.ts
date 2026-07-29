@@ -44,7 +44,7 @@ const record: MissionRecord = {
     teamBindingId: "team-a",
     version: 1,
     contentHash: "team-hash",
-    members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }],
+    members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"], enabledTools: [] }],
   },
   status: "starting",
 };

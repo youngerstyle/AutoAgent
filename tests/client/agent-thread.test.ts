@@ -76,6 +76,23 @@ describe("agent thread view", () => {
     ]);
   });
 
+  it("explains transient provider backoff without asking the human to resume", () => {
+    const bubbles = buildAgentThreadBubbles([
+      threadEvent(1, "evt_provider_wait", "system", "system_note", {
+        status: "external_service_waiting",
+        retryAt: "2026-07-24T06:30:00.000Z",
+      }),
+    ]);
+
+    expect(bubbles).toEqual([
+      expect.objectContaining({
+        role: "platform",
+        title: "模型服务暂时不可用",
+        body: expect.stringContaining("不需要人工操作"),
+      }),
+    ]);
+  });
+
   it("renders the Agent's blocked resolution as a readable chat message", () => {
     const bubbles = buildAgentThreadBubbles([
       threadEvent(1, "evt_resolution", "system", "system_note", {

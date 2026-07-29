@@ -72,6 +72,10 @@ export function agentEngineTraceDir(workspaceRoot: string, agentId: string): str
   return path.join(agentEngineDir(workspaceRoot, agentId), "traces");
 }
 
+export function agentEngineTraceRolloutFile(workspaceRoot: string, agentId: string): string {
+  return path.join(agentEngineDir(workspaceRoot, agentId), "traces.jsonl");
+}
+
 export function agentEngineTraceFile(workspaceRoot: string, agentId: string, traceId: string): string {
   return path.join(
     agentEngineTraceDir(workspaceRoot, agentId),

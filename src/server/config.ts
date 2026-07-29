@@ -6,12 +6,18 @@ export interface AppConfig {
   autoAgentHome: string;
   useMockProvider: boolean;
   providerRetryCount: number;
+  runtimeRestoreConcurrency?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const port = Number(env.PORT ?? "8787");
   if (!Number.isFinite(port) || port <= 0) {
     throw new Error(`Invalid PORT: ${env.PORT}`);
+  }
+
+  const runtimeRestoreConcurrency = Number(env.AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY ?? "2");
+  if (!Number.isInteger(runtimeRestoreConcurrency) || runtimeRestoreConcurrency <= 0) {
+    throw new Error(`Invalid AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY: ${env.AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY}`);
   }
 
   return {
@@ -21,5 +27,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       : path.join(os.homedir(), ".autoagent"),
     useMockProvider: env.AUTOAGENT_PROVIDER === "mock" || env.NODE_ENV === "test",
     providerRetryCount: Number(env.AUTOAGENT_PROVIDER_RETRIES ?? "2"),
+    runtimeRestoreConcurrency,
   };
 }

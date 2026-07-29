@@ -92,6 +92,8 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
     };
   }
   if (event.kind === "system_note") {
+    const providerWait = providerWaitBubble(event);
+    if (providerWait) return providerWait;
     const resolution = goalResolutionBubble(event);
     if (resolution) return resolution;
     return {
@@ -104,6 +106,22 @@ function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
     };
   }
   return undefined;
+}
+
+function providerWaitBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) return undefined;
+  const payload = event.payload as Record<string, unknown>;
+  if (payload.status !== "external_service_waiting" && payload.status !== "provider_retry_wait") return undefined;
+  const retryAt = typeof payload.retryAt === "string" ? new Date(payload.retryAt) : undefined;
+  const retryCopy = retryAt && !Number.isNaN(retryAt.getTime())
+    ? `系统将在 ${retryAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} 自动重试。`
+    : "系统会自动重试。";
+  return {
+    id: event.id,
+    role: "platform",
+    title: "模型服务暂时不可用",
+    body: `当前工单和 Agent 进度均已保存，不需要人工操作，也不会推进到下一张工单。${retryCopy}`,
+  };
 }
 
 function payloadAttachments(payload: unknown): AgentMessageAttachment[] {

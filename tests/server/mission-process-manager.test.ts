@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgentEngine } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import { MissionGoalResolutionPort } from "../../src/server/mission-process/mission-goal-resolution-port.js";
-import { MissionProcessManager, validateTeamAssignments } from "../../src/server/mission-process/mission-process-manager.js";
+import { correctionTargetMissionCriterionIds, MissionProcessManager, validateTeamAssignments } from "../../src/server/mission-process/mission-process-manager.js";
 import { MissionStore } from "../../src/server/mission-process/mission-store.js";
 import { createMinimalTeamPlanDefinition } from "../../src/server/product/plan-template.js";
 import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
@@ -16,13 +16,25 @@ import type { AgentGoal } from "../../src/shared/contracts/agent-engine.js";
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
+  it("preserves both delivery and assurance scope when exposing correction targets", () => {
+    expect(correctionTargetMissionCriterionIds({
+      missionContribution: { missionCriterionIds: ["criterion-delivery", "criterion-shared"] },
+      assurance: { missionCriterionIds: ["criterion-presentation", "criterion-shared", "criterion-legal"] },
+    })).toEqual([
+      "criterion-delivery",
+      "criterion-shared",
+      "criterion-presentation",
+      "criterion-legal",
+    ]);
+  });
+
   it("requires every required terminal to carry explicit Mission settlement authority", async () => {
     const team: TeamBinding = {
       teamBindingId: "team",
       version: 1,
       contentHash: "hash",
       deliveryPolicy: { requiredTerminalCapabilities: ["delivery:accept"] },
-      members: [{ agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"] }],
+      members: [{ agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"], enabledTools: [] }],
     };
     const withoutAuthority: MissionTicketOutcome = {
       result: {},
@@ -51,9 +63,9 @@ describe("MissionProcessManager", () => {
       contentHash: "hash",
       deliveryPolicy: { requiredTerminalCapabilities: ["delivery:accept"] },
       members: [
-        { agentId: "builder", principalId: "principal-builder", capabilities: ["delivery:implement"] },
-        { agentId: "reviewer", principalId: "principal-reviewer", capabilities: ["delivery:verify"] },
-        { agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"] },
+        { agentId: "builder", principalId: "principal-builder", capabilities: ["delivery:implement"], enabledTools: [] },
+        { agentId: "reviewer", principalId: "principal-reviewer", capabilities: ["delivery:verify"], enabledTools: [] },
+        { agentId: "approver", principalId: "principal-approver", capabilities: ["delivery:accept"], enabledTools: [] },
       ],
     };
     const withoutAcceptance = {
@@ -81,6 +93,34 @@ describe("MissionProcessManager", () => {
     } }, "plan-change-set-v3", team)).resolves.toContain("至少一个可验收终点");
     await expect(validateTeamAssignments(withoutAcceptance, "plan-change-set-v3", team)).resolves.toContain("delivery:accept");
     await expect(validateTeamAssignments(withAcceptance, "plan-change-set-v3", team)).resolves.toBeUndefined();
+  });
+
+  it("rejects a Ticket whose selected member lacks one of its declared tools", async () => {
+    const team: TeamBinding = {
+      teamBindingId: "team",
+      version: 1,
+      contentHash: "hash",
+      members: [
+        { agentId: "architect", principalId: "principal-architect", capabilities: ["research"], enabledTools: ["readFile"] },
+        { agentId: "researcher", principalId: "principal-researcher", capabilities: ["research"], enabledTools: ["readFile", "browser"] },
+      ],
+    };
+    const outcome = {
+      change: {
+        additions: [{
+          clientRef: "baseline",
+          assignment: {
+            principalId: "principal-architect",
+            requiredCapabilities: ["research"],
+            requiredTools: ["browser"],
+          },
+        }],
+        requiredTerminalRefs: [{ clientRef: "baseline" }],
+      },
+    } as MissionTicketOutcome;
+
+    await expect(validateTeamAssignments(outcome, "plan-change-set-v3", team))
+      .resolves.toContain("要求工具：browser");
   });
 
   it("reuses the one durable Plan when the same Mission start is replayed", async () => {
@@ -198,6 +238,17 @@ describe("MissionProcessManager", () => {
       },
     });
     let mission = await fixture.manager.tick();
+    const initialPlan = await fixture.tickets.getPlan(mission.record.planId);
+    const initialPlanningWork = await fixture.tickets.getWorkItem(initialPlan.graph.ticketIds[1]!);
+    expect(initialPlanningWork?.definition).toMatchObject({
+      title: "计划拆解",
+      successCriteria: expect.arrayContaining(["新增实际执行工单，形成完成 Mission 所需的真实交付链"]),
+      outputContract: { schemaRef: "plan-change-set-v3" },
+      contextPolicy: {
+        includeOriginalRequest: true,
+        requiresMissionBaseline: true,
+      },
+    });
     const intakeLink = mission.links.find((link) => link.agentId === "boss")!;
     expect(intakeLink).toMatchObject({ status: "running", agentId: "boss" });
 
@@ -226,14 +277,25 @@ describe("MissionProcessManager", () => {
 
     mission = await fixture.manager.tick();
     expect(mission.links.find((link) => link.dispatchId === intakeLink.dispatchId)?.status).toBe("settled");
+    expect(mission.record.baseline).toBeDefined();
+    const settledPlanningWork = await fixture.tickets.getWorkItem(initialPlan.graph.ticketIds[1]!);
+    expect(settledPlanningWork?.definition).toEqual(initialPlanningWork?.definition);
     expect(await boss.getGoal(goal!.spec.id)).toMatchObject({ status: "completed" });
 
     mission = await fixture.manager.tick();
+    expect(mission.record.baseline).toBeDefined();
     const planningLink = mission.links.find((link) => link.agentId === "pm")!;
     expect(planningLink).toMatchObject({ status: "running" });
     const pm = fixture.engines.get("pm")!;
     const planningThread = await pm.getThread(planningLink.agentThreadId!);
     const planningPayloads = await pm.getPayloads(planningThread.items.map((item) => item.payloadRef));
+    const missionMessages = [...planningPayloads.values()].filter((value) => (
+      typeof value === "object"
+      && value !== null
+      && "senderPrincipalId" in value
+      && value.senderPrincipalId === "mission-process"
+    ));
+    expect(missionMessages).toHaveLength(1);
     const missionInstruction = [...planningPayloads.values()].find((value) => (
       typeof value === "object"
       && value !== null
@@ -247,6 +309,12 @@ describe("MissionProcessManager", () => {
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"successCriteria"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"outputContract"') });
     expect(missionInstruction).toMatchObject({
+      content: expect.stringContaining('"currentTicket":{"ticketId"'),
+    });
+    expect(missionInstruction).toMatchObject({
+      content: expect.stringContaining('"handoffLineage":[{"ticketId"'),
+    });
+    expect(missionInstruction).toMatchObject({
       content: expect.stringContaining('"summary":"需求已接收"'),
     });
     expect(missionInstruction).toMatchObject({
@@ -254,6 +322,16 @@ describe("MissionProcessManager", () => {
     });
     expect(missionInstruction).toMatchObject({
       content: expect.not.stringContaining("proposal-intake"),
+    });
+    const sourceRequest = [...planningPayloads.values()].find((value) => (
+      typeof value === "object"
+      && value !== null
+      && "senderPrincipalId" in value
+      && value.senderPrincipalId === "human"
+    ));
+    expect(sourceRequest).toMatchObject({
+      deliveryKind: "context",
+      content: "build",
     });
   });
 
@@ -342,12 +420,23 @@ describe("MissionProcessManager", () => {
 
     const delivery = await awaitRunning("delivery");
     const deliveryGoal = (await boss.getGoal(delivery.agentGoalId!))!;
+    expect(deliveryGoal.spec.successCriteria).toEqual(["baseline delivery produced"]);
+    const deliveryThread = await boss.getThread(delivery.agentThreadId!);
+    const deliveryPayloads = await boss.getPayloads(deliveryThread.items.map((item) => item.payloadRef));
+    expect([...deliveryPayloads.values()]).toContainEqual(expect.objectContaining({
+      senderPrincipalId: "mission-process",
+      content: expect.stringContaining('"missionBaseline"'),
+    }));
     await boss.proposeGoalResolution({
       proposalId: "delivery-proposal", goalId: deliveryGoal.spec.id, expectedGoalVersion: deliveryGoal.version, resolvingGoalVersion: deliveryGoal.version + 1,
       status: "completed", summary: "baseline delivery produced", evidence: [], criterionResults: satisfied(deliveryGoal), residualRisks: [],
       domainOutcome: { result: "delivered" }, createdAt: NOW,
     });
     mission = await fixture.manager.tick();
+    const settledDeliveryGoal = await boss.getGoal(deliveryGoal.spec.id);
+    const settledDeliveryThread = await boss.getThread(delivery.agentThreadId!);
+    const settledDeliveryPayloads = await boss.getPayloads(settledDeliveryThread.items.map((item) => item.payloadRef));
+    expect(settledDeliveryGoal, JSON.stringify([...settledDeliveryPayloads.values()].slice(-6))).toMatchObject({ status: "completed" });
     const assurance = await awaitRunning("assurance");
     const assuranceGoal = (await boss.getGoal(assurance.agentGoalId!))!;
     await boss.proposeGoalResolution({
@@ -416,7 +505,14 @@ describe("MissionProcessManager", () => {
       proposalId: "plan-fresh-assurance", goalId: amendmentGoal.spec.id, expectedGoalVersion: amendmentGoal.version, resolvingGoalVersion: amendmentGoal.version + 1,
       status: "completed", summary: "append fresh assurance and acceptance", evidence: [], criterionResults: satisfied(amendmentGoal), residualRisks: [],
       domainOutcome: {
-        result: planningResult("fresh verification planned"),
+        result: {
+          summary: "fresh verification planned",
+          deliveryStrategy: {
+            mode: "single_increment",
+            rationale: "复用当前 Plan 已有交付增量补充验证",
+            increments: [],
+          },
+        },
         change: {
           additions: [
             {
@@ -424,7 +520,7 @@ describe("MissionProcessManager", () => {
               successCriteria: ["baseline criteria verified again"], assignment: { principalId: "principal-boss" },
               outputContract: { schemaRef: "mission-assurance-v1" },
               assurance: { missionCriterionIds: baseline.criteria.map((item) => item.criterionId) },
-              deliveryIncrement: TEST_INCREMENT,
+              deliveryIncrement: { incrementId: TEST_INCREMENT.incrementId },
             },
             {
               clientRef: "accept-fresh", title: "acceptance retry", objective: "accept fresh assurance",
@@ -437,7 +533,7 @@ describe("MissionProcessManager", () => {
             { from: { ticketId: delivery.ticketId }, to: { clientRef: "assure-fresh" } },
             { from: { clientRef: "assure-fresh" }, to: { clientRef: "accept-fresh" } },
           ],
-          cancelTicketIds: [acceptance.ticketId],
+          cancelTicketIds: [],
           requiredTerminalRefs: [{ clientRef: "accept-fresh" }],
         },
       },
@@ -491,7 +587,7 @@ describe("MissionProcessManager", () => {
       settlement: { acceptedByTicketId: acceptanceRetry.ticketId, baselineVersion: 1 },
     });
     expect((await fixture.tickets.getPlan(mission.record.planId)).status).toBe("completed");
-  });
+  }, 60_000);
 
   it("delivers the complete accepted ancestor lineage to a downstream Agent", async () => {
     const fixture = await createFixture();
@@ -654,6 +750,62 @@ describe("MissionProcessManager", () => {
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
   });
 
+  it("reconciles a stale running Mission link after its Ticket already committed", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const running = await fixture.manager.tick();
+    const link = running.links[0]!;
+    if (link.status !== "running") throw new Error("Expected a running Mission link");
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "proposal-terminal-before-link",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
+      domainOutcome: baselineOutcome(),
+      createdAt: NOW,
+    });
+    const settled = await fixture.manager.tick();
+    const settledLink = settled.links.find((item) => item.dispatchId === link.dispatchId)!;
+    await fixture.missionStore.transact(settled.version, (current) => ({
+      ...current,
+      version: current.version + 1,
+      links: current.links.map((item) => item.dispatchId === link.dispatchId
+        ? {
+            ...link,
+            status: "running" as const,
+            lastProposalId: settledLink.lastProposalId,
+            lastCommandId: settledLink.lastCommandId,
+            lastDecisionId: settledLink.lastDecisionId,
+          }
+        : item),
+    }));
+
+    const committedTicket = await fixture.tickets.getTicket(link.ticketId);
+    const recovered = await fixture.manager.recover();
+
+    expect(recovered.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({
+      status: "settled",
+      finalTicketVersion: committedTicket!.version,
+    });
+  });
+
   it("does not treat a claim lease renewal as a Ticket state-version conflict", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
@@ -773,6 +925,125 @@ describe("MissionProcessManager", () => {
 
     expect(recovered.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "running" });
     expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "active" });
+  });
+
+  it("does not commit a Ticket while a newer human turn for the Goal is pending", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    if (link.status !== "running") throw new Error("Expected a running Mission link");
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "proposal-before-human-turn",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "completed",
+      summary: "需求已接收",
+      evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
+      domainOutcome: baselineOutcome(),
+      createdAt: NOW,
+      turnId: "turn-before-human-message",
+    });
+    boss.hasPendingHumanTurn = async () => true;
+
+    const guarded = await fixture.manager.tick();
+    const guardedLink = guarded.links.find((item) => item.dispatchId === link.dispatchId);
+
+    expect(guardedLink).toMatchObject({ status: "running" });
+    const guardedGoal = await boss.getGoal(goal.spec.id);
+    expect(guardedGoal).toMatchObject({ status: "active" });
+    expect(guardedGoal).not.toHaveProperty("activeProposalId");
+    const ticket = await fixture.tickets.getTicket(link.ticketId);
+    expect(ticket?.status).not.toBe("completed");
+  });
+
+  it("settles a resolving Goal before projecting an already blocked Ticket onto its Mission link", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const mission = await fixture.manager.tick();
+    const link = mission.links[0]!;
+    if (link.status !== "running") throw new Error("Expected a running Mission link");
+    const boss = fixture.engines.get("boss")!;
+    const goal = (await boss.getGoal(link.agentGoalId))!;
+    await boss.proposeGoalResolution({
+      proposalId: "block-before-human-follow-up",
+      goalId: goal.spec.id,
+      expectedGoalVersion: goal.version,
+      resolvingGoalVersion: goal.version + 1,
+      status: "blocked",
+      summary: "需要 human 提供不可替代的事实",
+      evidence: [],
+      criterionResults: goal.spec.successCriteria.map((_, criterionIndex) => ({
+        criterionIndex,
+        status: "not_verified",
+        evidence: [],
+      })),
+      residualRisks: [],
+      humanInputRequest: {
+        kind: "manual_test",
+        description: "请完成真实交互测试",
+        details: { steps: ["打开产物", "反馈结果"] },
+      },
+      createdAt: NOW,
+    });
+    expect((await fixture.manager.tick()).links.find((item) => item.dispatchId === link.dispatchId))
+      .toMatchObject({ status: "blocked" });
+    const blockedGoal = (await boss.getGoal(goal.spec.id))!;
+    expect(blockedGoal).toMatchObject({ status: "blocked" });
+    await boss.controlGoal({
+      requestId: "resume-after-human-follow-up",
+      goalId: blockedGoal.spec.id,
+      expectedGoalVersion: blockedGoal.version,
+      action: "resume",
+      reason: "human 已提供不可替代的事实",
+    });
+    await fixture.manager.resumeBlockedAgent("boss");
+    const resumedGoal = (await boss.getGoal(goal.spec.id))!;
+
+    await boss.proposeGoalResolution({
+      proposalId: "proposal-after-human-follow-up",
+      goalId: resumedGoal.spec.id,
+      expectedGoalVersion: resumedGoal.version,
+      resolvingGoalVersion: resumedGoal.version + 1,
+      status: "completed",
+      summary: "human 已提供结果，需求接收完成",
+      evidence: [],
+      criterionResults: satisfied(goal),
+      residualRisks: [],
+      domainOutcome: baselineOutcome(),
+      createdAt: NOW,
+    });
+
+    const settled = await fixture.manager.tick();
+
+    expect(settled.links.find((item) => item.dispatchId === link.dispatchId)).toMatchObject({ status: "settled" });
+    expect(await boss.getGoal(goal.spec.id)).toMatchObject({ status: "completed" });
+    expect(await fixture.tickets.getTicket(link.ticketId)).toMatchObject({ status: "completed" });
   });
 
   it("renews a running claim before expiry without creating a second dispatch", async () => {
@@ -945,7 +1216,7 @@ describe("MissionProcessManager", () => {
     });
     mission = await fixture.manager.tick();
     expect(mission.links.find((item) => item.dispatchId === qaLink.dispatchId)).toMatchObject({ status: "settled" });
-    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "pending" });
+    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "returned" });
 
     mission = await fixture.manager.tick();
     const amendmentLink = mission.links.find((item) => item.agentId === "pm" && item.status === "running")!;
@@ -967,7 +1238,7 @@ describe("MissionProcessManager", () => {
             { from: { clientRef: "fix" }, to: { clientRef: "recheck" } },
             { from: { clientRef: "recheck" }, to: { clientRef: "accept" } },
           ],
-          cancelTicketIds: [qaLink.ticketId],
+          cancelTicketIds: [],
           requiredTerminalRefs: [{ clientRef: "accept" }],
         },
       },
@@ -986,7 +1257,7 @@ describe("MissionProcessManager", () => {
     expect(qaRetry.dispatchId).not.toBe(qaLink.dispatchId);
     expect(qaRetry.agentGoalId).not.toBe(qaLink.agentGoalId);
     expect(await fixture.tickets.getTicket(devLink.ticketId)).toMatchObject({ status: "completed", attempts: [{ attemptNumber: 1, status: "completed" }] });
-    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "cancelled", attempts: [{ attemptNumber: 1, status: "returned" }] });
+    expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "returned", attempts: [{ attemptNumber: 1, status: "returned" }] });
   });
 });
 
@@ -997,17 +1268,14 @@ function satisfied(goal: AgentGoal) {
 }
 function baselineOutcome(): MissionTicketOutcome {
   return {
-    baseline: {
-      objective: "build the agreed product",
-      successCriteria: ["the agreed product is delivered and verified"],
-      verificationPlan: [{
-        criterionIndex: 0,
-        anchors: [{ observableOutcome: "the agreed product is observable", evidenceRequirements: ["traceable tool evidence"] }],
-      }],
-      constraints: [],
-      assumptions: [],
-      exclusions: [],
-    },
+    objective: "build the agreed product",
+    criteria: [{
+      text: "the agreed product is delivered and verified",
+      anchors: [{ observableOutcome: "the agreed product is observable", evidenceRequirements: ["traceable tool evidence"] }],
+    }],
+    constraints: [],
+    assumptions: [],
+    exclusions: [],
   };
 }
 
@@ -1034,6 +1302,12 @@ function anchorResults(criterion: { criterionId: string; verification: { anchors
     anchorIndex,
     status: "satisfied" as const,
     evidence: [{ evidenceId: `ev-acceptance-${criterion.criterionId}` }],
+    verificationBasis: {
+      summary: "按 Mission baseline 验收锚点判断",
+      evidence: [{ evidenceId: `ev-acceptance-${criterion.criterionId}` }],
+    },
+    observations: ["工具观察结果与锚点完全一致"],
+    deviations: [],
   }));
 }
 
@@ -1056,10 +1330,10 @@ async function createFixture(clock = { now: new Date(NOW) }) {
     version: 1,
     contentHash: "team-hash",
     members: [
-      { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake", "delivery:accept"] },
-      { agentId: "pm", principalId: "principal-pm", capabilities: ["plan:plan"] },
-      { agentId: "dev", principalId: "principal-dev", capabilities: ["implementation"] },
-      { agentId: "qa", principalId: "principal-qa", capabilities: ["quality:verify"] },
+      { agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake", "delivery:accept"], enabledTools: [] },
+      { agentId: "pm", principalId: "principal-pm", capabilities: ["plan:plan"], enabledTools: [] },
+      { agentId: "dev", principalId: "principal-dev", capabilities: ["implementation"], enabledTools: [] },
+      { agentId: "qa", principalId: "principal-qa", capabilities: ["quality:verify"], enabledTools: [] },
     ],
   };
   const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();

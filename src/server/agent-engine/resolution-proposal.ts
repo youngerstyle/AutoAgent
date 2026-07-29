@@ -22,11 +22,16 @@ export function parseResolutionProposal(
   for (const [index, item] of submittedEvidence.entries()) {
     if (!isEvidence(item)) return { ok: false, reason: `evidence[${index}] 必须是包含 kind 和 ref 字符串的对象` };
   }
-  if (!Array.isArray(value.criterionResults)) return { ok: false, reason: "criterionResults 必须是数组" };
+  if (!Array.isArray(value.criterionResults)) {
+    return { ok: false, reason: "criterionResults 必须是数组" };
+  }
+  if (value.criterionResults !== undefined && !Array.isArray(value.criterionResults)) {
+    return { ok: false, reason: "criterionResults 必须是数组" };
+  }
 
   const criterionResults: GoalResolutionProposal["criterionResults"] = [];
   const seen = new Set<number>();
-  for (const [index, item] of value.criterionResults.entries()) {
+  for (const [index, item] of (Array.isArray(value.criterionResults) ? value.criterionResults : []).entries()) {
     if (!isRecord(item)
       || !Number.isInteger(item.criterionIndex)
       || !new Set(["satisfied", "not_satisfied", "not_verified"]).has(String(item.status))

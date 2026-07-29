@@ -113,6 +113,93 @@ describe("AgentContextAssembler", () => {
     expect(assembled.prompt).toContain("图片附件 1 张");
   });
 
+  it("keeps prior Goal facts auditable but excludes their raw tool history from a new Goal context", async () => {
+    const fixture = await contextFixture();
+    const priorGoal = await fixture.engine.startGoal({
+      agentId: "dev",
+      threadId: fixture.thread.threadId,
+      idempotencyKey: "prior-goal",
+      spec: {
+        id: "prior-goal",
+        threadId: fixture.thread.threadId,
+        objective: "检查旧版本",
+        successCriteria: ["旧版本已检查"],
+        contextRefs: [],
+        createdAt: "2026-07-13T00:00:00.000Z",
+      },
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "prior-call",
+      turnId: "prior-turn",
+      threadId: fixture.thread.threadId,
+      goalId: priorGoal.spec.id,
+      kind: "tool",
+      value: {
+        type: "tool_call",
+        goalId: priorGoal.spec.id,
+        callId: "prior-call",
+        name: "readFile",
+        arguments: { path: "index.html" },
+      },
+      createdAt: "2026-07-13T00:01:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "prior-result",
+      turnId: "prior-turn",
+      threadId: fixture.thread.threadId,
+      goalId: priorGoal.spec.id,
+      kind: "observation",
+      value: {
+        type: "tool_result",
+        goalId: priorGoal.spec.id,
+        callId: "prior-call",
+        content: { evidenceId: "stale-prior-evidence" },
+        isError: false,
+      },
+      createdAt: "2026-07-13T00:02:00.000Z",
+    });
+    const currentGoal = await fixture.engine.startGoal({
+      agentId: "dev",
+      threadId: fixture.thread.threadId,
+      idempotencyKey: "current-goal",
+      spec: {
+        id: "current-goal",
+        threadId: fixture.thread.threadId,
+        objective: "验收新版本",
+        successCriteria: ["新版本已验收"],
+        contextRefs: [],
+        createdAt: "2026-07-13T00:03:00.000Z",
+      },
+    });
+    await fixture.engine.sendMessage({
+      messageId: "current-instruction",
+      threadId: fixture.thread.threadId,
+      goalId: currentGoal.spec.id,
+      senderPrincipalId: "mission-process",
+      content: "使用正式 handoff 验收当前版本",
+      createdAt: "2026-07-13T00:04:00.000Z",
+    });
+
+    const assembled = await fixture.assembler.assemble({
+      profile,
+      agent,
+      policy,
+      thread: await fixture.engine.getThread(fixture.thread.threadId),
+      goal: currentGoal,
+    });
+
+    expect(JSON.stringify(assembled.history)).not.toContain("stale-prior-evidence");
+    expect(JSON.stringify(assembled.history)).not.toContain("prior-call");
+    expect(assembled.history).toContainEqual({
+      type: "user_message",
+      content: "使用正式 handoff 验收当前版本",
+    });
+    expect(assembled.history[0]).toMatchObject({
+      type: "user_message",
+      content: expect.stringContaining("Goal 上下文隔离"),
+    });
+  });
+
   it("compacts by whole interaction groups and never leaves a tool result without its call", async () => {
     const fixture = await contextFixture(220);
     for (let index = 0; index < 8; index += 1) {
@@ -151,6 +238,58 @@ describe("AgentContextAssembler", () => {
     const callIndex = assembled.history.findIndex((item) => item.type === "tool_call" && item.callId === "latest");
     expect(callIndex).toBeGreaterThanOrEqual(0);
     expect(resultIndex).toBeGreaterThan(callIndex);
+  });
+
+  it("keeps rejected tool calls auditable without replaying recursive arguments to the model", async () => {
+    const fixture = await contextFixture(220);
+    const recursiveArguments = {
+      status: "completed",
+      criterionResults: [`bad-${"recursive-payload".repeat(2_000)}`],
+    };
+    await fixture.engine.appendToolItem({
+      itemId: "invalid-call",
+      threadId: fixture.thread.threadId,
+      kind: "tool",
+      value: {
+        type: "tool_call",
+        callId: "invalid-call",
+        name: "goal_resolution",
+        arguments: recursiveArguments,
+      },
+      createdAt: "2026-07-13T01:00:00.000Z",
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "invalid-result",
+      threadId: fixture.thread.threadId,
+      kind: "observation",
+      value: {
+        type: "tool_result",
+        callId: "invalid-call",
+        content: `Validation failed for tool "goal_resolution":\n- criterionResults/0 must be object\n\nReceived arguments:\n${JSON.stringify(recursiveArguments, null, 2)}`,
+        isError: true,
+      },
+      createdAt: "2026-07-13T01:01:00.000Z",
+    });
+
+    const assembled = await fixture.assembler.assemble({
+      profile,
+      agent,
+      policy,
+      thread: await fixture.engine.getThread(fixture.thread.threadId),
+    });
+
+    expect(assembled.history).toContainEqual({
+      type: "tool_call",
+      callId: "invalid-call",
+      name: "goal_resolution",
+      arguments: expect.objectContaining({
+        rejected: true,
+        reason: "schema_validation_failed",
+      }),
+    });
+    expect(JSON.stringify(assembled.history)).toContain("criterionResults/0 must be object");
+    expect(JSON.stringify(assembled.history)).not.toContain("recursive-payload");
+    expect(JSON.stringify(assembled.history).length).toBeLessThan(5_000);
   });
 
   it("bounds every semantic compaction request instead of sending the whole oversized prefix", async () => {

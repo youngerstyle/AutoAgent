@@ -14,13 +14,13 @@ import type {
 } from "../../shared/types.js";
 import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
-import type { ActiveMissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
-import type { PlanId, PlanPolicyRef, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
+import type { ActiveMissionLink, MissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
+import type { PlanId, PlanPolicyRef, PlannedTicketAssignment, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { AgentContextAssembler } from "../agent-engine/context-assembler.js";
 import { PiAgentRuntime } from "../agent-engine/pi-runtime.js";
-import type { AgentExecutionRuntime } from "../agent-engine/runtime.js";
+import type { AgentExecutionRuntime, AgentExecutionSliceResult } from "../agent-engine/runtime.js";
 import { AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { ensureCoreTeam, listWorkspaceAgents } from "../agents/roster.js";
@@ -54,9 +54,12 @@ export class RuntimeHost {
   private readonly contexts = new Map<string, RuntimeContext>();
   private readonly readOnlyTasks = new Map<string, string>();
   private readonly agentRuns = new Map<string, Promise<void>>();
+  private readonly providerBackoffs = new Map<string, { failures: number; retryAt: number }>();
   private timer?: NodeJS.Timeout;
   private tickPromise?: Promise<void>;
   private backgroundTickPromise?: Promise<void>;
+  private backgroundTickRequested = false;
+  private startPromise?: Promise<void>;
   private operationTail: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -65,7 +68,12 @@ export class RuntimeHost {
     private readonly providers: ProviderRegistry,
     private readonly policyStore: PlanPolicyStore,
     private readonly policyRef: PlanPolicyRef,
-    private readonly options: { intervalMs?: number; now?: () => Date } = {},
+    private readonly options: {
+      intervalMs?: number;
+      now?: () => Date;
+      providerRetryBaseMs?: number;
+      providerRetryMaxMs?: number;
+    } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
   }
@@ -102,8 +110,7 @@ export class RuntimeHost {
     let queuedTurn: Promise<void> | undefined;
     const result = await this.exclusive(async () => {
       const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId, attachments);
-      const record = await this.store.get(taskId);
-      if (accepted.appended && record?.status === "active") {
+      if (accepted.appended) {
         queuedTurn = this.enqueueAgentMessageTurn(
           taskId,
           agentId,
@@ -146,19 +153,29 @@ export class RuntimeHost {
   }
 
   async start(): Promise<void> {
-    await this.recover();
     if (this.timer) return;
-    this.timer = setInterval(() => {
-      void this.backgroundTick().catch((error) => {
-        console.error("RuntimeHost background tick failed", error);
-      });
-    }, this.options.intervalMs ?? 1_000);
-    this.timer.unref();
+    if (this.startPromise) return this.startPromise;
+    const pending = (async () => {
+      await this.recover();
+      if (this.timer) return;
+      this.timer = setInterval(() => {
+        void this.backgroundTick().catch((error) => {
+          console.error("RuntimeHost background tick failed", error);
+        });
+      }, this.options.intervalMs ?? 1_000);
+      this.timer.unref();
+    })();
+    const tracked = pending.finally(() => {
+      if (this.startPromise === tracked) this.startPromise = undefined;
+    });
+    this.startPromise = tracked;
+    return tracked;
   }
 
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    this.providerBackoffs.clear();
 
     await Promise.allSettled(
       [...this.contexts.values()].flatMap((context) =>
@@ -251,10 +268,21 @@ export class RuntimeHost {
   }
 
   private backgroundTick(): Promise<void> {
+    this.backgroundTickRequested = true;
     if (this.backgroundTickPromise) return this.backgroundTickPromise;
-    const pending = this.exclusive(() => this.tickUnlocked(false));
+    const pending = (async () => {
+      while (this.backgroundTickRequested) {
+        this.backgroundTickRequested = false;
+        await this.exclusive(() => this.tickUnlocked(false));
+      }
+    })();
     const tracked = pending.finally(() => {
       if (this.backgroundTickPromise === tracked) this.backgroundTickPromise = undefined;
+      if (this.backgroundTickRequested && this.timer) {
+        queueMicrotask(() => void this.backgroundTick().catch((error) => {
+          console.error("RuntimeHost follow-up tick failed", error);
+        }));
+      }
     });
     this.backgroundTickPromise = tracked;
     return tracked;
@@ -396,16 +424,9 @@ export class RuntimeHost {
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
-    if (plan.status === "paused") {
-      const result = await context.tickets.applyPlan({
-        commandId: stableId("resume", taskId, String(plan.version)),
-        planId: plan.planId,
-        actorPrincipalId: "minimal-team-planner",
-        issuedAt: this.now().toISOString(),
-        payload: { type: "resume", expectedPlanVersion: plan.version },
-      });
-      if (!result.accepted) throw new Error(result.reason);
-    }
+    // The Plan is the execution gate. Resume Agent Goals first while that gate
+    // remains closed so a partial failure cannot expose an active Plan backed by
+    // paused workers.
     for (const link of mission.links.filter((item) => item.status === "running" || item.status === "paused")) {
       const engine = context.engines.get(link.agentId)!;
       const goal = await engine.getGoal(link.agentGoalId!);
@@ -416,6 +437,16 @@ export class RuntimeHost {
         action: "resume",
         reason: "plan resumed",
       });
+    }
+    if (plan.status === "paused") {
+      const result = await context.tickets.applyPlan({
+        commandId: stableId("resume", taskId, String(plan.version)),
+        planId: plan.planId,
+        actorPrincipalId: "minimal-team-planner",
+        issuedAt: this.now().toISOString(),
+        payload: { type: "resume", expectedPlanVersion: plan.version },
+      });
+      if (!result.accepted) throw new Error(result.reason);
     }
     context.record = { ...context.record, status: "active", updatedAt: this.now().toISOString() };
     await this.store.save(context.record);
@@ -500,9 +531,23 @@ export class RuntimeHost {
     const plan = await context.tickets.getPlan(mission.record.planId);
     const taskPausedForPresentation = plan.status === "paused";
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
+    const [workItems, profiles, projections] = await Promise.all([
+      Promise.all(plan.graph.ticketIds.map((ticketId) => context.tickets.getWorkItem(ticketId))),
+      this.profiles.list(),
+      Promise.all(agents.map(async (agent) => {
+        const engine = context.engines.get(agent.id);
+        const link = mission.links.find((item) => item.agentId === agent.id && new Set(["running", "blocked", "resolving", "paused"]).has(item.status));
+        return {
+          agent,
+          link,
+          projection: await engine?.getProjection(record.missionId, link?.agentGoalId, 200),
+        };
+      })),
+    ]);
     const tickets: Ticket[] = [];
-    for (const ticketId of plan.graph.ticketIds) {
-      const work = await context.tickets.getWorkItem(ticketId);
+    for (let index = 0; index < plan.graph.ticketIds.length; index += 1) {
+      const ticketId = plan.graph.ticketIds[index]!;
+      const work = workItems[index];
       if (!work) continue;
       const link = linksByTicket.get(String(ticketId));
       const targetAgent = agents.find((agent) => agent.id === link?.agentId);
@@ -537,14 +582,10 @@ export class RuntimeHost {
         updatedAt: link?.updatedAt ?? record.updatedAt,
       });
     }
-    const profiles = await this.profiles.list();
     const agentThreads: Record<string, AgentThreadEvent[]> = {};
     const recentEvents: AutoAgentEvent[] = [];
     const projectedAgents = [] as WorkspaceSnapshot["agents"];
-    for (const agent of agents) {
-      const engine = context.engines.get(agent.id);
-      const link = mission.links.find((item) => item.agentId === agent.id && new Set(["running", "blocked", "resolving", "paused"]).has(item.status));
-      const projection = await engine?.getProjection(record.missionId, link?.agentGoalId, 200);
+    for (const { agent, link, projection } of projections) {
       const thread = projection?.thread;
       const goal = projection?.goal;
       const events = thread ? projectThread(thread, projection.payloads, record) : [];
@@ -578,7 +619,7 @@ export class RuntimeHost {
         currentStep: goal?.spec.objective,
       });
     }
-    const status = presentationStatus(plan.status, mission.record.status);
+    const status = presentationStatus(plan.status, mission.record.status, tickets);
     const phase = presentationPhase(plan.status, mission.record.status, tickets);
     return {
       workspace: this.workspace,
@@ -622,6 +663,10 @@ export class RuntimeHost {
     return this.contexts.get(taskId);
   }
 
+  providerRetryState(taskId: string, agentId: string): { failures: number; retryAt: number } | undefined {
+    return this.providerBackoffs.get(`${taskId}:${agentId}`);
+  }
+
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.operationTail.then(operation, operation);
     this.operationTail = result.then(() => undefined, () => undefined);
@@ -637,7 +682,10 @@ export class RuntimeHost {
     }
     for (const link of mission.links) {
       if (link.status !== "running") continue;
-      if (this.agentRuns.has(this.agentRunKey(context, link.agentId))) continue;
+      const runKey = this.agentRunKey(context, link.agentId);
+      if (this.agentRuns.has(runKey)) continue;
+      const providerBackoff = this.providerBackoffs.get(runKey);
+      if (providerBackoff && providerBackoff.retryAt > this.now().getTime()) continue;
       const engine = context.engines.get(link.agentId);
       const goal = await engine?.getGoal(link.agentGoalId);
       if (goal?.status !== "active") continue;
@@ -652,7 +700,18 @@ export class RuntimeHost {
         });
         continue;
       }
-      const run = this.runAgentOnce(context, link);
+      const pendingHumanTurn = await context.loops.get(link.agentId)?.pendingHumanTurn(link.agentThreadId);
+      const run = pendingHumanTurn
+        ? this.trackAgentRun(
+            runKey,
+            this.runAgentSlice(
+              context,
+              link,
+              pendingHumanTurn.turnId,
+              pendingHumanTurn.triggerMessageId,
+            ),
+          )
+        : this.runAgentOnce(context, link);
       if (awaitAgentRuns) {
         await run;
       } else {
@@ -663,6 +722,7 @@ export class RuntimeHost {
       }
     }
     mission = await context.manager.tick();
+    await this.releaseSettledAgentResources(context, mission.links);
     const activeAgentIds = new Set(mission.links
       .filter((link) => new Set(["running", "blocked", "resolving", "paused"]).has(link.status))
       .map((link) => link.agentId));
@@ -685,6 +745,7 @@ export class RuntimeHost {
       }
     }
     mission = await context.manager.tick();
+    await this.releaseSettledAgentResources(context, mission.links);
     const plan = await context.tickets.getPlan(mission.record.planId);
     await this.syncTaskStatus(context, plan.status, mission.record.status);
   }
@@ -761,20 +822,108 @@ export class RuntimeHost {
     return `${context.record.taskId}:${agentId}`;
   }
 
+  private async releaseSettledAgentResources(context: RuntimeContext, links: MissionLink[]): Promise<void> {
+    await Promise.allSettled(links
+      .filter((link) => link.status === "settled" || link.status === "cancelled")
+      .filter((link) => link.agentThreadId && link.agentGoalId)
+      .map((link) => context.loops.get(link.agentId)?.releaseGoalResources?.({
+        agentId: link.agentId,
+        threadId: link.agentThreadId!,
+        goalId: link.agentGoalId!,
+        attemptId: link.attemptId,
+      })));
+  }
+
   private async runAgentSlice(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string): Promise<void> {
     const result = await context.loops.get(link.agentId)?.runSlice(await this.sliceInput(context, link, turnId, triggerMessageId));
-    if (result?.status !== "execution_blocked" || !result.goal || result.goal.status !== "active") return;
-    await context.engines.get(link.agentId)?.controlGoal({
+    const key = this.agentRunKey(context, link.agentId);
+    if (result?.status === "yielded" && result.blockReason === "provider_error" && result.providerRetryable) {
+      await this.deferProviderRetry(context, link, result);
+      return;
+    }
+    if (result?.status === "execution_blocked"
+      && result.goal?.status === "active"
+      && (result.blockReason === "no_progress" || result.blockReason === "provider_protocol")) {
+      await this.deferExecutionRetry(context, link, result);
+      return;
+    }
+    this.providerBackoffs.delete(key);
+    if (result?.status !== "execution_blocked"
+      || !result.goal
+      || result.goal.status !== "active") return;
+    const engine = context.engines.get(link.agentId);
+    const currentGoal = await engine?.getGoal(result.goal.spec.id);
+    if (!currentGoal || currentGoal.status !== "active") return;
+    await engine?.controlGoal({
       requestId: stableId("execution_blocked", context.record.taskId, link.agentId, result.turnId),
-      goalId: result.goal.spec.id,
-      expectedGoalVersion: result.goal.version,
+      goalId: currentGoal.spec.id,
+      expectedGoalVersion: currentGoal.version,
       action: result.blockReason === "usage_limit" ? "limit_usage" : "pause",
       reason: result.blockReason === "usage_limit"
         ? "configured token window reached; human confirmation is required"
-        : result.blockReason === "no_progress"
-          ? "the same tool error repeated without progress; execution is paused and ticket state is unchanged"
-          : "provider execution is unavailable; ticket state is unchanged",
+        : "the provider rejected the request and cannot be retried automatically; ticket state is unchanged",
     });
+  }
+
+  private async deferExecutionRetry(
+    context: RuntimeContext,
+    link: ActiveMissionLink,
+    result: AgentExecutionSliceResult,
+  ): Promise<void> {
+    const retry = this.scheduleRetry(context, link);
+    await context.engines.get(link.agentId)?.appendToolItem({
+      itemId: `${result.turnId}:execution-backoff`,
+      turnId: result.turnId,
+      threadId: link.agentThreadId,
+      goalId: link.agentGoalId,
+      kind: "control",
+      value: {
+        turnId: result.turnId,
+        status: "execution_retry_wait",
+        reason: result.blockReason,
+        detail: result.blockedMessage,
+        retryAt: new Date(retry.retryAt).toISOString(),
+        failures: retry.failures,
+      },
+      createdAt: this.now().toISOString(),
+    });
+  }
+
+  private async deferProviderRetry(
+    context: RuntimeContext,
+    link: ActiveMissionLink,
+    result: AgentExecutionSliceResult,
+  ): Promise<void> {
+    const { failures, retryAt } = this.scheduleRetry(context, link);
+    await context.engines.get(link.agentId)?.appendToolItem({
+      itemId: `${result.turnId}:provider-backoff`,
+      turnId: result.turnId,
+      threadId: link.agentThreadId,
+      goalId: link.agentGoalId,
+      kind: "control",
+      value: {
+        turnId: result.turnId,
+        status: "external_service_waiting",
+        retryAt: new Date(retryAt).toISOString(),
+        failures,
+      },
+      createdAt: this.now().toISOString(),
+    });
+  }
+
+  private scheduleRetry(
+    context: RuntimeContext,
+    link: ActiveMissionLink,
+  ): { failures: number; retryAt: number } {
+    const key = this.agentRunKey(context, link.agentId);
+    const previous = this.providerBackoffs.get(key);
+    const failures = (previous?.failures ?? 0) + 1;
+    const baseMs = Math.max(1, this.options.providerRetryBaseMs ?? 5_000);
+    const maxMs = Math.max(baseMs, this.options.providerRetryMaxMs ?? 60_000);
+    const delayMs = Math.min(maxMs, baseMs * (2 ** Math.min(failures - 1, 10)));
+    const retryAt = this.now().getTime() + delayMs;
+    this.providerBackoffs.set(key, { failures, retryAt });
+    return { failures, retryAt };
   }
 
   private async compose(record: RuntimeTaskRecord): Promise<RuntimeContext> {
@@ -785,7 +934,7 @@ export class RuntimeHost {
     const missionStore = new MissionStore(this.workspace.rootPath, record.missionId);
     const persistedMission = await missionStore.read();
     const team = persistedMission?.record.teamBinding
-      ?? createTeamBinding(workspaceAgents, profiles, "minimal-team");
+      ?? createTeamBinding(this.workspace, workspaceAgents, profiles, "minimal-team");
     const tickets = new TicketEngine(
       new TicketStore(this.workspace.rootPath, record.taskId, record.runId),
       this.policyStore,
@@ -801,14 +950,20 @@ export class RuntimeHost {
       const profile = profiles.find((item) => item.id === agent.profileId);
       if (!profile) continue;
       const resolutionPort = new MissionGoalResolutionPort(
-        () => undefined,
+        () => {
+          if (this.timer) {
+            queueMicrotask(() => void this.backgroundTick().catch((error) => {
+              console.error("RuntimeHost proposal wake failed", error);
+            }));
+          }
+        },
         agent.id,
         () => this.now(),
         this.workspace.rootPath,
       );
       const store = new AgentStore(this.workspace.rootPath, agent.id);
       const engine = new AgentEngine<MissionTicketOutcome>(store, resolutionPort, { now: () => this.now() });
-      const policy = resolvePolicy(this.workspace, agent);
+      const policy = resolvePolicy(this.workspace, agent, profile);
       const enabled = toolsForPolicy(policy).map((tool) => tool.name) as WorkspaceToolName[];
       engines.set(agent.id, engine);
       loops.set(agent.id, new PiAgentRuntime(
@@ -885,7 +1040,7 @@ export class RuntimeHost {
       attemptId,
       profile,
       agent,
-      policy: resolvePolicy(this.workspace, agent),
+      policy: resolvePolicy(this.workspace, agent, profile),
       provider,
       model,
       ...modelRuntime,
@@ -1000,13 +1155,19 @@ export function projectTicketBlocker(reason: string, requiredInput: TicketRequir
   };
 }
 
-function presentationStatus(plan: string, mission: string): EntityStatus {
+export function presentationStatus(
+  plan: string,
+  mission: string,
+  tickets: ReadonlyArray<Pick<Ticket, "status" | "blocker">> = [],
+): EntityStatus {
   if (mission === "completed") return "completed";
-  if (plan === "blocked") return "blocked";
-  if (plan === "paused") return "paused";
-  if (plan === "completed") return "blocked";
   if (plan === "failed") return "failed";
   if (plan === "cancelled") return "interrupted";
+  if (plan === "paused") return "paused";
+  if (tickets.some((ticket) => ticket.status === "blocked" || ticket.blocker)) return "blocked";
+  if (tickets.some((ticket) => ticket.status === "running" || ticket.status === "pending")) return "running";
+  if (plan === "blocked") return "blocked";
+  if (plan === "completed") return "blocked";
   return "running";
 }
 
@@ -1014,18 +1175,20 @@ export function planAllowsActiveAgentExecution(planStatus: string): boolean {
   return planStatus === "active" || planStatus === "blocked";
 }
 
-function hasEligibleMember(team: TeamBinding, assignment: { principalId?: string; requiredCapabilities?: string[] }): boolean {
+function hasEligibleMember(team: TeamBinding, assignment: PlannedTicketAssignment): boolean {
   return team.members.some((member) => {
     if (assignment.principalId && member.principalId !== assignment.principalId) return false;
-    return (assignment.requiredCapabilities ?? []).every((capability) => member.capabilities.includes(capability));
+    return (assignment.requiredCapabilities ?? []).every((capability) => member.capabilities.includes(capability))
+      && (assignment.requiredTools ?? []).every((tool) => member.enabledTools.includes(tool));
   });
 }
 
-function assignmentGapReason(assignment: { principalId?: string; requiredCapabilities?: string[] }): string {
-  if (assignment.principalId) return `工单指定负责人 ${assignment.principalId} 不在当前 Mission 的 TeamBinding 中或能力不匹配`;
+function assignmentGapReason(assignment: PlannedTicketAssignment): string {
+  if (assignment.principalId) return `工单指定负责人 ${assignment.principalId} 不在当前 Mission 的 TeamBinding 中或能力、工具不匹配`;
   const required = assignment.requiredCapabilities ?? [];
-  return required.length
-    ? `当前 Mission 的 TeamBinding 中没有同时具备以下能力的 Agent：${required.join("、")}`
+  const requiredTools = assignment.requiredTools ?? [];
+  return required.length || requiredTools.length
+    ? `当前 Mission 的 TeamBinding 中没有同时满足分配契约的 Agent：能力 ${required.join("、") || "无"}；工具 ${requiredTools.join("、") || "无"}`
     : "当前 Mission 的 TeamBinding 中没有可领取该工单的 Agent";
 }
 

@@ -27,6 +27,28 @@ describe("MissionGoalResolutionPort", () => {
     expect(result).toMatchObject({ settle: false, pending: "retry_later" });
     expect(wake).toHaveBeenCalledOnce();
   });
+
+  it("rejects a correction disposition nested inside the successful settlement payload", async () => {
+    const wake = vi.fn();
+    const port = new MissionGoalResolutionPort(wake, "boss");
+    const result = await port.resolve(goal(), proposal({
+      missionResolution: {
+        disposition: "correction_required",
+        targetTicketId: "upstream-ticket",
+        reason: "evidence changed",
+      },
+    }));
+
+    expect(result).toMatchObject({
+      settle: true,
+      decision: {
+        accepted: false,
+        disposition: "correctable",
+        reason: expect.stringContaining("domainOutcome"),
+      },
+    });
+    expect(wake).not.toHaveBeenCalled();
+  });
 });
 
 function goal(): AgentGoal {

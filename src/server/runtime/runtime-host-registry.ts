@@ -6,11 +6,13 @@ import type { ProviderRegistry } from "../providers/provider-registry.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import type { PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
+import type { Workspace } from "../../shared/types.js";
 import { RuntimeHost } from "./runtime-host.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
+  private readonly pendingHosts = new Map<string, Promise<RuntimeHost>>();
 
   constructor(
     private readonly workspaces: WorkspaceStore,
@@ -18,6 +20,7 @@ export class RuntimeHostRegistry {
     private readonly providers: ProviderRegistry,
     private readonly policyStore: PlanPolicyStore,
     private readonly policyRef: PlanPolicyRef,
+    private readonly restoreConcurrency = 2,
   ) {}
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
@@ -81,14 +84,50 @@ export class RuntimeHostRegistry {
   }
 
   async stopAll(): Promise<void> {
-    const hosts = [...this.hosts.values()];
+    const pending = await Promise.allSettled(this.pendingHosts.values());
+    const hosts = [
+      ...this.hosts.values(),
+      ...pending.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
+    ];
     this.hosts.clear();
-    await Promise.allSettled(hosts.map((host) => host.stop()));
+    this.pendingHosts.clear();
+    await Promise.allSettled([...new Set(hosts)].map((host) => host.stop()));
+  }
+
+  async removeWorkspace(
+    workspaceId: string,
+    options: { deleteLocalFolder?: boolean } = {},
+  ): Promise<Workspace> {
+    const pending = this.pendingHosts.get(workspaceId);
+    const host = this.hosts.get(workspaceId) ?? (pending ? await pending : undefined);
+    this.hosts.delete(workspaceId);
+    this.pendingHosts.delete(workspaceId);
+    if (host) await host.stop();
+    return this.workspaces.remove(workspaceId, options);
   }
 
   async startAll(): Promise<void> {
-    for (const workspace of await this.workspaces.list()) {
-      await this.host(workspace.id, true);
+    const workspaces = await this.workspaces.list();
+    const failures: Array<{ workspaceId: string; reason: unknown }> = [];
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < workspaces.length) {
+        const workspace = workspaces[cursor++];
+        if (!workspace) return;
+        try {
+          await this.host(workspace.id, true);
+        } catch (reason) {
+          failures.push({ workspaceId: workspace.id, reason });
+        }
+      }
+    };
+    const workerCount = Math.min(this.restoreConcurrency, workspaces.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map((failure) => failure.reason),
+        `Failed to restore ${failures.length} runtime host(s): ${failures.map((failure) => failure.workspaceId).join(", ")}`,
+      );
     }
   }
 
@@ -98,15 +137,30 @@ export class RuntimeHostRegistry {
       if (startScheduler) await existing.start();
       return existing;
     }
-    const workspace = await this.workspaces.get(workspaceId);
-    await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-    const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef);
-    if (startScheduler) {
-      await host.start();
-    } else {
-      await host.hydrate();
+    let pending = this.pendingHosts.get(workspaceId);
+    if (!pending) {
+      pending = this.createHost(workspaceId, startScheduler);
+      this.pendingHosts.set(workspaceId, pending);
     }
-    this.hosts.set(workspaceId, host);
+    const host = await pending;
+    if (startScheduler) await host.start();
     return host;
+  }
+
+  private async createHost(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
+    try {
+      const workspace = await this.workspaces.get(workspaceId);
+      await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+      const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef);
+      if (startScheduler) {
+        await host.start();
+      } else {
+        await host.hydrate();
+      }
+      this.hosts.set(workspaceId, host);
+      return host;
+    } finally {
+      this.pendingHosts.delete(workspaceId);
+    }
   }
 }

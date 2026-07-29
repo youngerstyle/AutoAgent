@@ -47,11 +47,27 @@ describe("append-only Plan graph", () => {
 
   it("preserves an explicit original-request context policy on the materialized Ticket", () => {
     const input = change(["intake"]);
-    input.additions[0]!.contextPolicy = { includeOriginalRequest: true };
+    input.additions[0]!.contextPolicy = { includeOriginalRequest: true, requiresMissionBaseline: true };
 
     const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[0] });
 
-    expect(graph.definitionsByTicketId[ids[0]].contextPolicy).toEqual({ includeOriginalRequest: true });
+    expect(graph.definitionsByTicketId[ids[0]].contextPolicy).toEqual({
+      includeOriginalRequest: true,
+      requiresMissionBaseline: true,
+    });
+  });
+
+  it("preserves declared tool requirements and rejects unknown tools", () => {
+    const input = change(["research"]);
+    input.additions[0]!.assignment.requiredTools = ["readFile", "browser"];
+
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[0] });
+    expect(graph.definitionsByTicketId[ids[0]].assignment.requiredTools).toEqual(["readFile", "browser"]);
+
+    const invalid = change(["invalid"]);
+    (invalid.additions[0]!.assignment as { requiredTools?: string[] }).requiredTools = ["unknown-tool"];
+    expect(() => materializePlanGraph({ planId, change: invalid, ticketIdFactory: () => ids[1] }))
+      .toThrow(/unknown tool/);
   });
 
   it("preserves explicit Mission baseline and settlement authority without inferring roles", () => {
@@ -172,18 +188,45 @@ describe("append-only Plan graph", () => {
     })).toThrow(/executing Ticket/);
   });
 
-  it("rejects adding a new prerequisite to an existing Ticket", () => {
+  it("allows a new correction branch to rejoin an existing pending Ticket", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
-    expect(() => materializePlanGraph({
+    const statuses = new Map<TicketId, TicketStatus>([[ids[0], "pending"]]);
+    const amended = materializePlanGraph({
       planId,
       previous: first,
+      ticketStatuses: statuses,
       change: {
         ...change(["late-prerequisite"]),
         dependencyAdditions: [{ from: { clientRef: "late-prerequisite" }, to: { ticketId: ids[0] } }],
+        requiredTerminalRefs: [{ ticketId: ids[0] }],
       },
       ticketIdFactory: () => ids[1],
-    })).toThrow(/target a newly added Ticket/);
+    });
+
+    expect(amended.graph.dependencyEdges).toContainEqual({
+      fromTicketId: ids[1],
+      toTicketId: ids[0],
+    });
+    expect(amended.completionPolicy.requiredTerminalTicketIds).toEqual([ids[0]]);
   });
+
+  it.each(["ready", "running", "blocked", "completed", "returned", "failed", "cancelled"] as const)(
+    "rejects adding a new prerequisite to an existing %s Ticket",
+    (status) => {
+      const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
+      const statuses = new Map<TicketId, TicketStatus>([[ids[0], status]]);
+      expect(() => materializePlanGraph({
+        planId,
+        previous: first,
+        ticketStatuses: statuses,
+        change: {
+          ...change(["late-prerequisite"]),
+          dependencyAdditions: [{ from: { clientRef: "late-prerequisite" }, to: { ticketId: ids[0] } }],
+        },
+        ticketIdFactory: () => ids[1],
+      })).toThrow(/only while it is pending/);
+    },
+  );
 
   it("computes completion from required Ticket IDs rather than the latest PM response", () => {
     const graph = materializePlanGraph({ planId, change: change(["planning", "dev"]), ticketIdFactory: () => ids.shift()! });
@@ -222,5 +265,158 @@ describe("append-only Plan graph", () => {
 
     statuses.set(oldAcceptance!, "returned");
     expect(evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses })).toBe("completed");
+  });
+
+  it("blocks a require-resolution Plan when a required Ticket explicitly fails", () => {
+    const [work, acceptance] = [
+      "c246cf15-1c82-4f9e-a44f-16e03ca2d67e",
+      "4bd62a43-03e6-498d-8632-18f0e1533857",
+    ].map((value) => value as TicketId);
+    const graph = {
+      schemaVersion: 3 as const,
+      ticketIds: [work!, acceptance!],
+      dependencyEdges: [{ fromTicketId: work!, toTicketId: acceptance! }],
+    };
+    const statuses = new Map<TicketId, TicketStatus>([
+      [work!, "failed"],
+      [acceptance!, "pending"],
+    ]);
+
+    expect(evaluatePlanOutcome({
+      graph,
+      completionPolicy: {
+        requiredTerminalTicketIds: [acceptance!],
+        failurePolicy: "require_resolution",
+        blockedPolicy: "wait",
+      },
+      ticketStatuses: statuses,
+    })).toBe("blocked");
+
+    expect(evaluatePlanOutcome({
+      graph,
+      completionPolicy: {
+        requiredTerminalTicketIds: [acceptance!],
+        failurePolicy: "fail_fast",
+        blockedPolicy: "wait",
+      },
+      ticketStatuses: statuses,
+    })).toBe("failed");
+  });
+
+  it("keeps a returned Ticket immutable but satisfies its dependency after an explicit resolution Ticket completes", () => {
+    const [returnedQa, replacementQa, acceptance] = [
+      "515b8574-bf59-4e16-a016-7c74fba9b635",
+      "39db92de-13e9-42db-b3ea-6e55d6b500ac",
+      "d94cf2f5-89bd-4721-a07b-b214947cfe9b",
+    ].map((value) => value as TicketId);
+    const graph = {
+      schemaVersion: 3 as const,
+      ticketIds: [returnedQa!, replacementQa!, acceptance!],
+      dependencyEdges: [
+        { fromTicketId: returnedQa!, toTicketId: acceptance! },
+        { fromTicketId: replacementQa!, toTicketId: acceptance! },
+      ],
+      failureResolutionEdges: [{
+        failedTicketId: returnedQa!,
+        resolutionTicketId: replacementQa!,
+      }],
+    };
+    const completionPolicy = {
+      requiredTerminalTicketIds: [acceptance!],
+      failurePolicy: "require_resolution" as const,
+      blockedPolicy: "wait" as const,
+    };
+    const statuses = new Map<TicketId, TicketStatus>([
+      [returnedQa!, "returned"],
+      [replacementQa!, "running"],
+      [acceptance!, "pending"],
+    ]);
+
+    expect(evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses })).toBe("blocked");
+    statuses.set(replacementQa!, "completed");
+    statuses.set(acceptance!, "completed");
+    expect(evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses })).toBe("completed");
+  });
+
+  it("rejects replacing unsuccessful assurance with equivalent assurance and no new upstream work", () => {
+    const [implementation, returnedAssurance, replacementAssurance] = [
+      "bcdfad56-b34c-43f4-92ee-ef583eb6dd71",
+      "139e9041-2098-4af5-92eb-343c9a6769f6",
+      "82674581-08dc-487a-9b84-e8f0a4a73bb8",
+    ].map((value) => value as TicketId);
+    const initialChange = change(["implementation", "assurance"]);
+    initialChange.additions[0]!.missionContribution = { missionCriterionIds: ["playable"] };
+    initialChange.additions[1]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    initialChange.additions[1]!.assurance = { missionCriterionIds: ["playable"] };
+    let initialIndex = 0;
+    const initial = materializePlanGraph({
+      planId,
+      change: initialChange,
+      ticketIdFactory: () => [implementation, returnedAssurance][initialIndex++]!,
+    });
+    const statuses = new Map<TicketId, TicketStatus>([
+      [implementation, "completed"],
+      [returnedAssurance, "returned"],
+    ]);
+    const amendment = change(["replacement-assurance"]);
+    amendment.additions[0]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    amendment.additions[0]!.assurance = { missionCriterionIds: ["playable"] };
+    amendment.failureResolutions = [{
+      failedTicketId: returnedAssurance,
+      resolvedBy: { clientRef: "replacement-assurance" },
+    }];
+
+    expect(() => materializePlanGraph({
+      planId,
+      previous: initial,
+      ticketStatuses: statuses,
+      change: amendment,
+      ticketIdFactory: () => replacementAssurance,
+    })).toThrow(/new upstream execution work/);
+  });
+
+  it("allows unsuccessful assurance to be resolved by new work followed by independent assurance", () => {
+    const [implementation, returnedAssurance, correction, replacementAssurance] = [
+      "bcdfad56-b34c-43f4-92ee-ef583eb6dd71",
+      "139e9041-2098-4af5-92eb-343c9a6769f6",
+      "077c9668-3f8f-4c8a-b929-52a1dd12bd27",
+      "82674581-08dc-487a-9b84-e8f0a4a73bb8",
+    ].map((value) => value as TicketId);
+    const initialChange = change(["implementation", "assurance"]);
+    initialChange.additions[0]!.missionContribution = { missionCriterionIds: ["playable"] };
+    initialChange.additions[1]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    initialChange.additions[1]!.assurance = { missionCriterionIds: ["playable"] };
+    let initialIndex = 0;
+    const initial = materializePlanGraph({
+      planId,
+      change: initialChange,
+      ticketIdFactory: () => [implementation, returnedAssurance][initialIndex++]!,
+    });
+    const statuses = new Map<TicketId, TicketStatus>([
+      [implementation, "completed"],
+      [returnedAssurance, "returned"],
+    ]);
+    const amendment = change(["correction", "replacement-assurance"]);
+    amendment.additions[0]!.missionContribution = { missionCriterionIds: ["playable"] };
+    amendment.additions[1]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    amendment.additions[1]!.assurance = { missionCriterionIds: ["playable"] };
+    amendment.failureResolutions = [{
+      failedTicketId: returnedAssurance,
+      resolvedBy: { clientRef: "replacement-assurance" },
+    }];
+    let amendmentIndex = 0;
+
+    const graph = materializePlanGraph({
+      planId,
+      previous: initial,
+      ticketStatuses: statuses,
+      change: amendment,
+      ticketIdFactory: () => [correction, replacementAssurance][amendmentIndex++]!,
+    });
+
+    expect(graph.graph.failureResolutionEdges).toContainEqual({
+      failedTicketId: returnedAssurance,
+      resolutionTicketId: replacementAssurance,
+    });
   });
 });

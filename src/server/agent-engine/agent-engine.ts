@@ -67,6 +67,7 @@ export function validateGoalCriterionResults(goal: AgentGoal, proposal: GoalReso
   if (!Array.isArray(proposal.residualRisks) || proposal.residualRisks.some((item) => typeof item !== "string")) {
     return "residualRisks 必须是字符串数组";
   }
+  if (goal.spec.outputContract?.completionOutcomeSchema) return undefined;
   if (proposal.status !== "completed") return undefined;
   const expected = goal.spec.successCriteria.length;
   if (proposal.criterionResults.length !== expected) return `完成报告必须逐项回应全部 ${expected} 条成功标准`;
@@ -278,38 +279,30 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       throw new Error("Goal identity is invalid");
     }
     const fingerprint = hash(input);
-    const current = await this.store.read();
-    const key = current.goalStartKeys.find((item) => item.idempotencyKey === input.idempotencyKey);
-    if (key) {
-      if (key.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal start conflict");
-      return structuredClone(current.goals.find((item) => item.spec.id === key.goalId)!);
-    }
-    const thread = current.threads.find((item) => item.threadId === input.threadId);
-    if (!thread) throw new Error("Goal thread does not exist");
-    if (thread.agentId !== input.agentId) throw new Error("Goal agent does not own the thread");
-    if (current.goals.some((item) => item.spec.id === input.spec.id)) throw new AgentEngineConflictError("Goal ID exists");
     const goal: AgentGoal = {
       spec: structuredClone(input.spec),
       version: 1,
       status: "active",
       updatedAt: input.spec.createdAt,
     };
-    const nextThread = appendItem(thread, {
-      itemId: `goal:${input.spec.id}`,
-      kind: "goal",
-      createdAt: input.spec.createdAt,
-      payloadRef: `goal:${input.spec.id}`,
-    });
-    const event = goalEvent(goal, "GoalStatusChanged", input.spec.createdAt);
     const updated = await this.store.transact((aggregate) => {
       const replay = aggregate.goalStartKeys.find((item) => item.idempotencyKey === input.idempotencyKey);
       if (replay) {
         if (replay.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal start conflict");
         return aggregate;
       }
+      const thread = aggregate.threads.find((item) => item.threadId === input.threadId);
+      if (!thread) throw new Error("Goal thread does not exist");
+      if (thread.agentId !== input.agentId) throw new Error("Goal agent does not own the thread");
       if (aggregate.goals.some((item) => item.spec.id === input.spec.id)) {
         throw new AgentEngineConflictError("Goal ID exists");
       }
+      const nextThread = appendItem(thread, {
+        itemId: `goal:${input.spec.id}`,
+        kind: "goal",
+        createdAt: input.spec.createdAt,
+        payloadRef: `goal:${input.spec.id}`,
+      });
       return {
         ...aggregate,
         aggregateVersion: aggregate.aggregateVersion + 1,
@@ -321,7 +314,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
           goalId: input.spec.id,
           fingerprint,
         }],
-        pendingEvents: [event],
+        pendingEvents: [goalEvent(goal, "GoalStatusChanged", input.spec.createdAt)],
       };
     });
     return structuredClone(updated.goals.find((item) => item.spec.id === input.spec.id)!);
@@ -348,8 +341,23 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       .filter((item) => item.kind === "control")
       .map((item) => payloadControlStatus(payloads, item.payloadRef, goalId))
       .find((status): status is string => Boolean(status));
-    if (latestControlStatus === "running") {
-      return { ready: true, reason: "interrupted_turn" };
+    if (latestControlStatus === "running"
+      || latestControlStatus === "provider_retry_wait"
+      || latestControlStatus === "external_service_waiting"
+      || latestControlStatus === "execution_retry_wait"
+      || latestControlStatus === "execution_blocked"
+      || latestControlStatus === "stale_goal") {
+      return {
+        ready: true,
+        reason: latestControlStatus === "running"
+          || latestControlStatus === "execution_blocked"
+          ? "interrupted_turn"
+          : latestControlStatus === "stale_goal"
+            ? "goal_version_updated"
+            : latestControlStatus === "execution_retry_wait"
+              ? "execution_retry_due"
+              : "provider_retry_due",
+      };
     }
     let lastAgentOutputIndex = -1;
     for (let index = thread.items.length - 1; index >= 0; index -= 1) {
@@ -369,11 +377,12 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       .map((item) => correctionReason(payloads, item.payloadRef))
       .find((reason): reason is string => Boolean(reason));
     if (latestCorrection) {
-      const repeated = thread.items.slice(0, lastAgentOutputIndex)
-        .some((item) => correctionReason(payloads, item.payloadRef) === latestCorrection);
-      return repeated
-        ? { ready: false, reason: "repeated_correction_without_new_input" }
-        : { ready: true, reason: "host_correction" };
+      const proposals = aggregate.proposals.filter((proposal) => proposal.goalId === goalId);
+      if (proposals.length >= 2
+        && proposalContentFingerprint(proposals.at(-1)!) === proposalContentFingerprint(proposals.at(-2)!)) {
+        return { ready: false, reason: "repeated_proposal_without_progress" };
+      }
+      return { ready: true, reason: "host_correction" };
     }
     return { ready: false, reason: "no_new_input_after_agent_output" };
   }
@@ -427,23 +436,24 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome> | undefined;
   }
 
+  async hasPendingHumanTurn(goalId: string, excludingTurnId?: string): Promise<boolean> {
+    const aggregate = await this.store.read();
+    const goal = aggregate.goals.find((item) => item.spec.id === goalId);
+    if (!goal) return false;
+    return hasUnconsumedHumanTurn(aggregate, goal.spec.threadId, goalId, excludingTurnId);
+  }
+
   async controlGoal(input: AgentGoalControlRequest): Promise<AgentGoal> {
     const fingerprint = hash(input);
-    const current = await this.store.read();
-    const replay = current.controls.find((item) => item.requestId === input.requestId);
-    if (replay) {
-      if (replay.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal control conflict");
-      return structuredClone(replay.goal);
-    }
-    const goal = current.goals.find((item) => item.spec.id === input.goalId);
-    if (!goal) throw new Error("Goal does not exist");
-    const next = controlGoalState(goal, input, this.now().toISOString());
     const updated = await this.store.transact((aggregate) => {
       const duplicate = aggregate.controls.find((item) => item.requestId === input.requestId);
       if (duplicate) {
         if (duplicate.fingerprint !== fingerprint) throw new AgentEngineConflictError("Goal control conflict");
         return aggregate;
       }
+      const goal = aggregate.goals.find((item) => item.spec.id === input.goalId);
+      if (!goal) throw new Error("Goal does not exist");
+      const next = controlGoalState(goal, input, this.now().toISOString());
       return {
         ...aggregate,
         aggregateVersion: aggregate.aggregateVersion + 1,
@@ -458,38 +468,100 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   async proposeGoalResolution(
     proposal: GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
   ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }> {
+    const updated = await this.store.transact((aggregate) => {
+      const existing = aggregate.proposals.find((item) => item.proposalId === proposal.proposalId);
+      if (existing) {
+        if (hash(existing) !== hash(proposal)) throw new AgentEngineConflictError("Proposal conflict");
+        return aggregate;
+      }
+      const goal = aggregate.goals.find((item) => item.spec.id === proposal.goalId);
+      if (!goal) throw new Error("Goal does not exist");
+      const resolving = beginGoalResolution(goal, proposal);
+      return {
+        ...aggregate,
+        aggregateVersion: aggregate.aggregateVersion + 1,
+        goals: aggregate.goals.map((item) => item.spec.id === resolving.spec.id ? resolving : item),
+        proposals: [...aggregate.proposals, structuredClone(proposal)],
+        pendingEvents: [goalEvent(resolving, "GoalProposalCreated", proposal.createdAt, proposal.proposalId)],
+      };
+    });
+    const persistedGoal = updated.goals.find((item) => item.spec.id === proposal.goalId)!;
+    const persistedProposal = updated.proposals.find((item) => item.proposalId === proposal.proposalId)! as
+      GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>;
+    return this.finishProposalResolution(persistedGoal, persistedProposal);
+  }
+
+  async retryProposalResolution(
+    proposalId: string,
+  ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }> {
     const current = await this.store.read();
-    const existing = current.proposals.find((item) => item.proposalId === proposal.proposalId);
-    if (existing) {
-      if (hash(existing) !== hash(proposal)) throw new AgentEngineConflictError("Proposal conflict");
-      const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
-      const attempt = await this.resolveProposal(
-        goal,
-        existing as GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
-      );
-      return { goal, attempt };
-    }
+    const proposal = current.proposals.find((item) => item.proposalId === proposalId) as
+      | GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>
+      | undefined;
+    if (!proposal) throw new Error("Proposal does not exist");
     const goal = current.goals.find((item) => item.spec.id === proposal.goalId);
     if (!goal) throw new Error("Goal does not exist");
-    const resolving = beginGoalResolution(goal, proposal);
-    const updated = await this.store.transact((aggregate) => ({
-      ...aggregate,
-      aggregateVersion: aggregate.aggregateVersion + 1,
-      goals: aggregate.goals.map((item) => item.spec.id === resolving.spec.id ? resolving : item),
-      proposals: [...aggregate.proposals, structuredClone(proposal)],
-      pendingEvents: [goalEvent(resolving, "GoalProposalCreated", proposal.createdAt, proposal.proposalId)],
-    }));
-    const persistedGoal = updated.goals.find((item) => item.spec.id === proposal.goalId)!;
-    const attempt = await this.resolveProposal(persistedGoal, proposal);
-    if (!attempt.settle) return { goal: persistedGoal, attempt };
+    if (goal.status !== "resolving" || goal.activeProposalId !== proposalId) {
+      return {
+        goal,
+        attempt: {
+          settle: false,
+          pending: "retry_later",
+          reason: "Proposal is no longer pending",
+          retryAfter: this.now().toISOString(),
+        },
+      };
+    }
+    return this.finishProposalResolution(goal, proposal);
+  }
+
+  private async finishProposalResolution(
+    goal: AgentGoal,
+    proposal: GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
+  ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }> {
+    const pendingHumanTurn = await this.hasPendingHumanTurn(goal.spec.id, proposal.turnId);
+    const attempt: GoalResolutionAttemptResult = pendingHumanTurn
+      ? {
+          settle: true,
+          decision: {
+            accepted: false,
+            disposition: "correctable",
+            reason: "当前 Goal 还有一条按时间序排队、尚未处理的 human 消息；请先处理该消息，再重新提交结论。",
+          },
+        }
+      : await this.resolveProposal(goal, proposal);
+    if (!attempt.settle) {
+      await this.publishSettlementRequest(goal, proposal.proposalId);
+      return { goal: (await this.getGoal(goal.spec.id)) ?? goal, attempt };
+    }
     const decisionId = stableId("decision", proposal.proposalId, hash(attempt.decision));
     const settled = await this.settleProposal({
       decisionId,
       proposalId: proposal.proposalId,
-      expectedGoalVersion: persistedGoal.version,
+      expectedGoalVersion: goal.version,
       decision: attempt.decision,
     });
     return { goal: settled.goal, attempt };
+  }
+
+  private async publishSettlementRequest(goal: AgentGoal, proposalId: string): Promise<void> {
+    await this.store.transact((aggregate) => {
+      const currentGoal = aggregate.goals.find((item) => item.spec.id === goal.spec.id);
+      const currentProposal = aggregate.proposals.find((item) => item.proposalId === proposalId);
+      if (
+        !currentGoal
+        || !currentProposal
+        || currentGoal.status !== "resolving"
+        || currentGoal.activeProposalId !== proposalId
+      ) return aggregate;
+      const event = goalEvent(currentGoal, "GoalSettlementRequested", this.now().toISOString(), proposalId);
+      if (aggregate.outbox.some((item) => item.event.eventId === event.eventId)) return aggregate;
+      return {
+        ...aggregate,
+        aggregateVersion: aggregate.aggregateVersion + 1,
+        pendingEvents: [event],
+      };
+    });
   }
 
   private async resolveProposal<TStatus extends GoalResolutionStatus>(
@@ -507,38 +579,50 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     input: SettleProposalRequest<TStatus>,
   ): Promise<SettleProposalResult> {
     const fingerprint = hash(input);
-    const current = await this.store.read();
-    const existing = current.decisions.find((item) => item.decisionId === input.decisionId);
-    const proposal = current.proposals.find((item) => item.proposalId === input.proposalId);
-    if (!proposal) throw new Error("Proposal does not exist");
-    const goal = current.goals.find((item) => item.spec.id === proposal.goalId)!;
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) return { applied: false, code: "idempotency_conflict", goal };
-      await this.recordResolutionDecision(goal, input, proposal.turnId);
-      return existing.result;
+    let result: SettleProposalResult | undefined;
+    let proposalTurnId: string | undefined;
+    await this.store.transact((aggregate) => {
+      const proposal = aggregate.proposals.find((item) => item.proposalId === input.proposalId);
+      if (!proposal) throw new Error("Proposal does not exist");
+      proposalTurnId = proposal.turnId;
+      const goal = aggregate.goals.find((item) => item.spec.id === proposal.goalId)!;
+      const existing = aggregate.decisions.find((item) => item.decisionId === input.decisionId);
+      if (existing) {
+        result = existing.fingerprint === fingerprint
+          ? existing.result
+          : { applied: false, code: "idempotency_conflict", goal };
+        return aggregate;
+      }
+      let next: AgentGoal;
+      try {
+        next = settleGoalState(goal, proposal, input.decision, input.expectedGoalVersion, this.now().toISOString());
+      } catch (error) {
+        if (!(error instanceof AgentGoalTransitionError)) throw error;
+        result = {
+          applied: false,
+          code: error.code === "goal_terminal" ? "goal_terminal" : "version_conflict",
+          goal,
+        };
+        return aggregate;
+      }
+      result = { applied: true, goal: next };
+      return {
+        ...aggregate,
+        aggregateVersion: aggregate.aggregateVersion + 1,
+        goals: aggregate.goals.map((item) => item.spec.id === next.spec.id ? next : item),
+        decisions: [...aggregate.decisions, {
+          decisionId: input.decisionId,
+          proposalId: input.proposalId,
+          fingerprint,
+          result,
+        }],
+        pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
+      };
+    });
+    if (!result) throw new Error("Proposal settlement did not produce a result");
+    if (result.applied || result.code !== "idempotency_conflict") {
+      await this.recordResolutionDecision(result.goal, input, proposalTurnId);
     }
-    let next: AgentGoal;
-    try {
-      next = settleGoalState(goal, proposal, input.decision, input.expectedGoalVersion, this.now().toISOString());
-    } catch (error) {
-      if (!(error instanceof AgentGoalTransitionError)) throw error;
-      const code = error.code === "goal_terminal" ? "goal_terminal" : "version_conflict";
-      return { applied: false, code, goal };
-    }
-    const result: SettleProposalResult = { applied: true, goal: next };
-    await this.store.transact((aggregate) => ({
-      ...aggregate,
-      aggregateVersion: aggregate.aggregateVersion + 1,
-      goals: aggregate.goals.map((item) => item.spec.id === next.spec.id ? next : item),
-      decisions: [...aggregate.decisions, {
-        decisionId: input.decisionId,
-        proposalId: input.proposalId,
-        fingerprint,
-        result,
-      }],
-      pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
-    }));
-    await this.recordResolutionDecision(goal, input, proposal.turnId);
     return result;
   }
 
@@ -689,6 +773,42 @@ function correctionReason(payloads: ReadonlyMap<string, unknown>, payloadRef: st
   return typeof reason === "string" ? reason : undefined;
 }
 
+function hasUnconsumedHumanTurn(
+  aggregate: AgentStoreAggregate,
+  threadId: string,
+  goalId: string,
+  excludingTurnId?: string,
+): boolean {
+  const thread = aggregate.threads.find((item) => item.threadId === threadId);
+  if (!thread) return false;
+  const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+  return thread.items.some((item, index) => {
+    if (item.kind !== "message" || item.turnId === excludingTurnId) return false;
+    const payload = payloads.get(item.payloadRef);
+    if (!isRecord(payload)
+      || payload.goalId !== goalId
+      || payload.senderPrincipalId !== "human"
+      || payload.deliveryKind === "context") return false;
+    return !thread.items.slice(index + 1).some((candidate) => {
+      if (candidate.turnId === item.turnId && candidate.kind !== "message") return true;
+      const candidatePayload = payloads.get(candidate.payloadRef);
+      return isRecord(candidatePayload) && candidatePayload.triggerMessageId === item.itemId;
+    });
+  });
+}
+
+function proposalContentFingerprint(proposal: GoalResolutionProposal): string {
+  return hash({
+    status: proposal.status,
+    summary: proposal.summary,
+    evidence: proposal.evidence,
+    criterionResults: proposal.criterionResults,
+    residualRisks: proposal.residualRisks,
+    domainOutcome: proposal.domainOutcome,
+    humanInputRequest: proposal.humanInputRequest,
+  });
+}
+
 function payloadControlStatus(
   payloads: ReadonlyMap<string, unknown>,
   payloadRef: string,
@@ -707,7 +827,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function goalEvent(
   goal: AgentGoal,
-  type: "GoalStatusChanged" | "GoalProposalCreated",
+  type: "GoalStatusChanged" | "GoalProposalCreated" | "GoalSettlementRequested",
   occurredAt: string,
   proposalId?: string,
 ): AgentEvent {

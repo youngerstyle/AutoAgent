@@ -1,8 +1,9 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentTraceStore } from "../../src/server/agent-engine/trace-store.js";
+import { agentEngineDir, agentEngineTraceRolloutFile } from "../../src/server/storage/paths.js";
 
 describe("AgentTraceStore", () => {
   it("keeps raw prompts in an immutable audit store ordered by time", async () => {
@@ -16,6 +17,8 @@ describe("AgentTraceStore", () => {
 
     expect((await new AgentTraceStore(root, "dev").list("thread-a")).map((item) => item.traceId))
       .toEqual(["trace-1", "trace-2"]);
+    expect((await readFile(agentEngineTraceRolloutFile(root, "dev"), "utf8")).trim().split("\n")).toHaveLength(2);
+    expect(await readdir(agentEngineDir(root, "dev"))).not.toContain("traces");
     await expect(store.append({ ...earlier, data: { prompt: "changed" } }))
       .rejects.toThrow("Trace idempotency conflict");
   });

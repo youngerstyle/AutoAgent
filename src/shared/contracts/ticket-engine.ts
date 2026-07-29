@@ -22,6 +22,7 @@ export interface TicketEvidenceRef {
 export interface PlannedTicketAssignment {
   principalId?: string;
   requiredCapabilities?: string[];
+  requiredTools?: WorkspaceToolName[];
 }
 
 export interface TicketDeliveryIncrement {
@@ -48,6 +49,7 @@ export interface TicketDefinition {
   contextPolicy?: {
     includeOriginalRequest?: boolean;
     establishesMissionBaseline?: boolean;
+    requiresMissionBaseline?: boolean;
   };
   permissions?: {
     amendPlan?: boolean;
@@ -65,6 +67,10 @@ export interface PlanChangeSet {
   dependencyAdditions: Array<{
     from: PlanTicketRef;
     to: PlanTicketRef;
+  }>;
+  failureResolutions?: Array<{
+    failedTicketId: TicketId;
+    resolvedBy: PlanTicketRef;
   }>;
   cancelTicketIds: TicketId[];
   requiredTerminalRefs: PlanTicketRef[];
@@ -88,6 +94,10 @@ export interface PlanGraphSnapshot {
   dependencyEdges: Array<{
     fromTicketId: TicketId;
     toTicketId: TicketId;
+  }>;
+  failureResolutionEdges?: Array<{
+    failedTicketId: TicketId;
+    resolutionTicketId: TicketId;
   }>;
 }
 
@@ -329,7 +339,7 @@ export type TicketCommandResult =
       accepted: true;
       commandId: string;
       proposalId: string;
-      ticketStatus: "pending" | "blocked" | "completed" | "failed";
+      ticketStatus: "blocked" | "completed" | "returned" | "failed";
       ticketVersion: number;
       planStatus: PlanStatus;
       planVersion: number;
@@ -470,7 +480,6 @@ export type TicketAggregateEventPayload =
   | { type: "TicketClaimed"; claimId: string; attemptId: string; attemptNumber: number }
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput: TicketRequiredInput }
-  | { type: "TicketRetryQueued"; prerequisiteTicketId: TicketId }
   | {
       type: "TicketTerminal";
       status: "completed" | "returned" | "failed" | "cancelled";
@@ -549,3 +558,4 @@ export interface TicketEventPage<
   events: TEvent[];
   nextCursor: TicketEventCursor<TPlanId>;
 }
+import type { WorkspaceToolName } from "../types.js";

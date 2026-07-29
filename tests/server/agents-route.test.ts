@@ -88,6 +88,7 @@ describe("agents route", () => {
       await request(app)
         .patch(`/api/agent-profiles/${profile.id}`)
         .send({
+          defaultSkills: [],
           defaultProvider: "openai",
           defaultModel: "gpt-default",
           defaultPolicy: {

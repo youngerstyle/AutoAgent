@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { bootstrapServer, startServer } from "../../src/server/bootstrap.js";
 import type { AppConfig } from "../../src/server/config.js";
 import {
@@ -15,6 +15,7 @@ import {
   createPlanPolicy,
 } from "../../src/server/tickets/plan-policy-store.js";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
+import { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
 
 describe("server bootstrap", () => {
   it("seeds the immutable minimal-team policy before returning the production app", async () => {
@@ -40,6 +41,29 @@ describe("server bootstrap", () => {
     await new PlanPolicyStore(home).seedPolicy(conflicting);
 
     await expect(startServer({ ...config(home), port: 0 })).rejects.toBeInstanceOf(PlanPolicyConflictError);
+  });
+
+  it("listens before historical runtime host restoration finishes", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-nonblocking-"));
+    const restore = vi
+      .spyOn(RuntimeHostRegistry.prototype, "startAll")
+      .mockImplementation(() => new Promise<void>(() => undefined));
+
+    const server = await startServer({ ...config(home), port: 0 });
+    try {
+      await request(server)
+        .get("/api/health")
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            ok: true,
+            runtimeHosts: { status: "restoring" },
+          });
+        });
+    } finally {
+      server.close();
+      restore.mockRestore();
+    }
   });
 
   it("uses the explicit bootstrap config for both policy and API storage", async () => {

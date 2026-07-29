@@ -22,6 +22,7 @@ import type {
   PlanSnapshot,
   TicketEvidenceRef,
 } from "./ticket-engine.js";
+import type { WorkspaceToolName } from "../types.js";
 
 export type { AgentPort, GoalResolutionPort } from "./agent-engine.js";
 
@@ -29,6 +30,7 @@ export interface TeamBindingMember {
   agentId: string;
   principalId: string;
   capabilities: string[];
+  enabledTools: WorkspaceToolName[];
 }
 
 export interface TeamBinding {
@@ -329,6 +331,7 @@ export interface TicketPort {
   claimReady(input: ClaimRequest): Promise<ClaimReceipt | undefined>;
   renewClaim(input: RenewClaimRequest): Promise<ClaimReceipt>;
   releaseClaim(input: ReleaseClaimRequest): Promise<TicketSnapshot>;
+  scanExpiredClaims(now?: Date): Promise<TicketSnapshot[]>;
   transferBlockedOwnership(
     input: TransferBlockedOwnershipRequest,
   ): Promise<BlockedOwnershipReceipt>;

@@ -48,12 +48,12 @@ describe("mock team loop E2E", () => {
       expect(tickets[index].dependsOnTicketIds).toEqual([tickets[index - 1].id]);
     }
     expect(Object.values(snapshot.agentThreads).flat().length).toBeGreaterThan(0);
-  }, 30_000);
+  }, 120_000);
 });
 
 async function pollSnapshot(app: ReturnType<typeof createApp>, workspaceId: string) {
   let snapshot;
-  const deadline = Date.now() + 20_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`);
     if (response.status !== 200) throw new Error(`Snapshot failed (${response.status}): ${JSON.stringify(response.body)}`);

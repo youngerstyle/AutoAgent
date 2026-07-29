@@ -6,6 +6,7 @@ import type { Skill } from "@earendil-works/pi-coding-agent";
 import {
   activePiToolNames,
   initialGoalMessage,
+  isTransientInfrastructureToolFailure,
   promptedGoalIds,
   promptedGoalVersions,
   latestCorrectableDecision,
@@ -17,12 +18,37 @@ import {
 } from "../../src/server/agent-engine/pi-runtime.js";
 
 describe("Pi Skill read boundary", () => {
+  it("classifies only typed platform transport failures for same-Goal retry", () => {
+    expect(isTransientInfrastructureToolFailure({
+      content: [{ type: "text", text: "[AUTOAGENT_INFRASTRUCTURE_TRANSPORT] browser session reset" }],
+    })).toBe(true);
+    expect(isTransientInfrastructureToolFailure({
+      content: [{ type: "text", text: "game assertion failed" }],
+    })).toBe(false);
+  });
+
   it("keeps read active so Pi can progressively load enabled Skills", () => {
     expect(activePiToolNames(["readFile", "readImage", "shell"], false, true)).toEqual([
       "read",
       "readFile",
       "shell",
       "goal_resolution",
+      "request_human_input",
+    ]);
+  });
+
+  it("exposes only the workflow actions compiled for the current Goal", () => {
+    expect(activePiToolNames(["readFile"], false, {
+      schemaRef: "test",
+      completionOutcomeSchema: { type: "object" },
+      correctionOutcomeSchema: { type: "object" },
+      planChangeOutcomeSchema: { type: "object" },
+    })).toEqual([
+      "read",
+      "readFile",
+      "goal_resolution",
+      "report_goal_correction",
+      "request_goal_plan_change",
       "request_human_input",
     ]);
   });
@@ -53,7 +79,7 @@ describe("Pi Skill read boundary", () => {
     const retry = piWorkSessionDirectory("C:\\workspace", "qa", "thread-a", "goal-b");
     expect(first).not.toBe(retry);
     expect(path.dirname(first)).toBe(path.dirname(retry));
-    expect(first).toContain(path.join("C:\\workspace", ".autoagent", "pi-sessions"));
+    expect(first).toContain(path.join("C:\\workspace", ".autoagent", "pi-sessions", "goal-context-v4"));
   });
 
   it("recovers the first chronological message for an unprompted Goal", () => {

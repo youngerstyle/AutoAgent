@@ -85,10 +85,15 @@ The full assurance scope and one correction's impact scope are different
 contracts. `assuranceReport.criterionResults` always reports every criterion
 declared by the assurance Ticket. A `correction_required` outcome additionally
 uses `correctionMissionCriterionIds` to identify only the criteria affected by
-its single `targetTicketId`. Those ids must be a subset of both the assurance
-scope and the target work Ticket's `missionContribution`. This lets an Agent
-report a complete review while returning one defect to its actual owner; the
-platform validates references but does not infer defects or routing from text.
+its single `targetTicketId`. Those ids must be a subset of the target work
+Ticket's `missionContribution`. They do not have to be part of the current
+assurance Ticket's assigned slice: a QA Agent may discover a reproducible
+upstream defect incidentally while checking another concern. The correction
+tool schema pairs each eligible completed ancestor Ticket with only the
+criteria that Ticket owns, so the Host preserves authority without narrowing a
+person's observation scope. This lets an Agent return a defect to its actual
+owner; the platform validates references but does not infer defects or routing
+from text.
 
 ## Plan validation
 

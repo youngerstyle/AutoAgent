@@ -127,8 +127,10 @@ references of the form `{ evidenceId }`.
 Before accepting a Goal proposal, Agent Engine and Mission Control validate:
 
 1. the evidence exists in the ledger;
-2. it belongs to the same Agent Goal and current Attempt;
-3. it was produced after the Attempt started;
+2. it belongs to the same Agent Goal; an Attempt is an execution segment, not
+   an evidence ownership boundary;
+3. it was produced during that Goal and remains fresh for the artifact version
+   being claimed;
 4. it is inside the current workspace when it references an artifact;
 5. it is not failed or still running when cited as successful evidence;
 6. artifact facts still match the cited content hash when freshness is
@@ -136,6 +138,33 @@ Before accepting a Goal proposal, Agent Engine and Mission Control validate:
 7. assurance and settlement evidence belongs to the current artifact version.
 
 Agents still decide whether those facts semantically satisfy the criteria.
+
+## Local browser evidence provenance
+
+A successful browser command is not sufficient evidence by itself. On a shared
+host, the same port may be occupied by another workspace, an earlier Mission,
+or an unrelated developer process. Browser evidence for a local application
+must therefore be bound to a live service registered by `startService` in the
+current workspace.
+
+The generic tool host enforces this infrastructure boundary:
+
+1. `startService` records an immutable `serviceId`, workspace root, declared
+   port and process state.
+2. Opening `localhost`, `127.0.0.1` or `::1` is allowed only when that port
+   belongs to a live registered service in the current workspace.
+3. Every successful browser observation records the current page URL and, for
+   a local page, the matching `serviceId` and port.
+4. A browser session left on an unregistered local address is rejected before
+   its next observation can become successful evidence.
+5. `file:` pages are allowed only when the target file is inside the current
+   workspace.
+6. Public HTTP(S) browsing remains available and is not treated as a managed
+   workspace service.
+
+This is not product routing and does not decide whether a test passed. It
+proves only that a local observation came from the current workspace rather
+than another process on the machine.
 
 ## Attempt workspace baseline
 
@@ -163,6 +192,21 @@ allowed, but they are explicitly distinguishable from files changed during the
 Attempt. A handoff cannot describe a reused file as a current change.
 
 ## Incremental delivery inside one Plan
+
+Planning must challenge its own delivery strategy before appending execution
+Tickets. It compares scope, uncertainty, dependencies, and acceptance risk. A
+single increment is valid only when the planner can explain why it is reliably
+deliverable and verifiable; otherwise it creates multiple independently
+verifiable increments connected by ordinary DAG dependencies. This is an Agent
+planning judgment recorded in the Plan change, not a product-type branch in
+platform code.
+
+The planner also receives the immutable human source request as provenance
+alongside the authoritative Mission baseline. It may not use that source to
+override recorded clarification or accepted decisions. It must, however, return
+an explicit intake correction when the baseline silently omits, narrows, or
+weakens an explicit source requirement. Mission Control only validates and
+transports that result.
 
 There remains exactly one Mission and one Plan. There is no Release Engine and
 no hardcoded MVP/Alpha/Beta workflow.
@@ -207,11 +251,97 @@ correction, Plan-change, or human-input tools. PM may append another increment
 or additional Tickets to the same Plan. Platform code never invents the next
 version.
 
-A correction never reopens or mutates a completed Ticket Attempt. The failed
-assurance result appends a planner amendment Ticket to the same Plan. The
-planner then appends fresh correction and re-verification Tickets and connects
-them with ordinary DAG dependencies. Prior Attempts remain immutable evidence
-of what was delivered and checked at that point in time.
+## Output contract ownership
+
+Ticket Engine persists the stable `schemaRef` chosen for each Ticket. It does
+not know how an LLM tool is implemented. Before dispatch, Mission Control
+compiles that reference together with the current Ticket definition, Mission
+baseline, Plan snapshot, and assignment scope into a concrete JSON Schema for
+the Agent Goal.
+
+The compiled schema is immutable for that Goal Attempt. In particular, an
+assurance Goal accepts only the criterion ids assigned to its Ticket and the
+current baseline version. A final acceptance Goal accepts only the current
+baseline criteria. A planning Goal receives the current Plan identities and
+the schema for an append-only Plan change.
+
+Mission Control compiles independent action contracts instead of one
+`anyOf`-shaped outcome:
+
+- `completionOutcomeSchema` is used by `goal_resolution`;
+- `correctionOutcomeSchema` enables `report_goal_correction`;
+- `planChangeOutcomeSchema` enables `request_goal_plan_change`.
+
+Only actions valid for the current Goal are exposed. A plan-amendment Goal, for
+example, cannot recursively request another plan amendment. The schemas are
+small and unambiguous, so a model never has to guess whether the same tool call
+means completion, correction, or plan maintenance.
+
+Agent Engine treats every supplied schema as opaque data. It implements the
+generic Goal actions but contains no branches for PM, QA, acceptance, Mission
+schema names, or Ticket transitions. Mission Control validates the resulting
+proposal against domain invariants and translates an accepted result into
+Ticket and Plan commands. This keeps all three engines independently usable:
+
+- Agent Engine runs a thread, tools, and a Goal contract.
+- Ticket Engine owns DAG state and scheduling.
+- Mission Control compiles contracts and translates accepted outcomes.
+
+A correction never reopens or mutates an earlier Ticket Attempt. The reporting
+Ticket becomes the immutable terminal state `returned`; `completed`,
+`returned`, `failed`, and `cancelled` Tickets never re-enter scheduling. The
+correction appends an independently ready planner-amendment Ticket to the same
+Plan and records the reporting and target Ticket ids as provenance. That
+provenance does not reactivate either historical Ticket.
+
+The planner then appends fresh correction and re-verification Tickets after the
+amendment Ticket using ordinary DAG dependencies. Any obsolete downstream
+Ticket that has not started may be cancelled by that Plan change. A terminal
+historical Ticket cannot be cancelled, targeted by a new dependency, or used
+as the execution slot for the new work. Instead, the Plan change declares a
+`failureResolution` edge from each historical unsuccessful Ticket that affects
+the required closure to one newly added correction or assurance Ticket. The
+edge is a settlement relation, not a mutation or scheduling dependency: it
+preserves the old status and Attempt while declaring which new result is
+responsible for resolving it.
+
+An unsuccessful Ticket is effectively satisfied only after its declared
+resolution Ticket completes. If the resolution Ticket is returned or failed,
+the Plan remains blocked and a later amendment may resolve that newer failure
+with another explicit edge. This relation may therefore form an auditable
+chain, but never a cycle. A new required-terminal closure that contains an
+unsuccessful Ticket without such a resolution relation is rejected. Prior
+Attempts remain immutable evidence of what was delivered and checked at that
+point in time.
+
+`failed` and `returned` are intentionally different. `failed` is an explicit,
+immutable statement that the entrusted Ticket itself could not be completed.
+With `fail_fast` it terminates the Plan. With `require_resolution` it blocks the
+Plan and appends a planner-amendment Ticket whose provenance is the failed
+Ticket; PM, not platform code, decides whether to replace work, change scope, or
+terminate through the resulting Plan change. `returned` is produced by an
+accepted correction or Plan-change action when the reporting Agent already
+knows that upstream work or the Plan structure must change. Mission Control
+never converts one into the other by inspecting role names or natural-language
+reasons.
+
+The first correction chain for an already declared delivery increment starts
+from the planner-amendment Ticket. The returned assurance Ticket remains
+immutable provenance, and its explicit resolution edge names the new assurance
+result that must complete before existing downstream dependencies can unlock.
+That historical failure is therefore no longer an active exit for
+delivery-increment ordering. A pending obsolete terminal cancelled by the same
+change is no longer an active exit either. If no active exit remains in the
+previous increment, the replacement branch may start from the amendment
+Ticket; the scheduler must not require an invented dependency on completed or
+failed history.
+The planning Agent selects that result from the DAG it proposes; platform code
+does not infer it from roles or prose. When one amendment affects several
+delivery increments in a shared workspace, the first affected increment must
+produce a new independent assurance result before work on the next affected
+increment becomes ready. This preserves ordinary DAG scheduling without
+reviving history or allowing verification to race with later writes to the
+same artifact.
 
 An accepted increment may create an immutable release snapshot containing its
 artifact version, covered Mission criteria, assurance Tickets, and residual
@@ -224,7 +354,9 @@ A Mission settlement is accepted only when every baseline criterion cites a
 completed ancestor assurance result whose evidence:
 
 - resolves to real Evidence Facts;
-- was produced by the relevant current Attempt lineage;
+- was produced by the relevant Agent Goal and remains fresh for the settled
+  artifact version; retry Attempts may reuse those facts without replaying the
+  underlying tools;
 - refers to the current artifact version;
 - has status `succeeded`;
 - separately covers every verification anchor declared by that criterion;
@@ -254,15 +386,17 @@ non-runnable game is a failed platform test.
 ## Required tests
 
 1. An Agent cannot cite an evidence id that was not generated by a tool.
-2. Evidence from another Goal, Attempt, workspace, or artifact version is
-   rejected.
+2. Evidence from another Goal, workspace, or artifact version is rejected;
+   evidence from an earlier Attempt of the same Goal remains valid while fresh.
 3. A pre-existing file is recorded as reused, not modified.
 4. A file changed after Attempt start appears in the change set with a new hash.
 5. Browser assurance cannot be represented by a free-form string.
 6. A PM may create one or many increments without role or product hardcoding.
 7. Completing an intermediate increment cannot settle the Mission.
-8. A failed assurance can append correction work and produce a later artifact
-   version without mutating completed history.
+8. An assurance that finds a product failure can explicitly request correction,
+   append correction work and produce a later artifact version without mutating
+   completed history; a Ticket that resolves itself as `failed` terminates the
+   Plan instead of silently inventing that correction.
 9. Settlement cannot cite assurance for an older artifact version.
 10. The real Tank benchmark verifies the produced game from the user's point
     of view before accepting the platform run.
@@ -270,3 +404,63 @@ non-runnable game is a failed platform test.
     baseline verification anchor must have an assurance result.
 12. PM planning records an explicit single- or multi-increment decision and
     assigns every execution and assurance Ticket to the declared strategy.
+13. Browser evidence from another workspace's local service is rejected.
+14. Local browser evidence records the current workspace service identity.
+15. A browser `file:` target outside the workspace is rejected.
+16. A local service started by another Goal or Ticket Attempt cannot be polled
+    or cited as browser evidence, even inside the same workspace.
+17. Agent Engine contains no Mission-specific output-schema branch.
+18. An assurance Goal schema rejects criterion ids outside that Ticket's
+    declared assurance scope and a stale baseline version.
+19. A Goal Attempt keeps the concrete output schema that was compiled when it
+    was dispatched.
+20. Completion, correction, and plan-change actions use separate tool schemas;
+    a completion schema contains no top-level `anyOf` for workflow decisions.
+21. Deleting a workspace stops and unregisters its Runtime Host before removing
+    workspace state, so no scheduler can tick a deleted Mission.
+22. A correction Plan cannot use a terminal unsuccessful Ticket as a new
+    dependency or required terminal.
+23. Correction work for an existing increment may start after the amendment
+    Ticket, while later affected increments wait for the corrected increment's
+    new assurance result.
+24. A failed assurance cannot be resolved by adding only an equivalent
+    assurance Ticket. The same Plan change must add upstream execution work
+    that contributes to at least one Mission criterion covered by the new
+    assurance, so every retry has a traceable source of new evidence.
+25. A stale browser daemon or local tool transport timeout is recovered inside
+    the current Agent Goal. It cannot be submitted as an assurance conclusion,
+    converted into a product correction, or used to amend the Plan.
+26. Browser commands have bounded execution time. Safe observational commands
+    may be replayed once in a fresh session; side-effecting commands require the
+    Agent to observe the recovered state before deciding what to do next.
+27. Settled and cancelled Goals leave no browser sessions, managed services or
+    command processes behind. A repeated real-provider acceptance run must end
+    with the same resource count with which it started.
+28. Every assurance anchor records its judgment basis, concrete observations,
+    deviations and evidence. A `satisfied` anchor cannot retain deviations.
+29. Comparative criteria require a traceable external comparison basis. In its
+    absence the assurance remains `not_verified`; category resemblance or an
+    implementation claim is not sufficient.
+30. Final acceptance copies assurance basis, observations, deviations and
+    evidence unchanged. It cannot rewrite a weaker QA observation into a
+    stronger Mission conclusion.
+
+## Evidence-bound assurance
+
+Mission assurance is not a boolean pass gate. Each verification anchor keeps
+four separate facts:
+
+- `verificationBasis`: the exact requirement, standard, sample or external
+  reference used for the judgment;
+- `observations`: facts actually observed through tools or an explicit human
+  boundary;
+- `deviations`: every observed difference from the authoritative baseline;
+- `evidence`: attributable artifacts and tool results supporting those facts.
+
+Agents interpret the domain meaning. Mission Control validates structure,
+provenance and exact transfer into settlement. No product-specific keyword,
+role name or acceptance decision is encoded in platform routing.
+
+When a criterion depends on an external referent, the PM-owned Plan must acquire
+and hand off that reference before implementation and assurance. If it cannot,
+the criterion remains visibly unverified instead of being weakened.

@@ -1,13 +1,25 @@
 import { createHash } from "node:crypto";
-import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import type { AgentProfile, Workspace, WorkspaceAgent, WorkspaceToolName } from "../../shared/types.js";
 import type { TeamBinding } from "../../shared/contracts/mission-control.js";
+import { toolsForPolicy } from "../../shared/tool-catalog.js";
+import { resolvePolicy } from "../policy/policy.js";
 
-export function createTeamBinding(agents: WorkspaceAgent[], profiles: AgentProfile[], teamBindingId: string): TeamBinding {
-  const members = agents.map((agent) => ({
-    agentId: agent.id,
-    principalId: `principal:${agent.id}`,
-    capabilities: [...new Set(profiles.find((profile) => profile.id === agent.profileId)?.capabilities ?? [])].sort(),
-  }));
+export function createTeamBinding(
+  workspace: Workspace,
+  agents: WorkspaceAgent[],
+  profiles: AgentProfile[],
+  teamBindingId: string,
+): TeamBinding {
+  const members = agents.map((agent) => {
+    const profile = profiles.find((item) => item.id === agent.profileId);
+    const policy = resolvePolicy(workspace, agent, profile);
+    return {
+      agentId: agent.id,
+      principalId: `principal:${agent.id}`,
+      capabilities: [...new Set(profile?.capabilities ?? [])].sort(),
+      enabledTools: toolsForPolicy(policy).map((tool) => tool.name).sort() as WorkspaceToolName[],
+    };
+  });
   const deliveryPolicy = { requiredTerminalCapabilities: ["delivery:accept"] };
   return {
     teamBindingId,

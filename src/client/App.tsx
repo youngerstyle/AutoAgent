@@ -2145,6 +2145,8 @@ function operationsActivityCopy(title: string, detail: string | undefined, actor
     accepted: "目标结论已接受",
     running: "开始执行",
     waiting: "等待下一步",
+    external_service_waiting: "等待模型服务恢复",
+    provider_retry_wait: "模型服务暂时不可用",
     system_note: "系统记录",
     ticket_received: "收到工单"
   };

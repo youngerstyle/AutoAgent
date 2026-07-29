@@ -43,7 +43,7 @@ describe("single Plan runtime contract", () => {
         teamBindingId: "team-a",
         version: 1,
         contentHash: "team-hash",
-        members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }],
+        members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"], enabledTools: [] }],
       },
       status: "linked",
       linkedAt: "2026-07-14T00:00:00.000Z",

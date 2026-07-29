@@ -9,6 +9,7 @@ import type {
   TicketId,
   TicketStatus,
 } from "../../shared/contracts/ticket-engine.js";
+import { isKnownToolName } from "../../shared/tool-catalog.js";
 
 export class PlanGraphError extends Error {}
 
@@ -99,10 +100,13 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       ...(addition.assurance ? { assurance: {
         missionCriterionIds: addition.assurance.missionCriterionIds.map((item) => item.trim()),
       } } : {}),
-      ...(addition.contextPolicy?.includeOriginalRequest === true || addition.contextPolicy?.establishesMissionBaseline === true
+      ...(addition.contextPolicy?.includeOriginalRequest === true
+        || addition.contextPolicy?.establishesMissionBaseline === true
+        || addition.contextPolicy?.requiresMissionBaseline === true
         ? { contextPolicy: {
             ...(addition.contextPolicy.includeOriginalRequest === true ? { includeOriginalRequest: true } : {}),
             ...(addition.contextPolicy.establishesMissionBaseline === true ? { establishesMissionBaseline: true } : {}),
+            ...(addition.contextPolicy.requiresMissionBaseline === true ? { requiresMissionBaseline: true } : {}),
           } }
         : {}),
       ...(addition.permissions?.amendPlan === true || addition.permissions?.settleMission === true
@@ -120,8 +124,13 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
   const dependencyEdges = [
     ...(input.previous?.graph.dependencyEdges ?? []),
     ...input.change.dependencyAdditions.map((edge, index) => {
-      if (!("clientRef" in edge.to)) {
-        throw new PlanGraphError(`dependencyAdditions[${index}] must target a newly added Ticket`);
+      if ("ticketId" in edge.to) {
+        const targetStatus = statusOf(input.ticketStatuses, edge.to.ticketId);
+        if (targetStatus !== "pending") {
+          throw new PlanGraphError(
+            `dependencyAdditions[${index}] can target an existing Ticket only while it is pending`,
+          );
+        }
       }
       return {
         fromTicketId: resolveRef(edge.from, refs, known, `dependencyAdditions[${index}].from`),
@@ -133,6 +142,38 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
   validateUniqueEdges(dependencyEdges);
   validateAcyclic(ticketIds, dependencyEdges);
   validateDeliveryIncrements(definitions, dependencyEdges);
+
+  const failureResolutionEdges = [
+    ...(input.previous?.graph.failureResolutionEdges ?? []),
+    ...(input.change.failureResolutions ?? []).map((resolution, index) => {
+      if (!previousIdSet.has(String(resolution.failedTicketId))) {
+        throw new PlanGraphError(`failureResolutions[${index}] must reference an existing failed Ticket`);
+      }
+      const failedStatus = statusOf(input.ticketStatuses, resolution.failedTicketId);
+      if (failedStatus !== "failed" && failedStatus !== "returned" && failedStatus !== "cancelled") {
+        throw new PlanGraphError(`failureResolutions[${index}].failedTicketId must be terminal unsuccessful`);
+      }
+      const resolutionTicketId = resolveRef(
+        resolution.resolvedBy,
+        refs,
+        known,
+        `failureResolutions[${index}].resolvedBy`,
+      );
+      if (!addedTicketIds.includes(resolutionTicketId)) {
+        throw new PlanGraphError(`failureResolutions[${index}].resolvedBy must reference a Ticket added by this change`);
+      }
+      validateAssuranceResolutionProgress({
+        index,
+        failedTicketId: resolution.failedTicketId,
+        resolutionTicketId,
+        addedTicketIds,
+        definitions,
+        dependencyEdges,
+      });
+      return { failedTicketId: resolution.failedTicketId, resolutionTicketId };
+    }),
+  ];
+  validateUniqueFailureResolutions(failureResolutionEdges);
 
   for (const ticketId of input.change.cancelTicketIds) {
     if (!known.has(String(ticketId))) throw new PlanGraphError(`Cannot cancel unknown Ticket ${ticketId}`);
@@ -152,7 +193,7 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
 
   return {
     planId: input.planId,
-    graph: { schemaVersion: 3, ticketIds, dependencyEdges },
+    graph: { schemaVersion: 3, ticketIds, dependencyEdges, failureResolutionEdges },
     completionPolicy: {
       requiredTerminalTicketIds: uniqueIds(requiredTerminalTicketIds),
       failurePolicy: "require_resolution",
@@ -188,23 +229,63 @@ export function findUnresolvedRequiredFailures(input: RequiredFailureInput): Tic
   const required = computeRequiredClosure(input.graph, input.completionPolicy.requiredTerminalTicketIds);
   return [...required].filter((ticketId) => {
     const status = statusOf(input.ticketStatuses, ticketId);
-    return status === "failed" || status === "returned" || status === "cancelled";
+    return isUnsuccessful(status) && !hasDeclaredResolutionInClosure(input.graph, ticketId, required);
   });
 }
 
 export function evaluatePlanOutcome(input: PlanOutcomeInput): EvaluatedPlanOutcome {
   const required = computeRequiredClosure(input.graph, input.completionPolicy.requiredTerminalTicketIds);
-  const statuses = [...required].map((ticketId) => statusOf(input.ticketStatuses, ticketId));
+  const statuses = [...required].map((ticketId) => effectiveStatus(input.graph, input.ticketStatuses, ticketId));
   const allTicketStatuses = input.graph.ticketIds.map((ticketId) => statusOf(input.ticketStatuses, ticketId));
   const hasOpenTicket = allTicketStatuses.some((status) => status === undefined || !isTerminal(status));
   if (statuses.length > 0 && statuses.every((status) => status === "completed") && !hasOpenTicket) return "completed";
-  if (statuses.some((status) => status === "failed") && input.completionPolicy.failurePolicy === "fail_fast") {
-    return "failed";
+  if (statuses.some((status) => isUnsuccessful(status))) {
+    return input.completionPolicy.failurePolicy === "fail_fast" ? "failed" : "blocked";
   }
-  if (statuses.some((status) => status === "blocked" || status === "returned" || status === "failed")) {
+  if (statuses.some((status) => status === "blocked")) {
     return "blocked";
   }
   return input.deferredOutcome ?? "active";
+}
+
+export function isTicketDependencySatisfied(
+  graph: PlanGraphSnapshot,
+  ticketStatuses: TicketStatusLookup,
+  ticketId: TicketId,
+): boolean {
+  return effectiveStatus(graph, ticketStatuses, ticketId) === "completed";
+}
+
+function effectiveStatus(
+  graph: PlanGraphSnapshot,
+  ticketStatuses: TicketStatusLookup,
+  ticketId: TicketId,
+  visiting = new Set<string>(),
+): TicketStatus | undefined {
+  const status = statusOf(ticketStatuses, ticketId);
+  if (!isUnsuccessful(status)) return status;
+  if (visiting.has(String(ticketId))) return status;
+  const nextVisiting = new Set(visiting).add(String(ticketId));
+  const resolutions = (graph.failureResolutionEdges ?? [])
+    .filter((edge) => edge.failedTicketId === ticketId)
+    .map((edge) => edge.resolutionTicketId);
+  return resolutions.some((resolutionId) => (
+    effectiveStatus(graph, ticketStatuses, resolutionId, nextVisiting) === "completed"
+  )) ? "completed" : status;
+}
+
+function hasDeclaredResolutionInClosure(
+  graph: PlanGraphSnapshot,
+  failedTicketId: TicketId,
+  requiredClosure: ReadonlySet<TicketId>,
+): boolean {
+  return (graph.failureResolutionEdges ?? []).some((edge) => (
+    edge.failedTicketId === failedTicketId && requiredClosure.has(edge.resolutionTicketId)
+  ));
+}
+
+function isUnsuccessful(status: TicketStatus | undefined): status is "failed" | "returned" | "cancelled" {
+  return status === "failed" || status === "returned" || status === "cancelled";
 }
 
 function resolveRef(
@@ -230,6 +311,15 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   value.successCriteria.forEach((item, index) => requireText(item, `${label}.successCriteria[${index}]`));
   requireText(value.outputContract.schemaRef, `${label}.outputContract.schemaRef`);
+  if (value.assignment.requiredTools !== undefined) {
+    if (!Array.isArray(value.assignment.requiredTools)
+      || value.assignment.requiredTools.some((tool) => !isKnownToolName(tool))) {
+      throw new PlanGraphError(`${label}.assignment.requiredTools contains an unknown tool`);
+    }
+    if (new Set(value.assignment.requiredTools).size !== value.assignment.requiredTools.length) {
+      throw new PlanGraphError(`${label}.assignment.requiredTools must be unique`);
+    }
+  }
   if (value.missionContribution !== undefined) {
     validateCriterionIds(value.missionContribution.missionCriterionIds, `${label}.missionContribution.missionCriterionIds`);
   }
@@ -249,6 +339,9 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   if (value.contextPolicy?.establishesMissionBaseline !== undefined && typeof value.contextPolicy.establishesMissionBaseline !== "boolean") {
     throw new PlanGraphError(`${label}.contextPolicy.establishesMissionBaseline must be a boolean`);
+  }
+  if (value.contextPolicy?.requiresMissionBaseline !== undefined && typeof value.contextPolicy.requiresMissionBaseline !== "boolean") {
+    throw new PlanGraphError(`${label}.contextPolicy.requiresMissionBaseline must be a boolean`);
   }
   if (value.permissions?.amendPlan !== undefined && typeof value.permissions.amendPlan !== "boolean") {
     throw new PlanGraphError(`${label}.permissions.amendPlan must be a boolean`);
@@ -274,6 +367,72 @@ function validateUniqueEdges(edges: PlanGraphSnapshot["dependencyEdges"]): void 
     if (seen.has(key)) throw new PlanGraphError("Duplicate dependency edge");
     seen.add(key);
   }
+}
+
+function validateUniqueFailureResolutions(
+  edges: NonNullable<PlanGraphSnapshot["failureResolutionEdges"]>,
+): void {
+  const seen = new Set<string>();
+  for (const edge of edges) {
+    if (edge.failedTicketId === edge.resolutionTicketId) {
+      throw new PlanGraphError("A Ticket cannot resolve itself");
+    }
+    const key = `${edge.failedTicketId}\u0000${edge.resolutionTicketId}`;
+    if (seen.has(key)) throw new PlanGraphError("Duplicate failure resolution edge");
+    seen.add(key);
+  }
+}
+
+function validateAssuranceResolutionProgress(input: {
+  index: number;
+  failedTicketId: TicketId;
+  resolutionTicketId: TicketId;
+  addedTicketIds: readonly TicketId[];
+  definitions: Readonly<Record<string, TicketDefinition>>;
+  dependencyEdges: PlanGraphSnapshot["dependencyEdges"];
+}): void {
+  const failed = input.definitions[String(input.failedTicketId)];
+  const resolution = input.definitions[String(input.resolutionTicketId)];
+  if (!failed?.assurance || !resolution?.assurance) return;
+
+  const coveredCriteria = new Set(resolution.assurance.missionCriterionIds);
+  const hasNewUpstreamExecution = input.addedTicketIds.some((ticketId) => {
+    if (ticketId === input.resolutionTicketId) return false;
+    const definition = input.definitions[String(ticketId)];
+    if (!definition?.missionContribution || definition.assurance) return false;
+    if (!definition.missionContribution.missionCriterionIds.some((criterionId) => coveredCriteria.has(criterionId))) {
+      return false;
+    }
+    return hasDependencyPath(ticketId, input.resolutionTicketId, input.dependencyEdges);
+  });
+  if (!hasNewUpstreamExecution) {
+    throw new PlanGraphError(
+      `failureResolutions[${input.index}] cannot replace an unsuccessful assurance Ticket `
+      + "without new upstream execution work for the same Mission criterion",
+    );
+  }
+}
+
+function hasDependencyPath(
+  fromTicketId: TicketId,
+  toTicketId: TicketId,
+  edges: PlanGraphSnapshot["dependencyEdges"],
+): boolean {
+  const outgoing = new Map<string, TicketId[]>();
+  for (const edge of edges) {
+    const key = String(edge.fromTicketId);
+    outgoing.set(key, [...(outgoing.get(key) ?? []), edge.toTicketId]);
+  }
+  const visited = new Set<string>();
+  const queue = [fromTicketId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current === toTicketId) return true;
+    if (visited.has(String(current))) continue;
+    visited.add(String(current));
+    queue.push(...(outgoing.get(String(current)) ?? []));
+  }
+  return false;
 }
 
 function validateDeliveryIncrements(
@@ -348,6 +507,7 @@ function cloneAssignment(value: TicketDefinition["assignment"]): TicketDefinitio
   return {
     ...(value.principalId ? { principalId: value.principalId } : {}),
     ...(value.requiredCapabilities ? { requiredCapabilities: [...value.requiredCapabilities] } : {}),
+    ...(value.requiredTools ? { requiredTools: [...value.requiredTools] } : {}),
   };
 }
 

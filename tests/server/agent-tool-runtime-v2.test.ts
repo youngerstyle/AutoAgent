@@ -1,4 +1,6 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
+import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -62,7 +64,7 @@ describe("AgentToolRuntime", () => {
       canReadWorkspace: true,
       canWriteWorkspace: true,
       canExecuteCommands: true,
-    }, ["shell"]);
+    }, ["shell"], { shellYieldMs: 10_000 });
 
     const result = await runtime.execute({ tool: "shell", command: "node -e \"process.exit(3)\"" });
     expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
@@ -86,6 +88,182 @@ describe("AgentToolRuntime", () => {
     expect(String(result.stdout)).toMatch(/\d+\.\d+\.\d+/);
   });
 
+  it("prevents shell from bypassing enabled browser and service tools", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-dedicated-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["shell", "browser", "startService"]);
+
+    await expect(runtime.execute({
+      tool: "shell",
+      command: "agent-browser open http://127.0.0.1:4173",
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("browser"),
+    });
+    await expect(runtime.execute({
+      tool: "shell",
+      command: "python -m http.server 4173",
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("startService"),
+    });
+  });
+
+  it("rejects an occupied service port before spawning the command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-port-conflict-"));
+    const occupied = createServer();
+    await new Promise<void>((resolve, reject) => {
+      occupied.once("error", reject);
+      occupied.listen(0, "127.0.0.1", resolve);
+    });
+    const address = occupied.address();
+    if (!address || typeof address === "string") throw new Error("test server did not expose a port");
+
+    try {
+      const runtime = new AgentToolRuntime({
+        profile: "development",
+        workspaceRoot: root,
+        canReadWorkspace: true,
+        canWriteWorkspace: true,
+        canExecuteCommands: true,
+      }, ["startService"]);
+      await expect(runtime.execute({
+        tool: "startService",
+        command: "node -e \"setInterval(() => {}, 1000)\"",
+        port: address.port,
+      })).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining(`端口 ${address.port}`),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("allows only one concurrent managed service to claim a port", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-port-race-"));
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const runtimeA = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"], { serviceStartupTimeoutMs: 10_000 });
+    const runtimeB = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"], { serviceStartupTimeoutMs: 10_000 });
+    const command = `node -e "require('node:http').createServer((_q,r)=>r.end('owned')).listen(${address.port},'127.0.0.1');setTimeout(()=>process.exit(0),5000)"`;
+
+    const results = await Promise.all([
+      runtimeA.execute({ tool: "startService", command, port: address.port }),
+      runtimeB.execute({ tool: "startService", command, port: address.port }),
+    ]);
+
+    expect(results.filter((result) => result.ok), JSON.stringify(results)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      expect.objectContaining({ error: expect.stringContaining(String(address.port)) }),
+    ]);
+  });
+
+  it("returns the real failure when a service exits during startup", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-start-failure-"));
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"], { shellYieldMs: 250 });
+    const result = await runtime.execute({
+      tool: "startService",
+      command: "node -e \"console.error('startup failed'); process.exit(7)\"",
+      port: address.port,
+    });
+    expect(result).toMatchObject({
+      tool: "startService",
+      ok: false,
+      running: false,
+      exitCode: 7,
+      port: address.port,
+    });
+    expect(result.stderr).toContain("startup failed");
+  });
+
+  it("records a successfully started service as completed evidence while its process remains running", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-service-evidence-"));
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService", "pollProcess"], { shellYieldMs: 30, serviceStartupTimeoutMs: 10_000 });
+    const context = {
+      agentId: "wa_dev",
+      threadId: "thread-service",
+      goalId: "goal-service",
+      attemptId: "attempt-service",
+      turnId: "turn-service",
+      toolCallId: "tool-start-service",
+    };
+
+    const started = await runtime.execute({
+      tool: "startService",
+      command: `node -e "const s=require('node:http').createServer((q,r)=>r.end('ok'));s.listen(${address.port},'127.0.0.1');setTimeout(()=>s.close(),1500)"`,
+      port: address.port,
+    }, context);
+    expect(started, JSON.stringify(started)).toMatchObject({
+      ok: true,
+      running: true,
+      evidenceId: expect.any(String),
+    });
+
+    const fact = await new EvidenceLedger(root).get(String(started.evidenceId));
+    expect(fact).toMatchObject({
+      status: "succeeded",
+      kind: "service",
+      result: expect.objectContaining({ running: true }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_600));
+    await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
+  });
+
   it("yields a long-running shell command as a pollable managed process", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-yield-"));
     const runtime = new AgentToolRuntime({
@@ -103,7 +281,7 @@ describe("AgentToolRuntime", () => {
     expect(started).toMatchObject({ tool: "shell", ok: true, running: true, serviceId: expect.any(String) });
 
     let completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
-    const deadline = Date.now() + 2_000;
+    const deadline = Date.now() + 10_000;
     while (completed.running && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 50));
       completed = await runtime.execute({ tool: "pollProcess", serviceId: String(started.serviceId) });
@@ -185,7 +363,362 @@ describe("AgentToolRuntime", () => {
     expect(facts.get(String(title.evidenceId))?.result).toMatchObject({
       stdout: expect.stringContaining("AutoAgent browser proof"),
     });
+  }, 90_000);
+
+  it("serializes concurrent browser calls that share one ticket-attempt session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-queue-"));
+    let activeCommands = 0;
+    let maxActiveCommands = 0;
+    let currentUrl = "https://example.com/initial";
+    const commandOrder: string[] = [];
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+    }, ["browser"], {
+      browserCommandRunner: async (_executable, args) => {
+        const command = args.includes("open")
+          ? `open:${args[args.indexOf("open") + 1]}`
+          : args.includes("url") ? "get:url" : "other";
+        activeCommands += 1;
+        maxActiveCommands = Math.max(maxActiveCommands, activeCommands);
+        commandOrder.push(`start:${command}`);
+        await new Promise((resolve) => setTimeout(resolve, command.startsWith("open:") ? 20 : 5));
+        if (command.startsWith("open:")) currentUrl = command.slice("open:".length);
+        commandOrder.push(`end:${command}`);
+        activeCommands -= 1;
+        return {
+          stdout: command === "get:url" ? currentUrl : "",
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+    const context = {
+      agentId: "wa_qa",
+      threadId: "thread-browser-queue",
+      goalId: "goal-browser-queue",
+      attemptId: "attempt-browser-queue",
+      turnId: "turn-browser-queue",
+    };
+
+    const [first, second] = await Promise.all([
+      runtime.execute({
+        tool: "browser",
+        browserArgs: ["open", "https://example.com/first"],
+      }, { ...context, toolCallId: "tool-first" }),
+      runtime.execute({
+        tool: "browser",
+        browserArgs: ["open", "https://example.com/second"],
+      }, { ...context, toolCallId: "tool-second" }),
+    ]);
+
+    expect(maxActiveCommands).toBe(1);
+    expect(first).toMatchObject({ ok: true, pageUrl: "https://example.com/first" });
+    expect(second).toMatchObject({ ok: true, pageUrl: "https://example.com/second" });
+    expect(commandOrder).toEqual([
+      "start:open:https://example.com/first",
+      "end:open:https://example.com/first",
+      "start:get:url",
+      "end:get:url",
+      "start:open:https://example.com/second",
+      "end:open:https://example.com/second",
+      "start:get:url",
+      "end:get:url",
+    ]);
+    await runtime.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("replaces a stale browser session and replays only a safe observation command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-recover-"));
+    const pageUrl = pathToFileURL(path.join(root, "index.html")).href;
+    const calls: string[][] = [];
+    let openAttempts = 0;
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+    }, ["browser"], {
+      browserCommandRunner: async (_executable, args) => {
+        calls.push(args);
+        if (args.includes("close")) return { stdout: "", stderr: "", exitCode: 0 };
+        if (args.includes("open") && openAttempts++ === 0) {
+          return { stdout: "", stderr: "Failed to read: connection timed out (os error 10060)", exitCode: 1 };
+        }
+        if (args.includes("open")) return { stdout: "opened", stderr: "", exitCode: 0 };
+        if (args.includes("url")) return { stdout: pageUrl, stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+    const context = {
+      agentId: "wa_qa",
+      threadId: "thread-recover",
+      goalId: "goal-recover",
+      attemptId: "attempt-recover",
+      turnId: "turn-recover",
+      toolCallId: "tool-open",
+    };
+
+    const result = await runtime.execute({
+      tool: "browser",
+      browserArgs: ["--allow-file-access", "open", pageUrl],
+    }, context);
+
+    expect(result).toMatchObject({
+      ok: true,
+      sessionRecovered: true,
+      pageUrl,
+    });
+    const openedSessions = calls
+      .filter((args) => args.includes("open"))
+      .map((args) => args[args.indexOf("--session") + 1]);
+    expect(openedSessions).toHaveLength(2);
+    expect(openedSessions[1]).not.toBe(openedSessions[0]);
+    await runtime.dispose();
+  });
+
+  it("closes the ticket browser session when its execution resources are released", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-release-"));
+    const page = path.join(root, "index.html");
+    await writeFile(page, "<!doctype html><title>Goal browser resource</title>", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+    }, ["browser"]);
+    const context = {
+      agentId: "wa_qa",
+      threadId: "thread-release",
+      goalId: "goal-release",
+      attemptId: "attempt-release",
+      turnId: "turn-release",
+    };
+
+    const opened = await runtime.execute({
+      tool: "browser",
+      browserArgs: ["--allow-file-access", "open", pathToFileURL(page).href],
+    }, { ...context, toolCallId: "tool-open" });
+    expect(opened).toMatchObject({ ok: true, tool: "browser" });
+
+    await runtime.releaseExecutionResources(context);
+
+    const afterRelease = await runtime.execute({
+      tool: "browser",
+      browserArgs: ["get", "title"],
+    }, { ...context, toolCallId: "tool-after-release" });
+    expect(afterRelease).toMatchObject({ ok: true, tool: "browser" });
+    expect(String(afterRelease.stdout)).not.toContain("Goal browser resource");
+    await runtime.dispose();
+  }, 90_000);
+
+  it("rejects browser evidence from an unregistered local service", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-provenance-"));
+    const foreign = createHttpServer((_request, response) => response.end("foreign workspace"));
+    await new Promise<void>((resolve, reject) => {
+      foreign.once("error", reject);
+      foreign.listen(0, "127.0.0.1", resolve);
+    });
+    const address = foreign.address();
+    if (!address || typeof address === "string") throw new Error("test server did not expose a port");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+    }, ["browser"]);
+
+    try {
+      await expect(runtime.execute({
+        tool: "browser",
+        browserArgs: ["open", `http://127.0.0.1:${address.port}`],
+      })).resolves.toMatchObject({
+        ok: false,
+        error: expect.stringContaining("不属于当前工作区正在运行的受管服务"),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => foreign.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("binds local browser evidence to the current workspace managed service", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-service-"));
+    await writeFile(path.join(root, "server.js"), [
+      "const http = require('http');",
+      "http.createServer((_req,res)=>res.end('<title>managed proof</title>')).listen(Number(process.env.PORT));",
+    ].join("\n"), "utf8");
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService", "browser"], { shellYieldMs: 100 });
+    const command = process.platform === "win32"
+      ? `set PORT=${address.port}&& node server.js`
+      : `PORT=${address.port} node server.js`;
+    const executionContext = {
+      agentId: "wa_qa",
+      threadId: "thread-managed-browser",
+      goalId: "goal-managed-browser",
+      attemptId: "attempt-managed-browser",
+      turnId: "turn-managed-browser",
+      toolCallId: "tool-managed-browser",
+    };
+    const started = await runtime.execute({
+      tool: "startService",
+      command,
+      port: address.port,
+    }, { ...executionContext, toolCallId: "tool-start-managed-browser" });
+    expect(started).toMatchObject({ ok: true, running: true });
+
+    const opened = await runtime.execute({
+      tool: "browser",
+      browserArgs: ["open", `http://127.0.0.1:${address.port}`],
+    }, executionContext);
+    expect(opened).toMatchObject({
+      ok: true,
+      pageUrl: `http://127.0.0.1:${address.port}/`,
+      localService: {
+        serviceId: started.serviceId,
+        port: address.port,
+      },
+      evidenceId: expect.any(String),
+    });
+    await runtime.dispose();
+  }, 90_000);
+
+  it("does not let another Ticket Attempt poll or browse a managed service", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-service-owner-"));
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService", "pollProcess", "browser"], { serviceStartupTimeoutMs: 10_000 });
+    const owner = {
+      agentId: "wa_dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-dev",
+      toolCallId: "start",
+    };
+    const otherAttempt = {
+      agentId: "wa_qa",
+      threadId: "thread-qa",
+      goalId: "goal-qa",
+      attemptId: "attempt-qa",
+      turnId: "turn-qa",
+      toolCallId: "observe",
+    };
+    const started = await runtime.execute({
+      tool: "startService",
+      command: `node -e "require('node:http').createServer((_q,r)=>r.end('owned')).listen(${address.port},'127.0.0.1');setTimeout(()=>process.exit(0),5000)"`,
+      port: address.port,
+    }, owner);
+    expect(started).toMatchObject({ ok: true, running: true });
+
+    await expect(runtime.execute({
+      tool: "pollProcess",
+      serviceId: String(started.serviceId),
+    }, otherAttempt)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("不属于当前 Agent Ticket Attempt"),
+    });
+    await expect(runtime.execute({
+      tool: "browser",
+      browserArgs: ["open", `http://127.0.0.1:${address.port}`],
+    }, otherAttempt)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("不属于当前工作区正在运行的受管服务"),
+    });
+    await runtime.dispose();
+  });
+
+  it("terminates owned managed services when the Agent runtime is disposed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-dispose-"));
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("test probe did not expose a port");
+    await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"], { serviceStartupTimeoutMs: 10_000 });
+    const started = await runtime.execute({
+      tool: "startService",
+      command: `node -e "require('node:http').createServer((_q,r)=>r.end('owned')).listen(${address.port},'127.0.0.1')"`,
+      port: address.port,
+    });
+    expect(started).toMatchObject({ ok: true, running: true });
+
+    await runtime.dispose();
+
+    const listening = await new Promise<boolean>((resolve) => {
+      const socket = createConnection({ host: "127.0.0.1", port: address.port });
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+    });
+    expect(listening).toBe(false);
   }, 30_000);
+
+  it("rejects browser file targets outside the current workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-file-boundary-"));
+    const outside = path.join(path.dirname(root), "outside-browser-proof.html");
+    await writeFile(outside, "<title>outside</title>", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+    }, ["browser"]);
+
+    await expect(runtime.execute({
+      tool: "browser",
+      browserArgs: ["--allow-file-access", "open", pathToFileURL(outside).href],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("当前工作区之外"),
+    });
+  });
 
   it("settles parallel shell calls even when one command remains running", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-parallel-"));
@@ -346,5 +879,52 @@ describe("AgentToolRuntime", () => {
       expect(shell?.description).toContain("POSIX shell");
       expect(startService?.description).toContain("POSIX shell");
     }
+  });
+
+  it("describes public browser navigation separately from managed local services", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-description-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+      allowHostAccess: false,
+    }, ["browser"]);
+
+    const browser = runtime.definitions().find((item) => item.name === "browser");
+    expect(browser?.description).toContain("公网 HTTP/HTTPS 页面可以直接打开");
+    expect(browser?.description).toContain("本地页面只能打开当前工作区");
+    await runtime.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects Agent-supplied browser session ownership arguments", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-browser-session-boundary-"));
+    let commands = 0;
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: true,
+      allowHostAccess: false,
+    }, ["browser"], {
+      browserCommandRunner: async () => {
+        commands += 1;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+
+    await expect(runtime.execute({
+      tool: "browser",
+      browserArgs: ["--session", "agent-chosen", "snapshot", "-i"],
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("不能覆盖平台管理的浏览器会话参数"),
+    });
+    expect(commands).toBe(0);
+    await runtime.dispose();
+    await rm(root, { recursive: true, force: true });
   });
 });

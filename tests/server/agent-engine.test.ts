@@ -332,6 +332,102 @@ describe("AgentEngine", () => {
     });
   });
 
+  it("continues an explicitly resumed goal after an execution block", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    await fixture.engine.appendModelItem({
+      itemId: "blocked-turn:model",
+      turnId: "blocked-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      content: "work in progress",
+      createdAt: T1,
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "blocked-turn:control",
+      turnId: "blocked-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: {
+        turnId: "blocked-turn",
+        status: "execution_blocked",
+        reason: "provider_error",
+      },
+      createdAt: T1,
+    });
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "interrupted_turn",
+    });
+  });
+
+  it("continues from the newest goal version after discarding a stale turn", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    await fixture.engine.appendModelItem({
+      itemId: "stale-turn:model",
+      turnId: "stale-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      content: "outdated result",
+      createdAt: T1,
+    });
+    await fixture.engine.appendToolItem({
+      itemId: "stale-turn:discarded",
+      turnId: "stale-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: {
+        status: "stale_goal",
+        expectedGoalVersion: 2,
+        actualGoalVersion: 3,
+      },
+      createdAt: T1,
+    });
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "goal_version_updated",
+    });
+  });
+
+  it("treats every host correction as ordered input even when its reason repeats", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const appendModel = (itemId: string) => fixture.engine.appendModelItem({
+      itemId,
+      turnId: itemId,
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      content: "revised proposal",
+      createdAt: T1,
+    });
+    const appendCorrection = (itemId: string) => fixture.engine.appendToolItem({
+      itemId,
+      turnId: itemId,
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control" as const,
+      value: {
+        type: "goal_resolution_decision",
+        status: "correctable",
+        goalId: fixture.goal.spec.id,
+        decision: { accepted: false, disposition: "correctable", reason: "criterion coverage is incomplete" },
+      },
+      createdAt: T1,
+    });
+
+    await appendModel("attempt-1");
+    await appendCorrection("correction-1");
+    await appendModel("attempt-2");
+    await appendCorrection("correction-2");
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "host_correction",
+    });
+  });
+
   it("makes duplicate appends no-ops and rejects conflicting reuse", async () => {
     const fixture = await createFixture();
     const thread = await fixture.engine.ensureThread({
@@ -409,6 +505,151 @@ describe("AgentEngine", () => {
 
     const restarted = new AgentEngine(new AgentStore(fixture.root, "dev"));
     expect(await restarted.getGoal("goal-a")).toMatchObject({ status: "completed" });
+  });
+
+  it("rejects settlement until a queued human turn for the same Goal is consumed", async () => {
+    const port = new AcceptAllPort();
+    const fixture = await activeGoalFixture(port);
+    await fixture.engine.appendToolItem({
+      itemId: "active-turn:started",
+      turnId: "active-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: { turnId: "active-turn", status: "running" },
+      createdAt: T1,
+    });
+    await fixture.engine.sendMessage({
+      messageId: "human-during-active-turn",
+      turnId: "queued-human-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      senderPrincipalId: "human",
+      deliveryKind: "turn",
+      content: "真实浏览器发现阻断问题，请纳入当前结论",
+      createdAt: T1,
+    });
+
+    const rejected = await fixture.engine.proposeGoalResolution({
+      ...proposalFor(fixture.goal),
+      turnId: "active-turn",
+    });
+
+    expect(port.resolveCalls).toBe(0);
+    expect(rejected.goal.status).toBe("active");
+    expect(rejected.attempt).toMatchObject({
+      settle: true,
+      decision: {
+        accepted: false,
+        disposition: "correctable",
+      },
+    });
+    expect(await fixture.engine.hasPendingHumanTurn(fixture.goal.spec.id, "active-turn")).toBe(true);
+
+    await fixture.engine.appendToolItem({
+      itemId: "queued-human-turn:started",
+      turnId: "queued-human-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: {
+        turnId: "queued-human-turn",
+        triggerMessageId: "human-during-active-turn",
+        status: "running",
+      },
+      createdAt: T1,
+    });
+    const currentGoal = (await fixture.engine.getGoal(fixture.goal.spec.id))!;
+    const accepted = await fixture.engine.proposeGoalResolution({
+      ...proposalFor(currentGoal),
+      proposalId: "proposal-after-human-turn",
+      turnId: "queued-human-turn",
+    });
+
+    expect(port.resolveCalls).toBe(1);
+    expect(accepted.goal.status).toBe("completed");
+  });
+
+  it("publishes external settlement only after the resolution port accepts responsibility", async () => {
+    const port = new DeferredRetryPort();
+    const fixture = await activeGoalFixture(port);
+    const proposal = proposalFor(fixture.goal);
+    const pending = fixture.engine.proposeGoalResolution(proposal);
+    await port.entered;
+
+    const beforeValidation = await fixture.engine.readEvents({ agentId: "dev", limit: 100 });
+    expect(beforeValidation.events.map((event) => event.payload.type)).toContain("GoalProposalCreated");
+    expect(beforeValidation.events.map((event) => event.payload.type)).not.toContain("GoalSettlementRequested");
+
+    port.release();
+    await pending;
+    const afterValidation = await fixture.engine.readEvents({ agentId: "dev", limit: 100 });
+    expect(afterValidation.events.map((event) => event.payload.type)).toContain("GoalSettlementRequested");
+  });
+
+  it("settles the same proposal idempotently when concurrent ticks submit one decision", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const proposal = proposalFor(fixture.goal);
+    const resolving = (await fixture.engine.proposeGoalResolution(proposal)).goal;
+    const input = {
+      decisionId: "concurrent-decision",
+      proposalId: proposal.proposalId,
+      expectedGoalVersion: resolving.version,
+      decision: { accepted: true as const, committedState: "completed" as const },
+    };
+
+    const [first, second] = await Promise.all([
+      fixture.engine.settleProposal(input),
+      fixture.engine.settleProposal(input),
+    ]);
+
+    expect(first).toMatchObject({ applied: true, goal: { status: "completed" } });
+    expect(second).toEqual(first);
+    expect((await fixture.store.read()).decisions.filter((item) => item.decisionId === input.decisionId)).toHaveLength(1);
+    await expect(new AgentStore(fixture.root, "dev").read()).resolves.toMatchObject({
+      goals: [expect.objectContaining({ status: "completed" })],
+    });
+  });
+
+  it("does not let a stale resolution proposal overwrite a concurrent Goal control", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const originalTransact = fixture.store.transact.bind(fixture.store);
+    let releaseFirst!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const released = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let blockNextTransaction = true;
+    vi.spyOn(fixture.store, "transact").mockImplementation(async (mutate) => {
+      if (blockNextTransaction) {
+        blockNextTransaction = false;
+        markEntered();
+        await released;
+      }
+      return originalTransact(mutate);
+    });
+
+    const proposal = proposalFor(fixture.goal);
+    const pendingProposal = fixture.engine.proposeGoalResolution(proposal);
+    await entered;
+    const paused = await fixture.engine.controlGoal({
+      requestId: "pause-during-proposal",
+      goalId: fixture.goal.spec.id,
+      expectedGoalVersion: fixture.goal.version,
+      action: "pause",
+      reason: "operator pause",
+    });
+    releaseFirst();
+
+    await expect(pendingProposal).rejects.toMatchObject({ code: "version_conflict" });
+    expect(await fixture.engine.getGoal(fixture.goal.spec.id)).toEqual(paused);
+    const events = await fixture.engine.readEvents({ agentId: "dev", limit: 100 });
+    const goalVersions = events.events
+      .filter((event) => event.aggregateId === fixture.goal.spec.id)
+      .map((event) => event.aggregateVersion);
+    expect(goalVersions).toEqual([...goalVersions].sort((a, b) => a - b));
+    await expect(new AgentStore(fixture.root, "dev").read()).resolves.toMatchObject({
+      goals: [expect.objectContaining({ version: paused.version, status: "paused" })],
+    });
   });
 
   it("keeps a resolving proposal while paused and resumes resolution", async () => {
@@ -530,6 +771,26 @@ class RetryPort implements GoalResolutionPort {
     _proposal: GoalResolutionProposal<TStatus>,
   ): Promise<GoalResolutionAttemptResult<TStatus>> {
     return { settle: false, pending: "retry_later", reason: "host unavailable", retryAfter: T1 };
+  }
+}
+
+class DeferredRetryPort implements GoalResolutionPort {
+  private signalEntered!: () => void;
+  private signalRelease!: () => void;
+  readonly entered = new Promise<void>((resolve) => { this.signalEntered = resolve; });
+  private readonly released = new Promise<void>((resolve) => { this.signalRelease = resolve; });
+
+  release(): void {
+    this.signalRelease();
+  }
+
+  async resolve<TStatus extends GoalResolutionStatus>(
+    _goal: AgentGoal,
+    _proposal: GoalResolutionProposal<TStatus>,
+  ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    this.signalEntered();
+    await this.released;
+    return { settle: false, pending: "retry_later", reason: "external settlement", retryAfter: T1 };
   }
 }
 

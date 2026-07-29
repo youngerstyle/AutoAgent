@@ -4,8 +4,9 @@ import { isKnownToolName } from "../tools/tool-catalog.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { globalAgentProfilesFile } from "../storage/paths.js";
 import { CORE_AGENT_PROFILES } from "./roster.js";
+import { toolsRequiredBySkills } from "./skill-config.js";
 
-const DEFAULT_PROFILE_CONTENT_VERSION = 8;
+const DEFAULT_PROFILE_CONTENT_VERSION = 9;
 const LEGACY_V4_AUTONOMY_CONTENT_HASHES = new Set([
   "9da2edcf9996cf811045de08949f0599e62a9a034178c92c534b1f2b34caecc8",
   "0f3bd16facddbbcc3afb43459bc1432a2ce6f28e33c36759a444fb5fa7d34b3f",
@@ -32,7 +33,7 @@ export class AgentProfileStore {
     const profiles = await this.list();
     const existing = profiles.find((profile) => profile.id === profileId);
     if (!existing) throw new Error(`Agent profile not found: ${profileId}`);
-    const updated: AgentProfile = stripRemovedProfileFields({
+    const updated: AgentProfile = normalizeSkillToolContract(stripRemovedProfileFields({
       ...existing,
       name: patch.name ?? existing.name,
       identity: patch.identity ?? existing.identity,
@@ -43,7 +44,7 @@ export class AgentProfileStore {
       defaultProvider: patch.defaultProvider ?? existing.defaultProvider,
       defaultModel: patch.defaultModel ?? existing.defaultModel,
       defaultPolicy: patch.defaultPolicy ? { ...existing.defaultPolicy, ...patch.defaultPolicy } : existing.defaultPolicy
-    });
+    }));
     await writeJson(globalAgentProfilesFile(this.homeDir), profiles.map((profile) => profile.id === profileId ? stripRemovedProfileFields(updated) : stripRemovedProfileFields(profile)));
     return updated;
   }
@@ -63,12 +64,15 @@ function mergeDefaults(stored: AgentProfile[]): AgentProfile[] {
   const byId = new Map(stored.map((profile) => [profile.id, profile]));
   const merged = defaultAgentProfiles().map((profile) => {
     const stored = byId.get(profile.id);
-    const result = mergeDefaultProfile(profile, stored);
+    const result = normalizeSkillToolContract(mergeDefaultProfile(profile, stored));
     return stored && stored.contentVersion !== DEFAULT_PROFILE_CONTENT_VERSION
       ? withProtocolCapabilities(result, profile)
       : result;
   });
-  const custom = stored.filter((profile) => !merged.some((item) => item.id === profile.id)).map(stripRemovedProfileFields);
+  const custom = stored
+    .filter((profile) => !merged.some((item) => item.id === profile.id))
+    .map(stripRemovedProfileFields)
+    .map(normalizeSkillToolContract);
   return [...merged, ...custom];
 }
 
@@ -159,6 +163,15 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
       contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
     });
   }
+  if (storedProfile.contentVersion === 8) {
+    return normalizeSkillToolContract(stripRemovedProfileFields({
+      ...defaultProfile,
+      ...storedProfile,
+      defaultSkills: storedProfile.defaultSkills ?? defaultProfile.defaultSkills,
+      defaultPolicy: { ...defaultProfile.defaultPolicy, ...storedProfile.defaultPolicy },
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
+    }));
+  }
   return stripRemovedProfileFields({
     ...defaultProfile,
     name: storedProfile.name ?? defaultProfile.name,
@@ -167,6 +180,19 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
     defaultPolicy: storedProfile.defaultPolicy ?? defaultProfile.defaultPolicy,
     contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
   });
+}
+
+function normalizeSkillToolContract(profile: AgentProfile): AgentProfile {
+  const enabledTools = profile.defaultPolicy.enabledTools ?? [];
+  const normalizedTools = toolsRequiredBySkills(profile.defaultSkills ?? [], enabledTools);
+  if (normalizedTools.length === enabledTools.length) return profile;
+  return {
+    ...profile,
+    defaultPolicy: {
+      ...profile.defaultPolicy,
+      enabledTools: normalizedTools
+    }
+  };
 }
 
 function isProtocolCapability(capability: string): boolean {

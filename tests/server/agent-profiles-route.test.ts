@@ -50,7 +50,7 @@ describe("agent profiles route", () => {
     const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
     const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
     expect(persistedPm.identity).toBe(pm.identity);
-    expect(persistedPm.contentVersion).toBe(8);
+    expect(persistedPm.contentVersion).toBe(9);
     expect(persistedPm.capabilities).toContain("plan:plan");
   });
 
@@ -73,7 +73,7 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(8);
+    expect(dev.contentVersion).toBe(9);
     expect(dev.capabilities).toContain("delivery:implement");
     expect(dev.defaultModel).toBe("deepseek-v4-flash");
     expect(dev.agentMd).toContain("已经存在的手册要保留");
@@ -104,7 +104,7 @@ describe("agent profiles route", () => {
     expect(dev.capabilities).toEqual(expect.arrayContaining(["delivery:implement", "TypeScript", "验证"]));
     expect(dev.agentMd).toContain("# 使命");
     expect(dev.agentMd).toContain("实现");
-    expect(dev.contentVersion).toBe(8);
+    expect(dev.contentVersion).toBe(9);
     expect(dev.capabilities).toContain("delivery:implement");
   });
 
@@ -132,15 +132,66 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(8);
+    expect(dev.contentVersion).toBe(9);
     expect(dev.defaultSkills).toContain("agent-browser");
     expect(dev.defaultPolicy.enabledTools).toEqual(expect.arrayContaining([
       "listFiles",
       "readFile",
       "readImage",
       "writeFile",
-      "shell"
+      "shell",
+      "browser"
     ]));
+  });
+
+  it("migrates v8 browser skills to the dedicated browser tool without role checks", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_dev",
+      name: "开发",
+      role: "dev",
+      contentVersion: 8,
+      identity: "用户岗位",
+      soul: "用户个性",
+      agentMd: "用户能力说明",
+      capabilities: ["delivery:implement"],
+      defaultSkills: ["agent-browser"],
+      defaultProvider: "openai",
+      defaultModel: "custom-model",
+      defaultPolicy: {
+        canReadWorkspace: true,
+        canWriteWorkspace: true,
+        canExecuteCommands: true,
+        enabledTools: ["listFiles", "readFile", "writeFile", "shell"]
+      }
+    }, {
+      id: "prof_custom_browser",
+      name: "网页研究员",
+      role: "specialist",
+      contentVersion: 8,
+      capabilities: ["网页研究"],
+      defaultSkills: ["agent-browser"],
+      defaultProvider: "openai",
+      defaultModel: "custom-model",
+      defaultPolicy: {
+        canReadWorkspace: true,
+        canWriteWorkspace: false,
+        canExecuteCommands: true,
+        enabledTools: ["readFile"]
+      }
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const dev = listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_dev");
+    const specialist = listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_custom_browser");
+
+    expect(dev.contentVersion).toBe(9);
+    expect(dev.defaultPolicy.enabledTools).toContain("browser");
+    expect(specialist.defaultPolicy.enabledTools).toContain("browser");
+
+    const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
+    expect(persisted.find((profile: { id: string }) => profile.id === "prof_dev").defaultPolicy.enabledTools)
+      .toContain("browser");
   });
 
   it("persists editable global identity and soul separately from workspace overrides", async () => {
@@ -207,6 +258,7 @@ describe("agent profiles route", () => {
       .expect(200)
       .expect(({ body }) => {
         expect(body.profile.defaultSkills).toEqual(["agent-browser"]);
+        expect(body.profile.defaultPolicy.enabledTools).toContain("browser");
       });
 
     const selected = await request(app).get("/api/agent-profiles").expect(200);

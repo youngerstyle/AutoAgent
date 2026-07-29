@@ -43,7 +43,7 @@ describe("Ticket Engine runtime contracts", () => {
 
 describe("Mission Control runtime contracts", () => {
   it("stores exactly one Plan identity and an immutable TeamBinding per Mission in schema v4", () => {
-    const record = { missionId: "mission", objective: "完成项目目标", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", ownerPrincipalId: "principal-boss", teamBinding: { teamBindingId: "team-a", version: 1, contentHash: "team-hash", members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"] }] }, status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
+    const record = { missionId: "mission", objective: "完成项目目标", planId: "5deef401-b641-402d-b879-84909d3a2061" as PlanId, planCreateCommandId: "create", ownerPrincipalId: "principal-boss", teamBinding: { teamBindingId: "team-a", version: 1, contentHash: "team-hash", members: [{ agentId: "boss", principalId: "principal-boss", capabilities: ["mission:intake"], enabledTools: [] }] }, status: "linked", linkedAt: "2026-07-14T00:00:00.000Z" } satisfies MissionRecord;
     expect(record.planId).toBeDefined();
     expect(record.objective).toBe("完成项目目标");
   });
