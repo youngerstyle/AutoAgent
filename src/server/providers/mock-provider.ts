@@ -83,7 +83,7 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
   }
   if (ticket.outputSchema === "plan-change-set-v3" && !ticket.settleMission) {
     const sourceTicketId = currentTicketId(instructions);
-    const criterionIds = missionCriterionIds(instructions);
+    const criterionIndexes = missionCriterionIndexes(instructions);
     return {
       status: "completed",
       summary: "已形成执行工单 DAG",
@@ -104,11 +104,11 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
           additions: [
             {
               ...node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
-              missionContribution: { missionCriterionIds: criterionIds },
+              missionContribution: { missionCriterionIndexes: criterionIndexes },
             },
             {
               ...node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
-              assurance: { missionCriterionIds: criterionIds },
+              assurance: { missionCriterionIndexes: criterionIndexes },
             },
             { ...node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"), permissions: { settleMission: true } },
           ],
@@ -253,6 +253,10 @@ function missionCriterionIds(instructions: string): string[] {
   return workContext(instructions).currentPlan?.missionBaseline?.criteria
     ?.map((criterion) => criterion.criterionId)
     .filter((criterionId): criterionId is string => typeof criterionId === "string" && criterionId.length > 0) ?? [];
+}
+
+function missionCriterionIndexes(instructions: string): number[] {
+  return workContext(instructions).currentPlan?.missionBaseline?.criteria?.map((_criterion, index) => index) ?? [];
 }
 
 function missionBaselineVersion(instructions: string): number {

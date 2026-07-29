@@ -7,6 +7,7 @@ import {
   createPiToolExecutionBarrier,
   createPiPromptInactivityWatchdog,
   goalResolutionDomainOutcomeSchema,
+  goalResolutionTransportDomainOutcomeSchema,
   isUsefulToolProgress,
   modelFacingToolResultText,
   toolFailureFingerprint,
@@ -45,6 +46,28 @@ describe("Pi tool error projection", () => {
     expect(projected).toContain("Rejected arguments omitted");
     expect(projected).not.toContain("recursive-payload");
     expect(projected.length).toBeLessThan(1_000);
+  });
+});
+
+describe("Pi goal resolution transport boundary", () => {
+  it("passes domain payloads through transport while the Mission contract remains authoritative", () => {
+    const contract = compileMissionGoalOutputContract({
+      title: "质量检查",
+      objective: "验证交付",
+      successCriteria: ["形成结论"],
+      assignment: {},
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1"] },
+    }, baseline);
+    const malformed = {
+      assuranceReport: {
+        baselineVersion: 3,
+        criterionResults: ["not-a-domain-result"],
+      },
+    };
+
+    expect(Value.Check(goalResolutionTransportDomainOutcomeSchema(), malformed)).toBe(true);
+    expect(Value.Check(goalResolutionDomainOutcomeSchema(contract), malformed)).toBe(false);
   });
 });
 
@@ -620,7 +643,7 @@ describe("Pi runtime terminal propagation", () => {
           assignment: { requiredCapabilities: ["delivery:implement"], requiredTools: ["writeFile"] },
           outputContract: { schemaRef: "tank-delivery-v1" },
           deliveryIncrement: { incrementId: "tank-playable" },
-          missionContribution: { missionCriterionIds: ["criterion-1"] },
+          missionContribution: { missionCriterionIndexes: [0] },
         }, {
           clientRef: "acceptance",
           title: "最终验收",
@@ -641,6 +664,16 @@ describe("Pi runtime terminal propagation", () => {
     };
 
     expect(Value.Check(schema, valid)).toBe(true);
+    expect(Value.Check(schema, {
+      ...valid,
+      change: {
+        ...valid.change,
+        additions: [{
+          ...valid.change.additions[0],
+          missionContribution: { missionCriterionIds: ["criterion-1"] },
+        }, valid.change.additions[1]],
+      },
+    })).toBe(false);
     expect(Value.Check(schema, {
       ...valid,
       change: {

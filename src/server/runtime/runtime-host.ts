@@ -408,13 +408,21 @@ export class RuntimeHost {
     for (const link of mission.links.filter((item) => item.status === "running")) {
       const engine = context.engines.get(link.agentId)!;
       const goal = await engine.getGoal(link.agentGoalId!);
-      if (goal?.status === "active") await engine.controlGoal({
-        requestId: stableId("pause_goal", taskId, goal.spec.id, String(goal.version)),
-        goalId: goal.spec.id,
-        expectedGoalVersion: goal.version,
-        action: "pause",
-        reason: "plan paused",
-      });
+      if (goal?.status === "active") {
+        await engine.controlGoal({
+          requestId: stableId("pause_goal", taskId, goal.spec.id, String(goal.version)),
+          goalId: goal.spec.id,
+          expectedGoalVersion: goal.version,
+          action: "pause",
+          reason: "plan paused",
+        });
+        await context.loops.get(link.agentId)?.releaseGoalResources?.({
+          agentId: link.agentId,
+          threadId: goal.spec.threadId,
+          goalId: goal.spec.id,
+          attemptId: link.attemptId,
+        });
+      }
     }
     context.record = { ...context.record, status: "paused", updatedAt: this.now().toISOString() };
     await this.store.save(context.record);
@@ -664,7 +672,8 @@ export class RuntimeHost {
   }
 
   providerRetryState(taskId: string, agentId: string): { failures: number; retryAt: number } | undefined {
-    return this.providerBackoffs.get(`${taskId}:${agentId}`);
+    void taskId;
+    return this.providerBackoffs.get(agentId);
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -691,6 +700,7 @@ export class RuntimeHost {
       if (goal?.status !== "active") continue;
       const readiness = await engine!.executionReadiness(goal.spec.id);
       if (!readiness.ready) {
+        if (readiness.reason === "agent_busy") continue;
         await engine!.controlGoal({
           requestId: stableId("no_progress", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
           goalId: goal.spec.id,
@@ -792,7 +802,7 @@ export class RuntimeHost {
     triggerMessageId: string,
     sourceGoalId?: string,
   ): Promise<void> {
-    const key = `${taskId}:${agentId}`;
+    const key = agentId;
     const active = this.agentRuns.get(key);
     const pending = (active ? active.catch(() => undefined) : Promise.resolve())
       .then(() => this.exclusive(() => this.continueAfterAgentMessageUnlocked(
@@ -819,7 +829,8 @@ export class RuntimeHost {
   }
 
   private agentRunKey(context: RuntimeContext, agentId: string): string {
-    return `${context.record.taskId}:${agentId}`;
+    void context;
+    return agentId;
   }
 
   private async releaseSettledAgentResources(context: RuntimeContext, links: MissionLink[]): Promise<void> {

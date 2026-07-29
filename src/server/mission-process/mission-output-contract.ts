@@ -155,6 +155,10 @@ export function missionCompletionOutcomeSchema(
 
   if (definition.permissions?.amendPlan
     || definition.outputContract.schemaRef === "plan-change-set-v3") {
+    const missionCriterionIndex = Type.Integer({
+      minimum: 0,
+      ...(baseline?.criteria.length ? { maximum: baseline.criteria.length - 1 } : {}),
+    });
     const ticketRef = Type.Union([
       Type.Object({ ticketId: Type.String({ minLength: 1 }) }),
       Type.Object({ clientRef: Type.String({ minLength: 1 }) }),
@@ -175,11 +179,11 @@ export function missionCompletionOutcomeSchema(
         { additionalProperties: false },
       )),
       missionContribution: Type.Optional(Type.Object({
-        missionCriterionIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-      })),
+        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
+      }, { additionalProperties: false })),
       assurance: Type.Optional(Type.Object({
-        missionCriterionIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-      })),
+        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
+      }, { additionalProperties: false })),
       permissions: Type.Optional(Type.Object({
         amendPlan: Type.Optional(Type.Boolean()),
         settleMission: Type.Optional(Type.Boolean()),

@@ -419,4 +419,53 @@ describe("append-only Plan graph", () => {
       resolutionTicketId: replacementAssurance,
     });
   });
+
+  it("rejects a failure resolution that is downstream of the unsuccessful Ticket", () => {
+    const [implementation, returnedAssurance, aggregateAssurance, correction, replacementAssurance] = [
+      "bcdfad56-b34c-43f4-92ee-ef583eb6dd71",
+      "139e9041-2098-4af5-92eb-343c9a6769f6",
+      "077c9668-3f8f-4c8a-b929-52a1dd12bd27",
+      "82674581-08dc-487a-9b84-e8f0a4a73bb8",
+      "4bbc2876-35b9-427c-b51f-501b5304f850",
+    ].map((value) => value as TicketId);
+    const initialChange = change(["implementation", "returned-assurance", "aggregate-assurance"]);
+    initialChange.additions[0]!.missionContribution = { missionCriterionIds: ["playable"] };
+    initialChange.additions[1]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    initialChange.additions[1]!.assurance = { missionCriterionIds: ["playable"] };
+    initialChange.additions[2]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    initialChange.additions[2]!.assurance = { missionCriterionIds: ["playable"] };
+    let initialIndex = 0;
+    const initial = materializePlanGraph({
+      planId,
+      change: initialChange,
+      ticketIdFactory: () => [implementation, returnedAssurance, aggregateAssurance][initialIndex++]!,
+    });
+    const statuses = new Map<TicketId, TicketStatus>([
+      [implementation, "completed"],
+      [returnedAssurance, "returned"],
+      [aggregateAssurance, "pending"],
+    ]);
+    const amendment = change(["correction", "replacement-assurance"]);
+    amendment.additions[0]!.missionContribution = { missionCriterionIds: ["playable"] };
+    amendment.additions[1]!.outputContract = { schemaRef: "mission-assurance-v1" };
+    amendment.additions[1]!.assurance = { missionCriterionIds: ["playable"] };
+    amendment.dependencyAdditions = [
+      { from: { ticketId: aggregateAssurance }, to: { clientRef: "correction" } },
+      { from: { clientRef: "correction" }, to: { clientRef: "replacement-assurance" } },
+    ];
+    amendment.failureResolutions = [{
+      failedTicketId: returnedAssurance,
+      resolvedBy: { clientRef: "replacement-assurance" },
+    }];
+    amendment.requiredTerminalRefs = [{ clientRef: "replacement-assurance" }];
+    let amendmentIndex = 0;
+
+    expect(() => materializePlanGraph({
+      planId,
+      previous: initial,
+      ticketStatuses: statuses,
+      change: amendment,
+      ticketIdFactory: () => [correction, replacementAssurance][amendmentIndex++]!,
+    })).toThrow(/cannot depend.*unsuccessful Ticket/i);
+  });
 });

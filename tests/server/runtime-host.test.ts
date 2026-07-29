@@ -597,9 +597,11 @@ describe("RuntimeHost", () => {
     });
 
     await fixture.host.createTask({ taskId: "task-no-progress", title: "演示", objective: "构建演示" });
-    for (let index = 0; index < 6; index += 1) await fixture.host.tick();
+    for (let index = 0; index < 12 && planningTurns < 2; index += 1) await fixture.host.tick();
 
-    expect(planningTurns).toBe(3);
+    expect(planningTurns).toBe(2);
+    for (let index = 0; index < 4; index += 1) await fixture.host.tick();
+    expect(planningTurns).toBe(2);
   });
 
   it("backs off one turn after the same invalid tool call repeats without progress", async () => {
@@ -1211,12 +1213,17 @@ describe("RuntimeHost", () => {
     });
     const context = fixture.host.context("task-slow-agent")!;
     let releaseTurn!: () => void;
+    let releasedGoalResources = 0;
     const turnStarted = new Promise<void>((resolve) => {
       const loop = context.loops.get("wa_boss")!;
       loop.runSlice = async () => {
         resolve();
         await new Promise<void>((release) => { releaseTurn = release; });
         return { turnId: "slow-turn", status: "waiting", toolCalls: 0 };
+      };
+      loop.releaseGoalResources = async () => {
+        releasedGoalResources += 1;
+        releaseTurn();
       };
     });
 
@@ -1225,10 +1232,10 @@ describe("RuntimeHost", () => {
       fixture.host.pauseTask("task-slow-agent").then(() => "paused"),
       new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 2_000)),
     ]);
-    releaseTurn();
     await fixture.host.stop();
 
     expect(controlResult).toBe("paused");
+    expect(releasedGoalResources).toBe(1);
   });
 
   it("queues a human message behind the active turn for the same Agent", async () => {

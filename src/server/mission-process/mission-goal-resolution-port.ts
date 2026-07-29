@@ -13,7 +13,6 @@ import type {
 import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
 import { isWorkspacePath } from "../policy/path-policy.js";
 import type { MissionTicketOutcome } from "./ticket-agent-adapter.js";
-import { validateMissionTicketOutcome } from "./ticket-agent-adapter.js";
 
 export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTicketOutcome> {
   constructor(
@@ -41,18 +40,6 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
       if (evidenceError) {
         return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
       }
-    }
-    const validation = validateMissionTicketOutcome(
-      goal.spec.outputContract?.schemaRef,
-      proposal.status,
-      proposal.domainOutcome,
-      proposal.humanInputRequest,
-    );
-    if (!validation.valid) {
-      return {
-        settle: true,
-        decision: { accepted: false, disposition: "correctable", reason: validation.reason },
-      };
     }
     this.wake(this.agentId, goal.spec.id, proposal.proposalId);
     return {

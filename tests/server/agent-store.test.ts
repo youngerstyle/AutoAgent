@@ -1,9 +1,12 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
-import { agentEngineRolloutFile } from "../../src/server/storage/paths.js";
+import {
+  agentEngineExecutionLeaseFile,
+  agentEngineRolloutFile,
+} from "../../src/server/storage/paths.js";
 
 const roots: string[] = [];
 
@@ -12,6 +15,55 @@ afterEach(async () => {
 });
 
 describe("AgentStore", () => {
+  it("allows only one process-wide Agent execution lease across store instances", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
+    roots.push(root);
+    const first = new AgentStore(root, "agent-a");
+    const second = new AgentStore(root, "agent-a");
+    let releaseFirst!: () => void;
+    let announceFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { announceFirst = resolve; });
+    const firstRun = first.withExecutionLease(async () => {
+      announceFirst();
+      await new Promise<void>((release) => { releaseFirst = release; });
+    });
+    await firstStarted;
+
+    expect(await second.executionLeaseHeld()).toBe(true);
+    await expect(second.withExecutionLease(async () => "should-not-run")).resolves.toEqual({
+      acquired: false,
+    });
+
+    releaseFirst();
+    await firstRun;
+    expect(await second.executionLeaseHeld()).toBe(false);
+    await expect(second.withExecutionLease(async () => "ran")).resolves.toEqual({
+      acquired: true,
+      value: "ran",
+    });
+  });
+
+  it("immediately recovers a lease left by a dead process on the same host", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
+    roots.push(root);
+    const leaseFile = agentEngineExecutionLeaseFile(root, "agent-a");
+    await mkdir(path.dirname(leaseFile), { recursive: true });
+    await writeFile(leaseFile, `${JSON.stringify({
+      token: "abandoned",
+      pid: 2_147_483_647,
+      hostname: os.hostname(),
+      acquiredAt: new Date().toISOString(),
+    })}\n`, "utf8");
+    const store = new AgentStore(root, "agent-a", {
+      executionLeaseStaleMs: 60_000,
+    });
+
+    await expect(store.withExecutionLease(async () => "recovered")).resolves.toEqual({
+      acquired: true,
+      value: "recovered",
+    });
+  });
+
   it("serves concurrent first reads without turning an empty projection into a write race", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
     roots.push(root);

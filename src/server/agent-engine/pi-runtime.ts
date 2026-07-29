@@ -133,7 +133,15 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   runSlice(input: AgentExecutionSliceInput): Promise<AgentExecutionSliceResult> {
     const active = this.turnTails.get(input.threadId);
     const pending = (active ? active.catch(() => undefined) : Promise.resolve())
-      .then(() => this.runSliceSerial(input));
+      .then(async () => {
+        const leased = await this.store.withExecutionLease(() => this.runSliceSerial(input));
+        if (leased.acquired) return leased.value;
+        return {
+          turnId: input.turnId ?? stableId("busy-turn", input.threadId, input.goalId ?? "idle"),
+          status: "waiting" as const,
+          toolCalls: 0,
+        };
+      });
     const tracked = pending.finally(() => {
       if (this.turnTails.get(input.threadId) === tracked) this.turnTails.delete(input.threadId);
     });
@@ -1078,7 +1086,10 @@ function goalTool(
       criterionResults: genericCriterionResults,
       residualRisks: Type.Optional(Type.Array(Type.String())),
       ...(domainOutcomeSchema
-        ? { domainOutcome: goalResolutionDomainOutcomeSchema(outputContract) }
+        // Tool transport validates the Goal envelope only. The Mission manager
+        // owns the authoritative domain contract and returns correctable errors
+        // with the current Ticket/Plan context.
+        ? { domainOutcome: goalResolutionTransportDomainOutcomeSchema() }
         : { domainOutcome: Type.Optional(Type.Unknown()) }),
     }),
     async execute(_callId, params) {
@@ -1125,6 +1136,10 @@ export function goalResolutionDomainOutcomeSchema(
   return outputContract?.completionOutcomeSchema
     ? Type.Unsafe(outputContract.completionOutcomeSchema)
     : Type.Unknown();
+}
+
+export function goalResolutionTransportDomainOutcomeSchema() {
+  return Type.Unknown();
 }
 
 function correctionTool(

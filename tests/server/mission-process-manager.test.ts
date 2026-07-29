@@ -1104,7 +1104,7 @@ describe("MissionProcessManager", () => {
       createdAt: NOW,
     });
 
-    expect(attempt.goal.status).toBe("active");
+    expect(attempt.goal.status).toBe("resolving");
     await expect(fixture.manager.tick()).resolves.toMatchObject({
       links: [expect.objectContaining({ status: "running" })],
     });

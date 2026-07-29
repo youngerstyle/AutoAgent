@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat, utimes } from "node:fs/promises";
 import path from "node:path";
 import type {
   AgentEvent,
@@ -14,6 +14,7 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import {
   agentEngineLegacyAggregateFile,
+  agentEngineExecutionLeaseFile,
   agentEngineLockFile,
   agentEngineRolloutFile,
 } from "../storage/paths.js";
@@ -97,18 +98,24 @@ export interface AgentStoreOptions {
   lockWaitTimeoutMs?: number;
   lockRetryMs?: number;
   lockStaleMs?: number;
+  executionLeaseStaleMs?: number;
+  executionLeaseHeartbeatMs?: number;
 }
 
 interface ResolvedAgentStoreOptions {
   lockWaitTimeoutMs: number;
   lockRetryMs: number;
   lockStaleMs: number;
+  executionLeaseStaleMs: number;
+  executionLeaseHeartbeatMs: number;
 }
 
 const DEFAULT_OPTIONS: ResolvedAgentStoreOptions = {
   lockWaitTimeoutMs: 60_000,
   lockRetryMs: 10,
   lockStaleMs: 30_000,
+  executionLeaseStaleMs: 120_000,
+  executionLeaseHeartbeatMs: 10_000,
 };
 
 const queues = new Map<string, Promise<unknown>>();
@@ -117,6 +124,7 @@ export class AgentStore {
   private readonly file: string;
   private readonly legacyFile: string;
   private readonly lockFile: string;
+  private readonly executionLeaseFile: string;
   private readonly options: ResolvedAgentStoreOptions;
   private cached?: { size: number; mtimeMs: number; aggregate: AgentStoreAggregate };
 
@@ -129,7 +137,36 @@ export class AgentStore {
     this.file = agentEngineRolloutFile(workspaceRoot, agentId);
     this.legacyFile = agentEngineLegacyAggregateFile(workspaceRoot, agentId);
     this.lockFile = agentEngineLockFile(workspaceRoot, agentId);
+    this.executionLeaseFile = agentEngineExecutionLeaseFile(workspaceRoot, agentId);
     this.options = { ...DEFAULT_OPTIONS, ...options };
+  }
+
+  async executionLeaseHeld(): Promise<boolean> {
+    try {
+      await stat(this.executionLeaseFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (await this.recoverStaleExecutionLease()) return false;
+    return true;
+  }
+
+  async withExecutionLease<T>(
+    operation: () => Promise<T>,
+  ): Promise<{ acquired: true; value: T } | { acquired: false }> {
+    const token = await this.tryAcquireExecutionLease();
+    if (!token) return { acquired: false };
+    const heartbeat = setInterval(() => {
+      void this.heartbeatExecutionLease(token);
+    }, this.options.executionLeaseHeartbeatMs);
+    heartbeat.unref();
+    try {
+      return { acquired: true, value: await operation() };
+    } finally {
+      clearInterval(heartbeat);
+      await this.releaseExecutionLease(token);
+    }
   }
 
   async read(): Promise<AgentStoreAggregate> {
@@ -416,6 +453,86 @@ export class AgentStore {
         if ((code !== "EPERM" && code !== "EACCES") || Date.now() >= deadline) throw error;
         await delay(this.options.lockRetryMs);
       }
+    }
+  }
+
+  private async tryAcquireExecutionLease(): Promise<string | undefined> {
+    await mkdir(path.dirname(this.executionLeaseFile), { recursive: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = randomUUID();
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        handle = await open(this.executionLeaseFile, "wx", 0o600);
+        await handle.writeFile(`${JSON.stringify({
+          token,
+          pid: process.pid,
+          hostname: os.hostname(),
+          acquiredAt: new Date().toISOString(),
+        })}\n`, "utf8");
+        await handle.sync();
+        await handle.close();
+        return token;
+      } catch (error) {
+        await handle?.close().catch(() => undefined);
+        if (!await this.isExecutionLeaseContention(error)) throw error;
+      }
+      if (!await this.recoverStaleExecutionLease()) return undefined;
+    }
+    return undefined;
+  }
+
+  private async isExecutionLeaseContention(error: unknown): Promise<boolean> {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") return true;
+    if (code !== "EPERM" && code !== "EACCES") return false;
+    try {
+      await stat(this.executionLeaseFile);
+      return true;
+    } catch (statError) {
+      if ((statError as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw statError;
+    }
+  }
+
+  private async recoverStaleExecutionLease(): Promise<boolean> {
+    try {
+      const [content, info] = await Promise.all([
+        readFile(this.executionLeaseFile, "utf8"),
+        stat(this.executionLeaseFile),
+      ]);
+      const metadata = parseLock(content);
+      const locallyOwned = metadata?.hostname === os.hostname();
+      if (locallyOwned && isProcessAlive(metadata.pid)) return false;
+      if (!locallyOwned && Date.now() - info.mtimeMs <= this.options.executionLeaseStaleMs) return false;
+      const [latest, latestInfo] = await Promise.all([
+        readFile(this.executionLeaseFile, "utf8"),
+        stat(this.executionLeaseFile),
+      ]);
+      if (latest !== content || latestInfo.mtimeMs !== info.mtimeMs) return false;
+      await rm(this.executionLeaseFile);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT";
+    }
+  }
+
+  private async heartbeatExecutionLease(token: string): Promise<void> {
+    try {
+      if (parseLock(await readFile(this.executionLeaseFile, "utf8"))?.token !== token) return;
+      const now = new Date();
+      await utimes(this.executionLeaseFile, now, now);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
+  private async releaseExecutionLease(token: string): Promise<void> {
+    try {
+      if (parseLock(await readFile(this.executionLeaseFile, "utf8"))?.token === token) {
+        await rm(this.executionLeaseFile);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
 }

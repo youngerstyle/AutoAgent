@@ -174,6 +174,7 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
     }),
   ];
   validateUniqueFailureResolutions(failureResolutionEdges);
+  validateFailureResolutionReachability(failureResolutionEdges, dependencyEdges);
 
   for (const ticketId of input.change.cancelTicketIds) {
     if (!known.has(String(ticketId))) throw new PlanGraphError(`Cannot cancel unknown Ticket ${ticketId}`);
@@ -380,6 +381,19 @@ function validateUniqueFailureResolutions(
     const key = `${edge.failedTicketId}\u0000${edge.resolutionTicketId}`;
     if (seen.has(key)) throw new PlanGraphError("Duplicate failure resolution edge");
     seen.add(key);
+  }
+}
+
+function validateFailureResolutionReachability(
+  resolutionEdges: NonNullable<PlanGraphSnapshot["failureResolutionEdges"]>,
+  dependencyEdges: PlanGraphSnapshot["dependencyEdges"],
+): void {
+  for (const edge of resolutionEdges) {
+    if (hasDependencyPath(edge.failedTicketId, edge.resolutionTicketId, dependencyEdges)) {
+      throw new PlanGraphError(
+        "A failure resolution Ticket cannot depend directly or transitively on the unsuccessful Ticket it resolves",
+      );
+    }
   }
 }
 

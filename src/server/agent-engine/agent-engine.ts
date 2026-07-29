@@ -331,6 +331,9 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   }
 
   async executionReadiness(goalId: string): Promise<{ ready: boolean; reason: string }> {
+    if (await this.store.executionLeaseHeld()) {
+      return { ready: false, reason: "agent_busy" };
+    }
     const aggregate = await this.store.read();
     const goal = aggregate.goals.find((item) => item.spec.id === goalId);
     if (!goal || goal.status !== "active") return { ready: false, reason: "goal_not_active" };

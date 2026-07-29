@@ -2,9 +2,50 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { missionOutcomeInstruction, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
+  it("maps Agent-facing Mission criterion indexes to canonical internal IDs", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 1,
+      objective: "deliver",
+      criteria: [
+        baselineCriterion("criterion-long-a", "first criterion"),
+        baselineCriterion("criterion-long-b", "second criterion"),
+      ],
+      constraints: [],
+      assumptions: [],
+      exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+
+    expect(normalizeMissionPlanCriterionIndexes({
+      result: planResult(),
+      change: {
+        additions: [{
+          ...draft("work"),
+          missionContribution: { missionCriterionIndexes: [0, 1] },
+        }, {
+          ...draft("review", "mission-assurance-v1"),
+          assurance: { missionCriterionIndexes: [1] },
+        }],
+        dependencyAdditions: [],
+        cancelTicketIds: [],
+        requiredTerminalRefs: [{ clientRef: "review" }],
+      },
+    }, baseline)).toMatchObject({
+      change: {
+        additions: [{
+          missionContribution: { missionCriterionIds: ["criterion-long-a", "criterion-long-b"] },
+        }, {
+          assurance: { missionCriterionIds: ["criterion-long-b"] },
+        }],
+      },
+    });
+  });
+
   it("keeps PM domain output separate from Plan and Ticket commands", () => {
     const outcome = { result: { plan: "dev then qa" }, change: { additions: [draft("dev")], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "dev" }] } };
     const planCommand = proposalToPlanChangeCommand(proposal("completed", outcome), link, 4, NOW);
@@ -1174,6 +1215,54 @@ describe("Ticket Agent resolution adapter", () => {
 
     expect(validateMissionPlanAssurance(baseline, change, currentPlan))
       .toMatchObject({ valid: false, reason: expect.stringContaining("criterion-b") });
+  });
+
+  it("reports every Mission criterion missing upstream execution in one validation result", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 1,
+      objective: "deliver the agreed product",
+      criteria: [
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior matches"),
+      ],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const currentPlan: SharedPlanContext = {
+      planId: "plan-a",
+      version: 1,
+      missionBaseline: baseline,
+      tickets: [],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: [],
+      teamMembers: [],
+    };
+    const change = {
+      additions: [
+        {
+          ...draft("assurance", "mission-assurance-v1"),
+          assurance: { missionCriterionIds: ["criterion-a", "criterion-b"] },
+        },
+        {
+          ...draft("acceptance"),
+          permissions: { settleMission: true },
+        },
+      ],
+      dependencyAdditions: [
+        { from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } },
+      ],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "acceptance" }],
+    };
+
+    const result = validateMissionPlanAssurance(baseline, change, currentPlan);
+
+    expect(result).toMatchObject({ valid: false });
+    if (result.valid) throw new Error("expected invalid Mission Plan assurance");
+    expect(result.reason).toContain("criterion-a");
+    expect(result.reason).toContain("criterion-b");
   });
 
   it("does not impose fixed role names or output schemas on a structurally valid Plan", () => {

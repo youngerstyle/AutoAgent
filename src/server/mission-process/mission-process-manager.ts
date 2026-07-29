@@ -35,6 +35,7 @@ import {
   validateMissionPlanAssurance,
   validateMissionSettlement,
   validateMissionTicketOutcome,
+  normalizeMissionPlanCriterionIndexes,
   type MissionTicketOutcome,
   type MissionAssuranceSource,
   type MissionSettlementEvidence,
@@ -763,12 +764,12 @@ export class MissionProcessManager {
     if (!link || link.status !== "resolving") return aggregate;
     const active = link as ActiveMissionLink;
     const agent = this.agents.get(link.agentId);
-    const proposal = await agent.getProposal(proposalId);
-    if (!proposal) throw new Error("Goal proposal is missing");
+    const storedProposal = await agent.getProposal(proposalId);
+    if (!storedProposal) throw new Error("Goal proposal is missing");
     const plan = await this.tickets.getPlan(link.planId);
     const goal = await agent.getGoal(link.agentGoalId);
     if (!goal) throw new Error("Goal is missing");
-    if (await agent.hasPendingHumanTurn?.(goal.spec.id, proposal.turnId)) {
+    if (await agent.hasPendingHumanTurn?.(goal.spec.id, storedProposal.turnId)) {
       const decisionId = stableId("pending_human_turn", proposalId);
       const settled = await this.settleAgentProposal(
         agent,
@@ -791,9 +792,20 @@ export class MissionProcessManager {
     const work = await this.tickets.getWorkItem(link.ticketId);
     if (!work) throw new Error("Ticket work item is missing");
     const schemaRef = goal.spec.outputContract?.schemaRef;
+    const authoritativeMission = await this.requireAggregate();
+    const missionBaseline = authoritativeMission.record.baseline ?? aggregate.record.baseline;
     const planContext = schemaRef === "plan-change-set-v3"
-      ? await this.sharedPlanContext(link.planId, aggregate.record.baseline)
+      ? await this.sharedPlanContext(link.planId, missionBaseline)
       : undefined;
+    const proposal = schemaRef === "plan-change-set-v3"
+      ? {
+          ...storedProposal,
+          domainOutcome: normalizeMissionPlanCriterionIndexes(
+            storedProposal.domainOutcome,
+            missionBaseline ?? planContext?.missionBaseline,
+          ),
+        }
+      : storedProposal;
     const validation = validateMissionTicketOutcome(
       schemaRef,
       proposal.status,

@@ -49,6 +49,32 @@ describe("MissionGoalResolutionPort", () => {
     });
     expect(wake).not.toHaveBeenCalled();
   });
+
+  it("defers plan index normalization and Mission validation to the manager", async () => {
+    const wake = vi.fn();
+    const port = new MissionGoalResolutionPort(wake, "pm");
+    const planGoal = goal();
+    planGoal.spec.outputContract = { schemaRef: "plan-change-set-v3" };
+    const planProposal = proposal({
+      result: { summary: "可执行计划" },
+      change: {
+        additions: [{
+          clientRef: "dev",
+          title: "开发",
+          objective: "实现交付物",
+          successCriteria: ["产物可运行"],
+          missionContribution: { missionCriterionIndexes: [0] },
+          assurance: { missionCriterionIndexes: [0] },
+        }],
+      },
+    });
+    planProposal.criterionResults = [{ criterionIndex: 0, status: "satisfied", evidence: [] }];
+
+    const result = await port.resolve(planGoal, planProposal);
+
+    expect(result).toMatchObject({ settle: false, pending: "retry_later" });
+    expect(wake).toHaveBeenCalledOnce();
+  });
 });
 
 function goal(): AgentGoal {

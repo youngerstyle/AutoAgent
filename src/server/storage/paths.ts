@@ -68,6 +68,10 @@ export function agentEngineLockFile(workspaceRoot: string, agentId: string): str
   return path.join(agentEngineDir(workspaceRoot, agentId), ".lock");
 }
 
+export function agentEngineExecutionLeaseFile(workspaceRoot: string, agentId: string): string {
+  return path.join(agentEngineDir(workspaceRoot, agentId), ".execution.lock");
+}
+
 export function agentEngineTraceDir(workspaceRoot: string, agentId: string): string {
   return path.join(agentEngineDir(workspaceRoot, agentId), "traces");
 }
