@@ -14,6 +14,7 @@ import {
   toolFailureFingerprint,
   turnToolBudgetMessage,
   unresolvedGoalPrompt,
+  waitForCleanupPromptly,
 } from "../../src/server/agent-engine/pi-runtime.js";
 import {
   compileMissionGoalOutputContract,
@@ -288,6 +289,14 @@ describe("Pi runtime terminal propagation", () => {
 
     expect(result).toBe("idle");
     expect(disposed).toBe(1);
+  });
+
+  it("does not let slow execution-resource cleanup block production controls", async () => {
+    const neverSettles = new Promise<void>(() => undefined);
+
+    const result = await waitForCleanupPromptly(neverSettles, 10);
+
+    expect(result).toBe("detached");
   });
 
   it("groups changing terminal arguments by the returned contract failure", () => {

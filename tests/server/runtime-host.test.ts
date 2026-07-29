@@ -1284,7 +1284,7 @@ describe("RuntimeHost", () => {
     let modelTurns = 0;
     fixture.providers.get = async () => ({
       name: "mock",
-      async runModelTurn(input) {
+      async runModelTurn() {
         modelTurns += 1;
         if (modelTurns === 1) {
           return {
@@ -1308,7 +1308,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "completed after the queued human reply",
               evidence: [],
-              criterionResults: satisfiedCriteria(input.goal.successCriteria.length),
+              criterionResults: satisfiedCriteria(3),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },

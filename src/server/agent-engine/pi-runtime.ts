@@ -488,15 +488,17 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const key = piWorkSessionKey(input.threadId, input.goalId);
     const pending = this.sessions.get(key);
     this.sessions.delete(key);
+    const release = this.tools.releaseExecutionResources(input);
     if (pending) {
       const { session } = await pending;
-      await Promise.allSettled([
+      const cleanup = Promise.allSettled([
         abortPiSessionPromptly(session, DEFAULT_SESSION_ABORT_GRACE_MS),
-        this.tools.releaseExecutionResources(input),
+        release,
       ]);
+      await waitForCleanupPromptly(cleanup, DEFAULT_SESSION_ABORT_GRACE_MS);
       return;
     }
-    await this.tools.releaseExecutionResources(input);
+    await waitForCleanupPromptly(release, DEFAULT_SESSION_ABORT_GRACE_MS);
   }
 
   private requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
@@ -1671,6 +1673,23 @@ export async function abortPiSessionPromptly(
   void aborting
     .then(() => session.dispose())
     .catch(() => session.dispose());
+  return result;
+}
+
+export async function waitForCleanupPromptly(
+  cleanup: Promise<unknown>,
+  graceMs = DEFAULT_SESSION_ABORT_GRACE_MS,
+): Promise<"settled" | "detached"> {
+  const guarded = cleanup.then(
+    () => "settled" as const,
+    () => "settled" as const,
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"detached">((resolve) => {
+    timer = setTimeout(() => resolve("detached"), graceMs);
+  });
+  const result = await Promise.race([guarded, timedOut]);
+  if (timer) clearTimeout(timer);
   return result;
 }
 
