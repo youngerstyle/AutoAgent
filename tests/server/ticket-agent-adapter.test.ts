@@ -801,6 +801,42 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionPlanAssurance(baseline, verified, currentPlan)).toEqual({ valid: true });
   });
 
+  it("reports the model-facing assurance index path when a verification ticket uses contribution scope", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 1,
+      objective: "deliver the agreed product",
+      criteria: [baselineCriterion("criterion-a", "artifact runs")],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const currentPlan: SharedPlanContext = {
+      planId: "plan-a",
+      version: 1,
+      missionBaseline: baseline,
+      tickets: [],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: [],
+      teamMembers: [],
+    };
+    const result = validateMissionPlanAssurance(baseline, {
+      additions: [{
+        ...draft("verify", "mission-assurance-v1"),
+        missionContribution: { missionCriterionIds: ["criterion-a"] },
+      }],
+      dependencyAdditions: [],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [],
+    }, currentPlan);
+
+    expect(result).toEqual({
+      valid: false,
+      reason: expect.stringContaining("assurance.missionCriterionIndexes"),
+    });
+    if (!result.valid) expect(result.reason).toContain("不能放在 missionContribution");
+  });
+
   it("requires each later delivery increment to start after every previous increment exit", () => {
     const baseline = {
       baselineId: "baseline-a",

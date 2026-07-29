@@ -180,7 +180,7 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
     if (!known.has(String(ticketId))) throw new PlanGraphError(`Cannot cancel unknown Ticket ${ticketId}`);
     const status = statusOf(input.ticketStatuses, ticketId);
     if (status && isTerminal(status)) throw new PlanGraphError(`Cannot cancel terminal Ticket ${ticketId}`);
-    if (status === "running" || status === "blocked") {
+    if (status === "running") {
       throw new PlanGraphError(`Cannot cancel executing Ticket ${ticketId}`);
     }
   }

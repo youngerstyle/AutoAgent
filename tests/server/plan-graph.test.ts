@@ -188,6 +188,21 @@ describe("append-only Plan graph", () => {
     })).toThrow(/executing Ticket/);
   });
 
+  it("allows a Plan change to cancel a blocked Ticket", () => {
+    const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
+    const statuses = new Map<TicketId, TicketStatus>([[ids[0], "blocked"]]);
+    const amended = materializePlanGraph({
+      planId,
+      previous: first,
+      ticketStatuses: statuses,
+      change: { ...change(["next"]), cancelTicketIds: [ids[0]] },
+      ticketIdFactory: () => ids[1],
+    });
+
+    expect(amended.addedTicketIds).toEqual([ids[1]]);
+    expect(amended.graph.ticketIds).toEqual([ids[0], ids[1]]);
+  });
+
   it("allows a new correction branch to rejoin an existing pending Ticket", () => {
     const first = materializePlanGraph({ planId, change: change(["planning"]), ticketIdFactory: () => ids[0] });
     const statuses = new Map<TicketId, TicketStatus>([[ids[0], "pending"]]);
