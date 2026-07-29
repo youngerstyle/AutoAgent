@@ -1238,6 +1238,47 @@ describe("RuntimeHost", () => {
     expect(releasedGoalResources).toBe(1);
   });
 
+  it("queues a private message while the Plan is paused and delivers it to the same Goal after resume", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    await fixture.host.createTask({
+      taskId: "task-paused-private-message",
+      title: "Paused private message",
+      objective: "preserve chronological Agent input while paused",
+    });
+    const context = fixture.host.context("task-paused-private-message")!;
+    const initialLink = (await context.manager.tick()).links.find((item) => item.agentId === "wa_boss")!;
+    const loop = context.loops.get("wa_boss")!;
+    const inputs: Array<{ goalId?: string; triggerMessageId?: string }> = [];
+    let delivered!: () => void;
+    const delivery = new Promise<void>((resolve) => { delivered = resolve; });
+    loop.runSlice = async (input) => {
+      inputs.push({ goalId: input.goalId, triggerMessageId: input.triggerMessageId });
+      delivered();
+      return { turnId: input.turnId ?? "paused-message-turn", status: "waiting", toolCalls: 0 };
+    };
+
+    await fixture.host.pauseTask("task-paused-private-message");
+    await fixture.host.sendAgentMessage(
+      "task-paused-private-message",
+      "wa_boss",
+      "resume with this chronological fact",
+      "paused-private-message",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(inputs).toHaveLength(0);
+    const pausedGoal = await context.engines.get("wa_boss")!.getGoal(initialLink.agentGoalId!);
+    expect(pausedGoal?.status).toBe("paused");
+
+    await fixture.host.resumeTask("task-paused-private-message");
+    await delivery;
+
+    expect(inputs).toEqual([{
+      goalId: initialLink.agentGoalId,
+      triggerMessageId: "paused-private-message",
+    }]);
+  });
+
   it("queues a human message behind the active turn for the same Agent", async () => {
     const fixture = await createFixture({ intervalMs: 100 });
     await fixture.host.start();
