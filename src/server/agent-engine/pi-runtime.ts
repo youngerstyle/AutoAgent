@@ -103,6 +103,10 @@ const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = envPositiveInteger(
   "AUTOAGENT_TURN_INACTIVITY_TIMEOUT_MS",
   5 * 60_000,
 );
+const DEFAULT_SESSION_ABORT_GRACE_MS = envPositiveInteger(
+  "AUTOAGENT_SESSION_ABORT_GRACE_MS",
+  2_000,
+);
 
 export class PiAgentRuntime implements AgentExecutionRuntime {
   private readonly sessions = new Map<string, Promise<SessionState>>();
@@ -486,11 +490,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     this.sessions.delete(key);
     if (pending) {
       const { session } = await pending;
-      try {
-        await session.abort();
-      } finally {
-        session.dispose();
-      }
+      await Promise.allSettled([
+        abortPiSessionPromptly(session, DEFAULT_SESSION_ABORT_GRACE_MS),
+        this.tools.releaseExecutionResources(input),
+      ]);
+      return;
     }
     await this.tools.releaseExecutionResources(input);
   }
@@ -1630,14 +1634,69 @@ export function isUsefulToolProgress(
   if (isTerminalSubmissionTool(name)) return true;
   if (name === "writeFile" || name === "editFile") return true;
   if (name === "startService") return isRecord(result) ? result.running === true || result.ok === true : true;
+  if (name === "browser" && isBrowserInteraction(args)) return false;
   if (name === "shell") {
     const command = isRecord(args) && typeof args.command === "string" ? args.command : "";
     if (isTrivialShellCommand(command)) return false;
   }
-  const signature = createHash("sha256").update(JSON.stringify({ name, args })).digest("hex");
+  const signature = createHash("sha256").update(JSON.stringify({
+    name,
+    args,
+    result: progressResult(result),
+  })).digest("hex");
   if (seen.has(signature)) return false;
   seen.add(signature);
   return true;
+}
+
+type AbortablePiSession = Pick<AgentSession, "abort" | "dispose">;
+
+export async function abortPiSessionPromptly(
+  session: AbortablePiSession,
+  graceMs = DEFAULT_SESSION_ABORT_GRACE_MS,
+): Promise<"idle" | "detached"> {
+  const aborting = Promise.resolve()
+    .then(() => session.abort())
+    .then(() => "idle" as const);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"detached">((resolve) => {
+    timer = setTimeout(() => resolve("detached"), graceMs);
+  });
+  const result = await Promise.race([aborting, timedOut]);
+  if (timer) clearTimeout(timer);
+  if (result === "idle") {
+    session.dispose();
+    return result;
+  }
+  void aborting
+    .then(() => session.dispose())
+    .catch(() => session.dispose());
+  return result;
+}
+
+function isBrowserInteraction(args: unknown): boolean {
+  if (!isRecord(args) || !Array.isArray(args.browserArgs)) return false;
+  const command = args.browserArgs.find((item): item is string => (
+    typeof item === "string" && !item.startsWith("-")
+  ))?.toLowerCase();
+  return command !== undefined && [
+    "click",
+    "dblclick",
+    "drag",
+    "fill",
+    "hover",
+    "move",
+    "press",
+    "scroll",
+    "select",
+    "type",
+  ].includes(command);
+}
+
+function progressResult(result: unknown): unknown {
+  if (!isRecord(result)) return result;
+  const { data: _data, timestamp: _timestamp, durationMs: _durationMs, ...stable } = result;
+  return stable;
 }
 
 export function isTerminalSubmissionTool(name: string): boolean {

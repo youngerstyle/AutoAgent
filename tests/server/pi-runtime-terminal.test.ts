@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
+  abortPiSessionPromptly,
   awaitPiPromptOutcome,
   compactPiToolEventDetails,
   createPiToolExecutionBarrier,
@@ -217,6 +218,76 @@ describe("Pi runtime terminal propagation", () => {
       seen,
     )).toBe(false);
     expect(seen.size).toBe(0);
+  });
+
+  it("does not count browser input actions as durable progress", () => {
+    const seen = new Set<string>();
+    expect(isUsefulToolProgress(
+      "browser",
+      { browserArgs: ["press", "Space"] },
+      { ok: true, stdout: "Done" },
+      false,
+      seen,
+    )).toBe(false);
+    expect(seen.size).toBe(0);
+  });
+
+  it("counts a repeated observation only when its result changes", () => {
+    const seen = new Set<string>();
+    expect(isUsefulToolProgress(
+      "readFile",
+      { path: "index.html" },
+      { ok: true, content: "before" },
+      false,
+      seen,
+    )).toBe(true);
+    expect(isUsefulToolProgress(
+      "readFile",
+      { path: "index.html" },
+      { ok: true, content: "before" },
+      false,
+      seen,
+    )).toBe(false);
+    expect(isUsefulToolProgress(
+      "readFile",
+      { path: "index.html" },
+      { ok: true, content: "after" },
+      false,
+      seen,
+    )).toBe(true);
+  });
+
+  it("returns control when an aborted Pi session does not become idle promptly", async () => {
+    let disposed = 0;
+    const neverIdle = new Promise<void>(() => undefined);
+    const session = {
+      abort: async () => {
+        await neverIdle;
+      },
+      dispose: () => {
+        disposed += 1;
+      },
+    };
+
+    const result = await abortPiSessionPromptly(session, 10);
+
+    expect(result).toBe("detached");
+    expect(disposed).toBe(0);
+  });
+
+  it("disposes a Pi session that becomes idle inside the abort grace period", async () => {
+    let disposed = 0;
+    const session = {
+      abort: async () => undefined,
+      dispose: () => {
+        disposed += 1;
+      },
+    };
+
+    const result = await abortPiSessionPromptly(session, 50);
+
+    expect(result).toBe("idle");
+    expect(disposed).toBe(1);
   });
 
   it("groups changing terminal arguments by the returned contract failure", () => {
