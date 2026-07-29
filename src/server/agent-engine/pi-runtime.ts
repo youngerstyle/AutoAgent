@@ -86,6 +86,7 @@ interface RunSafetyBinding {
   repeatedToolBatchCount: number;
   consecutiveIdleResponses: number;
   unproductiveToolCalls: number;
+  blockReasonKind?: "usage_limit" | "no_progress";
   blockedReason?: string;
 }
 
@@ -97,6 +98,7 @@ const MAX_TERMINAL_SUBMISSION_FAILURES = envPositiveInteger(
 const MAX_REPEATED_TOOL_BATCHES = envPositiveInteger("AUTOAGENT_MAX_REPEATED_TOOL_BATCHES", 3);
 const MAX_IDLE_CONTINUATIONS = envPositiveInteger("AUTOAGENT_MAX_IDLE_CONTINUATIONS", 3);
 const MAX_UNPRODUCTIVE_TOOL_CALLS = envPositiveInteger("AUTOAGENT_MAX_UNPRODUCTIVE_TOOL_CALLS", 80);
+const MAX_TOOL_CALLS_PER_TURN = envPositiveInteger("AUTOAGENT_MAX_TOOL_CALLS_PER_TURN", 200);
 const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = envPositiveInteger(
   "AUTOAGENT_TURN_INACTIVITY_TIMEOUT_MS",
   5 * 60_000,
@@ -193,6 +195,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       if (event.type === "tool_execution_start") {
         toolBarrier.started(event.toolCallId);
         toolCalls += 1;
+        if (toolCalls >= MAX_TOOL_CALLS_PER_TURN && !state.safety.blockedReason) {
+          state.safety.blockReasonKind = "usage_limit";
+          state.safety.blockedReason = turnToolBudgetMessage(MAX_TOOL_CALLS_PER_TURN);
+          void state.session.abort();
+        }
         toolInputs.set(event.toolCallId, { name: event.toolName, args: event.args });
         persistEvent(() => this.engine.appendToolItem({
           itemId: `${turnId}:pi:${sequence}:tool-call`, turnId, threadId: input.threadId, goalId: input.goalId,
@@ -205,6 +212,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         const toolName = toolInput?.name ?? event.toolName;
         if (event.isError) {
           if (isTransientInfrastructureToolFailure(event.result) && !state.safety.blockedReason) {
+            state.safety.blockReasonKind = "no_progress";
             state.safety.blockedReason = "平台工具连接暂时不可用，当前 Agent Goal 将保持不变并在基础设施恢复后继续。";
             void state.session.abort();
           }
@@ -212,6 +220,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           const count = (state.safety.failures.get(fingerprint) ?? 0) + 1;
           state.safety.failures.set(fingerprint, count);
           if (count >= MAX_REPEATED_TOOL_FAILURES && !state.safety.blockedReason) {
+            state.safety.blockReasonKind = "no_progress";
             state.safety.blockedReason = `同一个工具错误已连续出现 ${count} 次，当前 turn 已暂停以避免空转。`;
             void state.session.abort();
           }
@@ -219,6 +228,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             state.safety.terminalSubmissionFailures += 1;
             if (state.safety.terminalSubmissionFailures >= MAX_TERMINAL_SUBMISSION_FAILURES
               && !state.safety.blockedReason) {
+              state.safety.blockReasonKind = "no_progress";
               state.safety.blockedReason = `终局提交已连续 ${state.safety.terminalSubmissionFailures} 次不符合当前 Goal 的输出契约，当前 turn 已停止。请检查工具返回的字段路径和合法示例后重新执行。`;
               void state.session.abort();
             }
@@ -233,6 +243,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         } else {
           state.safety.unproductiveToolCalls += 1;
           if (state.safety.unproductiveToolCalls >= MAX_UNPRODUCTIVE_TOOL_CALLS && !state.safety.blockedReason) {
+            state.safety.blockReasonKind = "no_progress";
             state.safety.blockedReason = `连续 ${state.safety.unproductiveToolCalls} 次工具调用没有产生新的可用进展，当前 turn 已暂停以避免空转。`;
             void state.session.abort();
           }
@@ -262,6 +273,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             state.safety.repeatedToolBatchCount = 1;
           }
           if (state.safety.repeatedToolBatchCount >= MAX_REPEATED_TOOL_BATCHES && !state.safety.blockedReason) {
+            state.safety.blockReasonKind = "no_progress";
             state.safety.blockedReason = "模型连续三次提交完全相同的工具调用且没有取得进展，当前 turn 已暂停。";
             void state.session.abort();
           }
@@ -292,8 +304,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.safety.repeatedToolBatchCount = 0;
     state.safety.consecutiveIdleResponses = 0;
     state.safety.unproductiveToolCalls = 0;
+    state.safety.blockReasonKind = undefined;
     state.safety.blockedReason = undefined;
     state.resolution.onInvalid = (reason) => {
+      state.safety.blockReasonKind ??= "no_progress";
       state.safety.blockedReason ??= reason;
       void state.session.abort();
     };
@@ -356,7 +370,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         }
         await eventWrites;
         if (state.safety.blockedReason) {
-          return this.block(turnId, input, toolCalls, goal, "no_progress", state.safety.blockedReason);
+          return this.block(
+            turnId,
+            input,
+            toolCalls,
+            goal,
+            state.safety.blockReasonKind ?? "no_progress",
+            state.safety.blockedReason,
+          );
         }
         if (proposal) {
           let attempted: Awaited<ReturnType<AgentEngine<any>["proposeGoalResolution"]>>;
@@ -416,7 +437,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       }
     } catch (error) {
       if (state.safety.blockedReason) {
-        return this.block(turnId, input, toolCalls, goal, "no_progress", state.safety.blockedReason);
+        return this.block(
+          turnId,
+          input,
+          toolCalls,
+          goal,
+          state.safety.blockReasonKind ?? "no_progress",
+          state.safety.blockedReason,
+        );
       }
       throw error;
     } finally {
@@ -1573,6 +1601,14 @@ export function modelFacingToolResultText(result: unknown, isError: boolean): st
   return text.length <= maxErrorChars
     ? text
     : `${text.slice(0, maxErrorChars)}\n...[tool error truncated before model context]`;
+}
+
+export function turnToolBudgetMessage(maxToolCalls: number): string {
+  return [
+    `当前 turn 已执行 ${maxToolCalls} 次工具调用，达到单轮执行预算。`,
+    "Mission 和 Goal 均保持原状，但本轮会话已释放，避免单个 turn 长时间占用执行权并持续消耗。",
+    "请检查当前证据和产物后再决定继续、调整计划或补充输入。",
+  ].join("");
 }
 
 export function isUsefulToolProgress(

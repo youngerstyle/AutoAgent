@@ -11,6 +11,7 @@ import {
   isUsefulToolProgress,
   modelFacingToolResultText,
   toolFailureFingerprint,
+  turnToolBudgetMessage,
   unresolvedGoalPrompt,
 } from "../../src/server/agent-engine/pi-runtime.js";
 import {
@@ -46,6 +47,17 @@ describe("Pi tool error projection", () => {
     expect(projected).toContain("Rejected arguments omitted");
     expect(projected).not.toContain("recursive-payload");
     expect(projected.length).toBeLessThan(1_000);
+  });
+});
+
+describe("Pi turn execution budget", () => {
+  it("describes a bounded turn without claiming that the Mission or Goal failed", () => {
+    const message = turnToolBudgetMessage(200);
+
+    expect(message).toContain("200 次工具调用");
+    expect(message).toContain("Mission 和 Goal 均保持原状");
+    expect(message).toContain("本轮会话已释放");
+    expect(message).not.toContain("任务失败");
   });
 });
 
