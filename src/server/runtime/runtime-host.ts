@@ -460,7 +460,30 @@ export class RuntimeHost {
     }
     context.record = { ...context.record, status: "active", updatedAt: this.now().toISOString() };
     await this.store.save(context.record);
+    await this.resumeDeferredHumanTurnsUnlocked(context);
     await this.tickTask(context, false);
+  }
+
+  private async resumeDeferredHumanTurnsUnlocked(context: RuntimeContext): Promise<void> {
+    const mission = await context.manager.current();
+    for (const link of mission.links.filter((item) => item.status === "blocked")) {
+      if (!link.agentGoalId || !link.agentThreadId) continue;
+      const runtime = context.loops.get(link.agentId);
+      const pending = await runtime?.pendingHumanTurn(link.agentThreadId);
+      if (!pending) continue;
+      const engine = context.engines.get(link.agentId);
+      const goal = await engine?.getGoal(link.agentGoalId);
+      if (goal && (goal.status === "blocked" || goal.status === "paused" || goal.status === "usage_limited")) {
+        await engine!.controlGoal({
+          requestId: stableId("resume_deferred_human", context.record.taskId, link.agentId, goal.spec.id, pending.triggerMessageId),
+          goalId: goal.spec.id,
+          expectedGoalVersion: goal.version,
+          action: "resume",
+          reason: "a chronological human message was queued while the Plan was paused",
+        });
+      }
+      await context.manager.resumeBlockedAgent(link.agentId);
+    }
   }
 
   private async cancelTaskUnlocked(taskId: string, reason: string): Promise<void> {

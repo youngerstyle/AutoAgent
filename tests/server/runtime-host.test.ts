@@ -1279,6 +1279,71 @@ describe("RuntimeHost", () => {
     }]);
   });
 
+  it("resumes a blocked Goal when its human reply was queued while the Plan was paused", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        modelTurns += 1;
+        if (modelTurns === 1) {
+          return {
+            items: [{
+              type: "tool_call" as const,
+              callId: "blocked-before-pause",
+              name: "request_human_input",
+              arguments: {
+                kind: "external_fact",
+                description: "need one human fact",
+              },
+            }],
+          };
+        }
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "complete-after-resume",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "completed after the queued human reply",
+              evidence: [],
+              criterionResults: satisfiedCriteria(input.goal.successCriteria.length),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+    await fixture.host.createTask({
+      taskId: "task-blocked-paused-message",
+      title: "Blocked paused message",
+      objective: "resume the same blocked Goal",
+    });
+    await fixture.host.tick();
+    await waitFor(async () => (
+      (await fixture.host.context("task-blocked-paused-message")!.manager.current())
+        .links.some((link) => link.status === "blocked")
+    ), 5_000);
+
+    await fixture.host.pauseTask("task-blocked-paused-message");
+    const blocked = (await fixture.host.context("task-blocked-paused-message")!.manager.current())
+      .links.find((link) => link.status === "blocked")!;
+    await fixture.host.sendAgentMessage(
+      "task-blocked-paused-message",
+      blocked.agentId,
+      "the missing fact",
+      "blocked-message-while-paused",
+    );
+    expect(modelTurns).toBe(1);
+
+    await fixture.host.resumeTask("task-blocked-paused-message");
+    await waitFor(async () => modelTurns === 2, 5_000);
+
+    expect(modelTurns).toBe(2);
+  });
+
   it("queues a human message behind the active turn for the same Agent", async () => {
     const fixture = await createFixture({ intervalMs: 100 });
     await fixture.host.start();
