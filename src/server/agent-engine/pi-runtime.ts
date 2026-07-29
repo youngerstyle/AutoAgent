@@ -1389,6 +1389,13 @@ export function isTransientInfrastructureToolFailure(result: unknown): boolean {
 
 function toolParameters(name: WorkspaceToolName) {
   if (name === "writeFile") return Type.Object({ path: Type.String(), content: Type.String() });
+  if (name === "editFile") {
+    return Type.Object({
+      path: Type.String(),
+      oldText: Type.String({ minLength: 1 }),
+      newText: Type.String(),
+    });
+  }
   if (name === "readFile") {
     return Type.Object({
       path: Type.String(),
@@ -1621,7 +1628,7 @@ export function isUsefulToolProgress(
   if (isError) return false;
   if (isRecord(result) && result.ok === false) return false;
   if (isTerminalSubmissionTool(name)) return true;
-  if (name === "writeFile") return true;
+  if (name === "writeFile" || name === "editFile") return true;
   if (name === "startService") return isRecord(result) ? result.running === true || result.ok === true : true;
   if (name === "shell") {
     const command = isRecord(args) && typeof args.command === "string" ? args.command : "";

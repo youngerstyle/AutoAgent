@@ -30,7 +30,7 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
     capabilities: ["architecture:design", "代码库理解", "技术方案", "架构边界", "接口设计", "风险评估", "能力缺口判断", "安全约束"],
     defaultProvider: "mock",
     defaultModel: "mock-architect",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: false, enabledTools: ["listFiles", "readFile", "writeFile"] }
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: false, enabledTools: ["listFiles", "readFile", "writeFile", "editFile"] }
   },
   {
     id: "prof_dev",
@@ -40,7 +40,7 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
     capabilities: ["delivery:implement", "代码阅读", "实现修改", "工具执行", "本地验证", "调试定位", "变更说明", "风险反馈"],
     defaultProvider: "mock",
     defaultModel: "mock-dev",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "writeFile", "shell", "startService", "pollProcess", "browser"] }
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] }
   },
   {
     id: "prof_qa",
@@ -105,7 +105,7 @@ export function profileForRole(role: AgentRole, profiles = CORE_AGENT_PROFILES):
     capabilities: ["专项分析", "专业判断", "方案补位", "交接结论"],
     defaultProvider: "mock",
     defaultModel: "mock-specialist",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "writeFile", "shell", "startService", "pollProcess", "browser"] }
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] }
   };
 }
 

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { permissionPatchForTool, toolProtocolFor, toolsForPolicy } from "../../src/server/tools/tool-catalog";
+import {
+  configuredToolsInclude,
+  permissionPatchForTool,
+  toolProtocolFor,
+  toolsForPolicy,
+} from "../../src/server/tools/tool-catalog";
 import type { AgentPolicy } from "../../src/shared/types";
 
 describe("tool catalog", () => {
@@ -29,9 +34,23 @@ describe("tool catalog", () => {
     expect(toolsForPolicy({ canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true })).toEqual([]);
   });
 
+  it("treats exact editing as part of an explicitly configured write capability", () => {
+    const policy: AgentPolicy = {
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+      enabledTools: ["readFile", "writeFile"],
+    };
+
+    expect(toolsForPolicy(policy).map((tool) => tool.name)).toEqual(["readFile", "writeFile", "editFile"]);
+    expect(configuredToolsInclude(policy.enabledTools!, "editFile")).toBe(true);
+    expect(configuredToolsInclude(["readFile"], "editFile")).toBe(false);
+  });
+
   it("maps enabled tools back to the coarse permissions they require", () => {
     expect(permissionPatchForTool("readFile")).toEqual({ canReadWorkspace: true });
     expect(permissionPatchForTool("writeFile")).toEqual({ canWriteWorkspace: true });
+    expect(permissionPatchForTool("editFile")).toEqual({ canWriteWorkspace: true });
     expect(permissionPatchForTool("startService")).toEqual({ canExecuteCommands: true });
   });
 });

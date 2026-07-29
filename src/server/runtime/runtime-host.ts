@@ -33,7 +33,7 @@ import { createMinimalTeamPlanDefinition } from "../product/plan-template.js";
 import { createTeamBinding } from "../product/team-binding.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { resolvePolicy } from "../policy/policy.js";
-import { toolsForPolicy } from "../../shared/tool-catalog.js";
+import { configuredToolsInclude, toolsForPolicy } from "../../shared/tool-catalog.js";
 import { TicketEngine } from "../tickets/ticket-engine.js";
 import { TicketStore } from "../tickets/ticket-store.js";
 import { WorkspaceSnapshotStore } from "../tickets/workspace-snapshot-store.js";
@@ -1193,7 +1193,7 @@ function hasEligibleMember(team: TeamBinding, assignment: PlannedTicketAssignmen
   return team.members.some((member) => {
     if (assignment.principalId && member.principalId !== assignment.principalId) return false;
     return (assignment.requiredCapabilities ?? []).every((capability) => member.capabilities.includes(capability))
-      && (assignment.requiredTools ?? []).every((tool) => member.enabledTools.includes(tool));
+      && (assignment.requiredTools ?? []).every((tool) => configuredToolsInclude(member.enabledTools, tool));
   });
 }
 

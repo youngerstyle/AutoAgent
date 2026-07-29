@@ -43,6 +43,14 @@ export const TOOL_CATALOG: ToolDefinition[] = [
     promptExample: "{\"toolIntents\":[{\"tool\":\"writeFile\",\"path\":\"README.md\",\"content\":\"...\"}]}"
   },
   {
+    name: "editFile",
+    label: "编辑文件",
+    description: "在授权边界内通过唯一精确匹配局部编辑项目文件",
+    category: "file",
+    observation: false,
+    promptExample: "{\"toolIntents\":[{\"tool\":\"editFile\",\"path\":\"src/app.ts\",\"oldText\":\"const value = 1;\",\"newText\":\"const value = 2;\"}]}"
+  },
+  {
     name: "shell",
     label: "执行命令",
     description: "执行会结束的本地命令",
@@ -79,7 +87,16 @@ export const TOOL_CATALOG: ToolDefinition[] = [
 export function toolsForPolicy(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands" | "enabledTools">): ToolDefinition[] {
   const configuredNames = Array.isArray(policy.enabledTools) ? policy.enabledTools : [];
   const configured = new Set(configuredNames);
+  if (configured.has("writeFile")) configured.add("editFile");
   return TOOL_CATALOG.filter((tool) => configured.has(tool.name) && policyAllowsTool(policy, tool.name));
+}
+
+export function configuredToolsInclude(
+  configuredTools: readonly WorkspaceToolName[],
+  requiredTool: WorkspaceToolName,
+): boolean {
+  return configuredTools.includes(requiredTool)
+    || (requiredTool === "editFile" && configuredTools.includes("writeFile"));
 }
 
 export function isKnownToolName(name: string): name is WorkspaceToolName {
@@ -96,7 +113,7 @@ export function isToolEnabledForPolicy(policy: Pick<AgentPolicy, "canReadWorkspa
 
 export function permissionPatchForTool(toolName: WorkspaceToolName): Partial<Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">> {
   if (toolName === "listFiles" || toolName === "readFile" || toolName === "readImage") return { canReadWorkspace: true };
-  if (toolName === "writeFile") return { canWriteWorkspace: true };
+  if (toolName === "writeFile" || toolName === "editFile") return { canWriteWorkspace: true };
   return { canExecuteCommands: true };
 }
 
@@ -118,6 +135,6 @@ export function toolProtocolFor(policy: Pick<AgentPolicy, "canReadWorkspace" | "
 
 function policyAllowsTool(policy: Pick<AgentPolicy, "canReadWorkspace" | "canWriteWorkspace" | "canExecuteCommands">, name: WorkspaceToolName): boolean {
   if (name === "listFiles" || name === "readFile" || name === "readImage") return policy.canReadWorkspace;
-  if (name === "writeFile") return policy.canWriteWorkspace;
+  if (name === "writeFile" || name === "editFile") return policy.canWriteWorkspace;
   return policy.canExecuteCommands;
 }

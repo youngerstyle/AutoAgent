@@ -9,6 +9,7 @@ const workspaceToolName = Type.Union([
   Type.Literal("readFile"),
   Type.Literal("readImage"),
   Type.Literal("writeFile"),
+  Type.Literal("editFile"),
   Type.Literal("shell"),
   Type.Literal("startService"),
   Type.Literal("pollProcess"),

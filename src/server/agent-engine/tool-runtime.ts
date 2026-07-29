@@ -45,6 +45,8 @@ export interface AgentToolIntent {
   tool: WorkspaceToolName;
   path?: string;
   content?: string;
+  oldText?: string;
+  newText?: string;
   offset?: number;
   limit?: number;
   command?: string;
@@ -78,6 +80,7 @@ export class AgentToolRuntime {
 
   private readonly enabled: Set<WorkspaceToolName>;
   private readonly evidence: EvidenceLedger;
+  private fileMutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly policy: EffectivePolicy,
@@ -90,7 +93,9 @@ export class AgentToolRuntime {
   }
 
   async execute(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
-    const result = await this.executeRaw(intent, context);
+    const result = intent.tool === "writeFile" || intent.tool === "editFile"
+      ? await this.serializeFileMutation(() => this.executeRaw(intent, context))
+      : await this.executeRaw(intent, context);
     if (!context) return result;
     const fact = await this.evidence.append({
       ...context,
@@ -104,6 +109,20 @@ export class AgentToolRuntime {
       artifact: await this.artifactFact(intent, result),
     });
     return { ...result, evidenceId: fact.evidenceId };
+  }
+
+  private async serializeFileMutation(operation: () => Promise<AgentToolResult>): Promise<AgentToolResult> {
+    const previous = this.fileMutationTail;
+    let release!: () => void;
+    this.fileMutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 
   private async executeRaw(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
@@ -156,6 +175,21 @@ export class AgentToolRuntime {
         await writeFile(target, intent.content ?? "", "utf8");
         return { tool: intent.tool, ok: true, path: intent.path };
       }
+      if (intent.tool === "editFile") {
+        const target = resolveToolPath(this.policy, required(intent.path, "path"), "write");
+        assertAgentVisiblePath(this.policy.workspaceRoot, target);
+        const oldText = required(intent.oldText, "oldText");
+        if (!oldText.length) throw new Error("oldText must not be empty");
+        const content = await readFile(target, "utf8");
+        const first = content.indexOf(oldText);
+        if (first < 0) throw new Error("oldText was not found; read the current file before editing");
+        if (content.indexOf(oldText, first + oldText.length) >= 0) {
+          throw new Error("oldText matches more than once; include more surrounding text");
+        }
+        const updated = `${content.slice(0, first)}${intent.newText ?? ""}${content.slice(first + oldText.length)}`;
+        await writeFile(target, updated, "utf8");
+        return { tool: intent.tool, ok: true, path: intent.path, replacements: 1 };
+      }
       if (intent.tool === "shell") {
         const command = required(intent.command, "command");
         assertCommandDoesNotAccessPlatformState(command);
@@ -175,8 +209,8 @@ export class AgentToolRuntime {
   }
 
   private async artifactFact(intent: AgentToolIntent, result: AgentToolResult): Promise<EvidenceArtifactFact | undefined> {
-    if (!result.ok || !intent.path || !["readFile", "readImage", "writeFile"].includes(intent.tool)) return undefined;
-    const access = intent.tool === "writeFile" ? "write" : "read";
+    if (!result.ok || !intent.path || !["readFile", "readImage", "writeFile", "editFile"].includes(intent.tool)) return undefined;
+    const access = intent.tool === "writeFile" || intent.tool === "editFile" ? "write" : "read";
     const absolute = resolveToolPath(this.policy, intent.path, access);
     try {
       const [info, content] = await Promise.all([stat(absolute), readFile(absolute)]);
@@ -570,7 +604,7 @@ export class AgentToolRuntime {
 }
 
 function evidenceKind(tool: WorkspaceToolName): EvidenceKind {
-  if (tool === "writeFile") return "file_write";
+  if (tool === "writeFile" || tool === "editFile") return "file_write";
   if (tool === "readFile" || tool === "listFiles") return "file_read";
   if (tool === "readImage") return "image";
   if (tool === "shell") return "command";
@@ -997,9 +1031,18 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
       description: "写入工作区内的 UTF-8 文本文件",
       inputSchema: objectSchema({ path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
     },
+    editFile: {
+      name,
+      description: "通过唯一精确匹配局部编辑工作区内的 UTF-8 文本文件。编辑前先读取当前内容；oldText 不存在或匹配多处时工具会拒绝，必须扩大上下文后重试",
+      inputSchema: objectSchema({
+        path: { type: "string" },
+        oldText: { type: "string" },
+        newText: { type: "string" },
+      }, ["path", "oldText", "newText"]),
+    },
     shell: {
       name,
-      description: `${shellDescription}。已有一级工具覆盖操作时必须直接调用，不得通过 shell 间接调用 readFile、writeFile、browser、startService 或 pollProcess`,
+      description: `${shellDescription}。已有一级工具覆盖操作时必须直接调用，不得通过 shell 间接调用 readFile、writeFile、editFile、browser、startService 或 pollProcess`,
       inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
     },
     startService: {

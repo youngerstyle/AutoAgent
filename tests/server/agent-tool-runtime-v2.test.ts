@@ -24,6 +24,91 @@ describe("AgentToolRuntime", () => {
     expect(await readFile(path.join(root, "note.txt"), "utf8")).toBe("hello");
   });
 
+  it("edits one unique text occurrence without rewriting the whole file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-edit-"));
+    const target = path.join(root, "game.js");
+    await writeFile(target, "const lives = 3;\nconst stages = 1;\n", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+    }, ["editFile"]);
+
+    const result = await runtime.execute({
+      tool: "editFile",
+      path: "game.js",
+      oldText: "const stages = 1;",
+      newText: "const stages = 3;",
+    });
+
+    expect(result).toMatchObject({ ok: true, replacements: 1 });
+    expect(await readFile(target, "utf8")).toBe("const lives = 3;\nconst stages = 3;\n");
+  });
+
+  it("rejects missing or ambiguous edit targets without modifying the file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-edit-reject-"));
+    const target = path.join(root, "game.js");
+    const original = "const value = 1;\nconst value = 1;\n";
+    await writeFile(target, original, "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+    }, ["editFile"]);
+
+    await expect(runtime.execute({
+      tool: "editFile",
+      path: "game.js",
+      oldText: "const missing = true;",
+      newText: "const missing = false;",
+    })).resolves.toMatchObject({ ok: false });
+    expect(await readFile(target, "utf8")).toBe(original);
+
+    await expect(runtime.execute({
+      tool: "editFile",
+      path: "game.js",
+      oldText: "const value = 1;",
+      newText: "const value = 2;",
+    })).resolves.toMatchObject({ ok: false });
+    expect(await readFile(target, "utf8")).toBe(original);
+  });
+
+  it("serializes concurrent file edits so one successful edit cannot overwrite another", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-edit-serial-"));
+    const target = path.join(root, "game.js");
+    await writeFile(target, "const lives = 1;\nconst stages = 1;\n", "utf8");
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+    }, ["editFile"]);
+
+    const [lives, stages] = await Promise.all([
+      runtime.execute({
+        tool: "editFile",
+        path: "game.js",
+        oldText: "const lives = 1;",
+        newText: "const lives = 3;",
+      }),
+      runtime.execute({
+        tool: "editFile",
+        path: "game.js",
+        oldText: "const stages = 1;",
+        newText: "const stages = 3;",
+      }),
+    ]);
+
+    expect(lives).toMatchObject({ ok: true, replacements: 1 });
+    expect(stages).toMatchObject({ ok: true, replacements: 1 });
+    expect(await readFile(target, "utf8")).toBe("const lives = 3;\nconst stages = 3;\n");
+  });
+
   it("pages large text files instead of injecting the whole file into one tool result", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-read-page-"));
     const runtime = new AgentToolRuntime({

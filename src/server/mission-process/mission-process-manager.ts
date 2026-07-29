@@ -43,6 +43,7 @@ import {
   missionOutcomeInstruction,
 } from "./ticket-agent-adapter.js";
 import { orderedAncestorTicketIds } from "./ticket-context-lineage.js";
+import { configuredToolsInclude } from "../../shared/tool-catalog.js";
 import { compileMissionGoalOutputContract } from "./mission-output-contract.js";
 
 export interface MissionAgentDirectory {
@@ -336,7 +337,7 @@ export class MissionProcessManager {
       const requiredCapabilities = work.definition.assignment.requiredCapabilities ?? [];
       const missingCapabilities = requiredCapabilities.filter((capability) => !member.capabilities.includes(capability));
       const requiredTools = work.definition.assignment.requiredTools ?? [];
-      const missingTools = requiredTools.filter((tool) => !member.enabledTools.includes(tool));
+      const missingTools = requiredTools.filter((tool) => !configuredToolsInclude(member.enabledTools, tool));
       const assignmentIssue = missingCapabilities.length || missingTools.length
         ? `工单 ${link.ticketId} 的负责人不满足分配契约`
           + `${missingCapabilities.length ? `；缺少能力：${missingCapabilities.join("、")}` : ""}`
@@ -1164,7 +1165,7 @@ function selectMember(team: TeamBinding, assignment: PlannedTicketAssignment) {
   const tools = assignment.requiredTools ?? [];
   return candidates.find((item) =>
     capabilities.every((capability) => item.capabilities.includes(capability))
-    && tools.every((tool) => item.enabledTools.includes(tool)));
+    && tools.every((tool) => configuredToolsInclude(item.enabledTools, tool)));
 }
 
 export async function validateTeamAssignments(
@@ -1228,7 +1229,7 @@ function membersForAssignment(team: TeamBinding, assignment: PlannedTicketAssign
   const requiredTools = assignment.requiredTools ?? [];
   return candidates.filter((member) =>
     required.every((capability) => member.capabilities.includes(capability))
-    && requiredTools.every((tool) => member.enabledTools.includes(tool)));
+    && requiredTools.every((tool) => configuredToolsInclude(member.enabledTools, tool)));
 }
 
 function collectEvidenceIds(value: unknown): string[] {
