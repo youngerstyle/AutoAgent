@@ -1713,8 +1713,21 @@ function isBrowserInteraction(args: unknown): boolean {
 }
 
 function progressResult(result: unknown): unknown {
+  if (Array.isArray(result)) return result.map((item) => progressResult(item));
   if (!isRecord(result)) return result;
-  const { data: _data, timestamp: _timestamp, durationMs: _durationMs, ...stable } = result;
+  const stable: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(result)) {
+    if ([
+      "callId",
+      "data",
+      "durationMs",
+      "evidenceId",
+      "requestId",
+      "timestamp",
+      "traceId",
+    ].includes(key)) continue;
+    stable[key] = progressResult(value);
+  }
   return stable;
 }
 

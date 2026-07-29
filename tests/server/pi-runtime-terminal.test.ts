@@ -258,6 +258,24 @@ describe("Pi runtime terminal propagation", () => {
     )).toBe(true);
   });
 
+  it("ignores transient evidence metadata when detecting repeated observations", () => {
+    const seen = new Set<string>();
+    expect(isUsefulToolProgress(
+      "readImage",
+      { path: "game.png" },
+      { ok: true, path: "game.png", size: 240_520, evidenceId: "evidence-1" },
+      false,
+      seen,
+    )).toBe(true);
+    expect(isUsefulToolProgress(
+      "readImage",
+      { path: "game.png" },
+      { ok: true, path: "game.png", size: 240_520, evidenceId: "evidence-2" },
+      false,
+      seen,
+    )).toBe(false);
+  });
+
   it("returns control when an aborted Pi session does not become idle promptly", async () => {
     let disposed = 0;
     const neverIdle = new Promise<void>(() => undefined);
