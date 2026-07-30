@@ -156,8 +156,16 @@ describe("AgentToolRuntime", () => {
   });
 
   it("exposes platform-installed Skill CLIs inside workspace shell commands", async () => {
-    const environment = agentCommandEnvironment({ PATH: "host-bin" }, "C:\\platform");
+    const environment = agentCommandEnvironment({
+      PATH: "host-bin",
+      PORT: "13748",
+      AUTOAGENT_HOME: "C:\\platform-state",
+      OPENAI_API_KEY: "provider-secret",
+    }, "C:\\platform");
     expect(environment.PATH).toBe(["C:\\platform", "node_modules", ".bin"].join(path.sep) + path.delimiter + "host-bin");
+    expect(environment.PORT).toBeUndefined();
+    expect(environment.AUTOAGENT_HOME).toBeUndefined();
+    expect(environment.OPENAI_API_KEY).toBe("provider-secret");
 
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-skill-cli-"));
     const runtime = new AgentToolRuntime({

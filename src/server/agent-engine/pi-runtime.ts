@@ -1819,7 +1819,7 @@ function stableSystemPrompt(input: AgentExecutionSliceInput): string {
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
       : "",
-    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。正常完成或失败时调用 goal_resolution；发现上游交付需要纠正时调用 report_goal_correction；当前 Plan 无法支撑目标时调用 request_goal_plan_change；缺少不可替代的 human 输入时调用 request_human_input。evidenceId 只能引用本 Goal 工具调用真实返回的 ID，没有工具证据时使用空数组。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
+    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。正常完成或失败时调用 goal_resolution；发现上游交付需要纠正时调用 report_goal_correction；当前 Plan 无法支撑目标时调用 request_goal_plan_change；缺少不可替代的 human 输入时调用 request_human_input。evidenceId 只能引用本 Goal 工具调用真实返回的 ID，或 Host 在当前 Goal 中明确注入的继承证据 ID；没有证据时使用空数组。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
   ].filter(Boolean).join("\n\n");
 }
 

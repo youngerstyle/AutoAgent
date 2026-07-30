@@ -34,6 +34,7 @@ import {
   validateMissionCorrectionOwnership,
   validateMissionPlanAssurance,
   validateMissionSettlement,
+  materializeMissionSettlement,
   validateMissionTicketOutcome,
   normalizeMissionPlanCriterionIndexes,
   type MissionTicketOutcome,
@@ -798,7 +799,7 @@ export class MissionProcessManager {
     const planContext = schemaRef === "plan-change-set-v3"
       ? await this.sharedPlanContext(link.planId, missionBaseline)
       : undefined;
-    const proposal = schemaRef === "plan-change-set-v3"
+    let proposal = schemaRef === "plan-change-set-v3"
       ? {
           ...storedProposal,
           domainOutcome: normalizeMissionPlanCriterionIndexes(
@@ -807,6 +808,27 @@ export class MissionProcessManager {
           ),
         }
       : storedProposal;
+    let settlementMaterializationError: string | undefined;
+    if (proposal.status === "completed" && work.definition.permissions?.settleMission
+      && proposal.domainOutcome?.disposition !== "correction_required"
+      && proposal.domainOutcome?.disposition !== "plan_change_required"
+      && missionBaseline) {
+      const assuranceSources = await this.listMissionAssuranceSources(link.planId, link.ticketId);
+      const materialized = materializeMissionSettlement(
+        missionBaseline,
+        proposal.domainOutcome?.missionResolution,
+        assuranceSources,
+      );
+      if (materialized.valid) {
+        proposal = {
+          ...proposal,
+          domainOutcome: {
+            ...proposal.domainOutcome,
+            missionResolution: materialized.resolution,
+          },
+        };
+      } else settlementMaterializationError = materialized.reason;
+    }
     const validation = validateMissionTicketOutcome(
       schemaRef,
       proposal.status,
@@ -867,6 +889,7 @@ export class MissionProcessManager {
       if (!member || !required.every((capability) => member.capabilities.includes(capability))) {
         missionContractError = `当前 Agent 没有 Mission 结算能力：${required.join("、")}`;
       } else if (!aggregate.record.baseline) missionContractError = "Mission 尚未建立权威 baseline，不能结算";
+      else if (settlementMaterializationError) missionContractError = settlementMaterializationError;
       else {
         const resolution = (proposal.domainOutcome as MissionTicketOutcome | undefined)?.missionResolution;
         const settlementValidation = validateMissionSettlement(

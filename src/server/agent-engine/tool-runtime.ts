@@ -625,7 +625,12 @@ export function agentCommandEnvironment(
   baseEnvironment: NodeJS.ProcessEnv = process.env,
   platformRoot = process.cwd(),
 ): NodeJS.ProcessEnv {
-  const environment = { ...baseEnvironment };
+  const environment = Object.fromEntries(
+    Object.entries(baseEnvironment).filter(([key]) => (
+      key.toLowerCase() !== "port"
+      && !key.toLowerCase().startsWith("autoagent_")
+    )),
+  );
   const pathKey = Object.keys(environment).find((key) => key.toLowerCase() === "path") ?? "PATH";
   const platformBin = path.join(platformRoot, "node_modules", ".bin");
   environment[pathKey] = [platformBin, environment[pathKey]].filter(Boolean).join(path.delimiter);

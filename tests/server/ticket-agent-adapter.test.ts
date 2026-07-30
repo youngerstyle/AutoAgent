@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { materializeMissionSettlement, missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("maps Agent-facing Mission criterion indexes to canonical internal IDs", () => {
@@ -585,6 +585,30 @@ describe("Ticket Agent resolution adapter", () => {
         })),
       })),
     }, assuranceSources)).toMatchObject({ valid: false, reason: expect.stringContaining("原样来自 assurance Ticket") });
+
+    const materialized = materializeMissionSettlement(baseline, {
+      baselineVersion: 2,
+      summary: "accepted without manually copying evidence IDs",
+      criterionResults: baseline.criteria.map(({ criterionId }) => ({
+        criterionId,
+        status: "satisfied",
+        assuranceTicketIds: [`assurance-${criterionId}`],
+        evidence: [{ evidenceId: "model-copied-the-wrong-id" }],
+      })),
+      residualRisks: [],
+    }, assuranceSources);
+    expect(materialized).toMatchObject({
+      valid: true,
+      resolution: {
+        criterionResults: [
+          { criterionId: "criterion-a", evidence: [{ evidenceId: "ev-acceptance-criterion-a" }] },
+          { criterionId: "criterion-b", evidence: [{ evidenceId: "ev-acceptance-criterion-b" }] },
+        ],
+      },
+    });
+    if (materialized.valid) {
+      expect(validateMissionSettlement(baseline, materialized.resolution, assuranceSources)).toEqual({ valid: true });
+    }
   });
 
   it("gives the settlement agent a criterion-scoped authoritative evidence matrix", () => {

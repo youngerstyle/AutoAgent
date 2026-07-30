@@ -572,8 +572,6 @@ describe("MissionProcessManager", () => {
             criterionId: item.criterionId,
             status: "satisfied",
             assuranceTicketIds: [assuranceRetry.ticketId],
-            evidence: [{ evidenceId: `ev-acceptance-${item.criterionId}` }],
-            anchorResults: anchorResults(item),
           })),
           residualRisks: [],
         },
@@ -584,7 +582,15 @@ describe("MissionProcessManager", () => {
     mission = await fixture.manager.tick();
     expect(mission.record).toMatchObject({
       status: "completed",
-      settlement: { acceptedByTicketId: acceptanceRetry.ticketId, baselineVersion: 1 },
+      settlement: {
+        acceptedByTicketId: acceptanceRetry.ticketId,
+        baselineVersion: 1,
+        criterionResults: baseline.criteria.map((item) => ({
+          criterionId: item.criterionId,
+          evidence: [{ evidenceId: `ev-acceptance-${item.criterionId}` }],
+          anchorResults: anchorResults(item),
+        })),
+      },
     });
     expect((await fixture.tickets.getPlan(mission.record.planId)).status).toBe("completed");
   }, 60_000);

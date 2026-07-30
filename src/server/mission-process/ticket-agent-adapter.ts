@@ -37,6 +37,18 @@ export interface MissionSettlementEvidence {
     assuranceSources: MissionAssuranceSource[];
   }>;
 }
+export interface MissionResolution {
+  baselineVersion: number;
+  summary: string;
+  criterionResults: Array<{
+    criterionId: string;
+    status: "satisfied";
+    assuranceTicketIds: TicketId[];
+    evidence: TicketEvidenceRef[];
+    anchorResults: MissionAssuranceSource["criterionResults"][number]["anchorResults"];
+  }>;
+  residualRisks: string[];
+}
 export interface PlanChangeSetOutcome extends MissionTicketOutcome { result: unknown; change: PlanChangeSet }
 export interface CorrectionTargetContext {
   ticketId: TicketId;
@@ -373,6 +385,77 @@ export function validateMissionSettlement(
     return { valid: false, reason: "missionResolution.residualRisks 必须是字符串数组" };
   }
   return { valid: true };
+}
+
+export function materializeMissionSettlement(
+  baseline: MissionBaseline,
+  value: unknown,
+  assuranceSources: readonly MissionAssuranceSource[],
+): { valid: true; resolution: MissionResolution } | { valid: false; reason: string } {
+  if (!isRecord(value)) return { valid: false, reason: "missionResolution 必须是对象" };
+  if (value.baselineVersion !== baseline.version) {
+    return { valid: false, reason: `missionResolution baseline version 必须是当前版本 ${baseline.version}` };
+  }
+  if (!isNonEmptyString(value.summary)) return { valid: false, reason: "missionResolution.summary 必须是非空字符串" };
+  if (!Array.isArray(value.criterionResults)) return { valid: false, reason: "missionResolution.criterionResults 必须是数组" };
+  if (!Array.isArray(value.residualRisks) || value.residualRisks.some((item) => !isNonEmptyString(item))) {
+    return { valid: false, reason: "missionResolution.residualRisks 必须是字符串数组" };
+  }
+
+  const requestedByCriterion = new Map<string, Record<string, unknown>>();
+  for (const [index, result] of value.criterionResults.entries()) {
+    if (!isRecord(result) || !isNonEmptyString(result.criterionId)) {
+      return { valid: false, reason: `missionResolution.criterionResults[${index}].criterionId 无效` };
+    }
+    if (requestedByCriterion.has(result.criterionId)) {
+      return { valid: false, reason: `missionResolution 重复报告 criterion ${result.criterionId}` };
+    }
+    requestedByCriterion.set(result.criterionId, result);
+  }
+
+  const criterionResults: MissionResolution["criterionResults"] = [];
+  for (const criterion of baseline.criteria) {
+    const requested = requestedByCriterion.get(criterion.criterionId);
+    if (!requested) return { valid: false, reason: `missionResolution 缺少 criterion：${criterion.criterionId}` };
+    if (requested.status !== "satisfied") {
+      return { valid: false, reason: `Mission 完成时 criterion ${criterion.criterionId} 必须为 satisfied` };
+    }
+    if (!Array.isArray(requested.assuranceTicketIds) || requested.assuranceTicketIds.length === 0
+      || requested.assuranceTicketIds.some((item) => !isNonEmptyString(item))) {
+      return { valid: false, reason: `Mission criterion ${criterion.criterionId} 必须引用 assurance Ticket` };
+    }
+    const assuranceTicketIds = [...new Set(requested.assuranceTicketIds as string[])].map((item) => item as TicketId);
+    let canonicalResult: MissionAssuranceSource["criterionResults"][number] | undefined;
+    for (const ticketId of assuranceTicketIds) {
+      const source = assuranceSources.find((item) => String(item.ticketId) === String(ticketId));
+      if (!source) return { valid: false, reason: `Mission criterion ${criterion.criterionId} 引用了不可用的 assurance Ticket ${ticketId}` };
+      if (source.baselineVersion !== baseline.version) return { valid: false, reason: `assurance Ticket ${ticketId} 使用了过期 baseline` };
+      const verified = source.criterionResults.find((item) => item.criterionId === criterion.criterionId && item.status === "satisfied");
+      if (!verified || verified.evidence.length === 0) {
+        return { valid: false, reason: `assurance Ticket ${ticketId} 没有验证 Mission criterion ${criterion.criterionId}` };
+      }
+      canonicalResult ??= verified;
+    }
+    if (!canonicalResult) return { valid: false, reason: `Mission criterion ${criterion.criterionId} 没有可装配的验收结果` };
+    criterionResults.push({
+      criterionId: criterion.criterionId,
+      status: "satisfied",
+      assuranceTicketIds,
+      evidence: structuredClone(canonicalResult.evidence),
+      anchorResults: structuredClone(canonicalResult.anchorResults),
+    });
+  }
+  const unknown = [...requestedByCriterion.keys()].filter((criterionId) => !baseline.criteria.some((item) => item.criterionId === criterionId));
+  if (unknown.length) return { valid: false, reason: `missionResolution 引用了未知 criterion ${unknown.join(", ")}` };
+
+  const resolution: MissionResolution = {
+    baselineVersion: baseline.version,
+    summary: value.summary,
+    criterionResults,
+    residualRisks: [...value.residualRisks as string[]],
+  };
+  const validation = validateMissionSettlement(baseline, resolution, assuranceSources);
+  return validation.valid ? { valid: true, resolution } : validation;
 }
 
 export function validateMissionAssuranceReport(
@@ -911,7 +994,7 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
     const evidenceMatrix = settlementEvidence
       ? `Mission Control 已从 Ticket Engine 的已完成祖先工单生成权威验收证据矩阵：${JSON.stringify(settlementEvidence)}。该矩阵只归并正式 mission-assurance-v1 交付，不替你作出验收判断。`
       : "当前没有可用的 Mission 验收证据矩阵。";
-    return `${base} 当前 Ticket 获得 Mission 结算权限。只有你依据当前 Mission baseline 和已完成祖先 Ticket 的 mission-assurance-v1 交付形成最终验收结论后才能正常完成。${evidenceMatrix}全部通过时，domainOutcome 必须使用 {disposition:"complete",missionResolution:{baselineVersion,summary,criterionResults,residualRisks}}；missionResolution 的每个 criterionResult 必须逐项引用 baseline criterionId、给出 status=satisfied，并从证据矩阵中选择实际验证该 criterion 的 assuranceTicketIds；evidence 和 anchorResults 必须逐字复制所选 assuranceSources 对应 criterionResult 内的证据、verificationBasis、observations 与 deviations，不得重新润色、提高结论强度，也不得从其他 criterion 或普通交付中拼接。你必须再次将 observations 与 baseline 原文逐项比较；如果 QA 的事实只支持较弱命题、缺少必要对照依据、存在任何 deviations，或 note/observations 与 satisfied 自相矛盾，必须发起纠正或计划变更，不能结算。residualRisks 必须是字符串数组；需要结构化描述时先自行归纳为字符串。若上游 assurance 未覆盖、未满足或未验证，使用 report_goal_correction 或 request_goal_plan_change 提交对应工作流动作，不得同时提交尚未通过的 missionResolution。不得用阶段性交付、自报完成或任意字符串证据代替 Mission 验收。`;
+    return `${base} 当前 Ticket 获得 Mission 结算权限。只有你依据当前 Mission baseline 和已完成祖先 Ticket 的 mission-assurance-v1 交付形成最终验收结论后才能正常完成。${evidenceMatrix}全部通过时，domainOutcome 必须使用 {disposition:"complete",missionResolution:{baselineVersion,summary,criterionResults,residualRisks}}；missionResolution 的每个 criterionResult 只提交 {criterionId,status:"satisfied",assuranceTicketIds}，从证据矩阵中选择实际验证该 criterion 的 assurance Ticket。不要手抄 evidenceId、evidence、anchorResults、verificationBasis、observations 或 deviations；Mission Control 会从所选 Ticket 的权威交付中机械装配这些不可变事实。你必须将所选 assurance 的 observations 与 baseline 原文逐项比较；如果 QA 的事实只支持较弱命题、缺少必要对照依据、存在任何 deviations，或 note/observations 与 satisfied 自相矛盾，必须发起纠正或计划变更，不能结算。residualRisks 必须是字符串数组；需要结构化描述时先自行归纳为字符串。若上游 assurance 未覆盖、未满足或未验证，使用 report_goal_correction 或 request_goal_plan_change 提交对应工作流动作，不得同时提交尚未通过的 missionResolution。不得用阶段性交付、自报完成或任意字符串证据代替 Mission 验收。`;
   }
   return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整时才调用 request_human_input；kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，调用 request_human_input(kind="manual_test")；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
 }
