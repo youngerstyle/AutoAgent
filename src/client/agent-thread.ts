@@ -34,11 +34,12 @@ export function scrollChatThreadToLatest(container: Pick<HTMLElement, "scrollTop
 }
 
 export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessages: AgentDirectMessage[] = []): AgentThreadBubble[] {
-  if (events.length === 0) return legacyMessages.flatMap(legacyMessageToBubbles);
-  return [...events]
+  if (events.length === 0) return collapseInternalRuns(legacyMessages.flatMap(legacyMessageToBubbles));
+  const bubbles = [...events]
     .sort((a, b) => a.sequence - b.sequence)
-    .map(eventToBubble)
-    .filter((bubble): bubble is AgentThreadBubble => Boolean(bubble && (bubble.body.trim() || bubble.attachments?.length)));
+    .flatMap(eventToBubbles)
+    .filter((bubble) => Boolean(bubble.body.trim() || bubble.attachments?.length));
+  return collapseInternalRuns(bubbles);
 }
 
 export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: string): AgentThreadBubble[] {
@@ -49,63 +50,156 @@ export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: s
   return [...bubbles, { id: "current-agent-prompt", role: "agent", body }];
 }
 
-function eventToBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
+function eventToBubbles(event: AgentThreadEvent): AgentThreadBubble[] {
   if (event.kind === "human_message") {
-    return { id: event.id, role: "human", body: payloadText(event.payload, "content", "message"), attachments: payloadAttachments(event.payload) };
+    return [{ id: event.id, role: "human", body: payloadText(event.payload, "content", "message"), attachments: payloadAttachments(event.payload) }];
   }
   if (event.kind === "agent_message") {
-    return { id: event.id, role: "agent", body: payloadText(event.payload, "content", "message") };
+    return agentMessageBubbles(event);
   }
   if (event.kind === "turn_failed") {
-    return { id: event.id, role: "agent", title: "本轮执行失败", body: payloadText(event.payload, "error", "message") };
+    return [{ id: event.id, role: "agent", title: "本轮执行失败", body: payloadText(event.payload, "error", "message") }];
   }
   if (event.kind === "ticket_claimed") {
-    return {
+    return [{
       id: event.id,
-      role: "platform",
+      role: "system",
       title: "开始处理工单",
+      collapsed: true,
+      summary: "Agent 已领取工作，执行过程可按需查看",
       body: payloadText(event.payload, "brief", "expectedArtifact", "ticketType")
-    };
+    }];
   }
   if (event.kind === "ticket_outcome") {
-    return {
+    return [{
       id: event.id,
       role: "platform",
       title: ticketOutcomeTitle(event.payload),
       body: payloadText(event.payload, "summary", "reason", "result", "status")
-    };
+    }];
   }
   if (event.kind === "ticket_received") {
-    return {
+    return [{
       id: event.id,
       role: "platform",
       title: "收到工单",
       body: ticketReceivedBody(event.payload)
-    };
+    }];
   }
   if (event.kind === "tool_observation") {
-    return {
+    return [{
       id: event.id,
       role: "tool",
-      title: "工具观察",
-      body: payloadText(event.payload, "summary", "path", "command", "message")
-    };
+      title: "工具活动",
+      collapsed: true,
+      summary: toolObservationSummary(event.payload),
+      body: payloadText(event.payload, "summary", "name", "path", "command", "message", "content")
+    }];
   }
   if (event.kind === "system_note") {
     const providerWait = providerWaitBubble(event);
-    if (providerWait) return providerWait;
+    if (providerWait) return [providerWait];
     const resolution = goalResolutionBubble(event);
-    if (resolution) return resolution;
-    return {
+    if (resolution) return [resolution];
+    return [{
       id: event.id,
       role: "system",
       title: "Agent 工作规则",
       collapsed: true,
       summary: "平台提供给 Agent 的内部规则，通常无需处理",
       body: payloadText(event.payload, "content", "message", "summary"),
-    };
+    }];
   }
-  return undefined;
+  return [];
+}
+
+function agentMessageBubbles(event: AgentThreadEvent): AgentThreadBubble[] {
+  const content = payloadText(event.payload, "content", "message");
+  return contentToAgentBubbles(event.id, content);
+}
+
+function contentToAgentBubbles(id: string, content: string): AgentThreadBubble[] {
+  const { reasoning, answer } = splitReasoningFromAnswer(content);
+  const bubbles: AgentThreadBubble[] = reasoning.map((body, index) => ({
+    id: `${id}:reasoning:${index}`,
+    role: "system",
+    title: "处理过程",
+    collapsed: true,
+    summary: reasoningSummary(body),
+    body,
+  }));
+  if (answer) bubbles.push({ id, role: "agent", body: answer });
+  return bubbles;
+}
+
+export function splitReasoningFromAnswer(content: string): { reasoning: string[]; answer: string } {
+  const reasoning: string[] = [];
+  const answer = content
+    .replace(/<thinking>([\s\S]*?)<\/thinking>/gi, (_match, body: string) => {
+      const normalized = normalizeReasoning(body);
+      if (normalized) reasoning.push(normalized);
+      return "";
+    })
+    .replace(/<\/?thinking>/gi, "")
+    .trim();
+  return { reasoning, answer };
+}
+
+function normalizeReasoning(value: string): string {
+  return value
+    .replace(/^\s*\*\*|\*\*\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function reasoningSummary(value: string): string {
+  const normalized = normalizeReasoning(value);
+  if (!normalized) return "Agent 的内部处理过程";
+  return normalized.length > 72 ? `${normalized.slice(0, 72)}…` : normalized;
+}
+
+function toolObservationSummary(payload: unknown): string {
+  const record = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : undefined;
+  const name = typeof record?.name === "string" ? record.name.trim() : "";
+  const path = typeof record?.path === "string" ? record.path.trim() : "";
+  const command = typeof record?.command === "string" ? record.command.trim() : "";
+  if (name) return `已完成 ${name}`;
+  if (path) return `已处理 ${path}`;
+  if (command) return command.length > 72 ? `${command.slice(0, 72)}…` : command;
+  return "工具调用与返回结果";
+}
+
+function collapseInternalRuns(bubbles: AgentThreadBubble[]): AgentThreadBubble[] {
+  const result: AgentThreadBubble[] = [];
+  let pending: AgentThreadBubble[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    if (pending.length === 1) {
+      result.push(pending[0]);
+    } else {
+      result.push({
+        id: `${pending[0].id}:group`,
+        role: "system",
+        title: "运行细节",
+        collapsed: true,
+        summary: `${pending.length} 条内部记录 · 思考、工具与系统信息`,
+        body: pending.map((bubble) => `${bubble.title ?? "记录"}\n${bubble.body}`).join("\n\n"),
+      });
+    }
+    pending = [];
+  };
+  for (const bubble of bubbles) {
+    if (bubble.collapsed) {
+      pending.push(bubble);
+      continue;
+    }
+    flush();
+    result.push(bubble);
+  }
+  flush();
+  return result;
 }
 
 function providerWaitBubble(event: AgentThreadEvent): AgentThreadBubble | undefined {
@@ -183,7 +277,7 @@ function equivalentMessage(left: string, right: string): boolean {
 
 function legacyMessageToBubbles(message: AgentDirectMessage): AgentThreadBubble[] {
   const bubbles: AgentThreadBubble[] = [{ id: message.id, role: "human", body: message.message }];
-  if (message.response) bubbles.push({ id: `${message.id}:response`, role: "agent", body: message.response });
+  if (message.response) bubbles.push(...contentToAgentBubbles(`${message.id}:response`, message.response));
   if (message.error) bubbles.push({ id: `${message.id}:error`, role: "agent", title: "本轮执行失败", body: message.error });
   return bubbles;
 }

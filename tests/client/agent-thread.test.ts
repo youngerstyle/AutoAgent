@@ -5,6 +5,7 @@ import {
   beginChatSubmission,
   chatComposerKeyAction,
   scrollChatThreadToLatest,
+  splitReasoningFromAnswer,
 } from "../../src/client/agent-thread";
 import type { AgentThreadEvent } from "../../src/shared/types";
 
@@ -29,10 +30,51 @@ describe("agent thread view", () => {
 
     expect(buildAgentThreadBubbles(events)).toEqual([
       expect.objectContaining({ id: "evt_human", role: "human", body: "继续处理这个报错。" }),
-      expect.objectContaining({ id: "evt_claimed", role: "platform", title: "开始处理工单", body: "修复跨域启动问题\nimplementation" }),
+      expect.objectContaining({ id: "evt_claimed", role: "system", title: "开始处理工单", collapsed: true, body: "修复跨域启动问题\nimplementation" }),
       expect.objectContaining({ id: "evt_agent", role: "agent", body: "我会先检查启动脚本和入口文件。" }),
       expect.objectContaining({ id: "evt_done", role: "platform", title: "工单处理完成", body: "已修复启动脚本\nacked" })
     ]);
+  });
+
+  it("keeps the Agent answer visible while folding reasoning and internal activity", () => {
+    const bubbles = buildAgentThreadBubbles([
+      threadEvent(1, "evt_thinking_1", "agent", "agent_message", {
+        content: "<thinking>Reading current artifacts and baseline</thinking>",
+      }),
+      threadEvent(2, "evt_tool", "tool", "tool_observation", {
+        name: "readFile",
+        path: "src/index.ts",
+        summary: "读取入口文件完成",
+      }),
+      threadEvent(3, "evt_thinking_2", "agent", "agent_message", {
+        content: "<thinking>Checking the implementation</thinking>\n已完成检查，当前实现可以继续。",
+      }),
+    ]);
+
+    expect(bubbles).toEqual([
+      expect.objectContaining({
+        role: "system",
+        title: "运行细节",
+        collapsed: true,
+        summary: "3 条内部记录 · 思考、工具与系统信息",
+      }),
+      expect.objectContaining({
+        id: "evt_thinking_2",
+        role: "agent",
+        body: "已完成检查，当前实现可以继续。",
+      }),
+    ]);
+    expect(JSON.stringify(bubbles[0])).toContain("Reading current artifacts and baseline");
+    expect(JSON.stringify(bubbles[0])).toContain("读取入口文件完成");
+  });
+
+  it("splits tagged reasoning from a user-facing answer", () => {
+    expect(splitReasoningFromAnswer(
+      "<thinking>**Inspecting files**</thinking>\n\n这里是最终结论。",
+    )).toEqual({
+      reasoning: ["Inspecting files"],
+      answer: "这里是最终结论。",
+    });
   });
 
   it("renders a received Goal as an understandable work brief and labels internal constraints", () => {
@@ -129,6 +171,24 @@ describe("agent thread view", () => {
       expect.objectContaining({ id: "hm_1", role: "human", body: "旧私聊" }),
       expect.objectContaining({ id: "hm_1:response", role: "agent", body: "旧回复" })
     ]);
+  });
+
+  it("folds reasoning found in legacy direct-message responses", () => {
+    const bubbles = buildAgentThreadBubbles([], [{
+      id: "hm_reasoning",
+      agentId: "wa_dev",
+      taskId: "task_1",
+      taskRunId: "tr_1",
+      message: "继续",
+      createdBy: "human",
+      createdAt: "2026-07-09T00:00:00.000Z",
+      response: "<thinking>Checking files</thinking>\n处理完成",
+    }]);
+
+    expect(bubbles).toHaveLength(3);
+    expect(bubbles[0]).toMatchObject({ role: "human", body: "继续" });
+    expect(bubbles[1]).toMatchObject({ role: "system", collapsed: true, title: "处理过程" });
+    expect(bubbles[2]).toMatchObject({ role: "agent", body: "处理完成" });
   });
 
   it("sends on Enter while preserving Shift+Enter and IME composition", () => {

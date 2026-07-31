@@ -291,10 +291,10 @@ button {
 .mission-brief {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(230px, 0.9fr) auto minmax(340px, 1.25fr) auto;
+  grid-template-columns: minmax(230px, 0.9fr) auto minmax(420px, 1.35fr);
   align-items: center;
-  gap: 22px;
-  padding: 16px 24px;
+  gap: 18px;
+  padding: 13px 22px;
   border-bottom: 1px solid var(--hq-line);
   background: var(--hq-paper);
 }
@@ -355,67 +355,98 @@ button {
 .mission-command {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  border: 1px solid #d7dcda;
-  border-radius: 12px;
-  background: #f7f9f8;
-  overflow: hidden;
+  grid-template-columns: auto minmax(0, 1fr) auto 34px;
+  align-items: center;
+  min-height: 44px;
+  padding: 4px 5px 4px 11px;
+  border: 1px solid #dfe4e1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(25, 33, 30, 0.03);
 }
 
 .mission-command:focus-within {
   border-color: var(--hq-teal);
-  box-shadow: 0 0 0 2px rgba(8, 125, 114, 0.12);
+  box-shadow: 0 0 0 3px rgba(8, 125, 114, 0.1);
 }
 
-.mission-command textarea {
+.mission-command-icon {
+  color: #71807a;
+}
+
+.mission-command input {
   width: 100%;
-  height: 52px;
-  min-height: 52px;
-  resize: none;
+  height: 34px;
+  min-height: 34px;
   border: 0;
   background: transparent;
-  padding: 10px 12px;
+  padding: 7px 9px;
   outline: 0;
-  line-height: 1.35;
+  font: inherit;
+  line-height: 1.4;
+}
+
+.mission-command-hint {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #9aa39f;
+  font-size: 10px;
 }
 
 .mission-send {
-  min-width: 82px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin: 6px;
-  border: 0;
-  border-radius: 9px;
-  background: var(--hq-teal);
-  color: #fff;
-  font-weight: 700;
-}
-
-.mission-send:disabled {
-  background: #c6cecc;
-}
-
-.mission-controls {
-  display: flex;
-  gap: 5px;
-}
-
-.mission-controls button {
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   padding: 0;
   border: 0;
   border-radius: 10px;
-  background: #f2f4f3;
+  background: var(--hq-teal);
+  color: #fff;
+}
+
+.mission-send:disabled {
+  background: #edf1ef;
+  color: #adb6b2;
+}
+
+.mission-actions {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.mission-controls {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #e5e9e7;
+  border-radius: 12px;
+  background: #f8faf9;
+}
+
+.mission-controls button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #54615c;
 }
 
 .mission-controls button:hover:not(:disabled) {
-  border-color: var(--hq-teal);
+  background: #e9f3f0;
   color: var(--hq-teal);
+}
+
+.mission-controls button:disabled {
+  color: #bdc4c1;
 }
 
 .mission-brief > .error-text {
@@ -1015,6 +1046,41 @@ button {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.conversation-dock .agent-chat-heading {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.conversation-dock .agent-chat-state {
+  flex: 0 0 auto;
+  max-width: 96px;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eff2f1;
+  color: #66716d;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-dock .agent-chat-state.running {
+  background: #e3f4eb;
+  color: #257653;
+}
+
+.conversation-dock .agent-chat-state.attention,
+.conversation-dock .agent-chat-state.blocked,
+.conversation-dock .agent-chat-state.waiting {
+  background: var(--hq-amber-soft);
+  color: #8b5b12;
+}
+
+.conversation-dock .agent-chat-state.failed {
+  background: var(--hq-red-soft);
+  color: var(--hq-red);
+}
+
 .conversation-dock .chat-avatar {
   width: 36px;
   height: 36px;
@@ -1022,24 +1088,79 @@ button {
 }
 
 .conversation-dock .chat-thread {
-  gap: 12px;
-  padding: 18px;
-  background: linear-gradient(180deg, rgba(248, 250, 249, 0.72), rgba(252, 253, 252, 0.94));
+  gap: 10px;
+  padding: 16px 18px 20px;
+  background: #f8faf9;
 }
 
 .conversation-dock .chat-message {
   max-width: 88%;
-  border-radius: 15px;
+  border-radius: 14px;
   padding: 11px 13px;
   box-shadow: none;
 }
 
 .conversation-dock .chat-message.agent {
   border-color: #e0e5e2;
+  background: #fff;
 }
 
 .conversation-dock .chat-message.human {
   background: #e5f7ef;
+}
+
+.conversation-dock .chat-message.platform {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  border-left: 3px solid var(--hq-teal);
+  border-radius: 5px 12px 12px 5px;
+  background: #f0f7f5;
+}
+
+.conversation-dock .chat-message.collapsed-message {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #69746f;
+}
+
+.conversation-dock .thread-message-details > summary {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #e1e6e3;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.conversation-dock .thread-message-details > summary strong {
+  color: #4a5752;
+  font-size: 12px;
+}
+
+.conversation-dock .thread-message-details > summary small {
+  overflow: hidden;
+  color: #8a9490;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-dock .thread-message-details[open] > summary {
+  border-radius: 10px 10px 0 0;
+  background: #fff;
+}
+
+.conversation-dock .thread-message-detail-body {
+  max-height: 240px;
+  border: 1px solid #e1e6e3;
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: #fff;
+  color: #65716c;
+  font-size: 12px;
 }
 
 .conversation-dock .quick-reply {
@@ -1563,7 +1684,7 @@ button {
 
 @media (max-width: 1180px) {
   .mission-brief {
-    grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr) auto;
+    grid-template-columns: minmax(220px, 0.8fr) minmax(380px, 1.2fr);
   }
 
   .mission-progress {
@@ -1608,17 +1729,9 @@ button {
   }
 
   .mission-brief {
-    grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1.25fr) auto;
+    grid-template-columns: minmax(180px, 0.75fr) minmax(300px, 1.25fr);
     gap: 10px;
     padding-inline: 12px;
-  }
-
-  .mission-send span {
-    display: none;
-  }
-
-  .mission-send {
-    min-width: 42px;
   }
 
   .office-main {
@@ -1662,6 +1775,14 @@ button {
 
   .mission-brief-title {
     display: none;
+  }
+
+  .mission-command-hint {
+    display: none;
+  }
+
+  .mission-actions {
+    grid-column: 1 / -1;
   }
 
   .office-main {

@@ -13,6 +13,8 @@ import {
   DraftingCompass,
   FolderKanban,
   ImagePlus,
+  CornerDownLeft,
+  MessageSquareText,
   Pause,
   Play,
   Plus,
@@ -650,16 +652,32 @@ export function App() {
                   <div><span>工单</span><strong>{completedTicketCount}/{ticketItems.length}</strong></div>
                   <div><span>成员</span><strong>{nodes.length}</strong></div>
                 </div>
-                <form className="mission-command" onSubmit={submitTask}>
-                  <textarea value={goal} onChange={(event) => setGoal(event.target.value)} placeholder={taskInputPlaceholder} disabled={taskSubmitting} aria-label={taskInputLabel} />
-                  <button type="submit" className="mission-send" disabled={taskSubmitView.disabled} title={taskSubmitView.label}>
-                    <Send size={17} /><span>{taskSubmitView.label}</span>
-                  </button>
-                </form>
-                <div className="mission-controls">
-                  <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"} title="暂停任务"><Pause size={16} /></button>
-                  <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"} title="继续任务"><Play size={16} /></button>
-                  <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"} title="停止任务"><CircleStop size={16} /></button>
+                <div className="mission-actions">
+                  <form className="mission-command" onSubmit={submitTask}>
+                    <MessageSquareText className="mission-command-icon" size={18} aria-hidden="true" />
+                    <input
+                      type="text"
+                      value={goal}
+                      onChange={(event) => setGoal(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                        event.preventDefault();
+                        if (!taskSubmitView.disabled) event.currentTarget.form?.requestSubmit();
+                      }}
+                      placeholder={taskInputPlaceholder}
+                      disabled={taskSubmitting}
+                      aria-label={taskInputLabel}
+                    />
+                    <span className="mission-command-hint" aria-hidden="true"><CornerDownLeft size={13} />Enter</span>
+                    <button type="submit" className="mission-send" disabled={taskSubmitView.disabled} title={taskSubmitView.label} aria-label={taskSubmitView.label}>
+                      <Send size={16} />
+                    </button>
+                  </form>
+                  <div className="mission-controls" aria-label="任务运行控制">
+                    <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"} title="暂停任务"><Pause size={16} /></button>
+                    <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"} title="继续任务"><Play size={16} /></button>
+                    <button type="button" onClick={() => void control("stop")} disabled={mode !== "running" && mode !== "paused" && mode !== "blocked"} title="停止任务"><CircleStop size={16} /></button>
+                  </div>
                 </div>
                 {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
                 {error ? <p className="error-text">{error}</p> : null}
@@ -1271,10 +1289,11 @@ function AgentHumanLoopBox(props: {
     <form className="agent-chat" onSubmit={submit}>
       <header className="agent-chat-header">
         <span className="chat-avatar">{initials(props.agentName)}</span>
-        <div>
+        <div className="agent-chat-heading">
           <strong>{props.agentName} 对话</strong>
           <small>{props.prompt.title} · {props.prompt.phase}</small>
         </div>
+        <span className="agent-chat-state attention">需要你</span>
       </header>
       <div className="chat-thread" ref={threadRef}>
         {bubbles.map((bubble) => <AgentThreadBubbleView key={bubble.id} bubble={bubble} workspaceId={props.workspaceId} />)}
@@ -1346,10 +1365,11 @@ function AgentDirectChatBox(props: {
     <form className="agent-chat" onSubmit={submit}>
       <header className="agent-chat-header">
         <span className="chat-avatar">{initials(agentName)}</span>
-        <div>
+        <div className="agent-chat-heading">
           <strong>{agentName} 对话</strong>
           <small>私聊 · {statusLabel(props.agent.status)}</small>
         </div>
+        <span className={`agent-chat-state ${props.agent.status}`}>{statusLabel(props.agent.status)}</span>
       </header>
       <div className="chat-thread" ref={threadRef}>
         {props.bubbles.length > 0 ? props.bubbles.map((bubble) => (
