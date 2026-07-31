@@ -47,7 +47,7 @@ describe("server bootstrap", () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-nonblocking-"));
     const restore = vi
       .spyOn(RuntimeHostRegistry.prototype, "startAll")
-      .mockImplementation(() => new Promise<void>(() => undefined));
+      .mockImplementation(() => new Promise<never>(() => undefined));
 
     const server = await startServer({ ...config(home), port: 0 });
     try {
@@ -62,6 +62,34 @@ describe("server bootstrap", () => {
         });
     } finally {
       server.close();
+      restore.mockRestore();
+    }
+  });
+
+  it("reports invalid workspaces without failing restoration for healthy workspaces", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-isolation-"));
+    const restore = vi
+      .spyOn(RuntimeHostRegistry.prototype, "startAll")
+      .mockResolvedValue({
+        restoredWorkspaceIds: ["workspace-healthy"],
+        failedWorkspaces: [{ workspaceId: "workspace-invalid", error: "Goal version must advance by exactly one" }],
+      });
+    try {
+      const app = await bootstrapServer(config(home));
+      await request(app)
+        .get("/api/health")
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            ok: true,
+            runtimeHosts: {
+              status: "degraded",
+              restoredWorkspaceCount: 1,
+              failedWorkspaces: [{ workspaceId: "workspace-invalid" }],
+            },
+          });
+        });
+    } finally {
       restore.mockRestore();
     }
   });

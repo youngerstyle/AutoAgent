@@ -104,9 +104,13 @@ describe("TicketEngine single Plan flow", () => {
       targetTicketId: fixture.dev,
       reason: "射击碰撞没有生效",
       evidence: [{ evidenceId: "ev-qa-failure-1" }],
+      handoff: completePayload({ findings: ["射击碰撞没有生效"] }).handoff,
     }));
 
     expect(result).toMatchObject({ accepted: true, ticketStatus: "returned", planStatus: "blocked" });
+    expect((await fixture.engine.getTicket(fixture.qa))?.attempts.at(-1)?.handoff).toMatchObject({
+      output: { findings: ["射击碰撞没有生效"] },
+    });
     const plan = await fixture.engine.getPlan(fixture.planId);
     expect(plan.graph.ticketIds).toHaveLength(5);
     const amendmentId = plan.graph.ticketIds.find((ticketId) => !fixture.plan.graph.ticketIds.includes(ticketId))!;
@@ -222,7 +226,12 @@ describe("TicketEngine single Plan flow", () => {
     expect(await fixture.engine.getTicket(fixture.acceptance)).toMatchObject({ status: "ready" });
 
     const events = await fixture.engine.readEvents({ planId: fixture.planId, limit: 100 });
-    expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "TicketCorrectionRequested")).toBe(true);
+    expect(events.events.find((event) => (
+      event.aggregateType === "plan" && event.payload.type === "TicketCorrectionRequested"
+    ))?.payload).toMatchObject({
+      type: "TicketCorrectionRequested",
+      handoff: { output: { findings: ["射击碰撞没有生效"] } },
+    });
     expect(events.events.some((event) => event.aggregateType === "plan" && event.payload.type === "PlanAmendmentRequested")).toBe(true);
   });
 
@@ -265,7 +274,13 @@ describe("TicketEngine single Plan flow", () => {
     await fixture.engine.applyTicket(ticketCommand(fixture.planId, qaB!, qaBClaim!, "complete-qa-b", completePayload()));
     const qaBBefore = await fixture.engine.getTicket(qaB!);
     const qaAClaim = await fixture.engine.claimReady({ requestId: "claim-qa-a", planId: fixture.planId, ticketId: qaA!, expectedTicketVersion: (await fixture.engine.getTicket(qaA!))!.version, principalId: "qa", leaseDurationMs: 60_000 });
-    await fixture.engine.applyTicket(ticketCommand(fixture.planId, qaA!, qaAClaim!, "return-a", { type: "request_correction", targetTicketId: devA!, reason: "A 分支缺陷", evidence: [] }));
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, qaA!, qaAClaim!, "return-a", {
+      type: "request_correction",
+      targetTicketId: devA!,
+      reason: "A 分支缺陷",
+      evidence: [],
+      handoff: completePayload({ findings: ["A 分支缺陷"] }).handoff,
+    }));
 
     expect(await fixture.engine.getTicket(devA!)).toMatchObject({ status: "completed" });
     expect(await fixture.engine.getTicket(qaA!)).toMatchObject({ status: "returned" });
@@ -285,6 +300,7 @@ describe("TicketEngine single Plan flow", () => {
       targetTicketId: fixture.qa,
       reason: "不能纠正自己",
       evidence: [],
+      handoff: completePayload({ findings: ["不能纠正自己"] }).handoff,
     }));
     expect(result).toMatchObject({ accepted: false, code: "invalid_command" });
     expect((await fixture.engine.getPlan(fixture.planId)).graph.ticketIds).toHaveLength(4);

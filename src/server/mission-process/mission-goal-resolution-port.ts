@@ -90,11 +90,19 @@ export async function validateEvidenceFacts(
   for (const ref of all) {
     const fact = facts.get(ref.evidenceId);
     if (!fact) return `证据不存在或不是平台工具生成的事实：${ref.evidenceId}`;
+    if (
+      !fact.capture
+      || (fact.capture.status !== "recorded" && fact.capture.status !== "unavailable")
+      || !fact.observation
+      || (fact.observation.status !== "observed" && fact.observation.status !== "not_observed")
+    ) {
+      return `Evidence fact does not satisfy the current evidence contract: ${ref.evidenceId}`;
+    }
     if (path.resolve(fact.workspaceRoot) !== path.resolve(workspaceRoot)) {
       return `证据不属于当前工作区：${ref.evidenceId}`;
     }
-    if (fact.status !== "succeeded") {
-      return `证据尚未成功完成：${ref.evidenceId} (${fact.status})`;
+    if (fact.capture.status !== "recorded") {
+      return `证据没有形成可信观察：${ref.evidenceId} (${fact.capture.error?.category ?? "unknown"})`;
     }
     const mustBelongToCurrentGoal = !inheritedIds.has(ref.evidenceId);
     if (mustBelongToCurrentGoal && (fact.agentId !== agentId || fact.goalId !== goal.spec.id)) {

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
+import { AgentStore, AgentStoreConflictError } from "../../src/server/agent-engine/agent-store.js";
 import {
   agentEngineExecutionLeaseFile,
   agentEngineRolloutFile,
@@ -122,5 +122,50 @@ describe("AgentStore", () => {
       .map((line) => JSON.parse(line) as { payloads: unknown[] });
     expect(commits).toHaveLength(8);
     expect(commits.every((commit) => commit.payloads.length === 1)).toBe(true);
+  });
+
+  it("rejects an older Goal projection before it can overwrite newer state", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
+    roots.push(root);
+    const store = new AgentStore(root, "agent-a");
+    const goal = {
+      spec: {
+        id: "goal-a",
+        threadId: "thread-a",
+        objective: "deliver",
+        successCriteria: ["done"],
+        contextRefs: [],
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      version: 1,
+      status: "active" as const,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    await store.transact((current) => ({
+      ...current,
+      aggregateVersion: current.aggregateVersion + 1,
+      threads: [{
+        threadId: "thread-a",
+        agentId: "agent-a",
+        scopeId: "scope-a",
+        version: 1,
+        items: [],
+      }],
+      goals: [goal],
+    }));
+    await store.transact((current) => ({
+      ...current,
+      aggregateVersion: current.aggregateVersion + 1,
+      goals: [{ ...goal, version: 2, status: "paused", updatedAt: "2026-07-30T00:01:00.000Z" }],
+    }));
+
+    await expect(store.transact((current) => ({
+      ...current,
+      aggregateVersion: current.aggregateVersion + 1,
+      goals: [{ ...goal, version: 1, status: "active" }],
+    }))).rejects.toBeInstanceOf(AgentStoreConflictError);
+    await expect(new AgentStore(root, "agent-a").read()).resolves.toMatchObject({
+      goals: [{ version: 2, status: "paused" }],
+    });
   });
 });

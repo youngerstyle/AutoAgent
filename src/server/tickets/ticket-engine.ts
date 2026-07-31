@@ -400,6 +400,8 @@ export class TicketEngine {
       if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
     }
     if (command.payload.type === "request_correction") {
+      const handoffError = validateCompletionHandoff(command.payload.handoff);
+      if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
       const targetTicketId = command.payload.targetTicketId;
       const target = aggregate.tickets.find((item) => item.ticketId === targetTicketId);
       if (!target || target.status !== "completed" || !isStrictAncestor(aggregate.plan.graph, target.ticketId, ticket.ticketId)) {
@@ -430,7 +432,16 @@ export class TicketEngine {
           ? { status: "blocked" as const, reason: command.payload.reason, requiredInput: structuredClone(command.payload.requiredInput) }
           : command.payload.type === "fail"
             ? { status: "failed" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence), ...(changeSet ? { changeSet } : {}) }
-            : { status: "returned" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence), ...(changeSet ? { changeSet } : {}) };
+            : {
+                status: "returned" as const,
+                endedAt: command.issuedAt,
+                reason: command.payload.reason,
+                evidence: structuredClone(command.payload.evidence),
+                ...(command.payload.type === "request_correction"
+                  ? { handoff: structuredClone(command.payload.handoff) }
+                  : {}),
+                ...(changeSet ? { changeSet } : {}),
+              };
       let tickets = current.tickets.map((item) => item.ticketId === command.ticketId ? {
         ...item, status, version: item.version + 1,
         activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
@@ -514,7 +525,13 @@ export class TicketEngine {
       )];
       for (const ready of changed.ready) pendingEvents.push(ticketEvent(ready, { type: "TicketReady", ticketVersion: ready.version }, command.issuedAt));
       if (command.payload.type === "request_correction") {
-        pendingEvents.push(planEvent(command.planId, plan.version, { type: "TicketCorrectionRequested", sourceTicketId: command.ticketId, targetTicketId: correctionTargetId!, reason: command.payload.reason }, command.issuedAt));
+        pendingEvents.push(planEvent(command.planId, plan.version, {
+          type: "TicketCorrectionRequested",
+          sourceTicketId: command.ticketId,
+          targetTicketId: correctionTargetId!,
+          reason: command.payload.reason,
+          handoff: structuredClone(command.payload.handoff),
+        }, command.issuedAt));
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
       } else if (command.payload.type === "request_plan_change") {

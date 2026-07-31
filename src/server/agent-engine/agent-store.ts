@@ -538,6 +538,7 @@ export class AgentStore {
 }
 
 function createCommit(current: AgentStoreAggregate, next: AgentStoreAggregate): AgentStoreCommit {
+  validateGoalTransitions(current.goals, next.goals, "conflict");
   return {
     schemaVersion: 1,
     type: "agent_store_commit",
@@ -618,8 +619,15 @@ function applyCommit(current: AgentStoreAggregate, commit: AgentStoreCommit): Ag
   const goals = structuredClone(current.goals);
   for (const goal of commit.goals) {
     const index = goals.findIndex((item) => item.spec.id === goal.spec.id);
-    if (index < 0) goals.push(structuredClone(goal));
-    else goals[index] = structuredClone(goal);
+    if (index < 0) {
+      if (goal.version !== 1) throw new AgentStoreCorruptionError("New Goal must start at version 1");
+      goals.push(structuredClone(goal));
+    } else {
+      if (goal.version !== goals[index]!.version + 1) {
+        throw new AgentStoreCorruptionError("Goal version must advance by exactly one");
+      }
+      goals[index] = structuredClone(goal);
+    }
   }
   const next: AgentStoreAggregate = {
     schemaVersion: 2,
@@ -643,6 +651,32 @@ function applyCommit(current: AgentStoreAggregate, commit: AgentStoreCommit): Ag
   };
   validateAggregate(next, current.agentId);
   return next;
+}
+
+function validateGoalTransitions(
+  current: AgentGoal[],
+  next: AgentGoal[],
+  errorKind: "conflict" | "corruption",
+): void {
+  const fail = (message: string): never => {
+    if (errorKind === "conflict") throw new AgentStoreConflictError(message);
+    throw new AgentStoreCorruptionError(message);
+  };
+  const currentById = new Map(current.map((goal) => [goal.spec.id, goal]));
+  if (next.length < current.length) fail("Goals cannot be removed");
+  for (const goal of next) {
+    const previous = currentById.get(goal.spec.id);
+    if (!previous) {
+      if (goal.version !== 1) fail("New Goal must start at version 1");
+    } else if (same(previous, goal)) {
+      currentById.delete(goal.spec.id);
+      continue;
+    } else if (goal.version !== previous.version + 1) {
+      fail("Goal version must advance by exactly one");
+    }
+    currentById.delete(goal.spec.id);
+  }
+  if (currentById.size) fail("Goals cannot be removed");
 }
 
 function emptyAggregate(agentId: string): AgentStoreAggregate {

@@ -726,6 +726,21 @@ export class RuntimeHost {
       const readiness = await engine!.executionReadiness(goal.spec.id);
       if (!readiness.ready) {
         if (readiness.reason === "agent_busy") continue;
+        if (readiness.reason === "repeated_host_correction_without_progress") {
+          const createdAt = this.now().toISOString();
+          await engine!.appendToolItem({
+            itemId: stableId("agent_contract_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version)),
+            threadId: link.agentThreadId,
+            goalId: goal.spec.id,
+            kind: "observation",
+            value: {
+              type: "agent_contract_stalled",
+              reason: readiness.reason,
+              message: "Agent repeated the same Host contract violation without any accepted state change.",
+            },
+            createdAt,
+          });
+        }
         await engine!.controlGoal({
           requestId: stableId("no_progress", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
           goalId: goal.spec.id,

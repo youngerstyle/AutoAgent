@@ -388,6 +388,7 @@ describe("MissionProcessManager", () => {
             {
               clientRef: "accept", title: "acceptance", objective: "accept against verified baseline", successCriteria: ["acceptance decided"],
               assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "acceptance-v1" },
+              deliveryIncrement: TEST_INCREMENT,
               permissions: { settleMission: true },
             },
           ],
@@ -525,7 +526,8 @@ describe("MissionProcessManager", () => {
             {
               clientRef: "accept-fresh", title: "acceptance retry", objective: "accept fresh assurance",
               successCriteria: ["acceptance decided again"], assignment: { principalId: "principal-boss" },
-              outputContract: { schemaRef: "acceptance-v1" }, permissions: { settleMission: true },
+              outputContract: { schemaRef: "acceptance-v1" }, deliveryIncrement: TEST_INCREMENT,
+              permissions: { settleMission: true },
             },
           ],
           dependencyAdditions: [
@@ -1187,8 +1189,8 @@ describe("MissionProcessManager", () => {
           amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "plan-change-set-v3" } },
           initialChange: {
             additions: [
-              { clientRef: "dev", title: "开发", objective: "实现功能", successCriteria: ["功能可运行"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" } },
-              { clientRef: "qa", title: "质量检查", objective: "验证功能", successCriteria: ["质量通过"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "result-v1" } },
+              { clientRef: "dev", title: "开发", objective: "实现功能", successCriteria: ["功能可运行"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
+              { clientRef: "qa", title: "质量检查", objective: "验证功能", successCriteria: ["质量通过"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
             ],
             dependencyAdditions: [{ from: { clientRef: "dev" }, to: { clientRef: "qa" } }],
             cancelTicketIds: [],
@@ -1224,26 +1226,41 @@ describe("MissionProcessManager", () => {
     expect(mission.links.find((item) => item.dispatchId === qaLink.dispatchId)).toMatchObject({ status: "settled" });
     expect(await fixture.tickets.getTicket(qaLink.ticketId)).toMatchObject({ status: "returned" });
 
-    mission = await fixture.manager.tick();
-    const amendmentLink = mission.links.find((item) => item.agentId === "pm" && item.status === "running")!;
+    let amendmentLink = mission.links.find((item) => item.agentId === "pm" && item.status === "running");
+    for (let attempt = 0; !amendmentLink && attempt < 12; attempt += 1) {
+      mission = await fixture.manager.tick();
+      amendmentLink = mission.links.find((item) => item.agentId === "pm" && item.status === "running");
+    }
+    expect(amendmentLink).toBeDefined();
     const pmEngine = fixture.engines.get("pm")!;
-    const amendmentGoal = (await pmEngine.getGoal(amendmentLink.agentGoalId!))!;
+    const amendmentGoal = (await pmEngine.getGoal(amendmentLink!.agentGoalId!))!;
     await pmEngine.proposeGoalResolution({
       proposalId: "append-correction-work", goalId: amendmentGoal.spec.id, expectedGoalVersion: amendmentGoal.version, resolvingGoalVersion: amendmentGoal.version + 1,
       status: "completed", summary: "追加新的修复和复验工单", evidence: [], criterionResults: satisfied(amendmentGoal), residualRisks: [],
       domainOutcome: {
-        result: planningResult("correction planned"),
+        result: {
+          summary: "correction planned",
+          deliveryStrategy: {
+            mode: "single_increment",
+            rationale: "复用当前 Plan 已有交付增量完成修复和复验",
+            increments: [],
+          },
+        },
         change: {
           additions: [
             { clientRef: "fix", title: "修复碰撞", objective: "修复碰撞失效", successCriteria: ["碰撞恢复"], assignment: { principalId: "principal-dev" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
             { clientRef: "recheck", title: "重新质量检查", objective: "复验碰撞", successCriteria: ["碰撞质量通过"], assignment: { principalId: "principal-qa" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT },
-            { clientRef: "accept", title: "重新验收", objective: "验收修复结果", successCriteria: ["修复结果可接受"], assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "result-v1" }, permissions: { settleMission: true } },
+            { clientRef: "accept", title: "重新验收", objective: "验收修复结果", successCriteria: ["修复结果可接受"], assignment: { principalId: "principal-boss" }, outputContract: { schemaRef: "result-v1" }, deliveryIncrement: TEST_INCREMENT, permissions: { settleMission: true } },
           ],
           dependencyAdditions: [
-            { from: { ticketId: amendmentLink.ticketId }, to: { clientRef: "fix" } },
+            { from: { ticketId: amendmentLink!.ticketId }, to: { clientRef: "fix" } },
             { from: { clientRef: "fix" }, to: { clientRef: "recheck" } },
             { from: { clientRef: "recheck" }, to: { clientRef: "accept" } },
           ],
+          failureResolutions: [{
+            failedTicketId: qaLink.ticketId,
+            resolvedBy: { clientRef: "recheck" },
+          }],
           cancelTicketIds: [],
           requiredTerminalRefs: [{ clientRef: "accept" }],
         },

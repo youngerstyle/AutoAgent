@@ -40,11 +40,20 @@ export interface EvidenceFact {
   toolCallId: string;
   toolName: string;
   kind: EvidenceKind;
-  status: "succeeded" | "failed" | "running";
+  capture: {
+    status: "recorded" | "unavailable";
+    error?: {
+      category: "tool" | "policy" | "transport" | "timeout";
+      message: string;
+    };
+  };
+  observation: {
+    status: "observed" | "not_observed";
+    result: unknown;
+  };
   workspaceRoot: string;
   createdAt: string;
   input: unknown;
-  result: unknown;
   artifact?: EvidenceArtifactFact;
 }
 

@@ -392,7 +392,7 @@ describe("AgentEngine", () => {
     });
   });
 
-  it("treats every host correction as ordered input even when its reason repeats", async () => {
+  it("stops a host-correction episode when the same violation repeats without Host state progress", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     const appendModel = (itemId: string) => fixture.engine.appendModelItem({
       itemId,
@@ -423,8 +423,8 @@ describe("AgentEngine", () => {
     await appendCorrection("correction-2");
 
     expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
-      ready: true,
-      reason: "host_correction",
+      ready: false,
+      reason: "repeated_host_correction_without_progress",
     });
   });
 
@@ -482,6 +482,19 @@ describe("AgentEngine", () => {
       action: "pause",
       reason: "人工暂停",
     });
+    const afterFirstPause = await fixture.store.read();
+    const pausedAgain = await fixture.engine.controlGoal({
+      requestId: "pause-again",
+      goalId: goal.spec.id,
+      expectedGoalVersion: paused.version,
+      action: "pause",
+      reason: "仍然暂停",
+    });
+    const afterSecondPause = await fixture.store.read();
+    expect(pausedAgain).toEqual(paused);
+    expect(afterSecondPause.controls).toHaveLength(afterFirstPause.controls.length + 1);
+    expect(afterSecondPause.outbox).toEqual(afterFirstPause.outbox);
+
     const resumed = await fixture.engine.controlGoal({
       requestId: "resume-a",
       goalId: goal.spec.id,

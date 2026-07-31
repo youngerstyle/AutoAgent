@@ -53,6 +53,21 @@ describe("Pi Skill read boundary", () => {
     ]);
   });
 
+  it("does not expose human input while the Agent is correcting a Host contract rejection", () => {
+    expect(activePiToolNames(["readFile"], false, {
+      schemaRef: "test",
+      completionOutcomeSchema: { type: "object" },
+      correctionOutcomeSchema: { type: "object" },
+      planChangeOutcomeSchema: { type: "object" },
+    }, { hostCorrection: true })).toEqual([
+      "read",
+      "readFile",
+      "goal_resolution",
+      "report_goal_correction",
+      "request_goal_plan_change",
+    ]);
+  });
+
   it("normalizes an omitted empty-risk list at the tool boundary", () => {
     expect(withDefaultResidualRisks({ status: "completed" })).toEqual({
       status: "completed",

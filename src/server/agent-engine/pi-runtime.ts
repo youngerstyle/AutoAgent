@@ -79,7 +79,7 @@ interface ToolExecutionBinding {
 }
 
 interface RunSafetyBinding {
-  failures: Map<string, number>;
+  failedToolSignatures: Set<string>;
   terminalSubmissionFailures: number;
   seenUsefulToolSignatures: Set<string>;
   lastToolBatchFingerprint?: string;
@@ -90,7 +90,6 @@ interface RunSafetyBinding {
   blockedReason?: string;
 }
 
-const MAX_REPEATED_TOOL_FAILURES = envPositiveInteger("AUTOAGENT_MAX_REPEATED_TOOL_FAILURES", 3);
 const MAX_TERMINAL_SUBMISSION_FAILURES = envPositiveInteger(
   "AUTOAGENT_MAX_TERMINAL_SUBMISSION_FAILURES",
   4,
@@ -221,12 +220,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             void state.session.abort();
           }
           const fingerprint = toolFailureFingerprint(toolName, toolInput?.args, event.result);
-          const count = (state.safety.failures.get(fingerprint) ?? 0) + 1;
-          state.safety.failures.set(fingerprint, count);
-          if (count >= MAX_REPEATED_TOOL_FAILURES && !state.safety.blockedReason) {
+          if (state.safety.failedToolSignatures.has(fingerprint) && !state.safety.blockedReason) {
             state.safety.blockReasonKind = "no_progress";
-            state.safety.blockedReason = `同一个工具错误已连续出现 ${count} 次，当前 turn 已暂停以避免空转。`;
+            state.safety.blockedReason = "模型收到工具纠错结果后再次提交了语义相同的失败调用，当前 turn 已暂停以避免空转。";
             void state.session.abort();
+          } else {
+            state.safety.failedToolSignatures.add(fingerprint);
           }
           if (isTerminalSubmissionTool(toolName)) {
             state.safety.terminalSubmissionFailures += 1;
@@ -238,7 +237,6 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
             }
           }
         } else {
-          state.safety.failures.clear();
           state.safety.lastToolBatchFingerprint = undefined;
           state.safety.repeatedToolBatchCount = 0;
         }
@@ -301,7 +299,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.resolution.turnId = turnId;
     state.resolution.onProposal = (value) => { proposal = value; };
     state.resolution.mock = input.provider === "mock";
-    state.safety.failures.clear();
+    state.safety.failedToolSignatures.clear();
     state.safety.terminalSubmissionFailures = 0;
     state.safety.seenUsefulToolSignatures.clear();
     state.safety.lastToolBatchFingerprint = undefined;
@@ -319,6 +317,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       this.tools.definitions().map((tool) => tool.name),
       Boolean(input.supportsImages),
       goal?.spec.outputContract,
+      { hostCorrection: pending?.kind === "correction" },
     );
     state.session.setActiveToolsByName(activeTools);
 
@@ -590,7 +589,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       threadId: input.threadId,
     };
     const safety: RunSafetyBinding = {
-      failures: new Map(),
+      failedToolSignatures: new Set(),
       terminalSubmissionFailures: 0,
       seenUsefulToolSignatures: new Set(),
       repeatedToolBatchCount: 0,
@@ -685,7 +684,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       }
       return goalUpdate!;
     }
-    if (pending?.kind === "correction") return `Host 对目标结算的决定：${pending.content}`;
+    if (pending?.kind === "correction") {
+      return [
+        "## Host contract correction",
+        pending.content,
+        "This is an internal contract correction in the current Goal, not missing external input.",
+        "Correct the proposal against the reported violation and resubmit it. Human-input tools are not available in this turn.",
+      ].join("\n");
+    }
     throw new Error("Agent turn 没有新的按时间序输入");
   }
 
@@ -980,13 +986,16 @@ function workspaceTools(runtime: AgentToolRuntime, binding: ToolExecutionBinding
     name: definition.name,
     label: definition.name,
     description: definition.description,
-    parameters: toolParameters(definition.name as WorkspaceToolName),
+    executionMode: workspaceToolExecutionMode(definition.name as WorkspaceToolName),
+    parameters: Type.Unsafe(definition.inputSchema),
     async execute(callId, params) {
       const result = await runtime.execute(
         { tool: definition.name as WorkspaceToolName, ...(params as Omit<AgentToolIntent, "tool">) },
         toolExecutionContext(binding, callId),
       );
-      if (!result.ok) throw new Error(failureMessage(result));
+      if (!result.ok && typeof result.failureKind === "string") {
+        throw new Error(failureMessage(result));
+      }
       if (result.tool === "readImage" && typeof result.data === "string" && typeof result.mimeType === "string") {
         return {
           content: [
@@ -1002,6 +1011,21 @@ function workspaceTools(runtime: AgentToolRuntime, binding: ToolExecutionBinding
       };
     },
   }));
+}
+
+const SEQUENTIAL_WORKSPACE_TOOLS = new Set<WorkspaceToolName>([
+  "writeFile",
+  "editFile",
+  "shell",
+  "startService",
+  "pollProcess",
+  "browser",
+]);
+
+export function workspaceToolExecutionMode(
+  tool: WorkspaceToolName,
+): "parallel" | "sequential" {
+  return SEQUENTIAL_WORKSPACE_TOOLS.has(tool) ? "sequential" : "parallel";
 }
 
 function piReadTool(runtime: AgentToolRuntime, skills: Skill[], binding: ToolExecutionBinding): ToolDefinition {
@@ -1080,6 +1104,7 @@ export function activePiToolNames(
   workspaceToolNames: string[],
   supportsImages: boolean,
   outputContractOrHasGoal?: AgentGoal["spec"]["outputContract"] | boolean,
+  options: { hostCorrection?: boolean } = {},
 ): string[] {
   const hasGoal = Boolean(outputContractOrHasGoal);
   const outputContract = typeof outputContractOrHasGoal === "object"
@@ -1092,7 +1117,7 @@ export function activePiToolNames(
       "goal_resolution",
       ...(outputContract?.correctionOutcomeSchema ? ["report_goal_correction"] : []),
       ...(outputContract?.planChangeOutcomeSchema ? ["request_goal_plan_change"] : []),
-      "request_human_input",
+      ...(options.hostCorrection ? [] : ["request_human_input"]),
     ] : []),
   ])];
 }
@@ -1120,10 +1145,9 @@ function goalTool(
       criterionResults: genericCriterionResults,
       residualRisks: Type.Optional(Type.Array(Type.String())),
       ...(domainOutcomeSchema
-        // Tool transport validates the Goal envelope only. The Mission manager
-        // owns the authoritative domain contract and returns correctable errors
-        // with the current Ticket/Plan context.
-        ? { domainOutcome: goalResolutionTransportDomainOutcomeSchema() }
+        // Reject malformed domain output inside the current turn. Mission Process
+        // remains authoritative for cross-aggregate facts and committing state.
+        ? { domainOutcome: goalResolutionDomainOutcomeSchema(outputContract) }
         : { domainOutcome: Type.Optional(Type.Unknown()) }),
     }),
     async execute(_callId, params) {
@@ -1391,34 +1415,6 @@ function failureMessage(details: unknown): string {
 export function isTransientInfrastructureToolFailure(result: unknown): boolean {
   const serialized = typeof result === "string" ? result : JSON.stringify(result);
   return serialized.includes("[AUTOAGENT_INFRASTRUCTURE_TRANSPORT]");
-}
-
-function toolParameters(name: WorkspaceToolName) {
-  if (name === "writeFile") return Type.Object({ path: Type.String(), content: Type.String() });
-  if (name === "editFile") {
-    return Type.Object({
-      path: Type.String(),
-      oldText: Type.String({ minLength: 1 }),
-      newText: Type.String(),
-    });
-  }
-  if (name === "readFile") {
-    return Type.Object({
-      path: Type.String(),
-      offset: Type.Optional(Type.Integer({ minimum: 0 })),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 64_000 })),
-    });
-  }
-  if (name === "readImage" || name === "listFiles") return Type.Object({ path: Type.Optional(Type.String()) });
-  if (name === "startService") {
-    return Type.Object({
-      command: Type.String(),
-      port: Type.Integer({ minimum: 1, maximum: 65_535 }),
-    });
-  }
-  if (name === "pollProcess") return Type.Object({ serviceId: Type.String() });
-  if (name === "browser") return Type.Object({ browserArgs: Type.Array(Type.String(), { minItems: 1 }) });
-  return Type.Object({ command: Type.String() });
 }
 
 function compactToolResultDetails(result: WorkspaceAgentToolResult): Record<string, unknown> {

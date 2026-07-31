@@ -50,8 +50,17 @@ async function restoreRuntimeHosts(app: Express): Promise<void> {
   if (state?.status === "restoring" || state?.status === "ready") return;
   app.locals.runtimeHostRestoration = { status: "restoring" };
   try {
-    await (app.locals.runtimeHostRegistry as RuntimeHostRegistry).startAll();
-    app.locals.runtimeHostRestoration = { status: "ready" };
+    const report = await (app.locals.runtimeHostRegistry as RuntimeHostRegistry).startAll();
+    app.locals.runtimeHostRestoration = report.failedWorkspaces.length
+      ? {
+          status: "degraded",
+          restoredWorkspaceCount: report.restoredWorkspaceIds.length,
+          failedWorkspaces: report.failedWorkspaces,
+        }
+      : {
+          status: "ready",
+          restoredWorkspaceCount: report.restoredWorkspaceIds.length,
+        };
   } catch (error) {
     app.locals.runtimeHostRestoration = {
       status: "failed",

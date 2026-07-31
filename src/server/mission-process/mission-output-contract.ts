@@ -26,7 +26,7 @@ export function compileMissionGoalOutputContract(
     ? correctionTargets.filter((target) => (target.missionCriterionIds?.length ?? 0) > 0)
     : correctionTargets;
   const correction = eligibleCorrectionTargets.length
-    ? missionCorrectionOutcomeSchema(definition, eligibleCorrectionTargets)
+    ? missionCorrectionOutcomeSchema(definition, baseline, eligibleCorrectionTargets)
     : undefined;
   const planChange = definition.permissions?.amendPlan
     || definition.outputContract.schemaRef === "plan-change-set-v3"
@@ -92,32 +92,15 @@ export function missionCompletionOutcomeSchema(
     // A completed assurance ticket is the positive terminal path. Negative or
     // inconclusive judgments use the dedicated correction, plan-change, or
     // human-input tools so the agent's routing decision remains explicit.
-    const verificationStatus = Type.Literal("satisfied");
     return Type.Object({
       disposition,
-      assuranceReport: Type.Object({
-        baselineVersion: baseline
-          ? Type.Literal(baseline.version)
-          : Type.Integer({ minimum: 1 }),
-        criterionResults: Type.Array(Type.Object({
-          criterionId: stringEnum(assignedCriterionIds),
-          status: verificationStatus,
-          evidence: Type.Array(evidenceRef, { minItems: 1 }),
-          anchorResults: Type.Array(Type.Object({
-            anchorIndex: Type.Integer({ minimum: 0 }),
-            status: verificationStatus,
-            evidence: Type.Array(evidenceRef),
-            verificationBasis: Type.Object({
-              summary: Type.String({ minLength: 1 }),
-              evidence: Type.Array(evidenceRef),
-            }),
-            observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-            deviations: Type.Array(Type.String({ minLength: 1 })),
-            note: Type.Optional(Type.String()),
-          }), { minItems: 1 }),
-          note: Type.Optional(Type.String()),
-        }), { minItems: 1 }),
-      }),
+      assuranceReport: missionAssuranceReportSchema(
+        assignedCriterionIds,
+        baseline,
+        Type.Literal("satisfied"),
+        1,
+        true,
+      ),
     });
   }
 
@@ -164,7 +147,7 @@ export function missionCompletionOutcomeSchema(
       Type.Object({ ticketId: Type.String({ minLength: 1 }) }),
       Type.Object({ clientRef: Type.String({ minLength: 1 }) }),
     ]);
-    const addition = Type.Object({
+    const additionFields = {
       clientRef: Type.String({ minLength: 1 }),
       title: Type.String({ minLength: 1 }),
       objective: Type.String({ minLength: 1 }),
@@ -175,21 +158,35 @@ export function missionCompletionOutcomeSchema(
         requiredTools: Type.Array(workspaceToolName, { uniqueItems: true }),
       }),
       outputContract: Type.Object({ schemaRef: Type.String({ minLength: 1 }) }),
-      deliveryIncrement: Type.Optional(Type.Object(
-        { incrementId: Type.String({ minLength: 1 }) },
-        { additionalProperties: false },
-      )),
       missionContribution: Type.Optional(Type.Object({
         missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
       }, { additionalProperties: false })),
       assurance: Type.Optional(Type.Object({
         missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
       }, { additionalProperties: false })),
-      permissions: Type.Optional(Type.Object({
-        amendPlan: Type.Optional(Type.Boolean()),
-        settleMission: Type.Optional(Type.Boolean()),
-      })),
-    });
+    };
+    const deliveryIncrementRef = Type.Object(
+      { incrementId: Type.String({ minLength: 1 }) },
+      { additionalProperties: false },
+    );
+    const addition = Type.Union([
+      Type.Object({
+        ...additionFields,
+        deliveryIncrement: deliveryIncrementRef,
+        permissions: Type.Optional(Type.Object({
+          amendPlan: Type.Optional(Type.Boolean()),
+          settleMission: Type.Optional(Type.Literal(false)),
+        })),
+      }),
+      Type.Object({
+        ...additionFields,
+        deliveryIncrement: deliveryIncrementRef,
+        permissions: Type.Object({
+          settleMission: Type.Literal(true),
+          amendPlan: Type.Optional(Type.Boolean()),
+        }),
+      }),
+    ]);
     return Type.Object({
       disposition,
       result: Type.Object({
@@ -223,6 +220,7 @@ export function missionCompletionOutcomeSchema(
 
 export function missionCorrectionOutcomeSchema(
   definition: TicketDefinition,
+  baseline: MissionBaseline | undefined,
   correctionTargets: readonly CorrectionTargetContext[],
 ): TSchema {
   if (definition.outputContract.schemaRef === "mission-assurance-v1") {
@@ -233,12 +231,100 @@ export function missionCorrectionOutcomeSchema(
         stringEnum(target.missionCriterionIds ?? []),
         { minItems: 1 },
       ),
+      findings: Type.Array(Type.Object({
+        summary: Type.String({ minLength: 1 }),
+        details: Type.String({ minLength: 1 }),
+        evidence: Type.Array(Type.Object({ evidenceId: Type.String({ minLength: 1 }) }), { minItems: 1 }),
+        affectedMissionCriterionIds: Type.Array(
+          stringEnum(target.missionCriterionIds ?? []),
+          { minItems: 1, uniqueItems: true },
+        ),
+      }), { minItems: 1 }),
+      assuranceReport: missionAssuranceReportSchema(
+        target.missionCriterionIds ?? [],
+        baseline,
+        Type.Union([
+          Type.Literal("satisfied"),
+          Type.Literal("not_satisfied"),
+          Type.Literal("not_verified"),
+        ]),
+        0,
+        false,
+      ),
     })));
   }
   return Type.Object({
     targetTicketId: stringEnum(correctionTargets.map((target) => String(target.ticketId))),
     reason: Type.String({ minLength: 1 }),
     correctionMissionCriterionIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+  });
+}
+
+function missionAssuranceReportSchema(
+  assignedCriterionIds: readonly string[],
+  baseline: MissionBaseline | undefined,
+  verificationStatus: TSchema,
+  minimumEvidence: number,
+  requireAllCriteria: boolean,
+): TSchema {
+  const evidenceRef = Type.Object({ evidenceId: Type.String({ minLength: 1 }) });
+  const criterionSchemas = assignedCriterionIds.map((criterionId) => {
+    const criterion = baseline?.criteria.find((candidate) => candidate.criterionId === criterionId);
+    const anchors = criterion?.verification.anchors ?? [];
+    const anchorSchemas = anchors.map((_anchor, anchorIndex) => Type.Object({
+      anchorIndex: Type.Literal(anchorIndex),
+      status: verificationStatus,
+      evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+      verificationBasis: Type.Object({
+        summary: Type.String({ minLength: 1 }),
+        evidence: Type.Array(evidenceRef),
+      }),
+      observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      deviations: Type.Array(Type.String({ minLength: 1 })),
+      note: Type.Optional(Type.String()),
+    }));
+    const anchorCount = anchors.length;
+    return Type.Object({
+      criterionId: Type.Literal(criterionId),
+      status: verificationStatus,
+      evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+      anchorResults: Type.Array(
+        schemaUnion(anchorSchemas, Type.Object({
+          anchorIndex: Type.Integer({ minimum: 0 }),
+          status: verificationStatus,
+          evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+          verificationBasis: Type.Object({
+            summary: Type.String({ minLength: 1 }),
+            evidence: Type.Array(evidenceRef),
+          }),
+          observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+          deviations: Type.Array(Type.String({ minLength: 1 })),
+          note: Type.Optional(Type.String()),
+        })),
+        anchorCount > 0
+          ? { minItems: anchorCount, maxItems: anchorCount }
+          : { minItems: 1 },
+      ),
+      note: Type.Optional(Type.String()),
+    });
+  });
+  const criterionCount = assignedCriterionIds.length;
+  return Type.Object({
+    baselineVersion: baseline
+      ? Type.Literal(baseline.version)
+      : Type.Integer({ minimum: 1 }),
+    criterionResults: Type.Array(
+      schemaUnion(criterionSchemas, Type.Object({
+        criterionId: stringEnum(assignedCriterionIds),
+        status: verificationStatus,
+        evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+        anchorResults: Type.Array(Type.Unknown(), { minItems: 1 }),
+        note: Type.Optional(Type.String()),
+      })),
+      requireAllCriteria && criterionCount > 0
+        ? { minItems: criterionCount, maxItems: criterionCount }
+        : { minItems: 1, ...(criterionCount > 0 ? { maxItems: criterionCount } : {}) },
+    ),
   });
 }
 
@@ -253,6 +339,12 @@ function stringEnum(values: readonly string[]): TSchema {
   if (unique.length === 0) return Type.String({ minLength: 1 });
   if (unique.length === 1) return Type.Literal(unique[0]!);
   return Type.Unsafe({ type: "string", enum: unique });
+}
+
+function schemaUnion(schemas: readonly TSchema[], fallback: TSchema): TSchema {
+  if (schemas.length === 0) return fallback;
+  if (schemas.length === 1) return schemas[0]!;
+  return Type.Union([...schemas]);
 }
 
 function toJsonSchema(schema: TSchema): Record<string, unknown> {

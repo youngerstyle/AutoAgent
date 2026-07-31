@@ -97,15 +97,21 @@ export class AgentToolRuntime {
       ? await this.serializeFileMutation(() => this.executeRaw(intent, context))
       : await this.executeRaw(intent, context);
     if (!context) return result;
+    const captureError = evidenceCaptureError(result);
     const fact = await this.evidence.append({
       ...context,
       toolName: intent.tool,
       kind: evidenceKind(intent.tool),
-      status: result.ok ? "succeeded" : "failed",
+      capture: captureError
+        ? { status: "unavailable", error: captureError }
+        : { status: "recorded" },
+      observation: {
+        status: captureError ? "not_observed" : "observed",
+        result: evidenceResult(result),
+      },
       workspaceRoot: this.policy.workspaceRoot,
       createdAt: new Date().toISOString(),
       input: structuredClone(intent),
-      result: evidenceResult(result),
       artifact: await this.artifactFact(intent, result),
     });
     return { ...result, evidenceId: fact.evidenceId };
@@ -199,12 +205,19 @@ export class AgentToolRuntime {
       if (intent.tool === "startService") {
         const command = required(intent.command, "command");
         assertCommandDoesNotAccessPlatformState(command);
-        return await this.startService(command, requiredPort(intent.port), context);
+        const automaticPort = intent.port === undefined || intent.port === 0;
+        const port = automaticPort ? await allocateServicePort() : requiredPort(intent.port);
+        return await this.startService(materializeServiceCommand(command, port, automaticPort), port, context);
       }
       if (intent.tool === "pollProcess") return await this.pollService(required(intent.serviceId, "serviceId"), context);
       return await this.runBrowser(requiredBrowserArgs(intent.browserArgs), context);
     } catch (error) {
-      return { tool: intent.tool, ok: false, error: (error as Error).message };
+      return {
+        tool: intent.tool,
+        ok: false,
+        failureKind: "tool_execution",
+        error: (error as Error).message,
+      };
     }
   }
 
@@ -621,6 +634,24 @@ function evidenceResult(result: AgentToolResult): unknown {
   }));
 }
 
+function evidenceCaptureError(
+  result: AgentToolResult,
+): { category: "tool" | "policy" | "transport" | "timeout"; message: string } | undefined {
+  const failureKind = typeof result.failureKind === "string" ? result.failureKind : undefined;
+  if (!failureKind) return undefined;
+  const category = failureKind === "policy"
+    ? "policy"
+    : failureKind === "infrastructure_transport"
+      ? "transport"
+      : failureKind === "timeout"
+        ? "timeout"
+        : "tool";
+  return {
+    category,
+    message: typeof result.error === "string" ? result.error : "The tool did not produce an observation",
+  };
+}
+
 export function agentCommandEnvironment(
   baseEnvironment: NodeJS.ProcessEnv = process.env,
   platformRoot = process.cwd(),
@@ -735,6 +766,31 @@ function requiredPort(value: number | undefined): number {
     throw new Error("startService 必须提供 1 到 65535 之间的 port");
   }
   return value!;
+}
+
+function materializeServiceCommand(command: string, port: number, automatic: boolean): string {
+  if (!automatic) return command.replaceAll("{port}", String(port));
+  if (!command.includes("{port}")) {
+    throw new Error("自动分配端口时，startService 的 command 必须使用 {port} 占位符");
+  }
+  return command.replaceAll("{port}", String(port));
+}
+
+async function allocateServicePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Host 无法分配本地服务端口")));
+        return;
+      }
+      const port = address.port;
+      server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
 }
 
 async function assertPortAvailable(port: number): Promise<void> {
@@ -1052,11 +1108,11 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     },
     startService: {
       name,
-      description: `${serviceDescription}。必须提供服务实际监听的 port；工具会在启动前检查端口冲突，并在进程立即退出时返回真实错误`,
+      description: `${serviceDescription}。推荐让 Host 自动分配端口：command 中使用 {port} 占位符，并省略 port 或传入 0；只有外部协议要求固定端口时才提供非零 port。工具会检查端口冲突，并在进程立即退出时返回真实错误`,
       inputSchema: objectSchema({
         command: { type: "string" },
-        port: { type: "integer", minimum: 1, maximum: 65_535 },
-      }, ["command", "port"]),
+        port: { type: "integer", minimum: 0, maximum: 65_535 },
+      }, ["command"]),
     },
     pollProcess: {
       name,

@@ -15,6 +15,7 @@ import {
   turnToolBudgetMessage,
   unresolvedGoalPrompt,
   waitForCleanupPromptly,
+  workspaceToolExecutionMode,
 } from "../../src/server/agent-engine/pi-runtime.js";
 import {
   compileMissionGoalOutputContract,
@@ -63,8 +64,18 @@ describe("Pi turn execution budget", () => {
   });
 });
 
+describe("Pi workspace tool execution", () => {
+  it("serializes stateful tools while preserving parallel reads", () => {
+    expect(workspaceToolExecutionMode("browser")).toBe("sequential");
+    expect(workspaceToolExecutionMode("shell")).toBe("sequential");
+    expect(workspaceToolExecutionMode("writeFile")).toBe("sequential");
+    expect(workspaceToolExecutionMode("readFile")).toBe("parallel");
+    expect(workspaceToolExecutionMode("listFiles")).toBe("parallel");
+  });
+});
+
 describe("Pi goal resolution transport boundary", () => {
-  it("passes domain payloads through transport while the Mission contract remains authoritative", () => {
+  it("validates domain payloads inside the current turn before Mission settlement", () => {
     const contract = compileMissionGoalOutputContract({
       title: "质量检查",
       objective: "验证交付",
@@ -82,6 +93,107 @@ describe("Pi goal resolution transport boundary", () => {
 
     expect(Value.Check(goalResolutionTransportDomainOutcomeSchema(), malformed)).toBe(true);
     expect(Value.Check(goalResolutionDomainOutcomeSchema(contract), malformed)).toBe(false);
+  });
+
+  it("rejects undeclared assurance criteria before creating a durable proposal", () => {
+    const contract = compileMissionGoalOutputContract({
+      title: "质量检查",
+      objective: "验证交付",
+      successCriteria: ["形成结论"],
+      assignment: {},
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1"] },
+    }, baseline);
+    const malformed = {
+      assuranceReport: {
+        baselineVersion: 3,
+        criterionResults: [{
+          criterionId: "criterion-1",
+          status: "satisfied",
+          evidence: [{ evidenceId: "evidence-1" }],
+          anchorResults: [{
+            anchorIndex: 0,
+            status: "satisfied",
+            evidence: [{ evidenceId: "evidence-1" }],
+            verificationBasis: {
+              summary: "已验证",
+              evidence: [{ evidenceId: "evidence-1" }],
+            },
+            observations: ["页面可访问"],
+            deviations: [],
+          }],
+        }, {
+          criterionId: "undeclared-criterion",
+          status: "satisfied",
+          evidence: [{ evidenceId: "evidence-1" }],
+          anchorResults: [],
+        }],
+      },
+    };
+
+    expect(Value.Check(goalResolutionDomainOutcomeSchema(contract), malformed)).toBe(false);
+  });
+
+  it("encodes every baseline verification anchor in the correction tool schema", () => {
+    const twoAnchorBaseline: MissionBaseline = {
+      ...baseline,
+      criteria: [{
+        ...baseline.criteria[0]!,
+        verification: {
+          anchors: [
+            ...baseline.criteria[0]!.verification.anchors,
+            {
+              observableOutcome: "直接链接可以在公开浏览器访问",
+              evidenceRequirements: ["逐条浏览器访问记录"],
+            },
+          ],
+        },
+      }],
+    };
+    const contract = compileMissionGoalOutputContract({
+      title: "质量检查",
+      objective: "验证交付",
+      successCriteria: ["形成结论"],
+      assignment: {},
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1"] },
+    }, twoAnchorBaseline, [{
+      ticketId: "ticket-upstream" as TicketId,
+      title: "上游交付",
+      missionCriterionIds: ["criterion-1"],
+    }]);
+    const anchor = (anchorIndex: number) => ({
+      anchorIndex,
+      status: "not_satisfied",
+      evidence: [],
+      verificationBasis: { summary: "浏览器复核", evidence: [] },
+      observations: ["观察到链接不可访问"],
+      deviations: ["与可访问要求不符"],
+    });
+    const correction = {
+      targetTicketId: "ticket-upstream",
+      reason: "上游链接不可访问",
+      correctionMissionCriterionIds: ["criterion-1"],
+      findings: [{
+        summary: "链接不可访问",
+        details: "浏览器复核失败",
+        evidence: [{ evidenceId: "evidence-1" }],
+        affectedMissionCriterionIds: ["criterion-1"],
+      }],
+      assuranceReport: {
+        baselineVersion: 3,
+        criterionResults: [{
+          criterionId: "criterion-1",
+          status: "not_satisfied",
+          evidence: [],
+          anchorResults: [anchor(0)],
+        }],
+      },
+    };
+
+    expect(Value.Check(contract.correctionOutcomeSchema!, correction)).toBe(false);
+    correction.assuranceReport.criterionResults[0]!.anchorResults.push(anchor(1));
+    expect(Value.Check(contract.correctionOutcomeSchema!, correction)).toBe(true);
   });
 });
 
@@ -566,6 +678,28 @@ describe("Pi runtime terminal propagation", () => {
         targetTicketId: "ticket-dev",
         reason: "交付与验收标准不符",
         correctionMissionCriterionIds: ["criterion-1"],
+        findings: [{
+          summary: "交付不符合标准",
+          details: "可观察行为与约定不一致",
+          evidence: [{ evidenceId: "ev-failure" }],
+          affectedMissionCriterionIds: ["criterion-1"],
+        }],
+        assuranceReport: {
+          baselineVersion: 3,
+          criterionResults: [{
+            criterionId: "criterion-1",
+            status: "not_satisfied",
+            evidence: [{ evidenceId: "ev-failure" }],
+            anchorResults: [{
+              anchorIndex: 0,
+              status: "not_satisfied",
+              evidence: [{ evidenceId: "ev-failure" }],
+              verificationBasis: { summary: "observed failure", evidence: [{ evidenceId: "ev-failure" }] },
+              observations: ["behavior was exercised"],
+              deviations: ["behavior differs from the anchor"],
+            }],
+          }],
+        },
       },
     )).toBe(true);
     expect(Value.Check(
@@ -598,6 +732,28 @@ describe("Pi runtime terminal propagation", () => {
         targetTicketId: "ticket-core",
         reason: "验证音效时发现启动入口失效",
         correctionMissionCriterionIds: ["criterion-lifecycle"],
+        findings: [{
+          summary: "启动入口失效",
+          details: "音效验证被上游启动缺陷阻断",
+          evidence: [{ evidenceId: "ev-entry-failure" }],
+          affectedMissionCriterionIds: ["criterion-lifecycle"],
+        }],
+        assuranceReport: {
+          baselineVersion: 3,
+          criterionResults: [{
+            criterionId: "criterion-lifecycle",
+            status: "not_satisfied",
+            evidence: [{ evidenceId: "ev-entry-failure" }],
+            anchorResults: [{
+              anchorIndex: 0,
+              status: "not_satisfied",
+              evidence: [{ evidenceId: "ev-entry-failure" }],
+              verificationBasis: { summary: "blocked by upstream entry failure", evidence: [{ evidenceId: "ev-entry-failure" }] },
+              observations: ["application could not start"],
+              deviations: ["startup entry does not satisfy its lifecycle anchor"],
+            }],
+          }],
+        },
       },
     )).toBe(true);
     expect(Value.Check(
@@ -761,6 +917,7 @@ describe("Pi runtime terminal propagation", () => {
           successCriteria: ["逐项形成验收结论"],
           assignment: { requiredCapabilities: ["delivery:accept"], requiredTools: [] },
           outputContract: { schemaRef: "mission-settlement-v1" },
+          deliveryIncrement: { incrementId: "tank-playable" },
           permissions: { settleMission: true },
         }],
         dependencyAdditions: [{
@@ -774,6 +931,16 @@ describe("Pi runtime terminal propagation", () => {
     };
 
     expect(Value.Check(schema, valid)).toBe(true);
+    expect(Value.Check(schema, {
+      ...valid,
+      change: {
+        ...valid.change,
+        additions: [{
+          ...valid.change.additions[0],
+          deliveryIncrement: undefined,
+        }, valid.change.additions[1]],
+      },
+    })).toBe(false);
     expect(Value.Check(schema, {
       ...valid,
       change: {

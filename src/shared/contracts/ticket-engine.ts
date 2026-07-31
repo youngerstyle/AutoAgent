@@ -300,6 +300,7 @@ export interface RequestCorrectionCommand {
   targetTicketId: TicketId;
   reason: string;
   evidence: TicketEvidenceRef[];
+  handoff: TicketHandoff;
 }
 
 export interface RequestPlanChangeCommand {
@@ -502,6 +503,7 @@ export type PlanAggregateEventPayload = {
   sourceTicketId: TicketId;
   targetTicketId: TicketId;
   reason: string;
+  handoff: TicketHandoff;
 };
 
 export interface TicketEventPayloadByAggregate {

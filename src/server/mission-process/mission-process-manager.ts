@@ -17,6 +17,7 @@ import type {
 import type {
   TicketEventCursor,
   TicketDefinition,
+  TicketHandoff,
   TicketId,
   PlanId,
   PlannedTicketAssignment,
@@ -345,7 +346,10 @@ export class MissionProcessManager {
           + `${missingTools.length ? `；缺少工具：${missingTools.join("、")}` : ""}`
         : undefined;
       const upstreamDeliveries = await this.listUpstreamDeliveries(link.planId, link.ticketId);
-      const inheritedEvidenceIds = collectEvidenceIds(upstreamDeliveries);
+      const settlementAssuranceSources = work.definition.permissions?.settleMission
+        ? await this.listMissionAssuranceSources(link.planId, link.ticketId)
+        : [];
+      const inheritedEvidenceIds = collectEvidenceIds([upstreamDeliveries, settlementAssuranceSources]);
       const correctionTargets = await this.listCorrectionTargets(link.planId, link.ticketId);
       const authoritativeMission = await this.requireAggregate();
       const prior = await agent.getGoalByStartKey(link.goalStartKey);
@@ -432,17 +436,31 @@ export class MissionProcessManager {
     return {
       planId: String(plan.planId),
       version: plan.version,
-      tickets: workItems.flatMap((work) => work ? [{
-        ticketId: String(work.ticket.ticketId),
-        status: work.ticket.status,
-        title: work.definition.title,
-        objective: work.definition.objective,
-        successCriteria: work.definition.successCriteria,
-        outputContract: work.definition.outputContract,
-        deliveryIncrement: work.definition.deliveryIncrement,
-        missionContribution: work.definition.missionContribution,
-        assurance: work.definition.assurance,
-      }] : []),
+      tickets: workItems.flatMap((work) => {
+        if (!work) return [];
+        const assuranceSource = work.ticket.status === "completed" && work.ticket.completion
+          ? missionAssuranceSource(work.ticket.ticketId, work.ticket.completion.handoff)
+          : undefined;
+        return [{
+          ticketId: String(work.ticket.ticketId),
+          status: work.ticket.status,
+          ...(work.ticket.status === "completed" && work.ticket.completion
+            ? { completedAt: work.ticket.completion.completedAt }
+            : {}),
+          title: work.definition.title,
+          objective: work.definition.objective,
+          successCriteria: work.definition.successCriteria,
+          outputContract: work.definition.outputContract,
+          deliveryIncrement: work.definition.deliveryIncrement,
+          missionContribution: work.definition.missionContribution,
+          assurance: work.definition.assurance,
+          ...(assuranceSource ? {
+            satisfiedMissionCriterionIds: assuranceSource.criterionResults
+              .filter((result) => result.status === "satisfied")
+              .map((result) => result.criterionId),
+          } : {}),
+        }];
+      }),
       dependencyEdges: plan.graph.dependencyEdges.map((edge) => ({
         fromTicketId: String(edge.fromTicketId),
         toTicketId: String(edge.toTicketId),
@@ -510,16 +528,54 @@ export class MissionProcessManager {
     }] : []);
   }
 
-  private async listMissionAssuranceSources(planId: PlanId, ticketId: TicketId) {
+  private async listMissionAssuranceSources(planId: PlanId, _ticketId: TicketId) {
     const plan = await this.tickets.getPlan(planId);
-    const upstreamIds = orderedAncestorTicketIds(plan.graph, ticketId);
-    const workItems = await Promise.all(upstreamIds.map((upstreamId) => this.tickets.getWorkItem(upstreamId)));
-    return workItems.flatMap((work) => {
-      if (!work || work.ticket.status !== "completed" || !work.ticket.completion
+    const workItems = (await Promise.all(plan.graph.ticketIds.map((id) => this.tickets.getWorkItem(id))))
+      .filter((work): work is NonNullable<typeof work> => Boolean(work));
+    const latestContributionAt = new Map<string, number>();
+    for (const work of workItems) {
+      if (work.ticket.status !== "completed" || !work.ticket.completion) continue;
+      const completedAt = Date.parse(work.ticket.completion.completedAt);
+      for (const criterionId of work.definition.missionContribution?.missionCriterionIds ?? []) {
+        latestContributionAt.set(
+          criterionId,
+          Math.max(latestContributionAt.get(criterionId) ?? Number.NEGATIVE_INFINITY, completedAt),
+        );
+      }
+    }
+    const candidates = workItems.flatMap((work, planOrder) => {
+      if (work.ticket.status !== "completed" || !work.ticket.completion
         || work.definition.outputContract.schemaRef !== "mission-assurance-v1") return [];
       const source = missionAssuranceSource(work.ticket.ticketId, work.ticket.completion.handoff);
-      return source ? [source] : [];
+      return source ? [{ source, completedAt: Date.parse(work.ticket.completion.completedAt), planOrder }] : [];
     });
+    const selectedByCriterion = new Map<string, {
+      source: MissionAssuranceSource;
+      completedAt: number;
+      planOrder: number;
+    }>();
+    for (const candidate of candidates) {
+      for (const result of candidate.source.criterionResults) {
+        if (result.status !== "satisfied") continue;
+        if (candidate.completedAt < (latestContributionAt.get(result.criterionId) ?? Number.NEGATIVE_INFINITY)) continue;
+        const current = selectedByCriterion.get(result.criterionId);
+        if (!current
+          || candidate.completedAt > current.completedAt
+          || (candidate.completedAt === current.completedAt && candidate.planOrder > current.planOrder)) {
+          selectedByCriterion.set(result.criterionId, candidate);
+        }
+      }
+    }
+    const selectedByTicket = new Map<string, MissionAssuranceSource>();
+    for (const [criterionId, candidate] of selectedByCriterion) {
+      const key = String(candidate.source.ticketId);
+      const result = candidate.source.criterionResults.find((item) => item.criterionId === criterionId)!;
+      const current = selectedByTicket.get(key);
+      selectedByTicket.set(key, current
+        ? { ...current, criterionResults: [...current.criterionResults, result] }
+        : { ...candidate.source, criterionResults: [result] });
+    }
+    return [...selectedByTicket.values()];
   }
 
   private async missionSettlementEvidence(planId: PlanId, ticketId: TicketId, baseline: MissionBaseline): Promise<MissionSettlementEvidence> {
@@ -543,6 +599,7 @@ export class MissionProcessManager {
     const matches: Array<{
       sourceTicketId: TicketId;
       reason: string;
+      handoff: TicketHandoff;
       occurredAt: string;
     }> = [];
     for (;;) {
@@ -553,6 +610,7 @@ export class MissionProcessManager {
         matches.push({
           sourceTicketId: event.payload.sourceTicketId,
           reason: event.payload.reason,
+          handoff: structuredClone(event.payload.handoff),
           occurredAt: event.occurredAt,
         });
       }
@@ -869,14 +927,20 @@ export class MissionProcessManager {
       }
     }
     if (validation.valid && proposal.status === "completed" && schemaRef === "mission-assurance-v1"
-      && proposal.domainOutcome?.disposition !== "correction_required"
       && proposal.domainOutcome?.disposition !== "plan_change_required") {
       if (!aggregate.record.baseline) missionContractError = "Mission 尚未建立权威 baseline，不能提交 assurance";
       else {
         const assuranceValidation = validateMissionAssuranceReport(
           aggregate.record.baseline,
-          work.definition.assurance?.missionCriterionIds ?? [],
+          proposal.domainOutcome?.disposition === "correction_required"
+            ? (Array.isArray(proposal.domainOutcome.correctionMissionCriterionIds)
+              ? proposal.domainOutcome.correctionMissionCriterionIds.filter(
+                (criterionId): criterionId is string => typeof criterionId === "string" && criterionId.length > 0,
+              )
+              : [])
+            : work.definition.assurance?.missionCriterionIds ?? [],
           proposal.domainOutcome,
+          proposal.domainOutcome?.disposition === "correction_required" ? "correction" : "completion",
         );
         if (!assuranceValidation.valid) missionContractError = assuranceValidation.reason;
       }

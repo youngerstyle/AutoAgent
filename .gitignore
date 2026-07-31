@@ -2,6 +2,11 @@
 node_modules/
 dist/
 .autoagent/
+.acceptance/
+.autoagent-*
+.server-*
+.tank-*
+.tmp-*
 .tmp-*/
 .tmp/
 .tmp-*.log

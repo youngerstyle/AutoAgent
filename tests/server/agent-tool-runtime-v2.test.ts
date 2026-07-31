@@ -151,8 +151,30 @@ describe("AgentToolRuntime", () => {
       canExecuteCommands: true,
     }, ["shell"], { shellYieldMs: 10_000 });
 
-    const result = await runtime.execute({ tool: "shell", command: "node -e \"process.exit(3)\"" });
-    expect(result).toMatchObject({ tool: "shell", ok: false, exitCode: 3 });
+    const result = await runtime.execute(
+      { tool: "shell", command: "node -e \"process.exit(3)\"" },
+      {
+        agentId: "wa_qa",
+        threadId: "thread-negative-command",
+        goalId: "goal-negative-command",
+        attemptId: "attempt-negative-command",
+        turnId: "turn-negative-command",
+        toolCallId: "tool-negative-command",
+      },
+    );
+    expect(result).toMatchObject({
+      tool: "shell",
+      ok: false,
+      exitCode: 3,
+      evidenceId: expect.any(String),
+    });
+    expect(await new EvidenceLedger(root).get(String(result.evidenceId))).toMatchObject({
+      capture: { status: "recorded" },
+      observation: {
+        status: "observed",
+        result: expect.objectContaining({ ok: false, exitCode: 3 }),
+      },
+    });
   });
 
   it("exposes platform-installed Skill CLIs inside workspace shell commands", async () => {
@@ -236,6 +258,54 @@ describe("AgentToolRuntime", () => {
     } finally {
       await new Promise<void>((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
     }
+  });
+
+  it("allocates an available service port when the command uses the port placeholder", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-auto-port-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"], { serviceStartupTimeoutMs: 10_000 });
+
+    try {
+      const result = await runtime.execute({
+        tool: "startService",
+        command: "node -e \"const s=require('node:http').createServer((_q,r)=>r.end('auto'));s.listen({port:{port},host:'127.0.0.1'});setTimeout(()=>s.close(),5000)\"",
+        port: 0,
+      });
+
+      expect(result, JSON.stringify(result)).toMatchObject({
+        tool: "startService",
+        ok: true,
+        running: true,
+        port: expect.any(Number),
+      });
+      expect(result.command).not.toContain("{port}");
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("requires the port placeholder when automatic service port allocation is requested", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-auto-port-contract-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: root,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: true,
+    }, ["startService"]);
+
+    await expect(runtime.execute({
+      tool: "startService",
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+    })).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining("{port}"),
+    });
   });
 
   it("allows only one concurrent managed service to claim a port", async () => {
@@ -348,9 +418,12 @@ describe("AgentToolRuntime", () => {
 
     const fact = await new EvidenceLedger(root).get(String(started.evidenceId));
     expect(fact).toMatchObject({
-      status: "succeeded",
       kind: "service",
-      result: expect.objectContaining({ running: true }),
+      capture: { status: "recorded" },
+      observation: {
+        status: "observed",
+        result: expect.objectContaining({ running: true }),
+      },
     });
 
     await new Promise((resolve) => setTimeout(resolve, 1_600));
@@ -451,9 +524,10 @@ describe("AgentToolRuntime", () => {
       attemptId: "attempt-browser",
       toolName: "browser",
       kind: "browser",
-      status: "succeeded",
+      capture: { status: "recorded" },
+      observation: { status: "observed" },
     });
-    expect(facts.get(String(title.evidenceId))?.result).toMatchObject({
+    expect(facts.get(String(title.evidenceId))?.observation.result).toMatchObject({
       stdout: expect.stringContaining("AutoAgent browser proof"),
     });
   }, 90_000);

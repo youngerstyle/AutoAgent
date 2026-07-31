@@ -627,13 +627,13 @@ describe("RuntimeHost", () => {
 
     const context = fixture.host.context("task-repeated-invalid-tool")!;
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
-    expect(modelTurns).toBe(3);
+    expect(modelTurns).toBe(2);
     expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
     expect(fixture.host.providerRetryState("task-repeated-invalid-tool", "wa_boss")).toMatchObject({ failures: 1 });
     expect((await context.tickets.getPlan((await context.manager.current()).record.planId)).status).toBe("active");
 
     await fixture.host.tick();
-    expect(modelTurns).toBe(3);
+    expect(modelTurns).toBe(2);
   });
 
   it("continues beyond twenty successful Pi tool calls and returns each result to the next model turn", async () => {
@@ -891,7 +891,7 @@ describe("RuntimeHost", () => {
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
     const boss = context.engines.get("wa_boss")!;
 
-    expect(modelTurns).toBeGreaterThanOrEqual(3);
+    expect(modelTurns).toBe(2);
     expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
     expect(fixture.host.providerRetryState("task-terminal-retry", "wa_boss")).toMatchObject({ failures: 1 });
     expect(await context.tickets.getTicket(link.ticketId!)).toMatchObject({ status: "running" });

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { AgentGoal, GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
@@ -17,6 +17,66 @@ describe("Mission completion evidence boundary", () => {
       fixture.goal,
       proposal(fixture.evidenceId),
     )).resolves.toBeUndefined();
+  });
+
+  it("accepts a recorded negative observation from the current Agent Goal", async () => {
+    const fixture = await evidenceFixture();
+    const ledger = new EvidenceLedger(fixture.root);
+    const observedFailure = await ledger.append({
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-negative",
+      toolCallId: "tool-call-negative",
+      toolName: "browser",
+      kind: "browser",
+      capture: { status: "recorded" },
+      observation: {
+        status: "observed",
+        result: { ok: false, exitCode: 1, stderr: "ERR_CONNECTION_CLOSED" },
+      },
+      workspaceRoot: fixture.root,
+      createdAt: new Date().toISOString(),
+      input: { browserArgs: ["open", "https://example.invalid"] },
+    });
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(observedFailure.evidenceId),
+    )).resolves.toBeUndefined();
+  });
+
+  it("rejects evidence when the tool produced no trustworthy observation", async () => {
+    const fixture = await evidenceFixture();
+    const ledger = new EvidenceLedger(fixture.root);
+    const unavailable = await ledger.append({
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-unavailable",
+      toolCallId: "tool-call-unavailable",
+      toolName: "browser",
+      kind: "browser",
+      capture: {
+        status: "unavailable",
+        error: { category: "transport", message: "browser process did not start" },
+      },
+      observation: { status: "not_observed", result: null },
+      workspaceRoot: fixture.root,
+      createdAt: new Date().toISOString(),
+      input: { browserArgs: ["open", "https://example.com"] },
+    });
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(unavailable.evidenceId),
+    )).resolves.toContain("没有形成可信观察");
   });
 
   it("keeps successful evidence valid across retries of the same Goal", async () => {
@@ -39,6 +99,33 @@ describe("Mission completion evidence boundary", () => {
       fixture.goal,
       proposal("invented-evidence"),
     )).resolves.toContain("invented-evidence");
+  });
+
+  it("rejects legacy evidence facts without crashing the Mission process", async () => {
+    const fixture = await evidenceFixture();
+    const evidenceId = "legacy-evidence";
+    const ledgerPath = path.join(fixture.root, ".autoagent", "evidence", "ledger.jsonl");
+    await appendFile(ledgerPath, `${JSON.stringify({
+      evidenceId,
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-legacy",
+      toolCallId: "tool-call-legacy",
+      toolName: "readFile",
+      kind: "file_read",
+      workspaceRoot: fixture.root,
+      createdAt: new Date().toISOString(),
+      input: { path: "src/game.ts" },
+    })}\n`, "utf8");
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(evidenceId),
+    )).resolves.toBe(`Evidence fact does not satisfy the current evidence contract: ${evidenceId}`);
   });
 
   it("rejects evidence from another Goal", async () => {
@@ -117,11 +204,11 @@ describe("Mission completion evidence boundary", () => {
       toolCallId: "tool-call-read-current",
       toolName: "readFile",
       kind: "file_read",
-      status: "succeeded",
+      capture: { status: "recorded" },
+      observation: { status: "observed", result: { path: path.join("src", "game.ts") } },
       workspaceRoot: fixture.root,
       createdAt: new Date(Date.now() + 1_000).toISOString(),
       input: { path: path.join("src", "game.ts") },
-      result: { path: path.join("src", "game.ts") },
       artifact: {
         path: path.join("src", "game.ts"),
         size: info.size,
@@ -162,11 +249,11 @@ async function evidenceFixture(overrides: { goalId?: string; attemptId?: string 
     toolCallId: "tool-call-read",
     toolName: "readFile",
     kind: "file_read",
-    status: "succeeded",
+    capture: { status: "recorded" },
+    observation: { status: "observed", result: { path: relativePath } },
     workspaceRoot: root,
     createdAt: new Date().toISOString(),
     input: { path: relativePath },
-    result: { path: relativePath },
     artifact: {
       path: relativePath,
       size: info.size,

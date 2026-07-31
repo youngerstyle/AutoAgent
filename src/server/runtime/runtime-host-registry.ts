@@ -106,9 +106,13 @@ export class RuntimeHostRegistry {
     return this.workspaces.remove(workspaceId, options);
   }
 
-  async startAll(): Promise<void> {
+  async startAll(): Promise<{
+    restoredWorkspaceIds: string[];
+    failedWorkspaces: Array<{ workspaceId: string; error: string }>;
+  }> {
     const workspaces = await this.workspaces.list();
     const failures: Array<{ workspaceId: string; reason: unknown }> = [];
+    const restoredWorkspaceIds: string[] = [];
     let cursor = 0;
     const worker = async () => {
       while (cursor < workspaces.length) {
@@ -116,6 +120,7 @@ export class RuntimeHostRegistry {
         if (!workspace) return;
         try {
           await this.host(workspace.id, true);
+          restoredWorkspaceIds.push(workspace.id);
         } catch (reason) {
           failures.push({ workspaceId: workspace.id, reason });
         }
@@ -123,12 +128,13 @@ export class RuntimeHostRegistry {
     };
     const workerCount = Math.min(this.restoreConcurrency, workspaces.length);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures.map((failure) => failure.reason),
-        `Failed to restore ${failures.length} runtime host(s): ${failures.map((failure) => failure.workspaceId).join(", ")}`,
-      );
-    }
+    return {
+      restoredWorkspaceIds,
+      failedWorkspaces: failures.map((failure) => ({
+        workspaceId: failure.workspaceId,
+        error: failure.reason instanceof Error ? failure.reason.message : String(failure.reason),
+      })),
+    };
   }
 
   private async host(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {

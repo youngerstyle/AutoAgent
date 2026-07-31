@@ -68,6 +68,7 @@ export interface ReworkRequestContext {
   sourceTicketId: TicketId;
   sourceTitle?: string;
   reason: string;
+  handoff: TicketHandoff;
   occurredAt: string;
 }
 export interface TicketAssignmentContext {
@@ -95,6 +96,7 @@ export interface SharedPlanContext {
   tickets: Array<{
     ticketId: string;
     status: string;
+    completedAt?: string;
     title: string;
     objective: string;
     successCriteria: string[];
@@ -107,6 +109,7 @@ export interface SharedPlanContext {
     };
     missionContribution?: { missionCriterionIds: string[] };
     assurance?: { missionCriterionIds: string[] };
+    satisfiedMissionCriterionIds?: string[];
   }>;
   dependencyEdges: Array<{ fromTicketId: string; toTicketId: string }>;
   requiredTerminalTicketIds: string[];
@@ -182,8 +185,11 @@ export function validateMissionTicketOutcome(
   }
   if (disposition === "correction_required") {
     if (!isNonEmptyString(value.targetTicketId) || !isNonEmptyString(value.reason)) return { valid: false, reason: "correction_required 需要 targetTicketId 和 reason" };
-    if (schemaRef === "mission-assurance-v1" && !isStringArray(value.correctionMissionCriterionIds)) {
-      return { valid: false, reason: "mission-assurance-v1 的 correction_required 需要 correctionMissionCriterionIds" };
+    if (schemaRef === "mission-assurance-v1"
+      && (!isStringArray(value.correctionMissionCriterionIds)
+        || !Array.isArray(value.findings)
+        || !isRecord(value.assuranceReport))) {
+      return { valid: false, reason: "mission-assurance-v1 的 correction_required 需要 correctionMissionCriterionIds、结构化 findings 和完整 assuranceReport" };
     }
     return { valid: true };
   }
@@ -462,6 +468,7 @@ export function validateMissionAssuranceReport(
   baseline: MissionBaseline,
   declaredCriterionIds: readonly string[],
   value: unknown,
+  mode: "completion" | "correction" = "completion",
 ): { valid: true } | { valid: false; reason: string } {
   if (!isRecord(value) || !isRecord(value.assuranceReport)) {
     return { valid: false, reason: "mission-assurance-v1 需要 assuranceReport 对象" };
@@ -477,20 +484,26 @@ export function validateMissionAssuranceReport(
     return { valid: false, reason: "Ticket 声明了无效或重复的 Mission criterion" };
   }
   const seen = new Set<string>();
+  let hasUnsuccessfulResult = false;
+  const allowedStatuses = mode === "completion"
+    ? new Set(["satisfied"])
+    : new Set(["satisfied", "not_satisfied", "not_verified"]);
   for (const [index, result] of report.criterionResults.entries()) {
     if (!isRecord(result) || !isNonEmptyString(result.criterionId) || !expected.has(result.criterionId)) {
       return { valid: false, reason: `assuranceReport.criterionResults[${index}] 引用了未声明的 criterion` };
     }
     if (seen.has(result.criterionId)) return { valid: false, reason: `assuranceReport 重复报告 criterion ${result.criterionId}` };
     seen.add(result.criterionId);
-    if (result.status !== "satisfied") {
-      return { valid: false, reason: `assuranceReport criterion ${result.criterionId} 状态为 ${String(result.status)}，不能完成验证 Ticket` };
+    if (!allowedStatuses.has(String(result.status))) {
+      return { valid: false, reason: `assuranceReport criterion ${result.criterionId} 状态 ${String(result.status)} 不符合 ${mode} 交付契约` };
     }
-    if (!Array.isArray(result.evidence) || result.evidence.length === 0) {
+    if (result.status !== "satisfied") hasUnsuccessfulResult = true;
+    if (!Array.isArray(result.evidence)
+      || (result.status !== "not_verified" && result.evidence.length === 0)) {
       return { valid: false, reason: `assuranceReport criterion ${result.criterionId} 缺少证据` };
     }
     const criterion = baseline.criteria.find((item) => item.criterionId === result.criterionId)!;
-    const anchorError = validateAnchorResults(criterion, result.anchorResults, "assuranceReport");
+    const anchorError = validateAnchorResults(criterion, result.anchorResults, "assuranceReport", allowedStatuses);
     if (anchorError) return { valid: false, reason: anchorError };
     for (const evidence of result.evidence) {
       if (!isRecord(evidence) || !isNonEmptyString(evidence.evidenceId)) {
@@ -499,9 +512,36 @@ export function validateMissionAssuranceReport(
     }
   }
   const missing = declaredCriterionIds.filter((item) => !seen.has(item));
-  return missing.length
-    ? { valid: false, reason: `assuranceReport 缺少 criterion：${missing.join(", ")}` }
-    : { valid: true };
+  if (missing.length) return { valid: false, reason: `assuranceReport 缺少 criterion：${missing.join(", ")}` };
+  if (mode === "correction") {
+    if (!hasUnsuccessfulResult) {
+      return { valid: false, reason: "correction_required 的 assuranceReport 至少需要一个 not_satisfied 或 not_verified criterion" };
+    }
+    const requested = new Set(
+      Array.isArray(value.correctionMissionCriterionIds)
+        ? value.correctionMissionCriterionIds.filter(isNonEmptyString)
+        : [],
+    );
+    if (!Array.isArray(value.findings) || value.findings.length === 0) {
+      return { valid: false, reason: "correction_required 需要至少一条结构化 finding" };
+    }
+    const findingCriterionIds = new Set<string>();
+    for (const [index, finding] of value.findings.entries()) {
+      if (!isRecord(finding) || !isNonEmptyString(finding.summary) || !isNonEmptyString(finding.details)
+        || !Array.isArray(finding.evidence) || finding.evidence.length === 0
+        || finding.evidence.some((item) => !isRecord(item) || !isNonEmptyString(item.evidenceId))
+        || !isStringArray(finding.affectedMissionCriterionIds)) {
+        return { valid: false, reason: `findings[${index}] 必须包含 summary、details、evidence 和 affectedMissionCriterionIds` };
+      }
+      for (const criterionId of finding.affectedMissionCriterionIds) findingCriterionIds.add(criterionId);
+    }
+    const mismatch = [...new Set([...requested, ...findingCriterionIds])]
+      .filter((criterionId) => requested.has(criterionId) !== findingCriterionIds.has(criterionId));
+    if (mismatch.length) {
+      return { valid: false, reason: `correctionMissionCriterionIds 必须与 findings 覆盖的 criterion 完全一致：${mismatch.join(", ")}` };
+    }
+  }
+  return { valid: true };
 }
 
 export function validateMissionPlanAssurance(
@@ -681,7 +721,17 @@ export function validateMissionPlanAssurance(
     const terminalAncestors = ancestorsOf(terminal);
     const missingAssurance: string[] = [];
     const missingExecution: string[] = [];
+    const revisedCriterionIds = new Set([...nodes.values()]
+      .filter((node) => node.key.startsWith("client:"))
+      .flatMap((node) => [...node.contributionCriterionIds, ...node.assuranceCriterionIds]));
     for (const criterion of baseline.criteria) {
+      const retainedAssurance = !revisedCriterionIds.has(criterion.criterionId)
+        && currentPlan.tickets.some((ticket) => (
+          ticket.status === "completed"
+          && ticket.outputContract.schemaRef === "mission-assurance-v1"
+          && ticket.satisfiedMissionCriterionIds?.includes(criterion.criterionId)
+        ));
+      if (retainedAssurance) continue;
       const assuranceNodes = [...terminalAncestors].filter((key) => {
         const node = nodes.get(key);
         return node?.schemaRef === "mission-assurance-v1"
@@ -762,6 +812,7 @@ function validateAnchorResults(
   criterion: MissionBaseline["criteria"][number],
   value: unknown,
   label: string,
+  allowedStatuses = new Set(["satisfied"]),
 ): string | undefined {
   if (!Array.isArray(value) || value.length !== criterion.verification.anchors.length) {
     return `${label} criterion ${criterion.criterionId} 的 anchorResults 必须逐项覆盖 ${criterion.verification.anchors.length} 个验收锚点`;
@@ -774,10 +825,10 @@ function validateAnchorResults(
       return `${label} criterion ${criterion.criterionId} 的 anchorResults[${index}].anchorIndex 无效或重复`;
     }
     seen.add(Number(raw.anchorIndex));
-    if (raw.status !== "satisfied") {
-      return `${label} criterion ${criterion.criterionId} anchor ${raw.anchorIndex} 状态为 ${String(raw.status)}，不能完成验收`;
+    if (!allowedStatuses.has(String(raw.status))) {
+      return `${label} criterion ${criterion.criterionId} anchor ${raw.anchorIndex} 状态 ${String(raw.status)} 不符合交付契约`;
     }
-    if (!Array.isArray(raw.evidence) || raw.evidence.length === 0
+    if (!Array.isArray(raw.evidence) || (raw.status !== "not_verified" && raw.evidence.length === 0)
       || raw.evidence.some((evidence) => !isRecord(evidence) || !isNonEmptyString(evidence.evidenceId))) {
       return `${label} criterion ${criterion.criterionId} anchor ${raw.anchorIndex} 缺少有效证据`;
     }
@@ -967,7 +1018,7 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
   }
   if (schemaRef === "mission-assurance-v1") {
     const criterionIds = assignmentContext?.ticket.assurance?.missionCriterionIds ?? [];
-    return `${base} 输出契约 mission-assurance-v1：你必须独立验证当前 Ticket 声明的 Mission criteria：${JSON.stringify(criterionIds)}。当前 Goal 只有三个互斥出口：全部标准和锚点均有证据证明满足时，调用 goal_resolution(completed)；发现可复现的上游交付缺陷时，调用 report_goal_correction；缺少必要工作、验证能力或 DAG 节点时，调用 request_goal_plan_change；只有缺少不可替代的外部事实、授权或人工操作时才调用 request_human_input。不要把 not_satisfied 或 not_verified 塞进 completed 提案。domainOutcome.assuranceReport 始终覆盖当前工单声明的全部验收范围，并包含当前 baselineVersion 与逐项 criterionResult。每个 criterionResult 除 criterionId、status、evidence 外，必须提交 anchorResults=[{anchorIndex,status,evidence,verificationBasis,observations,deviations,note}]，按索引逐项覆盖该 criterion.verification.anchors。verificationBasis={summary,evidence} 必须明确本次判断采用的标准、样本或外部参照；observations 只能记录工具实际观察到的事实；deviations 必须列出观察结果与 criterion/anchor 的全部差异。若标准包含复刻、对照、等价、一致性、相似度或其他外部参照关系，verificationBasis.evidence 必须引用该参照的真实证据；缺少对照依据时不能凭同类经验或实现自述标记 satisfied，应选择上述对应的非完成出口。每个锚点都要观察其 observableOutcome，并使用满足 evidenceRequirements 的真实工具证据，不能用“页面能运行”替代产品形态、行为或质量锚点，不能用代码存在替代用户可观察结果。status=satisfied 时 deviations 必须为空，且 observations 必须直接支持原文标准；不得降低强度、缩小范围或把“高度一致”改写成“属于同类”。targetTicketId 一次只选择一张真实负责该缺陷的上游工单，correctionMissionCriterionIds 只列出该目标工单实际负责且被缺陷影响的 criteria。Host 会按目标工单的 Mission 责任校验，不允许借此改写无关 criterion。`;
+    return `${base} 输出契约 mission-assurance-v1：你必须独立验证当前 Ticket 声明的 Mission criteria：${JSON.stringify(criterionIds)}。当前 Goal 只有三个互斥出口：全部标准和锚点均有证据证明满足时，调用 goal_resolution(completed)；发现可复现的上游交付缺陷时，调用 report_goal_correction；缺少必要工作、验证能力或 DAG 节点时，调用 request_goal_plan_change；只有缺少不可替代的外部事实、授权或人工操作时才调用 request_human_input。不要把 not_satisfied 或 not_verified 塞进 completed 提案。正常完成时 domainOutcome.assuranceReport 必须覆盖当前工单声明的全部验收范围；提交 report_goal_correction 时，assuranceReport 只覆盖 correctionMissionCriterionIds 中本次受影响的 criteria，不要重复提交不受该缺陷影响的标准。两种报告都必须包含当前 baselineVersion 与逐项 criterionResult。每个 criterionResult 除 criterionId、status、evidence 外，必须提交 anchorResults=[{anchorIndex,status,evidence,verificationBasis,observations,deviations,note}]，按索引逐项覆盖该 criterion.verification.anchors。verificationBasis={summary,evidence} 必须明确本次判断采用的标准、样本或外部参照；observations 只能记录工具实际观察到的事实；deviations 必须列出观察结果与 criterion/anchor 的全部差异。若标准包含复刻、对照、等价、一致性、相似度或其他外部参照关系，verificationBasis.evidence 必须引用该参照的真实证据；缺少对照依据时不能凭同类经验或实现自述标记 satisfied，应选择上述对应的非完成出口。每个锚点都要观察其 observableOutcome，并使用满足 evidenceRequirements 的真实工具证据，不能用“页面能运行”替代产品形态、行为或质量锚点，不能用代码存在替代用户可观察结果。status=satisfied 时 deviations 必须为空，且 observations 必须直接支持原文标准；不得降低强度、缩小范围或把“高度一致”改写成“属于同类”。targetTicketId 一次只选择一张真实负责该缺陷的上游工单，correctionMissionCriterionIds 只列出该目标工单实际负责且被缺陷影响的 criteria。Host 会按目标工单的 Mission 责任校验，不允许借此改写无关 criterion。`;
   }
   if (schemaRef === "plan-change-set-v3") {
     const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
@@ -979,7 +1030,7 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
       criterionIndex,
       criterion: criterion.text,
     })) ?? [];
-    const contract = `change 的结构为：{"additions":[{"clientRef":"work","title":"执行工作","objective":"完成明确目标","successCriteria":["形成可核验交付"],"assignment":{"requiredCapabilities":["从团队快照选择的能力"]},"outputContract":{"schemaRef":"由该工单领域决定的输出契约"},"deliveryIncrement":{"incrementId":"<已有或本次新增的增量 ID>"},"missionContribution":{"missionCriterionIndexes":[0]}},{"clientRef":"review","title":"独立验证","objective":"依据 Mission baseline 检查上游交付","successCriteria":["形成可复现的逐项验证结论"],"assignment":{"requiredCapabilities":["从团队快照选择的验证能力"]},"outputContract":{"schemaRef":"mission-assurance-v1"},"deliveryIncrement":{"incrementId":"<与本次执行工作相同的增量 ID>"},"assurance":{"missionCriterionIndexes":[0]}},{"clientRef":"terminal","title":"最终验收","objective":"依据 Mission baseline 与上游 assurance 作出最终验收结论","successCriteria":["逐项引用已验证的 Mission 成功标准"],"assignment":{"requiredCapabilities":["从团队快照选择的验收能力"]},"outputContract":{"schemaRef":"由验收工作决定的输出契约"},"permissions":{"settleMission":true}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"work"}},{"from":{"clientRef":"work"},"to":{"clientRef":"review"}},{"from":{"clientRef":"review"},"to":{"clientRef":"terminal"}}],"failureResolutions":[],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"terminal"}]}。Mission 成功标准索引表为：${JSON.stringify(criterionIndexTable)}。missionContribution 和 assurance 只提交 missionCriterionIndexes；Host 会将序号映射为内部 criterionId，不要复制或生成内部 ID。凡 outputContract.schemaRef 为 mission-assurance-v1 的新增 Ticket，无论 clientRef 或标题叫什么，都必须直接声明 assurance.missionCriterionIndexes，不得把它放进 missionContribution。这只是字段结构示例，不规定角色名称、工单数量、能力名称、增量名称或业务内容。你必须根据 Mission、成功标准、风险和当前团队能力设计真实 DAG。${incrementIdentity} deliveryIncrement 只通过 incrementId 引用增量；不能在 Ticket 内重复定义标题、顺序或目标。它是同一 Plan 内的可选交付分组，不是固定阶段：当目标包含明显的不确定性、较大范围或需要先形成可运行基线再逐步逼近最终质量时，应自主规划多个可验证增量，并用 sequence 表达顺序；范围足够小且可一次可靠交付时可以只规划一个增量。每个增量都必须形成实际可运行或可评审结果以及相应验证，后续增量通过 DAG 依赖前一增量，不得把未完成内容藏进“后续再做”。每个 Mission criterion 必须先由至少一个上游执行工单通过 missionContribution 明确负责，再由其下游 mission-assurance-v1 Ticket 验证；Mission baseline 会作为共享工作上下文提供给执行 Agent，但当前 Agent Goal 的顶层 successCriteria 只属于当前 Ticket，不能把后续增量或整个 Mission 的验收责任混进当前工单。可逆且低风险的工作无需机械增加层级。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。permissions 是 additions[] 节点自身的字段，与 assignment 和 outputContract 同级，不能放进 assignment；只有获得 Mission 结算权限的最终验收节点才设置 permissions.settleMission=true。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。历史工单不可改写：已完成、已返回、失败或取消的既有 Ticket 只能作为 dependency 的 from 上游引用，不能成为新增依赖的 to。新增验证节点确实用于解决一张已返回、失败或取消的历史工单时，必须在 failureResolutions 中显式登记 {"failedTicketId":"历史 Ticket UUID","resolvedBy":{"clientRef":"本次新增的验证节点"}}；只有 resolvedBy Ticket 真正完成后，该历史失败依赖才视为满足。没有历史失败需要解决时必须传空数组。尚未开始且状态为 pending 的既有 Ticket 可以作为 to，让新增纠正或验证分支在完成后重新汇入该工单；不要为此重复创建已有的待执行验收节点。`;
+    const contract = `change 的结构为：{"additions":[{"clientRef":"work","title":"执行工作","objective":"完成明确目标","successCriteria":["形成可核验交付"],"assignment":{"requiredCapabilities":["从团队快照选择的能力"]},"outputContract":{"schemaRef":"由该工单领域决定的输出契约"},"deliveryIncrement":{"incrementId":"<已有或本次新增的增量 ID>"},"missionContribution":{"missionCriterionIndexes":[0]}},{"clientRef":"review","title":"独立验证","objective":"依据 Mission baseline 检查上游交付","successCriteria":["形成可复现的逐项验证结论"],"assignment":{"requiredCapabilities":["从团队快照选择的验证能力"]},"outputContract":{"schemaRef":"mission-assurance-v1"},"deliveryIncrement":{"incrementId":"<与本次执行工作相同的增量 ID>"},"assurance":{"missionCriterionIndexes":[0]}},{"clientRef":"terminal","title":"最终验收","objective":"依据 Mission baseline 与上游 assurance 作出最终验收结论","successCriteria":["逐项引用已验证的 Mission 成功标准"],"assignment":{"requiredCapabilities":["从团队快照选择的验收能力"]},"outputContract":{"schemaRef":"由验收工作决定的输出契约"},"deliveryIncrement":{"incrementId":"<被验收的最终增量 ID>"},"permissions":{"settleMission":true}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"work"}},{"from":{"clientRef":"work"},"to":{"clientRef":"review"}},{"from":{"clientRef":"review"},"to":{"clientRef":"terminal"}}],"failureResolutions":[],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"terminal"}]}。Mission 成功标准索引表为：${JSON.stringify(criterionIndexTable)}。missionContribution 和 assurance 只提交 missionCriterionIndexes；Host 会将序号映射为内部 criterionId，不要复制或生成内部 ID。凡 outputContract.schemaRef 为 mission-assurance-v1 的新增 Ticket，无论 clientRef 或标题叫什么，都必须直接声明 assurance.missionCriterionIndexes，不得把它放进 missionContribution。这只是字段结构示例，不规定角色名称、工单数量、能力名称、增量名称或业务内容。你必须根据 Mission、成功标准、风险和当前团队能力设计真实 DAG。${incrementIdentity} 每个新增 Ticket（包括最终验收 Ticket）都必须通过 deliveryIncrement.incrementId 引用当前 Plan 已有或本次新声明的增量，不能在 Ticket 内重复定义标题、顺序或目标。交付增量不是固定阶段：当目标包含明显的不确定性、较大范围或需要先形成可运行基线再逐步逼近最终质量时，应自主规划多个可验证增量，并用 sequence 表达顺序；范围足够小且可一次可靠交付时可以只规划一个增量。每个增量都必须形成实际可运行或可评审结果以及相应验证，后续增量通过 DAG 依赖前一增量，不得把未完成内容藏进“后续再做”。每个 Mission criterion 必须先由至少一个上游执行工单通过 missionContribution 明确负责，再由其下游 mission-assurance-v1 Ticket 验证；Mission baseline 会作为共享工作上下文提供给执行 Agent，但当前 Agent Goal 的顶层 successCriteria 只属于当前 Ticket，不能把后续增量或整个 Mission 的验收责任混进当前工单。可逆且低风险的工作无需机械增加层级。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。permissions 是 additions[] 节点自身的字段，与 assignment 和 outputContract 同级，不能放进 assignment；只有获得 Mission 结算权限的最终验收节点才设置 permissions.settleMission=true。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。历史工单不可改写：已完成、已返回、失败或取消的既有 Ticket 只能作为 dependency 的 from 上游引用，不能成为新增依赖的 to。新增验证节点确实用于解决一张已返回、失败或取消的历史工单时，必须在 failureResolutions 中显式登记 {"failedTicketId":"历史 Ticket UUID","resolvedBy":{"clientRef":"本次新增的验证节点"}}；只有 resolvedBy Ticket 真正完成后，该历史失败依赖才视为满足。没有历史失败需要解决时必须传空数组。尚未开始且状态为 pending 的既有 Ticket 可以作为 to，让新增纠正或验证分支在完成后重新汇入该工单；不要为此重复创建已有的待执行验收节点。`;
     const toolAssignmentPolicy = "每个新增 Ticket 的 assignment 必须提供 requiredTools；不需要工具时传空数组。requiredTools 必须覆盖完成该 Ticket 实际需要的操作，并全部存在于同一候选成员的 enabledTools 中。不得把外部资料获取、服务运行或浏览器交互分配给没有相应工具的成员，也不得合并多名成员的能力或工具。";
     const currentPlan = toolAssignmentPolicy + (sharedPlanContext && !assignmentContext
       ? `当前 Plan 与团队的平台事实快照如下（这是 Ticket Engine 和 Team Binding 的权威状态）：${JSON.stringify(sharedPlanContext)}。无需读取工作区文件来猜测 Plan 或 Ticket 状态；项目文件只用于理解实际交付物。同一个 assignment 必须能由一名成员完整满足：优先直接使用快照中的 principalId；若使用 requiredCapabilities，则其中每一项都必须同时存在于同一名成员的 capabilities 中，不得把多名成员的能力合并为一个 Ticket 的要求。`
@@ -988,7 +1039,7 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
       ? `团队交付策略要求每个 requiredTerminalRefs 指向的终点都必须可分配给具备以下能力的成员：${sharedPlanContext.requiredTerminalCapabilities.join("、")}。独立质量检查不能代替最终交付验收。`
       : "";
     const referencePolicy = "若 Mission criterion 依赖外部产品、规范、样本或既有体验进行复刻、对照、等价或一致性判断，DAG 必须在实现和 assurance 之前安排获得并记录该对照基准的真实工作与交付；不能让执行者和 QA 仅凭名称、记忆或同类经验自行猜测。该工作由你依据团队能力分配，不规定固定角色。对照基准不可获得时，应保留可见风险并让后续验证得到 not_verified，而不是降低 Mission 标准。";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。result.deliveryStrategy 必须是 {mode:"single_increment"|"multi_increment",rationale,increments:[{incrementId,sequence,title,objective}]}；mode 描述变更后的整个 Plan，increments 只声明本次新增的增量，因此计划修订复用已有增量时允许为空。除最终 settleMission 节点外，每个新增执行或验证 Ticket 都必须通过 deliveryIncrement 归属当前 Plan 已有或本次新声明的增量。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${referencePolicy}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。若当前工单是由 correction_required 产生的修订，parentTicketId 指向提出纠正的工单，其 objective 中包含被纠正的目标 Ticket UUID；必须从 currentPlan 中读取该目标 Ticket 的 missionContribution 或 assurance 范围，并让新增执行与验证链重新覆盖本次缺陷实际影响的 Mission criteria。returned/failed/cancelled Ticket 只保留为历史来源，不能放进新 required delivery closure；第一条返工链从当前计划修订工单接出，不要直接依赖失败验证 Ticket。若 failureResolutions 用一张新 assurance Ticket 解决历史失败 assurance，本次 change 还必须新增至少一张位于该 assurance 上游的执行 Ticket；该执行 Ticket 的 missionContribution 必须覆盖新 assurance 检查的受影响 criterion。不能只新增同类 assurance 重复上一轮检查；实际工作可以是产品修复、验证自动化或其他能产生新证据的工作，由你依据失败事实决定。若一次修订影响多个 delivery increment，最早受影响增量完成新的独立验证后，下一个受影响增量才能开始，不能在共享工作区并行修改与验证。只证明“已经修过”或“文件没有继续变化”不能替代对受影响成功标准的重新验证。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}最终 requiredTerminalRefs 必须指向拥有 permissions.settleMission=true 的验收 Ticket；里程碑检查可以是普通 Ticket，不能冒充 Mission 完成。变更后 DAG 必须无环并包含可验证终点。`;
+    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。result.deliveryStrategy 必须是 {mode:"single_increment"|"multi_increment",rationale,increments:[{incrementId,sequence,title,objective}]}；mode 描述变更后的整个 Plan，increments 只声明本次新增的增量，因此计划修订复用已有增量时允许为空。每个新增 Ticket（包括最终 settleMission 节点）都必须通过 deliveryIncrement 归属当前 Plan 已有或本次新声明的增量。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${referencePolicy}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。若当前工单是由 correction_required 产生的修订，parentTicketId 指向提出纠正的工单，其 objective 中包含被纠正的目标 Ticket UUID；必须从 currentPlan 中读取该目标 Ticket 的 missionContribution 或 assurance 范围，并让新增执行与验证链重新覆盖本次缺陷实际影响的 Mission criteria。returned/failed/cancelled Ticket 只保留为历史来源，不能放进新 required delivery closure；第一条返工链从当前计划修订工单接出，不要直接依赖失败验证 Ticket。若 failureResolutions 用一张新 assurance Ticket 解决历史失败 assurance，本次 change 还必须新增至少一张位于该 assurance 上游的执行 Ticket；该执行 Ticket 的 missionContribution 必须覆盖新 assurance 检查的受影响 criterion。不能只新增同类 assurance 重复上一轮检查；实际工作可以是产品修复、验证自动化或其他能产生新证据的工作，由你依据失败事实决定。若一次修订影响多个 delivery increment，最早受影响增量完成新的独立验证后，下一个受影响增量才能开始，不能在共享工作区并行修改与验证。只证明“已经修过”或“文件没有继续变化”不能替代对受影响成功标准的重新验证。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}最终 requiredTerminalRefs 必须指向拥有 permissions.settleMission=true 的验收 Ticket；里程碑检查可以是普通 Ticket，不能冒充 Mission 完成。变更后 DAG 必须无环并包含可验证终点。`;
   }
   if (assignmentContext?.ticket.permissions?.settleMission) {
     const evidenceMatrix = settlementEvidence
@@ -1025,7 +1076,23 @@ export function proposalToTicketCommand(proposal: GoalResolutionProposal<GoalRes
   const evidence: TicketEvidenceRef[] = proposal.evidence.map((item) => ({ evidenceId: item.evidenceId }));
   const humanInput = proposal.status === "blocked" ? requiredInputValue(proposal.humanInputRequest) : undefined;
   let payload: TicketCommandPayload;
-  if (proposal.status === "completed" && proposal.domainOutcome?.disposition === "correction_required") payload = { type: "request_correction", targetTicketId: proposal.domainOutcome.targetTicketId as TicketId, reason: proposal.domainOutcome.reason as string, evidence };
+  if (proposal.status === "completed" && proposal.domainOutcome?.disposition === "correction_required") payload = {
+    type: "request_correction",
+    targetTicketId: proposal.domainOutcome.targetTicketId as TicketId,
+    reason: proposal.domainOutcome.reason as string,
+    evidence,
+    handoff: {
+      schemaVersion: 1,
+      summary: proposal.summary,
+      output: proposal.domainOutcome,
+      evidence,
+      criterionResults: proposal.criterionResults.map((item) => ({
+        ...item,
+        evidence: item.evidence.map((ref) => ({ evidenceId: ref.evidenceId })),
+      })),
+      residualRisks: [...proposal.residualRisks],
+    },
+  };
   else if (proposal.status === "completed" && proposal.domainOutcome?.disposition === "plan_change_required") payload = { type: "request_plan_change", reason: proposal.domainOutcome.reason as string, evidence };
   else if (proposal.status === "completed") payload = { type: "complete", handoff: {
     schemaVersion: 1,
@@ -1112,7 +1179,7 @@ function validateDeliveryStrategy(
   }
   const used = new Set<string>();
   for (const [index, raw] of (change.additions as unknown[]).entries()) {
-    if (!isRecord(raw) || isRecord(raw.permissions) && raw.permissions.settleMission === true) continue;
+    if (!isRecord(raw)) continue;
     if (!isRecord(raw.deliveryIncrement) || !isNonEmptyString(raw.deliveryIncrement.incrementId)) {
       return `change.additions[${index}] 必须归属 result.deliveryStrategy 声明的 deliveryIncrement`;
     }

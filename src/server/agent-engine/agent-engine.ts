@@ -380,10 +380,11 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       .map((item) => correctionReason(payloads, item.payloadRef))
       .find((reason): reason is string => Boolean(reason));
     if (latestCorrection) {
-      const proposals = aggregate.proposals.filter((proposal) => proposal.goalId === goalId);
-      if (proposals.length >= 2
-        && proposalContentFingerprint(proposals.at(-1)!) === proposalContentFingerprint(proposals.at(-2)!)) {
-        return { ready: false, reason: "repeated_proposal_without_progress" };
+      const correctionReasons = thread.items
+        .map((item) => correctionReason(payloads, item.payloadRef))
+        .filter((reason): reason is string => Boolean(reason));
+      if (correctionReasons.slice(0, -1).includes(latestCorrection)) {
+        return { ready: false, reason: "repeated_host_correction_without_progress" };
       }
       return { ready: true, reason: "host_correction" };
     }
@@ -457,12 +458,13 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       const goal = aggregate.goals.find((item) => item.spec.id === input.goalId);
       if (!goal) throw new Error("Goal does not exist");
       const next = controlGoalState(goal, input, this.now().toISOString());
+      const stateChanged = next.version !== goal.version;
       return {
         ...aggregate,
         aggregateVersion: aggregate.aggregateVersion + 1,
         goals: aggregate.goals.map((item) => item.spec.id === next.spec.id ? next : item),
         controls: [...aggregate.controls, { requestId: input.requestId, fingerprint, goal: next }],
-        pendingEvents: [goalEvent(next, "GoalStatusChanged", next.updatedAt)],
+        pendingEvents: stateChanged ? [goalEvent(next, "GoalStatusChanged", next.updatedAt)] : [],
       };
     });
     return structuredClone(updated.goals.find((item) => item.spec.id === input.goalId)!);
@@ -800,17 +802,6 @@ function hasUnconsumedHumanTurn(
   });
 }
 
-function proposalContentFingerprint(proposal: GoalResolutionProposal): string {
-  return hash({
-    status: proposal.status,
-    summary: proposal.summary,
-    evidence: proposal.evidence,
-    criterionResults: proposal.criterionResults,
-    residualRisks: proposal.residualRisks,
-    domainOutcome: proposal.domainOutcome,
-    humanInputRequest: proposal.humanInputRequest,
-  });
-}
 
 function payloadControlStatus(
   payloads: ReadonlyMap<string, unknown>,
