@@ -21,25 +21,27 @@ describe("agents route", () => {
     return { rootPath, workspaceId: created.body.workspace.id as string };
   }
 
-  it("keeps a new project empty until talent is explicitly added", async () => {
+  it("creates a new project with exactly one persistent owner", async () => {
     const app = createApp();
     const { workspaceId } = await createWorkspace(app);
 
     const first = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
     const second = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
 
-    expect(first.body.agents).toEqual([]);
-    expect(second.body.agents).toEqual([]);
+    expect(first.body.agents).toHaveLength(1);
+    expect(first.body.agents[0]).toMatchObject({
+      profileId: "prof_boss",
+      capabilities: expect.arrayContaining(["team:staff"]),
+    });
+    expect(second.body.agents).toEqual(first.body.agents);
   });
 
   it("lists an existing partial team without silently filling missing roles", async () => {
     const app = createApp();
     const { workspaceId } = await createWorkspace(app);
     const profiles = await request(app).get("/api/agent-profiles").expect(200);
-    const boss = profiles.body.profiles.find((profile: { role: string }) => profile.role === "boss");
     const pm = profiles.body.profiles.find((profile: { role: string }) => profile.role === "pm");
 
-    await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: boss.id }).expect(201);
     await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: pm.id }).expect(201);
 
     const first = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
@@ -49,7 +51,7 @@ describe("agents route", () => {
     expect(second.body.agents.map((agent: { roleInWorkspace: string }) => agent.roleInWorkspace)).toEqual(["boss", "pm"]);
   });
 
-  it("accepts a goal in an empty project and delegates staffing to the organization owner", async () => {
+  it("delivers a goal to the persistent project owner", async () => {
     const app = createApp();
     const { workspaceId } = await createWorkspace(app);
 
@@ -61,8 +63,12 @@ describe("agents route", () => {
     expect(response.body.snapshot.activeTask.goal).toBe("构建可运行产品");
     expect(response.body.snapshot.tickets).toEqual([]);
     expect(response.body.snapshot.agents).toContainEqual(expect.objectContaining({
+      profileId: "prof_boss",
       capabilities: expect.arrayContaining(["team:staff"]),
-      currentStep: "根据目标组建项目团队",
+      currentStep: "处理收到的目标",
+    }));
+    expect(response.body.snapshot.agents).not.toContainEqual(expect.objectContaining({
+      id: expect.stringMatching(/^organization-agent_/),
     }));
   });
 
@@ -124,7 +130,7 @@ describe("agents route", () => {
     await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: secondDev.body.profile.id }).expect(201);
 
     const listed = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
-    expect(listed.body.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["TypeScript 开发", "开发"].sort());
+    expect(listed.body.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["老板", "TypeScript 开发", "开发"].sort());
   });
 
   it("rejects duplicate membership and can remove a project instance without deleting talent", async () => {
@@ -137,7 +143,9 @@ describe("agents route", () => {
     await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: dev.id }).expect(409);
     await request(app).delete(`/api/workspaces/${workspaceId}/agents/${added.body.agent.id}`).expect(200);
 
-    expect((await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200)).body.agents).toEqual([]);
+    const remaining = (await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200)).body.agents;
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]).toMatchObject({ profileId: "prof_boss", roleInWorkspace: "boss" });
     expect((await request(app).get("/api/agent-profiles").expect(200)).body.profiles.some((profile: { id: string }) => profile.id === dev.id)).toBe(true);
   });
 

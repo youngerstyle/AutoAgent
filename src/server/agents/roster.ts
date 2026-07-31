@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import type { AgentProfile, AgentRole, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
@@ -103,6 +104,30 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
   await mkdir(workspaceAgentSessionsDir(workspace.rootPath, workspaceAgentId), { recursive: true });
   await writeJson(workspaceAgentFile(workspace.rootPath, workspaceAgentId), agent);
   return agent;
+}
+
+export async function ensureProjectOwner(workspace: Workspace, profiles: AgentProfile[]): Promise<WorkspaceAgent> {
+  const ownerProfile = selectProjectOwnerProfile(profiles);
+  const existing = (await listWorkspaceAgents(workspace)).find((agent) => agent.profileId === ownerProfile.id);
+  return existing ?? ensureWorkspaceAgent(
+    workspace,
+    ownerProfile,
+    stableWorkspaceAgentId(workspace.id, ownerProfile.id),
+  );
+}
+
+export function selectProjectOwnerProfile(profiles: AgentProfile[]): AgentProfile {
+  const candidates = profiles.filter((profile) => profile.capabilities.includes("team:staff"));
+  if (candidates.length === 1) return candidates[0]!;
+  const defaults = candidates.filter((profile) => profile.capabilities.includes("team:staff:default"));
+  if (defaults.length === 1) return defaults[0]!;
+  if (!candidates.length) throw new Error("组织人才池缺少具备 team:staff 能力的项目负责人");
+  throw new Error("组织存在多个项目负责人人选，但没有唯一的 team:staff:default");
+}
+
+function stableWorkspaceAgentId(workspaceId: string, profileId: string): string {
+  const digest = createHash("sha256").update(`${workspaceId}\u0000${profileId}`).digest("hex").slice(0, 24);
+  return `workspace-agent_${digest}`;
 }
 
 export function profileMetadata(agent: WorkspaceAgent, profiles = CORE_AGENT_PROFILES): Pick<AgentProfile, "name" | "role" | "capabilities"> {

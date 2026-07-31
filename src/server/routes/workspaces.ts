@@ -1,10 +1,13 @@
 import { Router } from "express";
 import { asyncHandler } from "../errors.js";
 import { loadConfig } from "../config.js";
+import { ensureProjectOwner, selectProjectOwnerProfile } from "../agents/roster.js";
+import { AgentProfileStore } from "../agents/profile-store.js";
 import { WorkspaceStore } from "../storage/workspace-store.js";
 
 export function createWorkspaceRouter(
   store = new WorkspaceStore(loadConfig().autoAgentHome),
+  profiles = new AgentProfileStore(loadConfig().autoAgentHome),
   removeWorkspace?: (
     workspaceId: string,
     options: { deleteLocalFolder?: boolean },
@@ -17,11 +20,14 @@ export function createWorkspaceRouter(
   }));
 
   router.post("/", asyncHandler(async (req, res) => {
+    const availableProfiles = await profiles.list();
+    selectProjectOwnerProfile(availableProfiles);
     const workspace = await store.create({
       name: String(req.body.name ?? ""),
       rootPath: String(req.body.rootPath ?? ""),
       policyProfile: req.body.policyProfile
     });
+    await ensureProjectOwner(workspace, availableProfiles);
     res.status(201).json({ workspace });
   }));
 

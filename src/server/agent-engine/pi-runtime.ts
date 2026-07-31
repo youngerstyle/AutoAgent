@@ -1137,9 +1137,9 @@ function staffingTool(
     name: "staff_project",
     label: "组建项目团队",
     description: [
-      "根据当前目标、人才池事实和启动契约提交项目团队。",
-      "你负责判断需要哪些人；平台只校验 profileId、能力与权限事实。",
-      "现有人才不足时使用 recruitment_required 并准确说明缺少的能力，不要虚构人才。",
+      "组织工具：按 profileId 将人才池成员实例化到当前项目，并以所选成员启动 Mission。",
+      "status=staffed 时提交本次 Mission 使用的成员、责任和选择依据。",
+      "现有人才不足时可提交 recruitment_required 及缺少的能力；平台只执行和校验结构化事实。",
     ].join(""),
     parameters: Type.Unsafe(outputContract?.completionOutcomeSchema ?? {
       type: "object",
@@ -1526,7 +1526,7 @@ function mockStream(providers: ProviderRegistry, modelId: string) {
           stream.push({ type: "error", reason: "aborted", error: message });
           return;
         }
-        const instructions = [context.systemPrompt ?? "", ...context.messages.flatMap(messageText)].filter(Boolean).join("\n\n");
+        const instructions = context.systemPrompt ?? "";
         if (process.env.AUTOAGENT_DEBUG_PI === "1") console.error("Pi mock instructions", instructions.slice(-2_000));
         const result = await providers.runModelTurnWithRetry({
           provider: "mock",
@@ -1560,12 +1560,6 @@ function toLegacyHistory(message: Context["messages"][number]): AgentModelHistor
   return message.content.flatMap((item): AgentModelHistoryItem[] => item.type === "text"
     ? [{ type: "assistant_message", content: item.text }]
     : item.type === "toolCall" ? [{ type: "tool_call", callId: item.id, name: item.name, arguments: item.arguments }] : []);
-}
-
-function messageText(message: Context["messages"][number]): string[] {
-  if (message.role === "user") return [typeof message.content === "string" ? message.content : message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n")];
-  if (message.role === "toolResult") return message.content.flatMap((item) => item.type === "text" ? [item.text] : []);
-  return message.content.flatMap((item) => item.type === "text" ? [item.text] : []);
 }
 
 async function restoreSessionHistory(

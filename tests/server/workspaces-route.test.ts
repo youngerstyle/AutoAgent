@@ -5,6 +5,7 @@ import path from "node:path";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createWorkspaceRouter } from "../../src/server/routes/workspaces";
+import { AgentProfileStore } from "../../src/server/agents/profile-store";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store";
 
 describe("workspaces route", () => {
@@ -53,6 +54,6 @@ async function createFixture() {
   const store = new WorkspaceStore(home);
   const app = express();
   app.use(express.json());
-  app.use("/api/workspaces", createWorkspaceRouter(store));
+  app.use("/api/workspaces", createWorkspaceRouter(store, new AgentProfileStore(home)));
   return { app, rootPath };
 }

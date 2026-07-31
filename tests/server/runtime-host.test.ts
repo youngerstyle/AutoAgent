@@ -410,19 +410,20 @@ describe("RuntimeHost", () => {
       type: "user_message",
       content: expect.stringContaining(objective),
     }));
-    expect(instructions[0]).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
+    expect(instructions[0]).not.toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
+    expect(JSON.stringify(histories[0])).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
   });
 
   it("delivers a new ticket instruction to an existing Pi session instead of replacing it with Goal metadata", async () => {
     const fixture = await createFixture();
-    const instructions: string[] = [];
+    const modelInputs: Array<{ instructions: string; history: unknown[] }> = [];
     const originalGet = fixture.providers.get.bind(fixture.providers);
     fixture.providers.get = async (name) => {
       const provider = await originalGet(name);
       return {
         ...provider,
         async runModelTurn(input) {
-        instructions.push(input.instructions);
+          modelInputs.push({ instructions: input.instructions, history: input.history });
           return provider.runModelTurn(input);
         },
       };
@@ -431,10 +432,13 @@ describe("RuntimeHost", () => {
     await fixture.host.createTask({ taskId: "task-new-goal-message", title: "演示", objective: "构建可运行演示" });
     for (let index = 0; index < 12; index += 1) await fixture.host.tick();
 
-    expect(instructions.length).toBeGreaterThanOrEqual(2);
-    const reusedBossSessionTurn = instructions.find((value) => value.includes("本轮按时间序收到的消息"));
+    expect(modelInputs.length).toBeGreaterThanOrEqual(2);
+    const reusedBossSessionTurn = modelInputs
+      .map((value) => JSON.stringify(value.history))
+      .find((value) => value.includes("本轮按时间序收到的消息"));
     expect(reusedBossSessionTurn).toContain("当前工作上下文（由 Mission Control 从 Ticket Engine 的权威状态组装");
     expect(reusedBossSessionTurn).toContain("handoffLineage");
+    expect(modelInputs.every((value) => !value.instructions.includes("handoffLineage"))).toBe(true);
   });
 
   it("backs off an active goal after an idle turn without replaying it immediately", async () => {
@@ -564,7 +568,7 @@ describe("RuntimeHost", () => {
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
-        const planning = input.instructions.includes("输出契约 plan-change-set-v3");
+        const planning = JSON.stringify(input.history).includes("输出契约 plan-change-set-v3");
         if (planning) planningTurns += 1;
         const structured = planning
           ? {

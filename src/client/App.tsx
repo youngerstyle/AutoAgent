@@ -1907,7 +1907,7 @@ function ProjectsHub(props: {
         <header>
           <span className="section-kicker">项目目录</span>
           <h2>项目</h2>
-          <p>项目空间是团队长期工作的边界。创建空项目后，再进入办公室发布任务。</p>
+          <p>项目空间是团队长期工作的边界。创建后会加入一位项目负责人，再进入办公室发布目标。</p>
         </header>
         <form className="project-create-form" onSubmit={props.onCreateWorkspace}>
           <label>
@@ -1925,7 +1925,7 @@ function ProjectsHub(props: {
               <option value="development">开发：允许本机访问</option>
             </select>
           </label>
-          <button type="submit" className="primary-action">创建空项目</button>
+          <button type="submit" className="primary-action">创建项目</button>
         </form>
         <div className="project-catalog-list">
           {props.workspaces.map((workspace) => (

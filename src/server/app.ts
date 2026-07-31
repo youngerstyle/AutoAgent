@@ -69,6 +69,7 @@ export function createApp(config: AppConfig = loadConfig()) {
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(
     workspaceStore,
+    profileStore,
     (workspaceId, options) => mission.removeWorkspace(workspaceId, options),
   ));
   app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));

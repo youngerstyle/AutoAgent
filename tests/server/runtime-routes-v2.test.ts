@@ -23,7 +23,7 @@ describe("V2 runtime public routes", () => {
     }).expect(201);
     const workspaceId = workspaceResponse.body.workspace.id as string;
     const profiles = await request(app).get("/api/agent-profiles").expect(200);
-    for (const profile of profiles.body.profiles) {
+    for (const profile of profiles.body.profiles.filter((item: { id: string }) => item.id !== "prof_boss")) {
       await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: profile.id }).expect(201);
     }
     const started = await request(app).post(`/api/workspaces/${workspaceId}/tasks`).send({ goal: "构建演示" }).expect(201);

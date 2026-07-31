@@ -87,6 +87,7 @@ export class RuntimeHost {
       profiles,
       providers,
       REQUIRED_TEAM_CAPABILITIES,
+      () => this.store.list(),
       () => this.now(),
     );
   }
@@ -634,29 +635,21 @@ export class RuntimeHost {
     if (!this.contexts.has(record.taskId)) {
       const staffing = await this.staffing.get(record.taskId);
       if (staffing) {
-        const stafferProfile = profiles.find((profile) => profile.id === staffing.staffingProfileId);
         const projection = await this.staffing.projection(record.taskId).catch(() => undefined);
+        const projectOwner = presentedAgents.find((agent) => agent.id === staffing.staffingAgentId);
+        if (!projectOwner) throw new Error("项目负责人实例不存在，无法投影目标处理状态");
         const staffer: WorkspaceSnapshot["agents"][number] = {
-          id: staffing.staffingAgentId,
-          workspaceId: this.workspace.id,
-          profileId: staffing.staffingProfileId,
-          roleInWorkspace: stafferProfile?.role ?? "specialist",
-          agentDir: stafferProfile ? `${this.workspace.rootPath}\\.autoagent\\organization-agents\\${stafferProfile.id}` : "",
+          ...projectOwner,
           status: staffing.status === "running" ? "running" : staffing.status === "blocked" ? "blocked" : "waiting",
-          provider: stafferProfile?.defaultProvider,
-          model: stafferProfile?.defaultModel,
-          name: stafferProfile?.name ?? "组队负责人",
-          role: stafferProfile?.role ?? "specialist",
-          capabilities: stafferProfile?.capabilities ?? [],
-          currentStep: staffing.status === "blocked" ? staffing.blockReason : "根据目标组建项目团队",
+          currentStep: staffing.status === "blocked" ? staffing.blockReason : "处理收到的目标",
         };
         const threadEvents = projection?.thread
           ? projectThread(projection.thread, projection.payloads, record)
           : [];
         const status = staffing.status === "blocked" || staffing.status === "failed" ? "blocked" : "running";
-        const otherProjectAgents = presentedAgents
-          .filter((agent) => agent.profileId !== staffing.staffingProfileId)
-          .map((agent) => ({ ...agent, status: "idle" as const }));
+        const staffingAgents = presentedAgents.map((agent) =>
+          agent.id === staffing.staffingAgentId ? staffer : { ...agent, status: "idle" as const },
+        );
         return {
           workspace: this.workspace,
           activeTask: {
@@ -676,7 +669,7 @@ export class RuntimeHost {
             phase: status === "blocked" ? "blocked" : "running",
             startedAt: record.createdAt,
           },
-          agents: [...otherProjectAgents, staffer],
+          agents: staffingAgents,
           assignments: [],
           tickets: [],
           agentThreads: { [staffer.id]: threadEvents },
@@ -696,7 +689,7 @@ export class RuntimeHost {
           status,
           currentStep: staffing.status === "blocked"
             ? staffing.blockReason
-            : `${staffer.name ?? "负责人"}正在根据目标组建项目团队`,
+            : `${staffer.name ?? "负责人"}正在处理收到的目标`,
         };
       }
     }

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import path from "node:path";
 import type {
   AgentGoal,
   GoalResolutionAttemptResult,
@@ -23,6 +22,7 @@ import type { AgentExecutionRuntime } from "../agent-engine/runtime.js";
 import { AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
+import { listWorkspaceAgents, selectProjectOwnerProfile } from "../agents/roster.js";
 import { resolvePolicy } from "../policy/policy.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { StaffingRequestStore, type StaffingRequestRecord } from "./staffing-request-store.js";
@@ -32,6 +32,15 @@ interface StaffingRuntime {
   loop: AgentExecutionRuntime;
   profile: AgentProfile;
   agent: WorkspaceAgent;
+}
+
+interface ProjectTaskFact {
+  taskId: string;
+  title: string;
+  objective: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface StaffingRunResult {
@@ -48,6 +57,7 @@ export class StaffingCoordinator {
     private readonly profiles: AgentProfileStore,
     private readonly providers: ProviderRegistry,
     private readonly requiredCapabilities: readonly string[],
+    private readonly projectHistory: () => Promise<ProjectTaskFact[]> = async () => [],
     private readonly now: () => Date = () => new Date(),
   ) {
     this.store = new StaffingRequestStore(workspace.rootPath);
@@ -57,7 +67,13 @@ export class StaffingCoordinator {
     const existing = await this.store.getByTask(taskId);
     if (existing) return existing;
     const profiles = await this.profiles.list();
-    const profile = selectStaffingProfile(profiles);
+    const projectAgents = await listWorkspaceAgents(this.workspace);
+    const projectProfiles = profiles.filter((profile) =>
+      projectAgents.some((agent) => agent.profileId === profile.id),
+    );
+    const profile = selectProjectOwnerProfile(projectProfiles);
+    const agent = projectAgents.find((candidate) => candidate.profileId === profile.id);
+    if (!agent) throw new Error("项目负责人实例不存在");
     const createdAt = this.now().toISOString();
     const request: StaffingRequestRecord = {
       staffingRequestId: stableId("staffing", this.workspace.id, taskId),
@@ -65,7 +81,7 @@ export class StaffingCoordinator {
       workspaceId: this.workspace.id,
       objective,
       staffingProfileId: profile.id,
-      staffingAgentId: stableId("organization-agent", this.workspace.id, profile.id),
+      staffingAgentId: agent.id,
       status: "pending",
       createdAt,
       updatedAt: createdAt,
@@ -89,8 +105,8 @@ export class StaffingCoordinator {
     const runtime = await this.runtime(request);
     const thread = await runtime.engine.ensureThread({
       agentId: request.staffingAgentId,
-      scopeId: request.taskId,
-      idempotencyKey: stableId("staffing-thread", request.staffingRequestId),
+      scopeId: this.workspace.id,
+      idempotencyKey: stableId("project-owner-thread", this.workspace.id, request.staffingAgentId),
     });
     const goalId = stableId("staffing-goal", request.staffingRequestId);
     const goal = await runtime.engine.getGoal(goalId) ?? await runtime.engine.startGoal({
@@ -100,12 +116,8 @@ export class StaffingCoordinator {
       spec: {
         id: goalId,
         threadId: thread.threadId,
-        objective: "根据项目目标和组织人才池，组建能够可靠启动并完成该目标的项目团队。",
-        successCriteria: [
-          "组队方案由当前组织人才池中的真实档案组成，或明确提交无法由现有人才满足的能力缺口",
-          "选择理由和项目责任足以让后续 Mission 理解每位成员为何加入",
-          "团队满足平台提供的启动能力契约，且不按固定角色流程机械凑人",
-        ],
+        objective: request.objective,
+        successCriteria: [],
         contextRefs: [
           { kind: "staffing_request", ref: request.staffingRequestId },
           { kind: "workspace", ref: this.workspace.id },
@@ -125,6 +137,16 @@ export class StaffingCoordinator {
       senderPrincipalId: "mission-control",
       deliveryKind: "context",
       content: await this.contextMessage(request),
+      createdAt: request.createdAt,
+    });
+    await runtime.engine.sendMessage({
+      messageId: stableId("human-objective", request.staffingRequestId),
+      turnId: stableId("human-objective-turn", request.staffingRequestId),
+      threadId: thread.threadId,
+      goalId,
+      senderPrincipalId: "human",
+      deliveryKind: "turn",
+      content: request.objective,
       createdAt: request.createdAt,
     });
     request = {
@@ -194,8 +216,8 @@ export class StaffingCoordinator {
     const runtime = await this.runtime(request);
     const thread = await runtime.engine.ensureThread({
       agentId: request.staffingAgentId,
-      scopeId: request.taskId,
-      idempotencyKey: stableId("staffing-thread", request.staffingRequestId),
+      scopeId: this.workspace.id,
+      idempotencyKey: stableId("project-owner-thread", this.workspace.id, request.staffingAgentId),
     });
     const turnId = stableId("turn", thread.threadId, messageId);
     await runtime.engine.sendMessage({
@@ -264,17 +286,9 @@ export class StaffingCoordinator {
     if (existing) return existing;
     const profile = (await this.profiles.list()).find((item) => item.id === request.staffingProfileId);
     if (!profile) throw new Error("负责组队的人才档案已不存在");
-    const agent: WorkspaceAgent = {
-      id: request.staffingAgentId,
-      workspaceId: this.workspace.id,
-      profileId: profile.id,
-      roleInWorkspace: profile.role,
-      agentDir: path.join(this.workspace.rootPath, ".autoagent", "organization-agents", profile.id),
-      status: "idle",
-      provider: profile.defaultProvider,
-      model: profile.defaultModel,
-      policyOverride: profile.defaultPolicy,
-    };
+    const agent = (await listWorkspaceAgents(this.workspace))
+      .find((candidate) => candidate.id === request.staffingAgentId);
+    if (!agent || agent.profileId !== profile.id) throw new Error("项目负责人实例已不存在或身份不匹配");
     const store = new AgentStore(this.workspace.rootPath, agent.id);
     const port = new StaffingResolutionPort(
       request.taskId,
@@ -307,24 +321,55 @@ export class StaffingCoordinator {
 
   private async contextMessage(request: StaffingRequestRecord): Promise<string> {
     const profiles = await this.profiles.list();
-    return [
-      "你正在以组织负责人的身份组建项目团队。",
-      `项目目标：${request.objective}`,
-      `项目：${this.workspace.name} (${this.workspace.rootPath})`,
-      `启动能力契约：${JSON.stringify(this.requiredCapabilities)}`,
-      "当前组织人才池（这是权威事实，只能选择其中的 profileId）：",
-      JSON.stringify(profiles.map((profile) => ({
+    const projectAgents = await listWorkspaceAgents(this.workspace);
+    const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const projectTasks = await this.projectHistory();
+    return JSON.stringify({
+      type: "project_context",
+      workspace: {
+        id: this.workspace.id,
+        name: this.workspace.name,
+        rootPath: this.workspace.rootPath,
+        policyProfile: this.workspace.policyProfile,
+      },
+      missionStartContract: {
+        requiredCapabilities: [...this.requiredCapabilities],
+      },
+      currentTeam: projectAgents.map((agent) => {
+        const profile = profileById.get(agent.profileId);
+        return {
+          agentId: agent.id,
+          profileId: agent.profileId,
+          name: profile?.name,
+          capabilities: profile?.capabilities ?? [],
+          enabledTools: profile
+            ? toolsForPolicy(resolvePolicy(this.workspace, agent, profile)).map((tool) => tool.name)
+            : [],
+        };
+      }),
+      projectHistory: projectTasks
+        .filter((task) => task.taskId !== request.taskId)
+        .map((task) => ({
+          taskId: task.taskId,
+          title: task.title,
+          objective: task.objective,
+          status: task.status,
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+        })),
+      talentPool: profiles.map((profile) => ({
         profileId: profile.id,
         name: profile.name,
         identity: profile.identity,
         capabilities: profile.capabilities,
         defaultSkills: profile.defaultSkills ?? [],
-        enabledTools: toolsForPolicy(resolvePolicy(this.workspace, virtualAgent(this.workspace, profile), profile))
+        enabledTools: toolsForPolicy(resolvePolicy(this.workspace, {
+          policyOverride: profile.defaultPolicy,
+          skillOverrides: profile.defaultSkills,
+        }, profile))
           .map((tool) => tool.name),
-      }))),
-      "请根据目标复杂度自行裁剪团队。不要按固定角色表凑人，也不要把组队责任退给 human。",
-      "确定后调用 staff_project；现有人才确实不足时提交 recruitment_required。",
-    ].join("\n\n");
+      })),
+    });
   }
 
   private async requireRequest(taskId: string): Promise<StaffingRequestRecord> {
@@ -412,29 +457,6 @@ class StaffingResolutionPort implements GoalResolutionPort<TeamStaffingOutcome> 
       decision: { accepted: true, committedState: proposal.status, domainResult: outcome },
     };
   }
-}
-
-export function selectStaffingProfile(profiles: AgentProfile[]): AgentProfile {
-  const candidates = profiles.filter((profile) => profile.capabilities.includes("team:staff"));
-  if (candidates.length === 1) return candidates[0]!;
-  const defaults = candidates.filter((profile) => profile.capabilities.includes("team:staff:default"));
-  if (defaults.length === 1) return defaults[0]!;
-  if (!candidates.length) throw new Error("组织人才池缺少具备 team:staff 能力的负责人");
-  throw new Error("组织存在多个组队负责人，但没有唯一的 team:staff:default");
-}
-
-function virtualAgent(workspace: Workspace, profile: AgentProfile): WorkspaceAgent {
-  return {
-    id: stableId("organization-agent", workspace.id, profile.id),
-    workspaceId: workspace.id,
-    profileId: profile.id,
-    roleInWorkspace: profile.role,
-    agentDir: path.join(workspace.rootPath, ".autoagent", "organization-agents", profile.id),
-    status: "idle",
-    provider: profile.defaultProvider,
-    model: profile.defaultModel,
-    policyOverride: profile.defaultPolicy,
-  };
 }
 
 function stableId(prefix: string, ...parts: string[]): string {

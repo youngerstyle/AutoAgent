@@ -6,7 +6,8 @@ AutoAgent 是全自动团队，不是让 human 代替负责人配置排班的管
 
 - human 只负责创建项目、给出目标以及处理不可替代的授权或事实输入。
 - 组织人才池保存长期存在的 Agent 档案。
-- 项目启动时，由具备 `team:staff` 能力的组织级 Agent 判断目标需要哪些能力，并从人才池组建项目团队。
+- 创建项目时只实例化一个长期存在的项目负责人；默认负责人由人才档案能力标记唯一确定。
+- human 发布的目标作为普通消息进入该负责人的项目会话，由负责人自行判断是否需要加人、招聘、追问或启动 Mission。
 - 平台不根据角色名、关键词或固定流程选择成员，只提供人才池事实、结构化工具和机械校验。
 - 项目团队确定后生成不可变 TeamBinding，Mission 与 Ticket 才开始运行。
 - 第一版采用预先招聘：缺少人才时，老板提交招聘请求并暂停启动；后续可由招聘 Agent 自动完成招聘。
@@ -17,33 +18,35 @@ AutoAgent 是全自动团队，不是让 human 代替负责人配置排班的管
 
 ### Agent Engine
 
-Agent Engine 是通用的单 Agent loop。组队时它运行组织老板，接收：
+Agent Engine 是通用的单 Agent loop。项目负责人和其他成员使用同一种线程、消息、Goal、工具调用与上下文压缩机制。负责人接收：
 
-- human 给出的项目目标；
+- human 按时间顺序发出的原始消息；
 - 当前组织人才池的结构化快照；
-- 项目路径、安全策略和可用工具；
-- `team-staffing-v1` 输出契约。
+- 当前项目、已有成员、历史 Mission、项目路径、安全策略和可用工具等事实。
+- Ticket/Mission 引擎启动所需的结构化能力契约；这是接口事实，不是角色名单，负责人可选择任意满足能力的人。
 
-老板通过 `staff_project` 工具提交：
+平台不得为本次目标拼接“组建团队”“必须选择某岗位”“按复杂度裁剪”等业务提示。负责人如何理解目标和组织团队来自可编辑的 Soul、Identity、Agent 档案以及连续项目会话。
+
+负责人需要启动工作时，可自主调用通用组织工具 `staff_project`，提交：
 
 - 选中的 `profileId`；
 - 每个人在本项目中的责任；
 - 选择理由；
 - 若人才不足，需要招聘的能力与原因。
 
-Agent Engine 不直接创建项目成员，也不启动 Mission。
+工具调用只是负责人的组织决策提案。Agent Engine 不直接创建项目成员，也不启动 Mission。
 
 ### Mission Control
 
 Mission Control 负责启动前后两个状态域：
 
-1. 创建 Staffing Request 并把它交给具备 `team:staff` 能力的组织 Agent。
+1. 把 human 消息投递给项目中唯一的负责人实例。
 2. 接收已通过机械校验的组队提案。
 3. 创建项目级 WorkspaceAgent 实例。
 4. 冻结 TeamBinding。
 5. 创建 Mission，并把控制权交给 Ticket Engine。
 
-Staffing Request 不是 Ticket。此时团队尚未形成，不能让 Ticket Engine 给一个不存在的项目团队派单。
+Staffing Request 是 Mission Control 对负责人组织工具调用的持久化执行记录，不是另一个 Agent、业务决策者或 Ticket。它不得改变负责人收到的消息，也不得替负责人选择成员。
 
 ### Ticket Engine
 
@@ -67,6 +70,16 @@ Ticket Engine 只在 TeamBinding 已形成后工作：
 - 默认模型、技能与工具权限。
 
 同一档案可以实例化到多个项目，每个项目实例拥有独立 Session 和项目记忆。
+
+### ProjectOwnerThread
+
+项目创建时生成并长期复用：
+
+- 属于项目负责人实例，而不是临时“组织老板”；
+- human 目标、后续追问和负责人回复按时间顺序追加；
+- 项目事实以结构化 context 消息注入；
+- 不保存平台组装后的完整 Prompt，不递归复制历史；
+- 多个 Mission 可以复用同一项目线程，但每个 Mission 使用独立 Goal。
 
 ### StaffingRequest
 
@@ -147,18 +160,18 @@ Mission 启动时从项目实例生成的不可变快照：
 
 ## 完整启动时序
 
-1. human 创建空项目。
+1. human 创建项目，系统仅实例化一个长期项目负责人。
 2. human 发布目标。
-3. Mission Control 持久化 Task 与 Staffing Request，立即向 UI 返回“老板正在组建团队”。
-4. Mission Control 从组织人才池中按 `team:staff` 能力寻找默认负责人。
-5. Agent Engine 运行该负责人，负责人读取目标与人才池快照。
-6. 负责人调用 `staff_project`。
+3. Mission Control 将原始目标作为 human 消息追加到负责人的项目线程，并附加当前项目事实。
+4. Agent Engine 正常运行该负责人；平台不插入本次任务的组队指令。
+5. 负责人可以继续对话、请求不可替代输入、调用 `staff_project` 增加成员并启动 Mission，或提交招聘缺口。
+6. 负责人调用 `staff_project` 后，Mission Control 才进入组织执行。
 7. Mission Control 对提案做机械校验。
 8. 若 `staffed`，创建 WorkspaceAgent、冻结 TeamBinding、创建 Mission。
 9. Mission 中的规划 Agent 基于目标与 TeamBinding 自主创建 Ticket DAG。
 10. 若 `recruitment_required`，任务停在组队阶段，UI 明确显示老板提出的人才缺口；不创建虚假 Mission 或 Ticket。
 
-组队 Agent 的选择同样不依赖 `role === "boss"`：
+项目负责人的初始化不依赖 `role === "boss"`：
 
 - 只有一个 `team:staff` 候选时使用该候选；
 - 多个候选时优先使用具备 `team:staff:default` 的唯一候选；
@@ -174,19 +187,21 @@ Mission 启动时从项目实例生成的不可变快照：
 
 ### 项目
 
-- 创建后允许为空。
+- 创建后只有一个项目负责人，不预装 PM、架构师、开发或 QA。
 - 项目成员列表是老板组队后的结果，不把“添加成员”作为发布目标的前置操作。
 - 保留人工调整入口用于组织管理员维护和故障恢复，但必须明确标记为人工管理操作。
 
 ### 办公室
 
-- 发布目标后立即显示组队负责人运行状态。
+- 发布目标后立即显示同一个项目负责人的运行状态，不投影第二个虚拟老板。
 - 组队完成后，办公室只显示真实项目成员。
 - 人才不足时在负责人头像上显示待处理标记，并展示原始招聘请求。
 
 ## 非目标
 
 - 平台根据“前端”“设计”等自然语言关键词硬编码岗位选择。
+- 平台在每次目标中注入组队业务提示词。
+- 临时创建 `organization-agent` 或其他负责人影子实例。
 - 固定老板、PM、开发、QA 流程。
 - 自动生成不存在的人才档案。
 - 运行中 Mission 偷偷修改 TeamBinding。

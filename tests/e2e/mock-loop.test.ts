@@ -22,7 +22,7 @@ describe("mock team loop E2E", () => {
       .expect(201);
     const workspaceId = created.body.workspace.id as string;
     const profiles = await request(app).get("/api/agent-profiles").expect(200);
-    for (const profile of profiles.body.profiles) {
+    for (const profile of profiles.body.profiles.filter((item: { id: string }) => item.id !== "prof_boss")) {
       await request(app)
         .post(`/api/workspaces/${workspaceId}/agents`)
         .send({ profileId: profile.id })

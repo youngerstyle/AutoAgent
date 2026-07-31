@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
-import { ensureWorkspaceAgent, listWorkspaceAgents } from "../../src/server/agents/roster.js";
+import { ensureProjectOwner, listWorkspaceAgents } from "../../src/server/agents/roster.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../../src/server/tickets/plan-policy-config.js";
@@ -22,8 +22,7 @@ describe("automatic project staffing", () => {
       createdAt: new Date().toISOString(),
     };
     const profiles = new AgentProfileStore(home);
-    const boss = (await profiles.list()).find((profile) => profile.id === "prof_boss")!;
-    await ensureWorkspaceAgent(workspace, boss, "wa_boss");
+    const owner = await ensureProjectOwner(workspace, await profiles.list());
     const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
     const policyStore = new PlanPolicyStore(home);
     const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
@@ -41,7 +40,7 @@ describe("automatic project staffing", () => {
     const owners = snapshot.agents.filter((agent) => agent.profileId === "prof_boss");
     expect(owners).toHaveLength(1);
     expect(owners[0]).toMatchObject({
-      id: expect.stringMatching(/^organization-agent_/),
+      id: owner.id,
       status: "waiting",
     });
     await host.stop();
@@ -58,14 +57,17 @@ describe("automatic project staffing", () => {
       createdAt: new Date().toISOString(),
     };
     const profiles = new AgentProfileStore(home);
+    await ensureProjectOwner(workspace, await profiles.list());
     const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
     const policyStore = new PlanPolicyStore(home);
     const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
     const seenToolSets: string[][] = [];
+    const seenModelInputs: Array<{ instructions: string; history: unknown[] }> = [];
     providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
         seenToolSets.push(input.tools.map((tool) => tool.name));
+        seenModelInputs.push({ instructions: input.instructions, history: input.history });
         if (input.tools.some((tool) => tool.name === "staff_project")) {
           return {
             items: [{
@@ -92,7 +94,7 @@ describe("automatic project staffing", () => {
       intervalMs: 60_000,
     });
 
-    expect(await listWorkspaceAgents(workspace)).toEqual([]);
+    expect((await listWorkspaceAgents(workspace)).map((agent) => agent.profileId)).toEqual(["prof_boss"]);
     await host.createTask({
       taskId: "task-staffing",
       title: "Build product",
@@ -106,6 +108,25 @@ describe("automatic project staffing", () => {
     expect(context).toBeDefined();
     expect(seenToolSets[0]).toContain("staff_project");
     expect(seenToolSets[0]).not.toContain("goal_resolution");
+    const firstModelInput = seenModelInputs[0]!;
+    const firstInput = JSON.stringify(firstModelInput);
+    const contextItem = firstModelInput.history
+      .map((item) => item as { type?: string; content?: string })
+      .find((item) => item.type === "user_message" && item.content?.startsWith("{\"type\":\"project_context\""));
+    expect(firstInput).toContain("Build and verify a usable product");
+    expect(JSON.parse(contextItem!.content!)).toMatchObject({
+      type: "project_context",
+      missionStartContract: {
+        requiredCapabilities: ["mission:intake", "plan:plan", "delivery:accept"],
+      },
+      currentTeam: expect.any(Array),
+      talentPool: expect.any(Array),
+    });
+    expect(firstModelInput.instructions).not.toContain("Build and verify a usable product");
+    expect(firstModelInput.instructions).not.toContain("project_context");
+    expect(firstInput).not.toContain("你正在以组织负责人的身份组建项目团队");
+    expect(firstInput).not.toContain("请根据目标复杂度自行裁剪团队");
+    expect(firstInput).not.toContain("确定后调用 staff_project");
     const workspaceAgents = await listWorkspaceAgents(workspace);
     expect(workspaceAgents.map((agent) => agent.profileId).sort()).toEqual([
       "prof_boss",

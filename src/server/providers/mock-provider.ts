@@ -30,7 +30,8 @@ export class MockProvider implements AgentModelProvider {
         usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 },
       };
     }
-    const ticket = currentTicketMetadata(input.instructions);
+    const prompt = modelInputText(input);
+    const ticket = currentTicketMetadata(prompt);
     const evidenceIds = toolEvidenceIds(input.history);
     if (ticket.outputSchema === "mission-assurance-v1"
       && evidenceIds.length === 0
@@ -50,7 +51,7 @@ export class MockProvider implements AgentModelProvider {
         type: "tool_call",
         callId: `mock-goal-${input.history.length}`,
         name: "goal_resolution",
-        arguments: mockGoalResolution(input.instructions, evidenceIds),
+        arguments: mockGoalResolution(prompt, evidenceIds),
       }],
       usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
     };
@@ -58,11 +59,18 @@ export class MockProvider implements AgentModelProvider {
 }
 
 function staffingProfileIds(input: AgentModelTurnInput): string[] {
-  const text = [
-    input.instructions,
-    ...input.history.flatMap((item) => item.type === "user_message" ? [item.content] : []),
-  ].join("\n");
+  const text = modelInputText(input);
   return [...new Set([...text.matchAll(/"profileId"\s*:\s*"([^"]+)"/g)].map((match) => match[1]!))];
+}
+
+function modelInputText(input: AgentModelTurnInput): string {
+  return [
+    input.instructions,
+    ...input.history.flatMap((item) =>
+      item.type === "user_message" || item.type === "assistant_message" || item.type === "tool_result"
+        ? [item.content]
+        : []),
+  ].join("\n");
 }
 
 function mockGoalResolution(instructions: string, toolEvidence: string[] = []): Record<string, unknown> {
