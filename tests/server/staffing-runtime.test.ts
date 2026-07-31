@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
-import { listWorkspaceAgents } from "../../src/server/agents/roster.js";
+import { ensureWorkspaceAgent, listWorkspaceAgents } from "../../src/server/agents/roster.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../../src/server/tickets/plan-policy-config.js";
@@ -11,6 +11,42 @@ import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("automatic project staffing", () => {
+  it("shows one staffing owner when the same profile already has a project instance", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-owner-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-owner-ws-"));
+    const workspace: Workspace = {
+      id: "workspace-staffing-owner",
+      name: "Staffing owner workspace",
+      rootPath: root,
+      policyProfile: "development",
+      createdAt: new Date().toISOString(),
+    };
+    const profiles = new AgentProfileStore(home);
+    const boss = (await profiles.list()).find((profile) => profile.id === "prof_boss")!;
+    await ensureWorkspaceAgent(workspace, boss, "wa_boss");
+    const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
+    const policyStore = new PlanPolicyStore(home);
+    const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+    const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, {
+      intervalMs: 60_000,
+    });
+
+    await host.createTask({
+      taskId: "task-staffing-owner",
+      title: "Build product",
+      objective: "Build and verify a usable product",
+    });
+
+    const snapshot = await host.snapshot();
+    const owners = snapshot.agents.filter((agent) => agent.profileId === "prof_boss");
+    expect(owners).toHaveLength(1);
+    expect(owners[0]).toMatchObject({
+      id: expect.stringMatching(/^organization-agent_/),
+      status: "waiting",
+    });
+    await host.stop();
+  });
+
   it("lets the staffing Agent choose talent before Mission creation", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-ws-"));

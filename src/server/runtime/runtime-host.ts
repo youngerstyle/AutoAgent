@@ -654,6 +654,9 @@ export class RuntimeHost {
           ? projectThread(projection.thread, projection.payloads, record)
           : [];
         const status = staffing.status === "blocked" || staffing.status === "failed" ? "blocked" : "running";
+        const otherProjectAgents = presentedAgents
+          .filter((agent) => agent.profileId !== staffing.staffingProfileId)
+          .map((agent) => ({ ...agent, status: "idle" as const }));
         return {
           workspace: this.workspace,
           activeTask: {
@@ -673,7 +676,7 @@ export class RuntimeHost {
             phase: status === "blocked" ? "blocked" : "running",
             startedAt: record.createdAt,
           },
-          agents: [...presentedAgents.map((agent) => ({ ...agent, status: "idle" as const })), staffer],
+          agents: [...otherProjectAgents, staffer],
           assignments: [],
           tickets: [],
           agentThreads: { [staffer.id]: threadEvents },
