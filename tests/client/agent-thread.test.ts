@@ -77,6 +77,42 @@ describe("agent thread view", () => {
     });
   });
 
+  it("folds untagged intermediate model commentary by turn structure", () => {
+    const bubbles = buildAgentThreadBubbles([
+      threadEvent(1, "evt_progress_1", "agent", "agent_message", {
+        content: "**Capturing movement-after screenshot**",
+      }, "turn_1"),
+      threadEvent(2, "evt_tool_1", "tool", "tool_observation", {
+        name: "browser",
+        summary: "screenshot captured",
+      }, "turn_1"),
+      threadEvent(3, "evt_progress_2", "agent", "agent_message", {
+        content: "**Inspecting movement evidence screenshot**",
+      }, "turn_1"),
+      threadEvent(4, "evt_tool_2", "tool", "tool_observation", {
+        name: "browser",
+        summary: "inspection completed",
+      }, "turn_1"),
+      threadEvent(5, "evt_answer", "agent", "agent_message", {
+        content: "Browser verification is complete.",
+      }, "turn_1"),
+    ]);
+
+    expect(bubbles).toEqual([
+      expect.objectContaining({
+        role: "system",
+        collapsed: true,
+      }),
+      expect.objectContaining({
+        id: "evt_answer",
+        role: "agent",
+        body: "Browser verification is complete.",
+      }),
+    ]);
+    expect(bubbles[0]?.body).toContain("Capturing movement-after screenshot");
+    expect(bubbles[0]?.body).toContain("Inspecting movement evidence screenshot");
+  });
+
   it("renders a received Goal as an understandable work brief and labels internal constraints", () => {
     const bubbles = buildAgentThreadBubbles([
       threadEvent(1, "evt_goal", "platform", "ticket_received", {
@@ -220,10 +256,12 @@ function threadEvent(
   id: string,
   source: AgentThreadEvent["source"],
   kind: AgentThreadEvent["kind"],
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  turnId?: string,
 ): AgentThreadEvent {
   return {
     id,
+    ...(turnId ? { turnId } : {}),
     taskId: "task_1",
     taskRunId: "tr_1",
     workspaceAgentId: "wa_dev",

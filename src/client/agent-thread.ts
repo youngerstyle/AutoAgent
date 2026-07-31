@@ -35,9 +35,10 @@ export function scrollChatThreadToLatest(container: Pick<HTMLElement, "scrollTop
 
 export function buildAgentThreadBubbles(events: AgentThreadEvent[], legacyMessages: AgentDirectMessage[] = []): AgentThreadBubble[] {
   if (events.length === 0) return collapseInternalRuns(legacyMessages.flatMap(legacyMessageToBubbles));
-  const bubbles = [...events]
-    .sort((a, b) => a.sequence - b.sequence)
-    .flatMap(eventToBubbles)
+  const orderedEvents = [...events].sort((a, b) => a.sequence - b.sequence);
+  const internalAgentEventIds = intermediateAgentEventIds(orderedEvents);
+  const bubbles = orderedEvents
+    .flatMap((event) => eventToBubbles(event, internalAgentEventIds.has(event.id)))
     .filter((bubble) => Boolean(bubble.body.trim() || bubble.attachments?.length));
   return collapseInternalRuns(bubbles);
 }
@@ -50,12 +51,12 @@ export function appendCurrentAgentPrompt(bubbles: AgentThreadBubble[], prompt: s
   return [...bubbles, { id: "current-agent-prompt", role: "agent", body }];
 }
 
-function eventToBubbles(event: AgentThreadEvent): AgentThreadBubble[] {
+function eventToBubbles(event: AgentThreadEvent, intermediateAgentMessage = false): AgentThreadBubble[] {
   if (event.kind === "human_message") {
     return [{ id: event.id, role: "human", body: payloadText(event.payload, "content", "message"), attachments: payloadAttachments(event.payload) }];
   }
   if (event.kind === "agent_message") {
-    return agentMessageBubbles(event);
+    return agentMessageBubbles(event, intermediateAgentMessage);
   }
   if (event.kind === "turn_failed") {
     return [{ id: event.id, role: "agent", title: "本轮执行失败", body: payloadText(event.payload, "error", "message") }];
@@ -113,9 +114,35 @@ function eventToBubbles(event: AgentThreadEvent): AgentThreadBubble[] {
   return [];
 }
 
-function agentMessageBubbles(event: AgentThreadEvent): AgentThreadBubble[] {
+function agentMessageBubbles(event: AgentThreadEvent, intermediate: boolean): AgentThreadBubble[] {
   const content = payloadText(event.payload, "content", "message");
+  if (intermediate) {
+    const { reasoning, answer } = splitReasoningFromAnswer(content);
+    const body = [...reasoning, answer].filter(Boolean).join("\n\n");
+    return [{
+      id: event.id,
+      role: "system",
+      title: "处理过程",
+      collapsed: true,
+      summary: reasoningSummary(answer || reasoning.at(-1) || body),
+      body,
+    }];
+  }
   return contentToAgentBubbles(event.id, content);
+}
+
+function intermediateAgentEventIds(events: AgentThreadEvent[]): Set<string> {
+  const lastAgentSequenceByTurn = new Map<string, number>();
+  for (const event of events) {
+    if (event.kind !== "agent_message" || !event.turnId) continue;
+    lastAgentSequenceByTurn.set(event.turnId, event.sequence);
+  }
+  return new Set(events
+    .filter((event) =>
+      event.kind === "agent_message"
+      && Boolean(event.turnId)
+      && event.sequence < (lastAgentSequenceByTurn.get(event.turnId!) ?? event.sequence))
+    .map((event) => event.id));
 }
 
 function contentToAgentBubbles(id: string, content: string): AgentThreadBubble[] {
