@@ -13,7 +13,6 @@ import {
   DraftingCompass,
   FolderKanban,
   ImagePlus,
-  CornerDownLeft,
   MessageSquareText,
   Pause,
   Play,
@@ -149,6 +148,7 @@ export function App() {
   const [agentMessageFiles, setAgentMessageFiles] = useState<File[]>([]);
   const [workspaceForm, setWorkspaceForm] = useState({ name: "演示项目", rootPath: "", policyProfile: "production" as Workspace["policyProfile"] });
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
+  const [teamConversationOpen, setTeamConversationOpen] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [view, setView] = useState<AppView>("office");
   const [rightPanelView, setRightPanelView] = useState<"events" | "tickets">("events");
@@ -351,8 +351,7 @@ export function App() {
     }
   }
 
-  async function submitTask(event: React.FormEvent) {
-    event.preventDefault();
+  async function submitTeamMessage() {
     if (!selectedId || !goal.trim() || taskSubmitting) return;
     setTaskSubmitting(true);
     try {
@@ -553,8 +552,20 @@ export function App() {
   const selectedCatalogProfile = catalogProfiles.find((profile) => profile.id === selectedProfileId) ?? catalogProfiles[0];
   const selectedCatalogDefinition = agentProfiles.find((profile) => profile.id === selectedCatalogProfile?.id) ?? agentProfiles[0];
   const hasActiveFlow = mode === "running" || mode === "paused" || mode === "blocked";
-  const taskInputLabel = hasActiveFlow ? "全局补充" : "项目目标";
-  const taskInputPlaceholder = hasActiveFlow ? "写给当前团队的补充信息，会进入后续智能体上下文；和单个智能体沟通请点击对应头像" : "描述这个项目要交给团队完成的目标";
+  const taskInputLabel = hasActiveFlow ? "给团队发送消息" : "项目目标";
+  const taskInputPlaceholder = hasActiveFlow ? "补充目标、事实或反馈；Enter 发送，Shift+Enter 换行" : "描述这个项目要交给团队完成的目标";
+  const teamActionLabel = hasActiveFlow ? "联系团队" : mode === "terminal" ? "创建新任务" : "发布目标";
+  const teamMessages = useMemo(
+    () => events
+      .filter((event) =>
+        event.type === "human.followup"
+        && event.taskId === snapshot?.activeTask?.id
+        && typeof event.payload.message === "string"
+      )
+      .slice(-12)
+      .map((event) => ({ id: event.id, message: event.payload.message as string })),
+    [events, snapshot?.activeTask?.id]
+  );
   const taskSubmitView = buildTaskSubmitView({
     mode,
     hasWorkspace: Boolean(selectedId),
@@ -638,7 +649,7 @@ export function App() {
           </div>
         </header>
 
-        <section className={view === "office" ? `office-view ${selectedAgent ? "chat-open" : ""}` : "management-region"}>
+        <section className={view === "office" ? `office-view ${selectedAgent || teamConversationOpen ? "chat-open" : ""}` : "management-region"}>
           {view === "office" ? (
             <>
               <section className="mission-brief">
@@ -653,26 +664,18 @@ export function App() {
                   <div><span>成员</span><strong>{nodes.length}</strong></div>
                 </div>
                 <div className="mission-actions">
-                  <form className="mission-command" onSubmit={submitTask}>
-                    <MessageSquareText className="mission-command-icon" size={18} aria-hidden="true" />
-                    <input
-                      type="text"
-                      value={goal}
-                      onChange={(event) => setGoal(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                        event.preventDefault();
-                        if (!taskSubmitView.disabled) event.currentTarget.form?.requestSubmit();
-                      }}
-                      placeholder={taskInputPlaceholder}
-                      disabled={taskSubmitting}
-                      aria-label={taskInputLabel}
-                    />
-                    <span className="mission-command-hint" aria-hidden="true"><CornerDownLeft size={13} />Enter</span>
-                    <button type="submit" className="mission-send" disabled={taskSubmitView.disabled} title={taskSubmitView.label} aria-label={taskSubmitView.label}>
-                      <Send size={16} />
-                    </button>
-                  </form>
+                  <button
+                    type="button"
+                    className="mission-contact-button"
+                    disabled={!selectedId}
+                    onClick={() => {
+                      setSelectedAgentId("");
+                      setTeamConversationOpen(true);
+                    }}
+                  >
+                    <MessageSquareText size={17} aria-hidden="true" />
+                    <span>{teamActionLabel}</span>
+                  </button>
                   <div className="mission-controls" aria-label="任务运行控制">
                     <button type="button" onClick={() => void control("pause")} disabled={mode !== "running"} title="暂停任务"><Pause size={16} /></button>
                     <button type="button" onClick={() => void control("resume")} disabled={mode !== "paused" && mode !== "blocked"} title="继续任务"><Play size={16} /></button>
@@ -700,7 +703,10 @@ export function App() {
                         key={node.id}
                         node={node}
                         selected={selectedAgentId === node.id}
-                        onSelect={() => setSelectedAgentId(node.id)}
+                        onSelect={() => {
+                          setTeamConversationOpen(false);
+                          setSelectedAgentId(node.id);
+                        }}
                       />
                     ))}
                   </div>
@@ -728,8 +734,8 @@ export function App() {
                 </aside>
               </section>
 
-              {selectedAgent ? (
-              <section className="conversation-dock open" role="dialog" aria-label={`${selectedAgent.name?.trim() || roleLabel(selectedAgent.roleInWorkspace)} 对话`}>
+              {selectedAgent || teamConversationOpen ? (
+              <section className="conversation-dock open" role="dialog" aria-label={teamConversationOpen ? "团队对话" : `${selectedAgent?.name?.trim() || roleLabel(selectedAgent?.roleInWorkspace ?? "specialist")} 对话`}>
                 <div
                   className="conversation-drag-surface"
                   title="拖动对话窗口"
@@ -741,12 +747,28 @@ export function App() {
                   className="conversation-close"
                   aria-label="关闭对话"
                   title="关闭对话"
-                  onClick={() => setSelectedAgentId("")}
+                  onClick={() => {
+                    setSelectedAgentId("");
+                    setTeamConversationOpen(false);
+                  }}
                 >
                   <X size={17} />
                 </button>
-                <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
-                  {selectedAgentNeedsReply && humanFlowPrompt ? (
+                <div className="agent-detail chat-mode">
+                  {teamConversationOpen ? (
+                    <TeamConversationBox
+                      currentGoal={snapshot?.activeTask?.goal}
+                      messages={teamMessages}
+                      value={goal}
+                      inputLabel={taskInputLabel}
+                      placeholder={taskInputPlaceholder}
+                      submitLabel={taskSubmitting ? "发送中" : taskSubmitView.label}
+                      disabled={taskSubmitView.disabled}
+                      mode={mode}
+                      onChange={setGoal}
+                      onSend={() => void submitTeamMessage()}
+                    />
+                  ) : selectedAgentNeedsReply && humanFlowPrompt ? (
                     <AgentHumanLoopBox
                       agentName={selectedAgent ? selectedAgent.name?.trim() || roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
                       prompt={humanFlowPrompt}
@@ -1334,6 +1356,95 @@ function AgentHumanLoopBox(props: {
           placeholder={props.prompt.placeholder}
         />
         <button type="submit" className="chat-send-button" disabled={props.disabled} aria-label={props.prompt.submitLabel} title={props.prompt.submitLabel}>
+          <Send size={18} />
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function TeamConversationBox(props: {
+  currentGoal?: string;
+  messages: Array<{ id: string; message: string }>;
+  value: string;
+  inputLabel: string;
+  placeholder: string;
+  submitLabel: string;
+  disabled: boolean;
+  mode: ReturnType<typeof taskControlMode>;
+  onChange: (value: string) => void;
+  onSend: () => void;
+}) {
+  const latestMessage = props.messages.at(-1);
+  const threadRef = useChatThreadAutoScroll(
+    `team:${props.currentGoal ?? "empty"}:${props.messages.length}:${latestMessage?.id ?? "empty"}`
+  );
+  const stateClass = props.mode === "blocked" ? "attention" : props.mode === "running" ? "running" : props.mode;
+  const stateLabel = props.mode === "terminal"
+    ? "新任务"
+    : props.mode === "blocked"
+      ? "需要补充"
+      : props.mode === "running"
+        ? "运行中"
+        : props.mode === "paused"
+          ? "已暂停"
+          : "待发布";
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    props.onSend();
+  };
+
+  return (
+    <form className="agent-chat team-chat" onSubmit={submit}>
+      <header className="agent-chat-header">
+        <span className="chat-avatar">团</span>
+        <div className="agent-chat-heading">
+          <strong>团队对话</strong>
+          <small>{props.mode === "terminal" ? "创建新的团队任务" : "发给当前团队 · 按时间进入工作上下文"}</small>
+        </div>
+        <span className={`agent-chat-state ${stateClass}`}>{stateLabel}</span>
+      </header>
+      <div className="chat-thread" ref={threadRef}>
+        {props.currentGoal ? (
+          <article className="chat-message human team-goal-message">
+            <strong className="thread-bubble-title">当前目标</strong>
+            <p className="agent-plain-message">{props.currentGoal}</p>
+          </article>
+        ) : (
+          <article className="chat-message agent">
+            <p className="agent-plain-message">描述你希望团队完成的目标。老板会先接收目标，再由团队自主组织后续工作。</p>
+          </article>
+        )}
+        {props.messages.map((message) => (
+          <article className="chat-message human" key={message.id}>
+            <p className="agent-plain-message">{message.message}</p>
+          </article>
+        ))}
+        {props.mode === "terminal" ? (
+          <article className="chat-message platform">
+            <strong className="thread-bubble-title">上一项任务已结束</strong>
+            <p className="agent-plain-message">在下方描述新目标，将创建独立的新任务，不会改写上一次任务的记录。</p>
+          </article>
+        ) : null}
+      </div>
+      <div className="chat-composer">
+        <textarea
+          aria-label={props.inputLabel}
+          value={props.value}
+          onChange={(event) => props.onChange(event.target.value)}
+          onKeyDown={(event) => {
+            const action = chatComposerKeyAction({
+              key: event.key,
+              shiftKey: event.shiftKey,
+              isComposing: event.nativeEvent.isComposing,
+            });
+            if (action !== "submit") return;
+            event.preventDefault();
+            if (!props.disabled) props.onSend();
+          }}
+          placeholder={props.placeholder}
+        />
+        <button type="submit" className="chat-send-button" disabled={props.disabled} aria-label={props.submitLabel} title={props.submitLabel}>
           <Send size={18} />
         </button>
       </div>
