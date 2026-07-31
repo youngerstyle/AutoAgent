@@ -32,7 +32,8 @@ describe("V2 runtime public routes", () => {
       .find((agent: { roleInWorkspace: string }) => agent.roleInWorkspace === "architect");
 
     expect(started.body.snapshot.assignments).toEqual([]);
-    expect(started.body.snapshot.tickets.length).toBeGreaterThan(0);
+    const staffed = await pollSnapshot(app, workspaceId, (value) => value.tickets.length > 0);
+    expect(staffed.tickets.length).toBeGreaterThan(0);
 
     const messageResponse = await request(app)
       .post(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${architect.id}/messages`)
@@ -93,7 +94,11 @@ describe("V2 runtime public routes", () => {
 async function pollSnapshot(app: Parameters<typeof request>[0], workspaceId: string, ready: (snapshot: any) => boolean) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const snapshot = (await request(app).get(`/api/workspaces/${workspaceId}/snapshot`).expect(200)).body.snapshot;
+    const response = await request(app).get(`/api/workspaces/${workspaceId}/snapshot`);
+    if (response.status !== 200) {
+      throw new Error(`Snapshot failed (${response.status}): ${JSON.stringify(response.body)}`);
+    }
+    const snapshot = response.body.snapshot;
     if (ready(snapshot)) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

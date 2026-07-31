@@ -1,105 +1,193 @@
-# 人才池与动态项目团队设计
+# 人才池与老板驱动的动态项目团队
 
-## 目标
+## 产品结论
 
-AutoAgent 第一阶段采用“预先招聘、项目按需实例化”的团队模型：
+AutoAgent 是全自动团队，不是让 human 代替负责人配置排班的管理后台。
 
-- 人才池保存组织长期拥有的 Agent 档案。
-- 项目团队只保存被明确加入该项目的 Agent 实例。
-- 同一个人才可以加入多个项目，但每个项目实例拥有独立 Session、项目记忆和运行覆盖配置。
-- 暂不自动招聘。能力不足时保持工单未领取并明确暴露能力缺口。
+- human 只负责创建项目、给出目标以及处理不可替代的授权或事实输入。
+- 组织人才池保存长期存在的 Agent 档案。
+- 项目启动时，由具备 `team:staff` 能力的组织级 Agent 判断目标需要哪些能力，并从人才池组建项目团队。
+- 平台不根据角色名、关键词或固定流程选择成员，只提供人才池事实、结构化工具和机械校验。
+- 项目团队确定后生成不可变 TeamBinding，Mission 与 Ticket 才开始运行。
+- 第一版采用预先招聘：缺少人才时，老板提交招聘请求并暂停启动；后续可由招聘 Agent 自动完成招聘。
 
-## 三层实体
+“项目由哪些人完成”是老板的业务判断，不是 human 的配置责任，也不是平台代码的推断责任。
 
-### 人才档案 AgentProfile
+## 三个独立引擎与启动胶水
 
-人才档案是组织级长期实体，包含：
+### Agent Engine
 
-- Soul：个体稳定特质、注意力模式和判断风格。
-- Identity：岗位责任、协作边界和组织身份。
-- Agent：工作方法、交付标准和专业能力。
-- Capabilities：供 Ticket assignment 匹配的结构化能力。
-- 默认模型、技能和工具权限。
+Agent Engine 是通用的单 Agent loop。组队时它运行组织老板，接收：
 
-人才档案可以被创建和编辑，不属于任何具体项目。
+- human 给出的项目目标；
+- 当前组织人才池的结构化快照；
+- 项目路径、安全策略和可用工具；
+- `team-staffing-v1` 输出契约。
 
-### 项目实例 WorkspaceAgent
+老板通过 `staff_project` 工具提交：
 
-项目实例通过选择一个 AgentProfile 创建，包含：
+- 选中的 `profileId`；
+- 每个人在本项目中的责任；
+- 选择理由；
+- 若人才不足，需要招聘的能力与原因。
 
-- `profileId`：所继承的人才档案。
-- `workspaceId`：实例所在项目。
-- 独立的 Agent Session 和运行状态。
+Agent Engine 不直接创建项目成员，也不启动 Mission。
+
+### Mission Control
+
+Mission Control 负责启动前后两个状态域：
+
+1. 创建 Staffing Request 并把它交给具备 `team:staff` 能力的组织 Agent。
+2. 接收已通过机械校验的组队提案。
+3. 创建项目级 WorkspaceAgent 实例。
+4. 冻结 TeamBinding。
+5. 创建 Mission，并把控制权交给 Ticket Engine。
+
+Staffing Request 不是 Ticket。此时团队尚未形成，不能让 Ticket Engine 给一个不存在的项目团队派单。
+
+### Ticket Engine
+
+Ticket Engine 只在 TeamBinding 已形成后工作：
+
+- PM 或其他具备规划能力的 Agent 自主设计 Ticket DAG；
+- Ticket 按 `principalId` 或 `requiredCapabilities` 分配；
+- 已冻结 TeamBinding 是该 Mission 的唯一人员事实；
+- Ticket Engine 不招聘、不选人、不按角色名路由。
+
+## 数据模型
+
+### AgentProfile
+
+组织级长期人才档案，包含：
+
+- Soul：稳定特质、注意力模式与判断风格；
+- Identity：岗位责任、协作边界与组织身份；
+- Agent：工作方法、交付标准与专业能力；
+- Capabilities：供组队与 Ticket assignment 使用的结构化能力；
+- 默认模型、技能与工具权限。
+
+同一档案可以实例化到多个项目，每个项目实例拥有独立 Session 和项目记忆。
+
+### StaffingRequest
+
+启动前的持久化工作项：
+
+- `staffingRequestId`
+- `workspaceId`
+- `taskId`
+- `objective`
+- `staffingProfileId`
+- `status`: `pending | running | blocked | completed | failed`
+- `threadId` / `goalId`
+- `proposal`
+- `blockReason`
+- `createdAt` / `updatedAt`
+
+它必须可恢复、可审计、幂等。服务重启后继续同一请求，不能重新创建另一套团队。
+
+### StaffingProposal
+
+```json
+{
+  "status": "staffed",
+  "members": [
+    {
+      "profileId": "prof_xxx",
+      "responsibility": "本项目中的责任",
+      "rationale": "为什么目标需要此人"
+    }
+  ],
+  "recruitmentRequests": []
+}
+```
+
+人才不足时：
+
+```json
+{
+  "status": "recruitment_required",
+  "members": [],
+  "recruitmentRequests": [
+    {
+      "capabilities": ["需要的结构化能力"],
+      "reason": "为什么现有人才不能可靠完成目标"
+    }
+  ]
+}
+```
+
+平台只校验：
+
+- `profileId` 确实存在于本次提供的人才池快照；
+- 同一档案在一个项目中没有重复实例；
+- 字段满足契约；
+- 项目与安全策略允许实例化；
+- 负责组队的 Agent 具备 `team:staff`。
+
+平台不得补全成员、改写责任、根据角色名称决定必需岗位，也不得把能力缺口偷偷转换成固定团队。
+
+### WorkspaceAgent
+
+由已接受的 StaffingProposal 创建，包含：
+
+- `profileId`
+- `workspaceId`
+- 独立 Agent Session 与运行状态；
 - 项目级模型、技能和工具权限覆盖。
 
-同一人才在同一项目中最多存在一个实例。不同项目实例之间不共享可变 Session。
+### TeamBinding
 
-### 任务团队快照 TeamBinding
+Mission 启动时从项目实例生成的不可变快照：
 
-Mission 启动时，从当前项目实例生成不可变 TeamBinding：
+- `teamBindingId` 表示 Ticket Policy 授权的团队域，不承载成员版本；
+- `contentHash` 固化该 Mission 的成员、能力和工具权限快照；
+- Ticket Engine 只按 `principalId` 与 `requiredCapabilities` 分配工作；
+- Mission 运行期间不被人才池或项目页面的后续修改偷偷改变；
+- Mission 结束后下一次目标重新发起 Staffing Request，可复用、增减或重组成员。
 
-- Ticket Engine 只按 `principalId` 和 `requiredCapabilities` 分配工作。
-- Mission 运行期间新增或移除项目成员不会偷偷改变当前 Mission。
-- 为保持审计一致性，第一版在存在运行中 Mission 时禁止修改项目团队。
-- Mission 结束后可调整团队，下一次 Mission 使用新的 TeamBinding。
+## 完整启动时序
 
-## 项目生命周期
+1. human 创建空项目。
+2. human 发布目标。
+3. Mission Control 持久化 Task 与 Staffing Request，立即向 UI 返回“老板正在组建团队”。
+4. Mission Control 从组织人才池中按 `team:staff` 能力寻找默认负责人。
+5. Agent Engine 运行该负责人，负责人读取目标与人才池快照。
+6. 负责人调用 `staff_project`。
+7. Mission Control 对提案做机械校验。
+8. 若 `staffed`，创建 WorkspaceAgent、冻结 TeamBinding、创建 Mission。
+9. Mission 中的规划 Agent 基于目标与 TeamBinding 自主创建 Ticket DAG。
+10. 若 `recruitment_required`，任务停在组队阶段，UI 明确显示老板提出的人才缺口；不创建虚假 Mission 或 Ticket。
 
-1. 创建项目，初始团队为空。
-2. 用户在“项目团队”中从人才池添加成员。
-3. 发布任务前，平台只校验启动契约：
-   - 至少一人具有 `mission:intake`。
-   - 至少一人具有 `plan:plan`。
-   - 至少一人具有 `delivery:accept`。
-4. PM 根据目标和当前 TeamBinding 自主设计 Ticket DAG。
-5. Ticket 所需能力无人满足时保持 Ready，不由平台猜测、改派或创建 Agent。
-6. 用户回到人才池招聘，再在 Mission 结束后调整项目团队。后续版本可增加受控的 TeamBinding amendment。
+组队 Agent 的选择同样不依赖 `role === "boss"`：
 
-启动契约不是固定岗位流程。具备多项能力的同一人才可以承担多个责任；PM 也可以根据项目规模省略架构、设计或其他非必要工单。
-
-## API
-
-### 人才池
-
-- `GET /api/agent-profiles`
-- `POST /api/agent-profiles`
-- `PATCH /api/agent-profiles/:profileId`
-
-创建人才时显式提交名称、岗位类别、Soul、Identity、Agent、Capabilities、模型、技能和权限。
-
-### 项目团队
-
-- `GET /api/workspaces/:workspaceId/agents`
-- `POST /api/workspaces/:workspaceId/agents`，输入 `profileId`
-- `PATCH /api/workspaces/:workspaceId/agents/:agentId`
-- `DELETE /api/workspaces/:workspaceId/agents/:agentId`
-
-GET 不得隐式创建任何成员。
+- 只有一个 `team:staff` 候选时使用该候选；
+- 多个候选时优先使用具备 `team:staff:default` 的唯一候选；
+- 无唯一负责人时暴露组织配置缺口，不由平台猜测。
 
 ## UI
 
 ### 人才
 
-- 展示组织人才池，而不是固定角色模板。
-- 提供“招聘人才”操作。
-- 新人才创建后不会自动进入已有项目。
+- 展示组织人才池并支持预先招聘。
+- 能力标签中可配置 `team:staff` 与 `team:staff:default`。
+- 新人才不会自动进入已有项目。
 
-### 项目团队
+### 项目
 
-- 左侧为当前项目成员列表。
-- 提供“添加成员”，从尚未加入当前项目的人才中选择。
-- 提供“移出项目”，只删除项目实例，不删除人才档案。
-- 无成员时显示明确空状态和添加入口。
+- 创建后允许为空。
+- 项目成员列表是老板组队后的结果，不把“添加成员”作为发布目标的前置操作。
+- 保留人工调整入口用于组织管理员维护和故障恢复，但必须明确标记为人工管理操作。
 
 ### 办公室
 
-- 只展示当前项目实例。
-- 多个相同岗位实例必须分别显示姓名，不能按角色重叠或合并。
+- 发布目标后立即显示组队负责人运行状态。
+- 组队完成后，办公室只显示真实项目成员。
+- 人才不足时在负责人头像上显示待处理标记，并展示原始招聘请求。
 
 ## 非目标
 
-- 自动招聘与自动生成人才档案。
-- 运行中 Mission 的团队热变更。
-- 招聘审批、面试、绩效和离职流程。
-- 平台根据“前端”“设计”等自然语言硬编码岗位选择。
-
+- 平台根据“前端”“设计”等自然语言关键词硬编码岗位选择。
+- 固定老板、PM、开发、QA 流程。
+- 自动生成不存在的人才档案。
+- 运行中 Mission 偷偷修改 TeamBinding。
+- 为旧项目数据增加兼容路由或双轨启动流程。

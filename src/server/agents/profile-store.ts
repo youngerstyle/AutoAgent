@@ -7,7 +7,7 @@ import { CORE_AGENT_PROFILES } from "./roster.js";
 import { toolsRequiredBySkills } from "./skill-config.js";
 import { createId } from "../../shared/ids.js";
 
-const DEFAULT_PROFILE_CONTENT_VERSION = 9;
+const DEFAULT_PROFILE_CONTENT_VERSION = 10;
 const LEGACY_V4_AUTONOMY_CONTENT_HASHES = new Set([
   "9da2edcf9996cf811045de08949f0599e62a9a034178c92c534b1f2b34caecc8",
   "0f3bd16facddbbcc3afb43459bc1432a2ce6f28e33c36759a444fb5fa7d34b3f",
@@ -90,7 +90,7 @@ function mergeDefaults(stored: AgentProfile[]): AgentProfile[] {
   const merged = defaultAgentProfiles().map((profile) => {
     const stored = byId.get(profile.id);
     const result = normalizeSkillToolContract(mergeDefaultProfile(profile, stored));
-    return stored && stored.contentVersion !== DEFAULT_PROFILE_CONTENT_VERSION
+    return stored && (stored.contentVersion ?? 0) < 9
       ? withProtocolCapabilities(result, profile)
       : result;
   });
@@ -197,6 +197,20 @@ function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: Agent
       contentVersion: DEFAULT_PROFILE_CONTENT_VERSION
     }));
   }
+  if (storedProfile.contentVersion === 9) {
+    return normalizeSkillToolContract(stripRemovedProfileFields({
+      ...defaultProfile,
+      ...storedProfile,
+      capabilities: [
+        ...new Set([
+          ...storedProfile.capabilities,
+          ...defaultProfile.capabilities.filter((capability) => capability.startsWith("team:staff")),
+        ]),
+      ],
+      defaultPolicy: { ...defaultProfile.defaultPolicy, ...storedProfile.defaultPolicy },
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION,
+    }));
+  }
   return stripRemovedProfileFields({
     ...defaultProfile,
     name: storedProfile.name ?? defaultProfile.name,
@@ -230,6 +244,7 @@ function withProtocolCapabilities(profile: AgentProfile, defaults: AgentProfile)
     capabilities: [...new Set([...defaults.capabilities.filter(isProtocolCapability), ...profile.capabilities])],
   };
 }
+
 
 function agentMdForRole(role: AgentProfile["role"]): string {
   const manuals: Record<string, string> = {

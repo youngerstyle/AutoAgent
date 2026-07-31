@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
-import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
+import { ensureWorkspaceAgent, listWorkspaceAgents } from "../../src/server/agents/roster.js";
+import { createTeamBinding } from "../../src/server/product/team-binding.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
 import {
@@ -1587,6 +1588,12 @@ async function createFixture(options: {
     now: options.now,
     providerRetryBaseMs: options.providerRetryBaseMs,
     providerRetryMaxMs: options.providerRetryMaxMs,
+    initialTeamBinding: async () => createTeamBinding(
+      workspace,
+      await listWorkspaceAgents(workspace),
+      await profiles.list(),
+      "minimal-team",
+    ),
   });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
 }

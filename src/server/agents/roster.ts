@@ -9,7 +9,7 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
     id: "prof_boss",
     name: "老板",
     role: "boss",
-    capabilities: ["mission:intake", "delivery:accept", "目标接收", "成功标准定义", "优先级取舍", "团队调度", "验收决策", "风险升级"],
+    capabilities: ["team:staff", "team:staff:default", "mission:intake", "delivery:accept", "目标接收", "成功标准定义", "优先级取舍", "团队调度", "验收决策", "风险升级"],
     defaultProvider: "mock",
     defaultModel: "mock-boss",
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false, enabledTools: ["listFiles", "readFile"] }

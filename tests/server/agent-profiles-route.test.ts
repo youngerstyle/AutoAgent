@@ -50,7 +50,7 @@ describe("agent profiles route", () => {
     const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
     const persistedPm = persisted.find((profile: { role: string }) => profile.role === "pm");
     expect(persistedPm.identity).toBe(pm.identity);
-    expect(persistedPm.contentVersion).toBe(9);
+    expect(persistedPm.contentVersion).toBe(10);
     expect(persistedPm.capabilities).toContain("plan:plan");
   });
 
@@ -73,7 +73,7 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(9);
+    expect(dev.contentVersion).toBe(10);
     expect(dev.capabilities).toContain("delivery:implement");
     expect(dev.defaultModel).toBe("deepseek-v4-flash");
     expect(dev.agentMd).toContain("已经存在的手册要保留");
@@ -104,7 +104,7 @@ describe("agent profiles route", () => {
     expect(dev.capabilities).toEqual(expect.arrayContaining(["delivery:implement", "TypeScript", "验证"]));
     expect(dev.agentMd).toContain("# 使命");
     expect(dev.agentMd).toContain("实现");
-    expect(dev.contentVersion).toBe(9);
+    expect(dev.contentVersion).toBe(10);
     expect(dev.capabilities).toContain("delivery:implement");
   });
 
@@ -132,7 +132,7 @@ describe("agent profiles route", () => {
     const listed = await request(app).get("/api/agent-profiles").expect(200);
     const dev = listed.body.profiles.find((profile: { role: string }) => profile.role === "dev");
 
-    expect(dev.contentVersion).toBe(9);
+    expect(dev.contentVersion).toBe(10);
     expect(dev.defaultSkills).toContain("agent-browser");
     expect(dev.defaultPolicy.enabledTools).toEqual(expect.arrayContaining([
       "listFiles",
@@ -185,7 +185,7 @@ describe("agent profiles route", () => {
     const dev = listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_dev");
     const specialist = listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_custom_browser");
 
-    expect(dev.contentVersion).toBe(9);
+    expect(dev.contentVersion).toBe(10);
     expect(dev.defaultPolicy.enabledTools).toContain("browser");
     expect(specialist.defaultPolicy.enabledTools).toContain("browser");
 

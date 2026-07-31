@@ -4,6 +4,26 @@ export class MockProvider implements AgentModelProvider {
   name = "mock" as const;
 
   async runModelTurn(input: AgentModelTurnInput): Promise<AgentModelTurnResult> {
+    if (input.tools.some((tool) => tool.name === "staff_project")) {
+      const profileIds = staffingProfileIds(input);
+      return {
+        items: [{
+          type: "tool_call",
+          callId: `mock-staffing-${input.history.length}`,
+          name: "staff_project",
+          arguments: {
+            status: "staffed",
+            members: profileIds.map((profileId) => ({
+              profileId,
+              responsibility: "按档案能力参与项目交付",
+              rationale: "mock 负责人采用保守组队策略，纳入当前人才池成员",
+            })),
+            recruitmentRequests: [],
+          },
+        }],
+        usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
+      };
+    }
     if (!input.tools.some((tool) => tool.name === "goal_resolution")) {
       return {
         items: [{ type: "assistant_message", content: "已收到并处理当前消息。" }],
@@ -35,6 +55,14 @@ export class MockProvider implements AgentModelProvider {
       usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
     };
   }
+}
+
+function staffingProfileIds(input: AgentModelTurnInput): string[] {
+  const text = [
+    input.instructions,
+    ...input.history.flatMap((item) => item.type === "user_message" ? [item.content] : []),
+  ].join("\n");
+  return [...new Set([...text.matchAll(/"profileId"\s*:\s*"([^"]+)"/g)].map((match) => match[1]!))];
 }
 
 function mockGoalResolution(instructions: string, toolEvidence: string[] = []): Record<string, unknown> {

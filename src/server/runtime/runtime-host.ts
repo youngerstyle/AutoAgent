@@ -23,7 +23,7 @@ import { PiAgentRuntime } from "../agent-engine/pi-runtime.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceResult } from "../agent-engine/runtime.js";
 import { AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
-import { listWorkspaceAgents } from "../agents/roster.js";
+import { ensureWorkspaceAgent, listWorkspaceAgents } from "../agents/roster.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import { MissionGoalResolutionPort } from "../mission-process/mission-goal-resolution-port.js";
 import { MissionProcessManager } from "../mission-process/mission-process-manager.js";
@@ -39,6 +39,8 @@ import { TicketStore } from "../tickets/ticket-store.js";
 import { WorkspaceSnapshotStore } from "../tickets/workspace-snapshot-store.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import { RuntimeHostStore, type RuntimeTaskRecord } from "./runtime-host-store.js";
+import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
+import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
@@ -51,15 +53,9 @@ interface RuntimeContext {
 
 export const REQUIRED_TEAM_CAPABILITIES = ["mission:intake", "plan:plan", "delivery:accept"] as const;
 
-export class TeamCapabilityContractError extends Error {
-  constructor(public readonly missingCapabilities: readonly string[]) {
-    super(`Project team is missing required capabilities: ${missingCapabilities.join(", ")}`);
-    this.name = "TeamCapabilityContractError";
-  }
-}
-
 export class RuntimeHost {
   private readonly store: RuntimeHostStore;
+  private readonly staffing: StaffingCoordinator;
   private readonly contexts = new Map<string, RuntimeContext>();
   private readonly readOnlyTasks = new Map<string, string>();
   private readonly agentRuns = new Map<string, Promise<void>>();
@@ -82,9 +78,17 @@ export class RuntimeHost {
       now?: () => Date;
       providerRetryBaseMs?: number;
       providerRetryMaxMs?: number;
+      initialTeamBinding?: TeamBinding | (() => Promise<TeamBinding>);
     } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
+    this.staffing = new StaffingCoordinator(
+      workspace,
+      profiles,
+      providers,
+      REQUIRED_TEAM_CAPABILITIES,
+      () => this.now(),
+    );
   }
 
   createTask(input: { taskId: string; title: string; objective: string }): Promise<RuntimeTaskRecord> {
@@ -116,6 +120,16 @@ export class RuntimeHost {
         throw new Error("附件元数据与工作区存储不一致");
       }
     }));
+    if (!this.contexts.has(taskId)) {
+      const request = await this.staffing.get(taskId);
+      if (request?.staffingAgentId === agentId) {
+        if (attachments.length) throw new Error("组队阶段暂不接受图片附件");
+        await this.staffing.sendHumanMessage(taskId, message, messageId);
+        this.backgroundTickRequested = true;
+        if (this.timer) queueMicrotask(() => void this.backgroundTick().catch(() => undefined));
+        return this.snapshotUnlocked();
+      }
+    }
     let queuedTurn: Promise<void> | undefined;
     const result = await this.exclusive(async () => {
       const accepted = await this.appendAgentMessageUnlocked(taskId, agentId, message, messageId, attachments);
@@ -138,6 +152,10 @@ export class RuntimeHost {
   }
 
   async sendTaskMessage(taskId: string, message: string, messageId: string = randomUUID()): Promise<WorkspaceSnapshot> {
+    if (!this.contexts.has(taskId)) {
+      const request = await this.staffing.get(taskId);
+      if (request) return this.sendAgentMessage(taskId, request.staffingAgentId, message, messageId);
+    }
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const owner = mission.record.teamBinding.members.find((member) => member.principalId === mission.record.ownerPrincipalId);
@@ -191,6 +209,7 @@ export class RuntimeHost {
         [...context.loops.values()].map((runtime) => runtime.dispose?.()),
       ),
     );
+    await this.staffing.dispose();
 
     const schedulerWork = [this.tickPromise, this.backgroundTickPromise].filter(
       (pending): pending is Promise<void> => pending !== undefined,
@@ -212,26 +231,18 @@ export class RuntimeHost {
       createdAt: now,
       updatedAt: now,
     };
-    const context = await this.compose(record);
-    const missingCapabilities = REQUIRED_TEAM_CAPABILITIES.filter(
-      (capability) => !context.team.members.some((member) => member.capabilities.includes(capability)),
-    );
-    if (missingCapabilities.length > 0) throw new TeamCapabilityContractError(missingCapabilities);
-    const owner = context.team.members.find((member) => member.capabilities.includes("mission:intake"));
-    if (!owner) throw new TeamCapabilityContractError(["mission:intake"]);
+    if (this.options.initialTeamBinding) {
+      await this.store.save(record);
+      const team = typeof this.options.initialTeamBinding === "function"
+        ? await this.options.initialTeamBinding()
+        : this.options.initialTeamBinding;
+      await this.initializeMission(record, team);
+      return record;
+    }
+    await this.staffing.create(record.taskId, record.objective);
     await this.store.save(record);
-    this.contexts.set(record.taskId, context);
-    await context.manager.startMission({
-      missionId: record.missionId,
-      objective: record.objective,
-      requestedByPrincipalId: "human",
-      ownerPrincipalId: owner.principalId,
-      teamBinding: context.team,
-      resolvedStart: {
-        planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
-        teamBindingId: "minimal-team",
-      },
-    });
+    this.backgroundTickRequested = true;
+    if (this.timer) queueMicrotask(() => void this.backgroundTick().catch(() => undefined));
     return record;
   }
 
@@ -239,6 +250,14 @@ export class RuntimeHost {
     for (const record of await this.store.list()) {
       if (new Set(["completed", "failed", "cancelled"]).has(record.status)) continue;
       try {
+        const persistedMission = await new MissionStore(this.workspace.rootPath, record.missionId).read();
+        if (!persistedMission) {
+          const staffing = await this.staffing.get(record.taskId);
+          if (staffing?.status === "completed" && staffing.proposal?.status === "staffed") {
+            await this.initializeMissionFromStaffing(record, staffing.proposal);
+          }
+          continue;
+        }
         const context = await this.compose(record);
         this.contexts.set(record.taskId, context);
         const persisted = await context.manager.current().catch(() => undefined);
@@ -270,6 +289,8 @@ export class RuntimeHost {
       if (new Set(["completed", "failed", "cancelled"]).has(record.status)) continue;
       if (this.contexts.has(record.taskId)) continue;
       try {
+        const persistedMission = await new MissionStore(this.workspace.rootPath, record.missionId).read();
+        if (!persistedMission) continue;
         const context = await this.compose(record);
         this.contexts.set(record.taskId, context);
       } catch (error) {
@@ -302,6 +323,14 @@ export class RuntimeHost {
   }
 
   private async tickUnlocked(awaitAgentRuns = true): Promise<void> {
+    for (const record of await this.store.list()) {
+      if (record.status !== "active" || this.contexts.has(record.taskId)) continue;
+      const request = await this.staffing.get(record.taskId);
+      if (!request || new Set(["blocked", "failed"]).has(request.status)) continue;
+      const key = `staffing:${record.taskId}`;
+      const run = this.agentRuns.get(key) ?? this.trackAgentRun(key, this.runStaffingOnce(record));
+      if (awaitAgentRuns) await run;
+    }
     for (const context of this.contexts.values()) {
       try {
         await this.tickTask(context, awaitAgentRuns);
@@ -409,6 +438,11 @@ export class RuntimeHost {
   }
 
   private async pauseTaskUnlocked(taskId: string): Promise<void> {
+    if (!this.contexts.has(taskId)) {
+      const record = await this.requireTaskRecord(taskId);
+      await this.store.save({ ...record, status: "paused", updatedAt: this.now().toISOString() });
+      return;
+    }
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
@@ -444,6 +478,13 @@ export class RuntimeHost {
   }
 
   private async resumeTaskUnlocked(taskId: string): Promise<void> {
+    if (!this.contexts.has(taskId)) {
+      const record = await this.requireTaskRecord(taskId);
+      await this.store.save({ ...record, status: "active", updatedAt: this.now().toISOString() });
+      this.backgroundTickRequested = true;
+      if (this.timer) queueMicrotask(() => void this.backgroundTick().catch(() => undefined));
+      return;
+    }
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
@@ -500,6 +541,12 @@ export class RuntimeHost {
   }
 
   private async cancelTaskUnlocked(taskId: string, reason: string): Promise<void> {
+    if (!this.contexts.has(taskId)) {
+      const record = await this.requireTaskRecord(taskId);
+      await this.staffing.cancel(taskId, reason);
+      await this.store.save({ ...record, status: "cancelled", updatedAt: this.now().toISOString() });
+      return;
+    }
     const context = await this.requireContext(taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
@@ -584,6 +631,72 @@ export class RuntimeHost {
       currentStep: readOnlyReason,
       readOnlyReason,
     };
+    if (!this.contexts.has(record.taskId)) {
+      const staffing = await this.staffing.get(record.taskId);
+      if (staffing) {
+        const stafferProfile = profiles.find((profile) => profile.id === staffing.staffingProfileId);
+        const projection = await this.staffing.projection(record.taskId).catch(() => undefined);
+        const staffer: WorkspaceSnapshot["agents"][number] = {
+          id: staffing.staffingAgentId,
+          workspaceId: this.workspace.id,
+          profileId: staffing.staffingProfileId,
+          roleInWorkspace: stafferProfile?.role ?? "specialist",
+          agentDir: stafferProfile ? `${this.workspace.rootPath}\\.autoagent\\organization-agents\\${stafferProfile.id}` : "",
+          status: staffing.status === "running" ? "running" : staffing.status === "blocked" ? "blocked" : "waiting",
+          provider: stafferProfile?.defaultProvider,
+          model: stafferProfile?.defaultModel,
+          name: stafferProfile?.name ?? "组队负责人",
+          role: stafferProfile?.role ?? "specialist",
+          capabilities: stafferProfile?.capabilities ?? [],
+          currentStep: staffing.status === "blocked" ? staffing.blockReason : "根据目标组建项目团队",
+        };
+        const threadEvents = projection?.thread
+          ? projectThread(projection.thread, projection.payloads, record)
+          : [];
+        const status = staffing.status === "blocked" || staffing.status === "failed" ? "blocked" : "running";
+        return {
+          workspace: this.workspace,
+          activeTask: {
+            id: record.taskId,
+            workspaceId: this.workspace.id,
+            title: record.title,
+            goal: record.objective,
+            status,
+            createdBy: "user",
+            activeTaskRunId: record.runId,
+          },
+          activeTaskRun: {
+            id: record.runId,
+            taskId: record.taskId,
+            workspaceId: this.workspace.id,
+            status,
+            phase: status === "blocked" ? "blocked" : "running",
+            startedAt: record.createdAt,
+          },
+          agents: [...presentedAgents.map((agent) => ({ ...agent, status: "idle" as const })), staffer],
+          assignments: [],
+          tickets: [],
+          agentThreads: { [staffer.id]: threadEvents },
+          recentEvents: threadEvents.map((event) => ({
+            id: event.id,
+            workspaceId: this.workspace.id,
+            taskId: record.taskId,
+            taskRunId: record.runId,
+            actorId: staffer.id,
+            type: "agent.status_changed" as const,
+            summary: threadEventText(event),
+            payload: event.payload,
+            timestamp: event.timestamp,
+            sequence: event.sequence,
+          })),
+          phase: status === "blocked" ? "blocked" : "running",
+          status,
+          currentStep: staffing.status === "blocked"
+            ? staffing.blockReason
+            : `${staffer.name ?? "负责人"}正在根据目标组建项目团队`,
+        };
+      }
+    }
     const context = await this.requireContext(record.taskId);
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
@@ -1001,12 +1114,71 @@ export class RuntimeHost {
     return { failures, retryAt };
   }
 
-  private async compose(record: RuntimeTaskRecord): Promise<RuntimeContext> {
+  private async runStaffingOnce(record: RuntimeTaskRecord): Promise<void> {
+    const result = await this.staffing.runOnce(record.taskId);
+    if (result.outcome?.status !== "staffed") return;
+    if ((await this.requireTaskRecord(record.taskId)).status !== "active") return;
+    await this.initializeMissionFromStaffing(record, result.outcome);
+  }
+
+  private async initializeMissionFromStaffing(
+    record: RuntimeTaskRecord,
+    outcome: Extract<TeamStaffingOutcome, { status: "staffed" }>,
+  ): Promise<void> {
+    if (this.contexts.has(record.taskId)) return;
+    const profiles = await this.profiles.list();
+    const existingAgents = await listWorkspaceAgents(this.workspace);
+    const selectedAgents: WorkspaceAgent[] = [];
+    for (const member of outcome.members) {
+      const profile = profiles.find((item) => item.id === member.profileId);
+      if (!profile) throw new Error(`Staffing profile no longer exists: ${member.profileId}`);
+      const existing = existingAgents.find((agent) => agent.profileId === profile.id);
+      selectedAgents.push(existing ?? await ensureWorkspaceAgent(
+        this.workspace,
+        profile,
+        stableId("workspace-agent", this.workspace.id, profile.id),
+      ));
+    }
+    const team = createTeamBinding(
+      this.workspace,
+      selectedAgents,
+      profiles,
+      "minimal-team",
+    );
+    await this.initializeMission(record, team);
+  }
+
+  private async initializeMission(record: RuntimeTaskRecord, team: TeamBinding): Promise<void> {
+    if (this.contexts.has(record.taskId)) return;
+    const owner = team.members.find((member) => member.capabilities.includes("mission:intake"));
+    if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
+    const context = await this.compose(record, team);
+    await context.manager.startMission({
+      missionId: record.missionId,
+      objective: record.objective,
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: owner.principalId,
+      teamBinding: team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
+        teamBindingId: team.teamBindingId,
+      },
+    });
+    this.contexts.set(record.taskId, context);
+  }
+
+  private async requireTaskRecord(taskId: string): Promise<RuntimeTaskRecord> {
+    const record = await this.store.get(taskId);
+    if (!record) throw new Error("Task does not exist");
+    return record;
+  }
+
+  private async compose(record: RuntimeTaskRecord, teamOverride?: TeamBinding): Promise<RuntimeContext> {
     const workspaceAgents = await listWorkspaceAgents(this.workspace);
     const profiles = await this.profiles.list();
     const missionStore = new MissionStore(this.workspace.rootPath, record.missionId);
     const persistedMission = await missionStore.read();
-    const team = persistedMission?.record.teamBinding
+    const team = teamOverride ?? persistedMission?.record.teamBinding
       ?? createTeamBinding(this.workspace, workspaceAgents, profiles, "minimal-team");
     const tickets = new TicketEngine(
       new TicketStore(this.workspace.rootPath, record.taskId, record.runId),

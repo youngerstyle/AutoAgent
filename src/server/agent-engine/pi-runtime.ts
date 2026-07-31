@@ -45,6 +45,10 @@ import {
   type AgentToolResult as WorkspaceAgentToolResult,
 } from "./tool-runtime.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
+import {
+  TEAM_STAFFING_SCHEMA_REF,
+  parseTeamStaffingOutcome,
+} from "../../shared/contracts/staffing.js";
 
 interface SessionState {
   session: AgentSession;
@@ -600,6 +604,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       ...workspaceTools(this.tools, toolExecution),
       piReadTool(this.tools, skills, toolExecution),
       goalTool(resolution, this.now, sessionGoal?.spec.outputContract),
+      staffingTool(resolution, this.now, sessionGoal?.spec.outputContract),
       correctionTool(resolution, this.now, sessionGoal?.spec.outputContract),
       planChangeTool(resolution, this.now, sessionGoal?.spec.outputContract),
       humanInputTool(resolution, this.now),
@@ -1110,16 +1115,56 @@ export function activePiToolNames(
   const outputContract = typeof outputContractOrHasGoal === "object"
     ? outputContractOrHasGoal
     : undefined;
+  const staffing = outputContract?.schemaRef === TEAM_STAFFING_SCHEMA_REF;
   return [...new Set([
     "read",
     ...workspaceToolNames.filter((name) => name !== "readImage" || supportsImages),
     ...(hasGoal ? [
-      "goal_resolution",
+      staffing ? "staff_project" : "goal_resolution",
       ...(outputContract?.correctionOutcomeSchema ? ["report_goal_correction"] : []),
       ...(outputContract?.planChangeOutcomeSchema ? ["request_goal_plan_change"] : []),
       ...(options.hostCorrection ? [] : ["request_human_input"]),
     ] : []),
   ])];
+}
+
+function staffingTool(
+  binding: ResolutionBinding,
+  now: () => Date,
+  outputContract?: AgentGoal["spec"]["outputContract"],
+): ToolDefinition {
+  return defineTool({
+    name: "staff_project",
+    label: "组建项目团队",
+    description: [
+      "根据当前目标、人才池事实和启动契约提交项目团队。",
+      "你负责判断需要哪些人；平台只校验 profileId、能力与权限事实。",
+      "现有人才不足时使用 recruitment_required 并准确说明缺少的能力，不要虚构人才。",
+    ].join(""),
+    parameters: Type.Unsafe(outputContract?.completionOutcomeSchema ?? {
+      type: "object",
+      properties: {},
+    }),
+    async execute(_callId, params) {
+      if (outputContract?.schemaRef !== TEAM_STAFFING_SCHEMA_REF) {
+        throw new Error("当前 Goal 不是组队任务");
+      }
+      const outcome = parseTeamStaffingOutcome(params);
+      return submitResolution(binding, now, {
+        status: "completed",
+        summary: outcome.status === "staffed"
+          ? `已选择 ${outcome.members.length} 名项目成员`
+          : `发现 ${outcome.recruitmentRequests.length} 个人才缺口`,
+        criterionResults: binding.goal?.spec.successCriteria.map((_criterion, criterionIndex) => ({
+          criterionIndex,
+          status: "satisfied",
+          evidence: [],
+        })) ?? [],
+        residualRisks: [],
+        domainOutcome: outcome,
+      }, "staff_project");
+    },
+  });
 }
 
 function goalTool(

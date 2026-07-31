@@ -32,19 +32,21 @@ describe("agents route", () => {
     expect(second.body.agents).toEqual([]);
   });
 
-  it("rejects task start until the explicit project team satisfies the capability contract", async () => {
+  it("accepts a goal in an empty project and delegates staffing to the organization owner", async () => {
     const app = createApp();
     const { workspaceId } = await createWorkspace(app);
 
     const response = await request(app)
       .post(`/api/workspaces/${workspaceId}/tasks`)
       .send({ goal: "构建可运行产品" })
-      .expect(409);
+      .expect(201);
 
-    expect(response.body.code).toBe("TEAM_CAPABILITY_GAP");
-    expect(response.body.error).toContain("mission:intake");
-    expect(response.body.error).toContain("plan:plan");
-    expect(response.body.error).toContain("delivery:accept");
+    expect(response.body.snapshot.activeTask.goal).toBe("构建可运行产品");
+    expect(response.body.snapshot.tickets).toEqual([]);
+    expect(response.body.snapshot.agents).toContainEqual(expect.objectContaining({
+      capabilities: expect.arrayContaining(["team:staff"]),
+      currentStep: "根据目标组建项目团队",
+    }));
   });
 
   it("creates talent and instantiates it independently in a project", async () => {
