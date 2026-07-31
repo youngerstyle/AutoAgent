@@ -17,6 +17,7 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Send,
   ShieldCheck,
@@ -2036,9 +2037,10 @@ function ProjectTeam(props: {
           <select
             aria-label="选择要加入项目的人才"
             value={candidateId}
+            disabled={!candidates.length}
             onChange={(event) => setCandidateId(event.target.value)}
           >
-            <option value="">{candidates.length ? "从人才池选择" : "人才池中没有可添加成员"}</option>
+            <option value="">{candidates.length ? "从人才池选择" : "暂无可添加成员"}</option>
             {candidates.map((profile) => (
               <option key={profile.id} value={profile.id}>{profile.name} · {roleLabel(profile.role)}</option>
             ))}
@@ -2055,7 +2057,15 @@ function ProjectTeam(props: {
             <Plus size={17} />
             添加成员
           </button>
-          <button type="button" onClick={props.onRefresh}>刷新</button>
+          <button
+            type="button"
+            className="team-refresh-button"
+            onClick={props.onRefresh}
+            aria-label="刷新项目团队"
+            title="刷新项目团队"
+          >
+            <RefreshCw size={17} />
+          </button>
         </div>
       </header>
       <div className="team-layout">

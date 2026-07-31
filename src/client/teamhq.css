@@ -1283,6 +1283,59 @@ button {
   border-bottom: 0;
 }
 
+.projects-hub .team-header-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.projects-hub .team-header-actions select {
+  width: min(270px, 30vw);
+  height: 42px;
+  border-color: #dce2df;
+  border-radius: 10px;
+  padding-right: 34px;
+  background: #fbfcfb;
+}
+
+.projects-hub .team-header-actions .primary-action {
+  min-width: 108px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 15px;
+  white-space: nowrap;
+}
+
+.projects-hub .team-header-actions .primary-action:disabled {
+  border: 1px solid #e1e6e3;
+  background: #f0f3f1;
+  color: #9aa49f;
+}
+
+.projects-hub .team-refresh-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #dce2df;
+  border-radius: 10px;
+  background: #fff;
+  color: #53615c;
+}
+
+.projects-hub .team-refresh-button:hover {
+  border-color: #9cc7c0;
+  background: #f0f8f6;
+  color: var(--hq-teal);
+}
+
 .projects-hub .team-layout {
   height: auto;
   display: grid;
@@ -1676,6 +1729,21 @@ button {
 }
 
 @media (max-width: 1050px) {
+  .projects-hub .team-workbench > .management-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .projects-hub .team-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .projects-hub .team-header-actions select {
+    width: auto;
+    flex: 1 1 240px;
+  }
+
   .projects-hub .team-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1784,6 +1852,20 @@ button {
   .projects-hub .team-roster,
   .projects-hub .skill-picker {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .projects-hub .team-header-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .projects-hub .team-header-actions select {
+    width: 100%;
+    grid-column: 1 / -1;
+  }
+
+  .projects-hub .team-header-actions .primary-action {
+    width: 100%;
   }
 
   .projects-hub .team-layout,
