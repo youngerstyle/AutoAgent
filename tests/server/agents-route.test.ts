@@ -32,6 +32,23 @@ describe("agents route", () => {
     expect(second.body.agents).toEqual([]);
   });
 
+  it("lists an existing partial team without silently filling missing roles", async () => {
+    const app = createApp();
+    const { workspaceId } = await createWorkspace(app);
+    const profiles = await request(app).get("/api/agent-profiles").expect(200);
+    const boss = profiles.body.profiles.find((profile: { role: string }) => profile.role === "boss");
+    const pm = profiles.body.profiles.find((profile: { role: string }) => profile.role === "pm");
+
+    await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: boss.id }).expect(201);
+    await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: pm.id }).expect(201);
+
+    const first = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
+    const second = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
+
+    expect(first.body.agents.map((agent: { roleInWorkspace: string }) => agent.roleInWorkspace)).toEqual(["boss", "pm"]);
+    expect(second.body.agents.map((agent: { roleInWorkspace: string }) => agent.roleInWorkspace)).toEqual(["boss", "pm"]);
+  });
+
   it("accepts a goal in an empty project and delegates staffing to the organization owner", async () => {
     const app = createApp();
     const { workspaceId } = await createWorkspace(app);

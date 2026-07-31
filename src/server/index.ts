@@ -6,7 +6,9 @@ const server = await startServer(config);
 
 async function shutdown() {
   await server.stopRuntimeHosts();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    void server.releaseInstanceLock().finally(() => process.exit(0));
+  });
 }
 
 process.once("SIGINT", () => void shutdown());

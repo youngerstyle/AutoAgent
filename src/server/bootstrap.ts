@@ -8,8 +8,12 @@ import {
 } from "./tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
+import { ServiceInstanceLock } from "./storage/service-instance-lock.js";
 
-export type AutoAgentServer = Server & { stopRuntimeHosts(): Promise<void> };
+export type AutoAgentServer = Server & {
+  stopRuntimeHosts(): Promise<void>;
+  releaseInstanceLock(): Promise<void>;
+};
 
 type BootstrapOptions = {
   restoreRuntimeHosts?: boolean;
@@ -29,20 +33,31 @@ export async function bootstrapServer(
 }
 
 export async function startServer(config: AppConfig = loadConfig()): Promise<AutoAgentServer> {
-  const app = await bootstrapServer(config, { restoreRuntimeHosts: false });
-  return new Promise<AutoAgentServer>((resolve, reject) => {
-    const server = app.listen(config.port, () => {
-      server.off("error", reject);
-      const managedServer = Object.assign(server, {
-        stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll() ?? Promise.resolve(),
+  const instanceLock = await ServiceInstanceLock.acquire(config.autoAgentHome);
+  try {
+    const app = await bootstrapServer(config, { restoreRuntimeHosts: false });
+    return await new Promise<AutoAgentServer>((resolve, reject) => {
+      const releaseAndReject = (error: Error) => {
+        void instanceLock.release().finally(() => reject(error));
+      };
+      const server = app.listen(config.port, () => {
+        server.off("error", releaseAndReject);
+        const managedServer = Object.assign(server, {
+          stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll() ?? Promise.resolve(),
+          releaseInstanceLock: () => instanceLock.release(),
+        });
+        server.once("close", () => void instanceLock.release());
+        resolve(managedServer);
+        void restoreRuntimeHosts(app).catch((error) => {
+          console.error("Runtime host restoration failed", error);
+        });
       });
-      resolve(managedServer);
-      void restoreRuntimeHosts(app).catch((error) => {
-        console.error("Runtime host restoration failed", error);
-      });
+      server.once("error", releaseAndReject);
     });
-    server.once("error", reject);
-  });
+  } catch (error) {
+    await instanceLock.release();
+    throw error;
+  }
 }
 
 async function restoreRuntimeHosts(app: Express): Promise<void> {

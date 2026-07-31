@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import request from "supertest";
@@ -16,6 +16,7 @@ import {
 } from "../../src/server/tickets/plan-policy-store.js";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 import { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
+import { ServiceInstanceLockError } from "../../src/server/storage/service-instance-lock.js";
 
 describe("server bootstrap", () => {
   it("seeds the immutable minimal-team policy before returning the production app", async () => {
@@ -64,6 +65,36 @@ describe("server bootstrap", () => {
       server.close();
       restore.mockRestore();
     }
+  });
+
+  it("allows only one server process to write the same AUTOAGENT_HOME", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-exclusive-"));
+    const first = await startServer({ ...config(home), port: 0 });
+    try {
+      await expect(startServer({ ...config(home), port: 0 })).rejects.toBeInstanceOf(ServiceInstanceLockError);
+    } finally {
+      await closeServer(first);
+    }
+
+    const restarted = await startServer({ ...config(home), port: 0 });
+    await closeServer(restarted);
+  });
+
+  it("recovers an instance lock left by a process that no longer exists", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-stale-"));
+    await writeFile(
+      path.join(home, ".service-instance.lock"),
+      JSON.stringify({
+        token: "stale-owner",
+        pid: 2_147_483_647,
+        hostname: os.hostname(),
+        acquiredAt: "2020-01-01T00:00:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const server = await startServer({ ...config(home), port: 0 });
+    await closeServer(server);
   });
 
   it("reports invalid workspaces without failing restoration for healthy workspaces", async () => {
@@ -129,4 +160,11 @@ function config(autoAgentHome: string): AppConfig {
     useMockProvider: true,
     providerRetryCount: 0,
   };
+}
+
+async function closeServer(server: Awaited<ReturnType<typeof startServer>>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  await server.releaseInstanceLock();
 }
