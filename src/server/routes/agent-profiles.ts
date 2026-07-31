@@ -4,7 +4,7 @@ import path from "node:path";
 import { loadSkills } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config.js";
 import { asyncHandler, HttpError } from "../errors.js";
-import { AgentProfileStore, sanitizeProfilePatch } from "../agents/profile-store.js";
+import { AgentProfileStore, sanitizeProfileCreate, sanitizeProfilePatch } from "../agents/profile-store.js";
 
 export function createAgentProfileRouter(store?: AgentProfileStore) {
   const router = Router();
@@ -29,6 +29,15 @@ export function createAgentProfileRouter(store?: AgentProfileStore) {
       })),
       diagnostics: loaded.diagnostics,
     });
+  }));
+
+  router.post("/", asyncHandler(async (req, res) => {
+    try {
+      const profile = await profileStore.create(sanitizeProfileCreate(req.body));
+      res.status(201).json({ profile });
+    } catch (error) {
+      throw new HttpError(400, (error as Error).message, "INVALID_AGENT_PROFILE");
+    }
   }));
 
   router.patch("/:profileId", asyncHandler(async (req, res) => {

@@ -1,4 +1,4 @@
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import type { AgentProfile, AgentRole, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { workspaceAgentDir, workspaceAgentFile, workspaceAgentSessionsDir } from "../storage/paths.js";
@@ -54,8 +54,6 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
   }
 ];
 
-export type CoreRole = Exclude<AgentRole, "specialist">;
-
 const ROLE_ORDER: Record<AgentRole, number> = {
   boss: 0,
   pm: 1,
@@ -64,14 +62,6 @@ const ROLE_ORDER: Record<AgentRole, number> = {
   qa: 4,
   specialist: 5
 };
-
-export async function ensureCoreTeam(workspace: Workspace, profiles = CORE_AGENT_PROFILES): Promise<WorkspaceAgent[]> {
-  const agents: WorkspaceAgent[] = [];
-  for (const profile of profiles.filter((profile) => profile.role !== "specialist")) {
-    agents.push(await ensureWorkspaceAgent(workspace, profile, `wa_${profile.role}`));
-  }
-  return agents;
-}
 
 export async function listWorkspaceAgents(workspace: Workspace): Promise<WorkspaceAgent[]> {
   const agentsRoot = workspaceAgentDir(workspace.rootPath, "");
@@ -95,20 +85,6 @@ export async function listWorkspaceAgents(workspace: Workspace): Promise<Workspa
   }
 }
 
-export function profileForRole(role: AgentRole, profiles = CORE_AGENT_PROFILES): AgentProfile {
-  const profile = profiles.find((item) => item.role === role);
-  if (profile) return profile;
-  return {
-    id: "prof_specialist",
-    name: "专家",
-    role: "specialist",
-    capabilities: ["专项分析", "专业判断", "方案补位", "交接结论"],
-    defaultProvider: "mock",
-    defaultModel: "mock-specialist",
-    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] }
-  };
-}
-
 export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentProfile, workspaceAgentId = createId("wa")): Promise<WorkspaceAgent> {
   const existing = await readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, workspaceAgentId), undefined);
   if (existing) return existing;
@@ -130,8 +106,30 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
 }
 
 export function profileMetadata(agent: WorkspaceAgent, profiles = CORE_AGENT_PROFILES): Pick<AgentProfile, "name" | "role" | "capabilities"> {
-  const profile = profileForRole(agent.roleInWorkspace, profiles);
+  const profile = profiles.find((item) => item.id === agent.profileId);
+  if (!profile) {
+    return {
+      name: "档案已缺失",
+      role: agent.roleInWorkspace,
+      capabilities: [],
+    };
+  }
   return { name: profile.name, role: profile.role, capabilities: profile.capabilities };
+}
+
+export async function addWorkspaceAgent(workspace: Workspace, profile: AgentProfile): Promise<WorkspaceAgent> {
+  const agents = await listWorkspaceAgents(workspace);
+  if (agents.some((agent) => agent.profileId === profile.id)) {
+    throw new Error(`Agent profile is already in workspace: ${profile.id}`);
+  }
+  return ensureWorkspaceAgent(workspace, profile);
+}
+
+export async function removeWorkspaceAgent(workspace: Workspace, workspaceAgentId: string): Promise<WorkspaceAgent> {
+  const existing = await readJson<WorkspaceAgent | undefined>(workspaceAgentFile(workspace.rootPath, workspaceAgentId), undefined);
+  if (!existing) throw new Error(`Workspace agent not found: ${workspaceAgentId}`);
+  await rm(workspaceAgentDir(workspace.rootPath, workspaceAgentId), { recursive: true, force: true });
+  return existing;
 }
 
 export async function updateWorkspaceAgent(

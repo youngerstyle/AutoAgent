@@ -88,14 +88,16 @@ export interface TaskSubmitView {
 }
 
 const ROLE_ORDER = ["boss", "pm", "architect", "dev", "specialist", "qa"];
-const ROLE_POSITIONS: Record<string, { x: number; y: number }> = {
-  boss: { x: 22, y: 25 },
-  pm: { x: 23, y: 53 },
-  architect: { x: 76, y: 25 },
-  dev: { x: 21, y: 80 },
-  specialist: { x: 76, y: 80 },
-  qa: { x: 76, y: 53 }
-};
+const OFFICE_SEATS = [
+  { x: 22, y: 25 },
+  { x: 76, y: 25 },
+  { x: 23, y: 53 },
+  { x: 76, y: 53 },
+  { x: 21, y: 80 },
+  { x: 76, y: 80 },
+  { x: 38, y: 68 },
+  { x: 61, y: 68 },
+];
 
 export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
   if (!snapshot) return [];
@@ -106,8 +108,10 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
     .slice()
     .sort((a, b) => ROLE_ORDER.indexOf(a.roleInWorkspace) - ROLE_ORDER.indexOf(b.roleInWorkspace))
     .map((agent, index) => {
-      const base = ROLE_POSITIONS[agent.roleInWorkspace] ?? { x: 18 + index * 14, y: 52 };
-      const specialistOffset = agent.roleInWorkspace === "specialist" ? Math.max(0, index - ROLE_ORDER.indexOf("specialist")) * 4 : 0;
+      const base = OFFICE_SEATS[index] ?? {
+        x: 18 + ((index - OFFICE_SEATS.length) % 5) * 17,
+        y: 88 + Math.floor((index - OFFICE_SEATS.length) / 5) * 9,
+      };
       const currentStep = displayText(agent.currentStep);
       const processingHumanReply = Boolean(problemAgentId === agent.id && hasRunningHumanTurn(snapshot, agent.id));
       const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id && !processingHumanReply)
@@ -115,12 +119,12 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       const displayStep = needsAttention ? "需要你回复" : canvasStepLabel(currentStep);
       return {
         id: agent.id,
-        label: roleLabel(agent.roleInWorkspace),
+        label: agent.name ?? roleLabel(agent.roleInWorkspace),
         role: agent.roleInWorkspace,
         status: agent.status,
         currentStep: displayStep,
         currentStepTitle: needsAttention ? problem?.rawOutput ?? currentStep : currentStep,
-        x: Math.min(base.x + specialistOffset, 88),
+        x: Math.min(base.x, 88),
         y: base.y,
         active: agent.status === "running" && !needsAttention && (!blockingWork || processingHumanReply),
         needsAttention

@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { asyncHandler } from "../errors.js";
+import { asyncHandler, HttpError } from "../errors.js";
 import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
 import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
+import { TeamCapabilityContractError } from "../runtime/runtime-host.js";
 
 export interface TaskRuntimeFacade {
   snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot>;
@@ -26,12 +27,23 @@ export function createTaskRouter(mission: TaskRuntimeFacade) {
   }));
 
   router.post("/tasks", asyncHandler(async (req, res) => {
-    const snapshot = await mission.startTask({
-      workspaceId: String(req.params.workspaceId),
-      goal: String(req.body.goal ?? ""),
-      title: req.body.title ? String(req.body.title) : undefined
-    });
-    res.status(201).json({ snapshot });
+    try {
+      const snapshot = await mission.startTask({
+        workspaceId: String(req.params.workspaceId),
+        goal: String(req.body.goal ?? ""),
+        title: req.body.title ? String(req.body.title) : undefined
+      });
+      res.status(201).json({ snapshot });
+    } catch (error) {
+      if (error instanceof TeamCapabilityContractError) {
+        throw new HttpError(
+          409,
+          `项目团队尚未具备发布任务所需能力：${error.missingCapabilities.join("、")}`,
+          "TEAM_CAPABILITY_GAP",
+        );
+      }
+      throw error;
+    }
   }));
 
   router.post("/tasks/:taskId/pause", asyncHandler(async (req, res) => {

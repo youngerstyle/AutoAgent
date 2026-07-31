@@ -239,6 +239,10 @@ describe("agent profiles route", () => {
       .send({ name: "Project", rootPath, policyProfile: "development" })
       .expect(201);
     const workspaceId = created.body.workspace.id as string;
+    await request(app)
+      .post(`/api/workspaces/${workspaceId}/agents`)
+      .send({ profileId: dev.id })
+      .expect(201);
     const agents = await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200);
     const workspaceDev = agents.body.agents.find((agent: { roleInWorkspace: string }) => agent.roleInWorkspace === "dev");
     const raw = JSON.parse(await readFile(path.join(rootPath, ".autoagent", "agents", workspaceDev.id, "agent.json"), "utf8"));

@@ -23,7 +23,7 @@ import { PiAgentRuntime } from "../agent-engine/pi-runtime.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceResult } from "../agent-engine/runtime.js";
 import { AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
-import { ensureCoreTeam, listWorkspaceAgents } from "../agents/roster.js";
+import { listWorkspaceAgents } from "../agents/roster.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import { MissionGoalResolutionPort } from "../mission-process/mission-goal-resolution-port.js";
 import { MissionProcessManager } from "../mission-process/mission-process-manager.js";
@@ -47,6 +47,15 @@ interface RuntimeContext {
   manager: MissionProcessManager;
   engines: Map<string, AgentEngine<MissionTicketOutcome>>;
   loops: Map<string, AgentExecutionRuntime>;
+}
+
+export const REQUIRED_TEAM_CAPABILITIES = ["mission:intake", "plan:plan", "delivery:accept"] as const;
+
+export class TeamCapabilityContractError extends Error {
+  constructor(public readonly missingCapabilities: readonly string[]) {
+    super(`Project team is missing required capabilities: ${missingCapabilities.join(", ")}`);
+    this.name = "TeamCapabilityContractError";
+  }
 }
 
 export class RuntimeHost {
@@ -204,8 +213,12 @@ export class RuntimeHost {
       updatedAt: now,
     };
     const context = await this.compose(record);
+    const missingCapabilities = REQUIRED_TEAM_CAPABILITIES.filter(
+      (capability) => !context.team.members.some((member) => member.capabilities.includes(capability)),
+    );
+    if (missingCapabilities.length > 0) throw new TeamCapabilityContractError(missingCapabilities);
     const owner = context.team.members.find((member) => member.capabilities.includes("mission:intake"));
-    if (!owner) throw new Error("TeamBinding has no Mission owner with mission:intake capability");
+    if (!owner) throw new TeamCapabilityContractError(["mission:intake"]);
     await this.store.save(record);
     this.contexts.set(record.taskId, context);
     await context.manager.startMission({
@@ -517,10 +530,22 @@ export class RuntimeHost {
   private async snapshotUnlocked(): Promise<WorkspaceSnapshot> {
     const tasks = await this.store.list();
     const record = [...tasks].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-    const agents = await listWorkspaceAgents(this.workspace);
+    const [agents, profiles] = await Promise.all([
+      listWorkspaceAgents(this.workspace),
+      this.profiles.list(),
+    ]);
+    const presentedAgents = agents.map((agent) => {
+      const profile = profiles.find((item) => item.id === agent.profileId);
+      return {
+        ...agent,
+        name: profile?.name ?? "档案已缺失",
+        role: profile?.role ?? agent.roleInWorkspace,
+        capabilities: profile?.capabilities ?? [],
+      };
+    });
     if (!record) return {
       workspace: this.workspace,
-      agents,
+      agents: presentedAgents,
       assignments: [],
       tickets: [],
       agentThreads: {},
@@ -549,7 +574,7 @@ export class RuntimeHost {
         startedAt: record.createdAt,
         endedAt: record.updatedAt,
       },
-      agents: agents.map((agent) => ({ ...agent, status: "idle" as const })),
+      agents: presentedAgents.map((agent) => ({ ...agent, status: "idle" as const })),
       assignments: [],
       tickets: [],
       agentThreads: {},
@@ -564,9 +589,8 @@ export class RuntimeHost {
     const plan = await context.tickets.getPlan(mission.record.planId);
     const taskPausedForPresentation = plan.status === "paused";
     const linksByTicket = new Map(mission.links.map((link) => [String(link.ticketId), link]));
-    const [workItems, profiles, projections] = await Promise.all([
+    const [workItems, projections] = await Promise.all([
       Promise.all(plan.graph.ticketIds.map((ticketId) => context.tickets.getWorkItem(ticketId))),
-      this.profiles.list(),
       Promise.all(agents.map(async (agent) => {
         const engine = context.engines.get(agent.id);
         const link = mission.links.find((item) => item.agentId === agent.id && new Set(["running", "blocked", "resolving", "paused"]).has(item.status));
@@ -978,9 +1002,7 @@ export class RuntimeHost {
   }
 
   private async compose(record: RuntimeTaskRecord): Promise<RuntimeContext> {
-    const workspaceAgents = (await listWorkspaceAgents(this.workspace)).length
-      ? await listWorkspaceAgents(this.workspace)
-      : await ensureCoreTeam(this.workspace, await this.profiles.list());
+    const workspaceAgents = await listWorkspaceAgents(this.workspace);
     const profiles = await this.profiles.list();
     const missionStore = new MissionStore(this.workspace.rootPath, record.missionId);
     const persistedMission = await missionStore.read();

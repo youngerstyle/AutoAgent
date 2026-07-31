@@ -3,12 +3,11 @@ import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBl
 import type { AgentProfile, AutoAgentEvent, WorkspaceSnapshot } from "../../src/shared/types";
 
 describe("client view model", () => {
-  it("marks the currently running agent as active and places core roles on canvas", () => {
+  it("marks the currently running agent as active and gives every member a distinct seat", () => {
     const nodes = buildAgentNodes(snapshot("running"));
 
     expect(nodes.find((node) => node.role === "dev")?.active).toBe(true);
-    expect(nodes.find((node) => node.role === "boss")?.y).toBeLessThan(nodes.find((node) => node.role === "dev")!.y);
-    expect(nodes.find((node) => node.role === "qa")?.x).toBeGreaterThan(nodes.find((node) => node.role === "dev")!.x);
+    expect(new Set(nodes.map((node) => `${node.x}:${node.y}`)).size).toBe(nodes.length);
   });
 
   it("keeps long agent steps as short canvas bubbles while preserving the full title", () => {

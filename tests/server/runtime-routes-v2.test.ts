@@ -22,21 +22,27 @@ describe("V2 runtime public routes", () => {
       policyProfile: "development",
     }).expect(201);
     const workspaceId = workspaceResponse.body.workspace.id as string;
+    const profiles = await request(app).get("/api/agent-profiles").expect(200);
+    for (const profile of profiles.body.profiles) {
+      await request(app).post(`/api/workspaces/${workspaceId}/agents`).send({ profileId: profile.id }).expect(201);
+    }
     const started = await request(app).post(`/api/workspaces/${workspaceId}/tasks`).send({ goal: "构建演示" }).expect(201);
     const taskId = started.body.snapshot.activeTask.id as string;
+    const architect = (await request(app).get(`/api/workspaces/${workspaceId}/agents`).expect(200)).body.agents
+      .find((agent: { roleInWorkspace: string }) => agent.roleInWorkspace === "architect");
 
     expect(started.body.snapshot.assignments).toEqual([]);
     expect(started.body.snapshot.tickets.length).toBeGreaterThan(0);
 
     const messageResponse = await request(app)
-      .post(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/wa_architect/messages`)
+      .post(`/api/workspaces/${workspaceId}/tasks/${taskId}/agents/${architect.id}/messages`)
       .send({ message: "请独立评估风险" });
     if (messageResponse.status !== 201) {
       throw new Error(`Private message failed (${messageResponse.status}): ${JSON.stringify(messageResponse.body)}`);
     }
-    expect(messageResponse.body.snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "human_message")).toBe(true);
-    const snapshot = await pollSnapshot(app, workspaceId, (value) => value.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message"));
-    expect(snapshot.agentThreads.wa_architect.some((event: { kind: string }) => event.kind === "agent_message")).toBe(true);
+    expect(messageResponse.body.snapshot.agentThreads[architect.id].some((event: { kind: string }) => event.kind === "human_message")).toBe(true);
+    const snapshot = await pollSnapshot(app, workspaceId, (value) => value.agentThreads[architect.id].some((event: { kind: string }) => event.kind === "agent_message"));
+    expect(snapshot.agentThreads[architect.id].some((event: { kind: string }) => event.kind === "agent_message")).toBe(true);
   });
 
   it("creates only one RuntimeHost when the same workspace is opened concurrently", async () => {

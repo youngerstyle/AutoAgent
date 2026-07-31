@@ -15,10 +15,12 @@ import {
   ImagePlus,
   Pause,
   Play,
+  Plus,
   Search,
   Send,
   ShieldCheck,
   UserRound,
+  UserPlus,
   Users,
   X,
   type LucideIcon,
@@ -29,6 +31,8 @@ import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } fro
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
 import { paginateTeamDirectory, TEAM_DIRECTORY_PAGE_SIZE } from "./team-directory";
 import {
+  addWorkspaceAgent,
+  createAgentProfile,
   createModelConfig,
   createWorkspace,
   deleteWorkspace,
@@ -40,6 +44,7 @@ import {
   listModelConfigs,
   listWorkspaces,
   pauseTask,
+  removeWorkspaceAgent,
   resumeTask,
   agentProfileUpdateInput,
   sendAgentMessage,
@@ -52,6 +57,7 @@ import {
   updateModelConfig,
   uploadAttachment,
   type AvailableSkill,
+  type AgentProfileCreateInput,
   type WorkspaceAgentConfig,
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
@@ -499,6 +505,46 @@ export function App() {
     }
   }
 
+  async function recruitAgent(profile: AgentProfile): Promise<boolean> {
+    try {
+      const { id: _id, contentVersion: _contentVersion, ...input } = profile;
+      const result = await createAgentProfile(input as AgentProfileCreateInput);
+      setAgentProfiles((current) => [...current, result.profile]);
+      setSelectedProfileId(result.profile.id);
+      setError("");
+      return true;
+    } catch (err) {
+      setError((err as Error).message);
+      return false;
+    }
+  }
+
+  async function addProjectMember(profileId: string) {
+    if (!selectedId) return;
+    try {
+      const result = await addWorkspaceAgent(selectedId, profileId);
+      await refreshAgents(selectedId);
+      await refreshSnapshot(selectedId);
+      setSelectedAgentId(result.agent.id);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function removeProjectMember(agentId: string) {
+    if (!selectedId) return;
+    try {
+      await removeWorkspaceAgent(selectedId, agentId);
+      setSelectedAgentId("");
+      await refreshAgents(selectedId);
+      await refreshSnapshot(selectedId);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   const selectedAgent = snapshot?.agents.find((agent) => agent.id === selectedAgentId);
   const selectedProfile = profiles.find((profile) => profile.id === selectedAgentId) ?? profiles[0];
   const selectedDraft = selectedProfile ? agents.find((agent) => agent.id === selectedProfile.id) : undefined;
@@ -665,7 +711,7 @@ export function App() {
               </section>
 
               {selectedAgent ? (
-              <section className="conversation-dock open" role="dialog" aria-label={`${roleLabel(selectedAgent.roleInWorkspace)} 对话`}>
+              <section className="conversation-dock open" role="dialog" aria-label={`${selectedAgent.name?.trim() || roleLabel(selectedAgent.roleInWorkspace)} 对话`}>
                 <div
                   className="conversation-drag-surface"
                   title="拖动对话窗口"
@@ -684,7 +730,7 @@ export function App() {
                 <div className={selectedAgent ? "agent-detail chat-mode" : "agent-detail"}>
                   {selectedAgentNeedsReply && humanFlowPrompt ? (
                     <AgentHumanLoopBox
-                      agentName={selectedAgent ? roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
+                      agentName={selectedAgent ? selectedAgent.name?.trim() || roleLabel(selectedAgent.roleInWorkspace) : humanFlowPrompt.waiter}
                       prompt={humanFlowPrompt}
                       bubbles={selectedAgentThreadBubbles}
                       value={agentMessage}
@@ -727,6 +773,7 @@ export function App() {
               onSelect={setSelectedProfileId}
               onProfileChange={(next) => setAgentProfiles((current) => current.map((item) => item.id === next.id ? next : item))}
               onSave={(profile) => void saveAgentProfile(profile)}
+              onCreate={recruitAgent}
             />
           ) : null}
 
@@ -737,6 +784,7 @@ export function App() {
               workspaceForm={workspaceForm}
               snapshot={snapshot}
               profiles={profiles}
+              agents={agents}
               profileDefinitions={agentProfiles}
               modelConfigs={modelConfigs}
               availableSkills={availableSkills}
@@ -751,6 +799,8 @@ export function App() {
               onRefresh={() => void refreshAgents()}
               onDraftChange={(next) => setAgents((current) => current.map((item) => item.id === next.id ? next : item))}
               onSave={(agent) => void saveAgent(agent)}
+              onAddMember={(profileId) => void addProjectMember(profileId)}
+              onRemoveMember={(agentId) => void removeProjectMember(agentId)}
             />
           ) : null}
 
@@ -1284,7 +1334,7 @@ function AgentDirectChatBox(props: {
   workspaceId: string;
   onFilesChange: (files: File[]) => void;
 }) {
-  const agentName = roleLabel(props.agent.roleInWorkspace);
+  const agentName = props.agent.name?.trim() || roleLabel(props.agent.roleInWorkspace);
   const statusText = props.agent.currentStep ?? capabilityLabels(props.agent.roleInWorkspace, props.agent.capabilities).join("、") ?? statusLabel(props.agent.status);
   const latestBubble = props.bubbles.at(-1);
   const threadRef = useChatThreadAutoScroll(`${props.agent.id}:${props.bubbles.length}:${latestBubble?.id ?? "empty"}:${latestBubble?.body.length ?? 0}`);
@@ -1397,9 +1447,16 @@ function AgentHub(props: {
   onSelect: (id: string) => void;
   onProfileChange: (profile: AgentProfile) => void;
   onSave: (profile: AgentProfile) => void;
+  onCreate: (profile: AgentProfile) => Promise<boolean>;
 }) {
-  const selected = props.profiles.find((profile) => profile.id === props.selectedId) ?? props.profiles[0];
-  const selectedView = props.profileViews.find((profile) => profile.id === selected?.id);
+  const [recruiting, setRecruiting] = useState(false);
+  const [newProfile, setNewProfile] = useState<AgentProfile>(() => createTalentDraft());
+  const selected = recruiting
+    ? newProfile
+    : props.profiles.find((profile) => profile.id === props.selectedId) ?? props.profiles[0];
+  const selectedView = recruiting
+    ? buildAgentCatalogProfiles([newProfile])[0]
+    : props.profileViews.find((profile) => profile.id === selected?.id);
   return (
     <section className="management-panel agent-studio">
       <header className="management-header">
@@ -1408,6 +1465,10 @@ function AgentHub(props: {
           <h2>人才中心</h2>
           <p>管理长期存在的智能体员工档案：灵魂、身份、能力、默认技能、模型和工具权限。项目实例继承档案，并可显式覆盖。</p>
         </div>
+        <button type="button" className="primary-action" onClick={() => setRecruiting(true)}>
+          <UserPlus size={17} />
+          招聘人才
+        </button>
       </header>
       <div className="studio-layout">
         <div className="agent-studio-grid">
@@ -1417,25 +1478,66 @@ function AgentHub(props: {
               profile={profile}
               selected={profile.id === props.selectedId}
               modelConfigs={props.modelConfigs}
-              onSelect={props.onSelect}
+              onSelect={(id) => {
+                setRecruiting(false);
+                props.onSelect(id);
+              }}
             />
           ))}
         </div>
         {selected && selectedView ? (
-          <AgentDefinitionEditor
-            profile={selected}
-            view={selectedView}
-            modelConfigs={props.modelConfigs}
-            availableSkills={props.availableSkills}
-            onChange={props.onProfileChange}
-            onSave={props.onSave}
-          />
+          <div className="agent-editor-stack">
+            {recruiting ? (
+              <div className="editor-mode-banner">
+                <div><strong>招聘新人才</strong><span>创建组织级档案，保存后再按需加入项目。</span></div>
+                <button type="button" onClick={() => setRecruiting(false)}><X size={17} />取消</button>
+              </div>
+            ) : null}
+            <AgentDefinitionEditor
+              profile={selected}
+              view={selectedView}
+              modelConfigs={props.modelConfigs}
+              availableSkills={props.availableSkills}
+              onChange={recruiting ? setNewProfile : props.onProfileChange}
+              onSave={async (profile) => {
+                if (!recruiting) {
+                  props.onSave(profile);
+                  return;
+                }
+                if (!await props.onCreate(profile)) return;
+                setRecruiting(false);
+                setNewProfile(createTalentDraft());
+              }}
+            />
+          </div>
         ) : (
           <aside className="agent-detail-panel empty-state">还没有可编辑的智能体档案。</aside>
         )}
       </div>
     </section>
   );
+}
+
+function createTalentDraft(): AgentProfile {
+  return {
+    id: "new_profile",
+    name: "新人才",
+    role: "specialist",
+    soul: "",
+    identity: "",
+    agentMd: "",
+    capabilities: [],
+    defaultSkills: [],
+    defaultProvider: "mock",
+    defaultModel: "mock-specialist",
+    defaultPolicy: {
+      canReadWorkspace: true,
+      canWriteWorkspace: false,
+      canExecuteCommands: false,
+      enabledTools: ["listFiles", "readFile"],
+      allowHostAccess: false,
+    },
+  };
 }
 
 function AgentProfileCard(props: {
@@ -1473,7 +1575,7 @@ function AgentDefinitionEditor(props: {
   modelConfigs: ModelConfig[];
   availableSkills: AvailableSkill[];
   onChange: (profile: AgentProfile) => void;
-  onSave: (profile: AgentProfile) => void;
+  onSave: (profile: AgentProfile) => void | Promise<void>;
 }) {
   const [skillQuery, setSkillQuery] = useState("");
   const capabilitiesText = props.profile.capabilities.join("、");
@@ -1520,6 +1622,19 @@ function AgentDefinitionEditor(props: {
 
       <section className="agent-section">
         <h4>岗位契约</h4>
+        {props.profile.id === "new_profile" ? (
+          <label>
+            <span>岗位类别</span>
+            <select value={props.profile.role} onChange={(event) => props.onChange({ ...props.profile, role: event.target.value as AgentProfile["role"] })}>
+              <option value="boss">负责人</option>
+              <option value="pm">产品/项目</option>
+              <option value="architect">架构</option>
+              <option value="dev">开发</option>
+              <option value="qa">测试</option>
+              <option value="specialist">专业岗位</option>
+            </select>
+          </label>
+        ) : null}
         <label>
           <span>名称</span>
           <input value={props.profile.name} onChange={(event) => props.onChange({ ...props.profile, name: event.target.value })} />
@@ -1632,6 +1747,7 @@ function ProjectsHub(props: {
   workspaceForm: { name: string; rootPath: string; policyProfile: Workspace["policyProfile"] };
   snapshot?: WorkspaceSnapshot;
   profiles: AgentProfileView[];
+  agents: WorkspaceAgentConfig[];
   profileDefinitions: AgentProfile[];
   modelConfigs: ModelConfig[];
   availableSkills: AvailableSkill[];
@@ -1646,6 +1762,8 @@ function ProjectsHub(props: {
   onRefresh: () => void;
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
+  onAddMember: (profileId: string) => void;
+  onRemoveMember: (agentId: string) => void;
 }) {
   const selectedWorkspace = props.workspaces.find((workspace) => workspace.id === props.selectedId);
   const completedTickets = props.snapshot?.tickets?.filter((ticket) => ticket.status === "completed").length ?? 0;
@@ -1710,6 +1828,7 @@ function ProjectsHub(props: {
             </section>
             <ProjectTeam
               profiles={props.profiles}
+              agents={props.agents}
               profileDefinitions={props.profileDefinitions}
               modelConfigs={props.modelConfigs}
               availableSkills={props.availableSkills}
@@ -1720,6 +1839,8 @@ function ProjectsHub(props: {
               onRefresh={props.onRefresh}
               onDraftChange={props.onDraftChange}
               onSave={props.onSave}
+              onAddMember={props.onAddMember}
+              onRemoveMember={props.onRemoveMember}
             />
           </>
         ) : (
@@ -1735,6 +1856,7 @@ function ProjectsHub(props: {
 
 function ProjectTeam(props: {
   profiles: AgentProfileView[];
+  agents: WorkspaceAgentConfig[];
   profileDefinitions: AgentProfile[];
   modelConfigs: ModelConfig[];
   availableSkills: AvailableSkill[];
@@ -1745,9 +1867,14 @@ function ProjectTeam(props: {
   onRefresh: () => void;
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
+  onAddMember: (profileId: string) => void;
+  onRemoveMember: (agentId: string) => void;
 }) {
   const [teamQuery, setTeamQuery] = useState("");
   const [teamPage, setTeamPage] = useState(0);
+  const [candidateId, setCandidateId] = useState("");
+  const assignedProfileIds = new Set(props.agents.map((agent) => agent.profileId));
+  const candidates = props.profileDefinitions.filter((profile) => !assignedProfileIds.has(profile.id));
   const normalizedQuery = teamQuery.trim().toLocaleLowerCase();
   const filteredProfiles = normalizedQuery
     ? props.profiles.filter((profile) =>
@@ -1774,7 +1901,31 @@ function ProjectTeam(props: {
           <h2>项目团队实例</h2>
           <p>这里是当前项目里的运行成员。全局档案不在这里被改写，项目可按需覆盖模型、技能和工具权限。</p>
         </div>
-        <button type="button" onClick={props.onRefresh}>刷新团队</button>
+        <div className="team-header-actions">
+          <select
+            aria-label="选择要加入项目的人才"
+            value={candidateId}
+            onChange={(event) => setCandidateId(event.target.value)}
+          >
+            <option value="">{candidates.length ? "从人才池选择" : "人才池中没有可添加成员"}</option>
+            {candidates.map((profile) => (
+              <option key={profile.id} value={profile.id}>{profile.name} · {roleLabel(profile.role)}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="primary-action"
+            disabled={!candidateId}
+            onClick={() => {
+              props.onAddMember(candidateId);
+              setCandidateId("");
+            }}
+          >
+            <Plus size={17} />
+            添加成员
+          </button>
+          <button type="button" onClick={props.onRefresh}>刷新</button>
+        </div>
       </header>
       <div className="team-layout">
         <div className="team-directory-pane">
@@ -1841,6 +1992,7 @@ function ProjectTeam(props: {
           availableSkills={props.availableSkills}
           onDraftChange={props.onDraftChange}
           onSave={props.onSave}
+          onRemove={props.selectedDraft ? () => props.onRemoveMember(props.selectedDraft!.id) : undefined}
         />
       </div>
     </section>
@@ -1855,9 +2007,10 @@ function AgentDetailPanel(props: {
   availableSkills: AvailableSkill[];
   onDraftChange: (agent: WorkspaceAgentConfig) => void;
   onSave: (agent: WorkspaceAgentConfig) => void;
+  onRemove?: () => void;
 }) {
   if (!props.profile) {
-    return <aside className="agent-detail-panel empty-state">创建或选择项目后会生成项目团队。</aside>;
+    return <aside className="agent-detail-panel empty-state">当前项目团队为空。请从人才池添加成员。</aside>;
   }
 
   const draft = props.draft;
@@ -1988,7 +2141,20 @@ function AgentDetailPanel(props: {
                 />
               ))}
             </div>
-            <button type="button" className="primary-action agent-save" onClick={() => props.onSave(draft)}>保存项目配置</button>
+            <div className="agent-instance-actions">
+              <button type="button" className="primary-action agent-save" onClick={() => props.onSave(draft)}>保存项目配置</button>
+              {props.onRemove ? (
+                <button
+                  type="button"
+                  className="danger-action"
+                  onClick={() => {
+                    if (window.confirm(`确定将“${props.profile?.identity.title}”移出当前项目吗？人才档案不会被删除。`)) props.onRemove?.();
+                  }}
+                >
+                  移出项目
+                </button>
+              ) : null}
+            </div>
           </>
         ) : (
           <p>团队配置加载后可编辑项目级覆盖。</p>

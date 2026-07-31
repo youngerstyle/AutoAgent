@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
+import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
 import {
@@ -1575,6 +1576,9 @@ async function createFixture(options: {
     createdAt: new Date().toISOString(),
   };
   const profiles = new AgentProfileStore(home);
+  for (const profile of (await profiles.list()).filter((candidate) => candidate.role !== "specialist")) {
+    await ensureWorkspaceAgent(workspace, profile, `wa_${profile.role}`);
+  }
   const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
   const policyStore = new PlanPolicyStore(home);
   const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);

@@ -2766,3 +2766,60 @@ button:disabled {
   margin-top: 3px;
   color: #607080;
 }
+
+.team-header-actions,
+.agent-instance-actions,
+.editor-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-header-actions select {
+  min-width: 220px;
+}
+
+.agent-editor-stack {
+  min-width: 0;
+  overflow: auto;
+}
+
+.editor-mode-banner {
+  justify-content: space-between;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #b8d9d5;
+  background: #f2faf8;
+}
+
+.editor-mode-banner div {
+  display: grid;
+  gap: 2px;
+}
+
+.editor-mode-banner span {
+  color: #607080;
+  font-size: 13px;
+}
+
+.agent-instance-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.danger-action {
+  color: #b42318;
+  border-color: #efc4bf;
+  background: #fff;
+}
+
+@media (max-width: 900px) {
+  .team-header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .team-header-actions select {
+    flex: 1 1 220px;
+  }
+}

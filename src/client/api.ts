@@ -85,6 +85,14 @@ export function listAgents(workspaceId: string): Promise<{ agents: WorkspaceAgen
   return api(`/api/workspaces/${workspaceId}/agents`);
 }
 
+export function addWorkspaceAgent(workspaceId: string, profileId: string): Promise<{ agent: WorkspaceAgentConfig }> {
+  return api(`/api/workspaces/${workspaceId}/agents`, { method: "POST", body: JSON.stringify({ profileId }) });
+}
+
+export function removeWorkspaceAgent(workspaceId: string, agentId: string): Promise<{ agent: WorkspaceAgentConfig }> {
+  return api(`/api/workspaces/${workspaceId}/agents/${agentId}`, { method: "DELETE" });
+}
+
 export function updateAgent(
   workspaceId: string,
   agentId: string,
@@ -108,6 +116,7 @@ export function listAvailableSkills(): Promise<{ skills: AvailableSkill[]; diagn
 }
 
 export type AgentProfileUpdateInput = Pick<AgentProfile, "name" | "identity" | "soul" | "agentMd" | "capabilities" | "defaultSkills" | "defaultProvider" | "defaultModel" | "defaultPolicy">;
+export type AgentProfileCreateInput = Omit<AgentProfile, "id" | "contentVersion">;
 
 export function agentProfileUpdateInput(profile: AgentProfile): AgentProfileUpdateInput {
   return {
@@ -125,6 +134,10 @@ export function agentProfileUpdateInput(profile: AgentProfile): AgentProfileUpda
 
 export function updateAgentProfile(profileId: string, input: Partial<AgentProfileUpdateInput>): Promise<{ profile: AgentProfile }> {
   return api(`/api/agent-profiles/${profileId}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function createAgentProfile(input: AgentProfileCreateInput): Promise<{ profile: AgentProfile }> {
+  return api("/api/agent-profiles", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function getProviderConfig(): Promise<{ providers: Partial<Record<Exclude<ProviderName, "mock">, ProviderConfig>> }> {

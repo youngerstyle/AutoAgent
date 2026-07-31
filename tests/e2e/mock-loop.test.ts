@@ -21,6 +21,13 @@ describe("mock team loop E2E", () => {
       .send({ name: "E2E", rootPath, policyProfile: "development" })
       .expect(201);
     const workspaceId = created.body.workspace.id as string;
+    const profiles = await request(app).get("/api/agent-profiles").expect(200);
+    for (const profile of profiles.body.profiles) {
+      await request(app)
+        .post(`/api/workspaces/${workspaceId}/agents`)
+        .send({ profileId: profile.id })
+        .expect(201);
+    }
 
     const started = await request(app)
       .post(`/api/workspaces/${workspaceId}/tasks`)

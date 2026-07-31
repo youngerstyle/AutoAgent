@@ -5,6 +5,7 @@ import { readJson, writeJson } from "../storage/json.js";
 import { globalAgentProfilesFile } from "../storage/paths.js";
 import { CORE_AGENT_PROFILES } from "./roster.js";
 import { toolsRequiredBySkills } from "./skill-config.js";
+import { createId } from "../../shared/ids.js";
 
 const DEFAULT_PROFILE_CONTENT_VERSION = 9;
 const LEGACY_V4_AUTONOMY_CONTENT_HASHES = new Set([
@@ -47,6 +48,30 @@ export class AgentProfileStore {
     }));
     await writeJson(globalAgentProfilesFile(this.homeDir), profiles.map((profile) => profile.id === profileId ? stripRemovedProfileFields(updated) : stripRemovedProfileFields(profile)));
     return updated;
+  }
+
+  async create(input: Omit<AgentProfile, "id" | "contentVersion">): Promise<AgentProfile> {
+    const profiles = await this.list();
+    const profile: AgentProfile = normalizeSkillToolContract(stripRemovedProfileFields({
+      ...input,
+      id: createId("prof"),
+      contentVersion: DEFAULT_PROFILE_CONTENT_VERSION,
+      name: input.name.trim(),
+      identity: input.identity?.trim(),
+      soul: input.soul?.trim(),
+      agentMd: input.agentMd?.trim(),
+      capabilities: [...new Set(input.capabilities.map((capability) => capability.trim()).filter(Boolean))],
+      defaultSkills: [...new Set((input.defaultSkills ?? []).map((skill) => skill.trim()).filter(Boolean))],
+      defaultModel: input.defaultModel.trim(),
+    }));
+    if (!profile.name) throw new Error("Agent profile name is required");
+    if (!profile.identity) throw new Error("Agent profile identity is required");
+    if (!profile.soul) throw new Error("Agent profile soul is required");
+    if (!profile.agentMd) throw new Error("Agent profile agentMd is required");
+    if (!profile.capabilities.length) throw new Error("Agent profile capabilities are required");
+    if (!profile.defaultModel) throw new Error("Agent profile model is required");
+    await writeJson(globalAgentProfilesFile(this.homeDir), [...profiles, profile]);
+    return profile;
   }
 }
 
@@ -398,6 +423,24 @@ export function sanitizeProfilePatch(input: Record<string, unknown>) {
   };
 }
 
+export function sanitizeProfileCreate(input: Record<string, unknown>): Omit<AgentProfile, "id" | "contentVersion"> {
+  const patch = sanitizeProfilePatch(input);
+  const role = sanitizeRole(input.role);
+  if (!role) throw new Error("Agent profile role is invalid");
+  return {
+    name: patch.name ?? "",
+    role,
+    identity: patch.identity,
+    soul: patch.soul,
+    agentMd: patch.agentMd,
+    capabilities: patch.capabilities ?? [],
+    defaultSkills: patch.defaultSkills ?? [],
+    defaultProvider: patch.defaultProvider ?? "mock",
+    defaultModel: patch.defaultModel ?? "",
+    defaultPolicy: patch.defaultPolicy ?? {},
+  };
+}
+
 function stripRemovedProfileFields(profile: AgentProfile): AgentProfile {
   const { loopDefinition: _discarded, ...kept } = profile as AgentProfile & { loopDefinition?: unknown };
   return kept;
@@ -405,6 +448,13 @@ function stripRemovedProfileFields(profile: AgentProfile): AgentProfile {
 
 function sanitizeProvider(value: unknown): ProviderName | undefined {
   if (value === "mock" || value === "openai" || value === "anthropic") return value;
+  return undefined;
+}
+
+function sanitizeRole(value: unknown): AgentProfile["role"] | undefined {
+  if (value === "boss" || value === "pm" || value === "architect" || value === "dev" || value === "qa" || value === "specialist") {
+    return value;
+  }
   return undefined;
 }
 
