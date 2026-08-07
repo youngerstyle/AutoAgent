@@ -10,6 +10,7 @@ describe("provider failure classification", () => {
     "request timed out",
     "Upstream HTTP/2 stream failed",
     "HTTP/2 stream reset by peer",
+    "Upstream response stream was interrupted",
   ])("classifies transient transport failures as retryable: %s", (message) => {
     expect(isRetryableProviderFailure(message)).toBe(true);
   });

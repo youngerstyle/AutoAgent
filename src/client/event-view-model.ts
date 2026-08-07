@@ -273,10 +273,39 @@ function item(event: AutoAgentEvent, actor: string, title: string, detail: strin
   return {
     actor,
     title,
-    detail,
+    detail: timelineDetail(detail),
     tone,
     debugType: event.type
   };
+}
+
+function timelineDetail(value: string | undefined): string | undefined {
+  if (!value) return value;
+  const readable = value
+    .replace(/<thinking\b[^>]*>[\s\S]*?<\/thinking>/gi, "")
+    .replace(/<thinking\b[^>]*>[\s\S]*$/i, "")
+    .trim();
+  if (!readable) return undefined;
+
+  const parsed = parseJsonRecord(readable);
+  if (parsed) {
+    const summary = reportSummary(parsed) ?? stringValue(parsed.message) ?? stringValue(parsed.reason);
+    if (summary) return truncateTimelineDetail(summary);
+    const status = stringValue(parsed.status);
+    if (status) return `状态：${statusLabelText(status) ?? status}`;
+    return "已收到结构化结果，原始数据可在详情中查看";
+  }
+
+  return truncateTimelineDetail(readable);
+}
+
+function truncateTimelineDetail(value: string, maxLength = 240): string {
+  if (value.length <= maxLength) return value;
+  return value.slice(0, maxLength - 1).trimEnd() + "…";
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function blockerReason(event: AutoAgentEvent): string | undefined {

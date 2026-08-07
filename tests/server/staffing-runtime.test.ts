@@ -8,9 +8,32 @@ import { ProviderRegistry } from "../../src/server/providers/provider-registry.j
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
+import { parseTeamStaffingOutcome } from "../../src/shared/contracts/staffing.js";
 import type { Workspace } from "../../src/shared/types.js";
 
 describe("automatic project staffing", () => {
+  it("requires each staffing member to declare auditable capability coverage", () => {
+    const parsed = parseTeamStaffingOutcome({
+      status: "staffed",
+      members: [member("prof_dev", "Implement the delivery")],
+      recruitmentRequests: [],
+    });
+    expect(parsed.members[0]?.capabilityCoverage).toEqual([
+      "delivery:implement",
+      "代码阅读",
+      "工具执行",
+    ]);
+    expect(() => parseTeamStaffingOutcome({
+      status: "staffed",
+      members: [{
+        profileId: "prof_dev",
+        responsibility: "Implement the delivery",
+        rationale: "Selected for delivery",
+      }],
+      recruitmentRequests: [],
+    })).toThrow("capabilityCoverage");
+  });
+
   it("shows one staffing owner when the same profile already has a project instance", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-owner-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-owner-ws-"));
@@ -118,6 +141,11 @@ describe("automatic project staffing", () => {
       type: "project_context",
       missionStartContract: {
         requiredCapabilities: ["mission:intake", "plan:plan", "delivery:accept"],
+        staffingDecision: {
+          meaning: expect.stringContaining("完整交付"),
+          memberCoverage: expect.stringContaining("capabilityCoverage"),
+          missingCapability: expect.stringContaining("recruitment_required"),
+        },
       },
       currentTeam: expect.any(Array),
       talentPool: expect.any(Array),
@@ -173,5 +201,12 @@ function member(profileId: string, responsibility: string) {
     profileId,
     responsibility,
     rationale: `Selected for ${responsibility}`,
+    capabilityCoverage: profileId === "prof_boss"
+      ? ["team:staff", "mission:intake", "delivery:accept"]
+      : profileId === "prof_pm"
+        ? ["plan:plan"]
+        : profileId === "prof_dev"
+          ? ["delivery:implement", "代码阅读", "工具执行"]
+          : ["delivery:verify", "测试计划", "验收证据"],
   };
 }

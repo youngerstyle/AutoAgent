@@ -30,9 +30,14 @@ import {
   controlGoalState,
   settleGoalState,
 } from "./goal-state.js";
+import { domainContractRecoveryHint } from "./tool-validation-feedback.js";
 
 export class AgentEngineConflictError extends Error {}
 
+const DEFAULT_NO_PROGRESS_WINDOW_MS = envPositiveInteger(
+  "AUTOAGENT_NO_PROGRESS_WINDOW_MS",
+  30 * 60_000,
+);
 export interface AgentOutputContractValidator {
   validate(schemaRef: string, value: unknown): { valid: true } | { valid: false; reason: string };
 }
@@ -51,7 +56,11 @@ export class AcceptingGoalResolutionPort implements GoalResolutionPort {
       if (!validation.valid) {
         return {
           settle: true,
-          decision: { accepted: false, disposition: "correctable", reason: validation.reason },
+          decision: {
+            accepted: false,
+            disposition: "correctable",
+            reason: `${validation.reason}\n\n${domainContractRecoveryHint()}`,
+          },
         };
       }
     }
@@ -84,13 +93,16 @@ export function validateGoalCriterionResults(goal: AgentGoal, proposal: GoalReso
 
 export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainOutcome> {
   private readonly now: () => Date;
+  private readonly noProgressWindowMs: number;
+  private readonly resolutionTails = new Map<string, Promise<void>>();
 
   constructor(
     private readonly store: AgentStore,
     private readonly resolutionPort: GoalResolutionPort<TDomainOutcome> = new AcceptingGoalResolutionPort(),
-    options: { now?: () => Date } = {},
+    options: { now?: () => Date; noProgressWindowMs?: number } = {},
   ) {
     this.now = options.now ?? (() => new Date());
+    this.noProgressWindowMs = options.noProgressWindowMs ?? DEFAULT_NO_PROGRESS_WINDOW_MS;
   }
 
   async ensureThread(input: EnsureAgentThreadRequest): Promise<AgentThreadSnapshot> {
@@ -340,11 +352,69 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
     if (!thread) throw new Error("Goal thread does not exist");
     const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    // A human message is the explicit recovery input. It must win over any
+    // stale retry marker; otherwise a paused Agent can look permanently
+    // blocked even though the user has already supplied new direction.
+    if (hasUnconsumedHumanTurn(aggregate, thread.threadId, goalId)) {
+      return { ready: true, reason: "new_input" };
+    }
+    const controlRecords = thread.items
+      .filter((item) => item.kind === "control")
+      .map((item) => ({
+        item,
+        payload: payloads.get(item.payloadRef),
+      }))
+      .filter(({ payload }) => isRecord(payload) && payload.goalId === goalId)
+      .map(({ item, payload }) => ({ item, payload: payload as Record<string, unknown> }));
     const latestControlStatus = [...thread.items].reverse()
       .filter((item) => item.kind === "control")
       .map((item) => payloadControlStatus(payloads, item.payloadRef, goalId))
       .find((status): status is string => Boolean(status));
+    if (latestControlStatus === "execution_retry_wait") {
+      const retries = controlRecords
+        .filter(({ payload }) => payload.status === "execution_retry_wait")
+        .slice(-2);
+      const latestReason = retries.at(-1)?.payload.reason;
+      const previousReason = retries.at(-2)?.payload.reason;
+      if (retries.length === 2 && typeof latestReason === "string" && latestReason === previousReason) {
+        return { ready: false, reason: "repeated_execution_retry_without_progress" };
+      }
+    }
+    if (latestControlStatus === "turn_yielded") {
+      const yieldedTurns = controlRecords.filter(({ payload }) => payload.status === "turn_yielded");
+      const latest = yieldedTurns.at(-1)?.payload;
+      const previous = yieldedTurns.at(-2)?.payload;
+      const latestFingerprint = latest?.idleResponseFingerprint;
+      const previousFingerprint = previous?.idleResponseFingerprint;
+      if (typeof latestFingerprint === "string"
+        && latestFingerprint === previousFingerprint
+        && latest?.durableProgress !== true
+        && previous?.durableProgress !== true) {
+        return { ready: false, reason: "repeated_turn_without_progress" };
+      }
+      const latestObservations = turnObservationFingerprint(latest);
+      const previousObservations = turnObservationFingerprint(previous);
+      if (latestObservations !== undefined
+        && latestObservations === previousObservations
+        && latestObservations !== "[]") {
+        return { ready: false, reason: "repeated_turn_without_progress" };
+      }
+      const noProgressTail: typeof yieldedTurns = [];
+      for (let index = yieldedTurns.length - 1; index >= 0; index -= 1) {
+        const record = yieldedTurns[index]!;
+        if (record.payload.durableProgress === true) break;
+        noProgressTail.unshift(record);
+      }
+      const firstNoProgressAt = noProgressTail[0]?.item.createdAt;
+      const firstNoProgressTimestamp = firstNoProgressAt ? Date.parse(firstNoProgressAt) : Number.NaN;
+      if (noProgressTail.length >= 2
+        && Number.isFinite(firstNoProgressTimestamp)
+        && this.now().getTime() - firstNoProgressTimestamp >= this.noProgressWindowMs) {
+        return { ready: false, reason: "no_durable_progress_window_elapsed" };
+      }
+    }
     if (latestControlStatus === "running"
+      || latestControlStatus === "turn_yielded"
       || latestControlStatus === "provider_retry_wait"
       || latestControlStatus === "external_service_waiting"
       || latestControlStatus === "execution_retry_wait"
@@ -355,6 +425,8 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         reason: latestControlStatus === "running"
           || latestControlStatus === "execution_blocked"
           ? "interrupted_turn"
+          : latestControlStatus === "turn_yielded"
+            ? "turn_boundary"
           : latestControlStatus === "stale_goal"
             ? "goal_version_updated"
             : latestControlStatus === "execution_retry_wait"
@@ -419,8 +491,12 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     thread?: AgentThreadSnapshot;
     goal?: AgentGoal;
     payloads: Map<string, unknown>;
+    execution: {
+      leaseHeld: boolean;
+    };
   }> {
     const aggregate = await this.store.read();
+    const leaseHeld = await this.store.executionLeaseHeld();
     const storedThread = aggregate.threads.find((item) => item.scopeId === scopeId);
     const thread = storedThread && itemLimit !== undefined
       ? { ...storedThread, items: storedThread.items.slice(-Math.max(0, itemLimit)) }
@@ -432,6 +508,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       payloads: new Map(aggregate.payloads
         .filter((item) => wanted.has(item.payloadRef))
         .map((item) => [item.payloadRef, structuredClone(item.value)])),
+      execution: { leaseHeld },
     };
   }
 
@@ -474,13 +551,16 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     proposal: GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>,
   ): Promise<{ goal: AgentGoal; attempt: GoalResolutionAttemptResult }> {
     const updated = await this.store.transact((aggregate) => {
+      const goal = aggregate.goals.find((item) => item.spec.id === proposal.goalId);
+      if (!goal) throw new Error("Goal does not exist");
       const existing = aggregate.proposals.find((item) => item.proposalId === proposal.proposalId);
       if (existing) {
         if (hash(existing) !== hash(proposal)) throw new AgentEngineConflictError("Proposal conflict");
-        return aggregate;
+        if (goal.status === "resolving" && goal.activeProposalId === proposal.proposalId) {
+          return aggregate;
+        }
+        throw new AgentEngineConflictError("Resolution proposal is stale; submit a new proposal for the current Goal version");
       }
-      const goal = aggregate.goals.find((item) => item.spec.id === proposal.goalId);
-      if (!goal) throw new Error("Goal does not exist");
       const resolving = beginGoalResolution(goal, proposal);
       return {
         ...aggregate,
@@ -493,7 +573,10 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const persistedGoal = updated.goals.find((item) => item.spec.id === proposal.goalId)!;
     const persistedProposal = updated.proposals.find((item) => item.proposalId === proposal.proposalId)! as
       GoalResolutionProposal<GoalResolutionStatus, TDomainOutcome>;
-    return this.finishProposalResolution(persistedGoal, persistedProposal);
+    return this.withResolutionLock(
+      proposal.goalId,
+      () => this.finishProposalResolution(persistedGoal, persistedProposal),
+    );
   }
 
   async retryProposalResolution(
@@ -517,7 +600,22 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
         },
       };
     }
-    return this.finishProposalResolution(goal, proposal);
+    return this.withResolutionLock(
+      proposal.goalId,
+      () => this.finishProposalResolution(goal, proposal),
+    );
+  }
+
+  private async withResolutionLock<T>(goalId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.resolutionTails.get(goalId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(operation);
+    const tail = run.then(() => undefined, () => undefined);
+    this.resolutionTails.set(goalId, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.resolutionTails.get(goalId) === tail) this.resolutionTails.delete(goalId);
+    }
   }
 
   private async finishProposalResolution(
@@ -546,6 +644,22 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       expectedGoalVersion: goal.version,
       decision: attempt.decision,
     });
+    if (!settled.applied) {
+      if (settled.code === "idempotency_conflict") {
+        throw new AgentEngineConflictError("Resolution decision idempotency conflict");
+      }
+      return {
+        goal: settled.goal,
+        attempt: {
+          settle: false,
+          pending: "retry_later",
+          reason: settled.code === "goal_terminal"
+            ? "Goal is already terminal; the current resolution was not applied"
+            : "Goal changed before resolution was applied; retry with the current Goal version",
+          retryAfter: this.now().toISOString(),
+        },
+      };
+    }
     return { goal: settled.goal, attempt };
   }
 
@@ -625,7 +739,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       };
     });
     if (!result) throw new Error("Proposal settlement did not produce a result");
-    if (result.applied || result.code !== "idempotency_conflict") {
+    if (result.applied) {
       await this.recordResolutionDecision(result.goal, input, proposalTurnId);
     }
     return result;
@@ -815,8 +929,22 @@ function payloadControlStatus(
   return record.status;
 }
 
+function turnObservationFingerprint(payload: Record<string, unknown> | undefined): string | undefined {
+  if (!payload || !Array.isArray(payload.observationFingerprints)) return undefined;
+  const fingerprints = payload.observationFingerprints.filter((value): value is string => typeof value === "string");
+  if (fingerprints.length !== payload.observationFingerprints.length) return undefined;
+  return JSON.stringify(fingerprints);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function envPositiveInteger(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw?.trim()) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function goalEvent(

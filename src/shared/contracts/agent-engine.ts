@@ -5,6 +5,11 @@ export interface ContextRef {
 
 export interface OutputContract {
   schemaRef: string;
+  /**
+   * Controls the generic evidence envelope at the Agent Engine boundary.
+   * Domain adapters still own the meaning of the domain result.
+   */
+  evidenceMode?: "required" | "optional" | "none";
   completionOutcomeSchema?: Record<string, unknown>;
   correctionOutcomeSchema?: Record<string, unknown>;
   planChangeOutcomeSchema?: Record<string, unknown>;

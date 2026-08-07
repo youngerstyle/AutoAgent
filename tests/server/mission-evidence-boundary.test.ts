@@ -79,7 +79,7 @@ describe("Mission completion evidence boundary", () => {
     )).resolves.toContain("没有形成可信观察");
   });
 
-  it("keeps successful evidence valid across retries of the same Goal", async () => {
+  it("rejects evidence from a previous execution attempt", async () => {
     const fixture = await evidenceFixture({ attemptId: "previous-attempt" });
 
     await expect(validateEvidenceFacts(
@@ -87,7 +87,7 @@ describe("Mission completion evidence boundary", () => {
       "dev",
       fixture.goal,
       proposal(fixture.evidenceId),
-    )).resolves.toBeUndefined();
+    )).resolves.toContain("当前 Agent Goal attempt");
   });
 
   it("rejects invented evidence IDs", async () => {

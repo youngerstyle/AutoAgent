@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { materializeMissionSettlement, missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { materializeMissionSettlement, missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, projectMissionAssuranceContext, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("maps Agent-facing Mission criterion indexes to canonical internal IDs", () => {
@@ -164,6 +164,11 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("criterion-legal");
     expect(instruction).toContain("missionContribution");
     expect(instruction).toContain("assurance");
+    expect(instruction).toContain("计划或拆解类 Ticket 的交付物是可执行、可验证的 Ticket DAG");
+    expect(instruction).toContain("团队能力是可分派资源，不是当前 Agent 自己的工具");
+    expect(instruction).toContain("不得因为当前 Agent 自己没有这些工具而调用 request_human_input(kind=\"tool_policy\")");
+    expect(instruction).toContain("把这项工作规划为可执行 Ticket");
+    expect(instruction).toContain("不得要求 human 先替团队提供结果");
     expect(instruction).toContain("重新覆盖缺陷实际影响的 Mission criteria");
     expect(instruction).toContain("不能替代对受影响成功标准的重新验证");
     expect(instruction).toContain("新增执行链必须位于当前规划工单");
@@ -290,6 +295,38 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('"artifact":"src/game.ts"');
     expect(instruction).not.toContain("tool_call");
     expect(instruction).not.toContain("Thread");
+  });
+
+  it("keeps the current Ticket boundary separate from downstream delivery work", () => {
+    const instruction = missionOutcomeInstruction(
+      "mission-baseline-v2",
+      [],
+      [],
+      undefined,
+      {
+        planId: "plan-intake",
+        version: 1,
+        tickets: [],
+        dependencyEdges: [],
+        requiredTerminalTicketIds: [],
+        teamMembers: [{ principalId: "principal:boss", name: "老板", capabilities: ["mission:intake"], enabledTools: ["listFiles", "readFile"] }],
+      },
+      [],
+      {
+        ticket: {
+          ticketId: "ticket-intake" as TicketId,
+          title: "需求接收",
+          objective: "形成正式目标基线",
+          successCriteria: ["记录目标与约束"],
+          outputContract: { schemaRef: "mission-baseline-v2" },
+        },
+      },
+    );
+
+    expect(instruction).toContain("当前 Ticket 的责任边界");
+    expect(instruction).toContain("只完成 currentTicket 中声明的 objective、successCriteria 和 outputContract");
+    expect(instruction).toContain("不要替下游实现、验证或结算");
+    expect(instruction).toContain("不要因为下游需要不同的文件、命令或浏览器能力而阻塞当前 Ticket");
   });
 
   it("injects a bounded handoff projection instead of recursively carrying an upstream payload", () => {
@@ -584,6 +621,20 @@ describe("Ticket Agent resolution adapter", () => {
         assuranceTicketIds: ["unrelated-ticket"],
       })),
     }, assuranceSources)).toMatchObject({ valid: false, reason: expect.stringContaining("unrelated-ticket") });
+    expect(materializeMissionSettlement(baseline, {
+      baselineVersion: 2,
+      summary: "final acceptance copied an evidence field",
+      criterionResults: resolution.criterionResults.map(({ criterionId, assuranceTicketIds }) => ({
+        criterionId,
+        status: "satisfied",
+        assuranceTicketIds,
+        evidence: [{ evidenceId: "copied-ticket-id" }],
+      })),
+      residualRisks: [],
+    }, assuranceSources)).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining("只能包含 criterionId、status、assuranceTicketIds"),
+    });
     expect(validateMissionSettlement(baseline, {
       ...resolution,
       criterionResults: resolution.criterionResults.map((result) => ({
@@ -602,7 +653,6 @@ describe("Ticket Agent resolution adapter", () => {
         criterionId,
         status: "satisfied",
         assuranceTicketIds: [`assurance-${criterionId}`],
-        evidence: [{ evidenceId: "model-copied-the-wrong-id" }],
       })),
       residualRisks: [],
     }, assuranceSources);
@@ -683,7 +733,7 @@ describe("Ticket Agent resolution adapter", () => {
     const report = {
       assuranceReport: {
         baselineVersion: 3,
-        criterionResults: [
+        missionCriterionResults: [
           { criterionId: "criterion-a", status: "satisfied", evidence: [{ evidenceId: "ev-browser-a" }], anchorResults: [anchorResult("ev-browser-a")] },
           { criterionId: "criterion-b", status: "satisfied", evidence: [{ evidenceId: "ev-browser-b" }], anchorResults: [anchorResult("ev-browser-b")] },
         ],
@@ -694,8 +744,8 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], {
       assuranceReport: {
         ...report.assuranceReport,
-        criterionResults: [
-          report.assuranceReport.criterionResults[0],
+        missionCriterionResults: [
+          report.assuranceReport.missionCriterionResults[0],
           { criterionId: "criterion-b", status: "not_verified", evidence: [], anchorResults: [] },
         ],
       },
@@ -703,7 +753,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], {
       assuranceReport: {
         ...report.assuranceReport,
-        criterionResults: report.assuranceReport.criterionResults.map((item) => ({
+        missionCriterionResults: report.assuranceReport.missionCriterionResults.map((item) => ({
           ...item,
           anchorResults: [],
         })),
@@ -712,7 +762,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionAssuranceReport(baseline, ["criterion-a", "criterion-b"], {
       assuranceReport: {
         ...report.assuranceReport,
-        criterionResults: report.assuranceReport.criterionResults.map((item) => ({
+        missionCriterionResults: report.assuranceReport.missionCriterionResults.map((item) => ({
           ...item,
           anchorResults: item.anchorResults.map((anchor) => ({
             ...anchor,
@@ -755,7 +805,7 @@ describe("Ticket Agent resolution adapter", () => {
       }],
       assuranceReport: {
         baselineVersion: 4,
-        criterionResults: [
+        missionCriterionResults: [
           { criterionId: "criterion-b", status: "not_satisfied", evidence: [{ evidenceId: "ev-failure-b" }], anchorResults: [failedAnchor] },
         ],
       },
@@ -774,9 +824,9 @@ describe("Ticket Agent resolution adapter", () => {
         ...outcome,
         assuranceReport: {
           ...outcome.assuranceReport,
-          criterionResults: [
+          missionCriterionResults: [
             { criterionId: "criterion-a", status: "satisfied", evidence: [{ evidenceId: "ev-pass-a" }], anchorResults: [anchorResult("ev-pass-a")] },
-            ...outcome.assuranceReport.criterionResults,
+            ...outcome.assuranceReport.missionCriterionResults,
           ],
         },
       },
@@ -832,10 +882,99 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("baselineVersion:3");
     expect(instruction).toContain('criterionId:"<Mission criterionId>"');
     expect(instruction).toContain('["criterion-a"]');
+    expect(instruction).toContain("assuranceReport.missionCriterionResults 必须恰好有 1 项");
+    expect(instruction).toContain("数组长度必须严格等于当前声明的 criteria 数量");
+    expect(instruction).toContain("不得添加总体结论、汇总项或额外的 criterion");
     expect(instruction).toContain("domainOutcome 是本 Ticket 唯一的权威结论");
     expect(instruction).toContain("verificationBasis");
     expect(instruction).toContain("不得降低强度");
-    expect(instruction).not.toContain("goal_resolution 顶层 criterionResults");
+    expect(instruction).toContain("goal_resolution 顶层 criterionResults");
+    expect(instruction).toContain("两组数组不是同一组数据");
+    expect(instruction).toContain("mission-assurance-v1 的正向 domainOutcome 只包含 assuranceReport");
+    expect(instruction).toContain("不要使用 verified 或其他自定义 disposition");
+    expect(instruction).toContain("不要把 disposition、summary 或 residualRisks 作为 missionCriterionResults 的数组项");
+  });
+
+  it("isolates the current assurance scope from unrelated Plan criteria", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 7,
+      objective: "deliver",
+      criteria: [
+        baselineCriterion("criterion-current", "当前功能必须可以完成核心操作"),
+        baselineCriterion("criterion-unrelated", "这个标准属于另一个交付增量"),
+      ],
+      constraints: [],
+      assumptions: [],
+      exclusions: [],
+      establishedByTicketId: "intake-a" as TicketId,
+      establishedAt: NOW,
+    };
+    const plan: SharedPlanContext = {
+      planId: "plan-a",
+      version: 4,
+      tickets: [{
+        ticketId: "unrelated-ticket",
+        status: "completed",
+        title: "另一个增量",
+        objective: "不要把这个目标混入当前验收",
+        successCriteria: ["另一个工单的标准不能进入当前报告"],
+        outputContract: { schemaRef: "delivery-v1" },
+        missionContribution: { missionCriterionIds: ["criterion-unrelated"] },
+      }],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: [],
+      missionBaseline: baseline,
+      teamMembers: [],
+    };
+    const assignment = {
+      ticket: {
+        ticketId: "assurance-a" as TicketId,
+        title: "当前验收",
+        objective: "验证当前功能",
+        successCriteria: ["形成当前 Ticket 的逐项结论"],
+        outputContract: { schemaRef: "mission-assurance-v1" },
+        assurance: { missionCriterionIds: ["criterion-current"] },
+      },
+    };
+
+    expect(projectMissionAssuranceContext(plan, assignment)).toEqual({
+      planRef: { planId: "plan-a", version: 4 },
+      baselineVersion: 7,
+      criterionIds: ["criterion-current"],
+      criteria: [baseline.criteria[0]],
+      missingCriterionIds: [],
+    });
+
+    const instruction = missionOutcomeInstruction(
+      "mission-assurance-v1",
+      [],
+      [],
+      undefined,
+      plan,
+      [{
+        ticketId: "unrelated-ticket" as TicketId,
+        title: "另一个增量",
+        objective: "不要把这个目标混入当前验收",
+        successCriteria: ["另一个工单的标准不能进入当前报告"],
+        outputContract: { schemaRef: "delivery-v1" },
+        handoff: {
+          schemaVersion: 1,
+          summary: "另一个增量的历史交付",
+          output: { note: "historical" },
+          evidence: [],
+          criterionResults: [],
+          residualRisks: [],
+        },
+      }],
+      assignment,
+    );
+
+    expect(instruction).toContain('"assuranceScope"');
+    expect(instruction).toContain("当前功能必须可以完成核心操作");
+    expect(instruction).not.toContain("这个标准属于另一个交付增量");
+    expect(instruction).not.toContain("另一个工单的标准不能进入当前报告");
+    expect(instruction).not.toContain('"currentPlan"');
   });
 
   it("requires every Mission settlement terminal to inherit baseline assurance from strict upstream Tickets", () => {
@@ -1652,7 +1791,7 @@ describe("Ticket Agent resolution adapter", () => {
       correctionMissionCriterionIds: ["criterion-b"],
       assuranceReport: {
         baselineVersion: 1,
-        criterionResults: [
+        missionCriterionResults: [
           { criterionId: "criterion-a", status: "satisfied", evidence: [] },
           { criterionId: "criterion-b", status: "not_satisfied", evidence: [] },
         ],

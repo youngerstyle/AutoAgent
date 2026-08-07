@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,7 +11,10 @@ import { chromium } from "playwright-core";
 const execFileAsync = promisify(execFile);
 const baseUrl = process.env.AUTOAGENT_BASE_URL ?? "http://127.0.0.1:13748";
 const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 2 * 60 * 60_000);
-const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO ?? "todo";
+// The built-in goal is a todo demo. A custom goal must be checked as the
+// artifact it actually produced, rather than inheriting that demo UI.
+const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO
+  ?? (process.env.AUTOAGENT_ACCEPTANCE_GOAL ? "html" : "todo");
 let workspaceRoot = process.env.AUTOAGENT_ACCEPTANCE_ROOT
   ?? await mkdtemp(path.join(os.tmpdir(), "autoagent-real-acceptance-"));
 let reportDir = path.join(workspaceRoot, ".autoagent", "user-acceptance");
@@ -29,13 +32,27 @@ let staticUrl;
 let snapshot;
 let browserResult;
 let acceptanceLock;
+let workspace;
+let serviceIdentity;
+let lastObservedAt;
+const acceptanceStartedAt = new Date().toISOString();
 const answeredManualTestTickets = new Set();
 const resumedProviderFailures = new Set();
+
+class AcceptanceDriverTimeoutError extends Error {
+  constructor({ timeoutMs: duration, lastObservedAt: observedAt, snapshot: lastSnapshot }) {
+    super(`Acceptance driver timed out after ${duration}ms without observing a terminal Mission state`);
+    this.name = "AcceptanceDriverTimeoutError";
+    this.timeoutMs = duration;
+    this.lastObservedAt = observedAt;
+    this.snapshot = lastSnapshot;
+  }
+}
 
 try {
   acceptanceLock = await acquireAcceptanceLock();
   await preflight();
-  const workspace = await resolveWorkspace();
+  workspace = await resolveWorkspace();
   if (!process.env.AUTOAGENT_ACCEPTANCE_WORKSPACE_ID) {
     snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
       method: "POST",
@@ -44,30 +61,51 @@ try {
   }
   snapshot = await waitForTerminal(workspace.id);
 
+  assertRuntimeSnapshot(snapshot, { terminal: true });
   assert.equal(snapshot.status, "completed", failureMessage("Mission 未完成", snapshot));
   assert.ok(snapshot.tickets.length > 0, "Mission 没有生成 Ticket");
   assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("存在未完成 Ticket", snapshot));
   assertAuditablePlan(snapshot.tickets);
 
-  browserResult ??= await runArtifactAcceptance();
+  // Always re-check the final artifact after Mission reaches a terminal
+  // state. A pre-terminal manual-test result must not stand in for the
+  // artifact produced by a later Plan version.
+  browserResult = await runArtifactAcceptance({ force: true });
 
   const report = {
     passed: true,
+    outcome: "passed",
+    observationStatus: "terminal_observed",
     at: new Date().toISOString(),
+    acceptanceStartedAt,
+    lastObservedAt,
+    businessStatusAtLastObservation: snapshot.status,
+    terminalConfirmedAt: lastObservedAt,
     baseUrl,
     workspace: { id: workspace.id, rootPath: workspaceRoot },
+    service: serviceIdentity,
     task: { id: snapshot.activeTask?.id, status: snapshot.status },
+    runtimeInvariants: { passed: true },
     tickets: snapshot.tickets.map(({ id, type, brief, status, targetAgentId }) => ({ id, type, brief, status, targetAgentId })),
     artifactAcceptance: browserResult,
   };
   await saveReport(report);
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {
+  const driverTimedOut = error instanceof AcceptanceDriverTimeoutError;
   const report = {
     passed: false,
+    outcome: driverTimedOut ? "driver_timeout" : "acceptance_error",
+    observationStatus: driverTimedOut ? "driver_timeout" : "transport_error",
     at: new Date().toISOString(),
+    acceptanceStartedAt,
+    lastObservedAt,
+    businessStatusAtLastObservation: snapshot?.status ?? null,
+    terminalConfirmedAt: null,
     baseUrl,
-    workspaceRoot,
+    service: serviceIdentity,
+    workspace: workspace ? { id: workspace.id, rootPath: workspaceRoot } : { rootPath: workspaceRoot },
+    terminal: Boolean(snapshot && ["completed", "failed", "paused", "interrupted"].includes(snapshot.status)),
     error: error instanceof Error ? error.stack ?? error.message : String(error),
     snapshot,
   };
@@ -115,6 +153,11 @@ function isProcessAlive(pid) {
 
 async function preflight() {
   const health = await api("/api/health");
+  serviceIdentity = {
+    baseUrl,
+    ready: health.ready ?? null,
+    runtimeStatus: health.runtimeHosts?.status ?? null,
+  };
   assert.equal(health.ok, true, `AutoAgent 服务不可用：${baseUrl}`);
   const status = await api("/api/providers/status");
   const hasRealProvider = status.providers?.openai?.configured || status.providers?.anthropic?.configured;
@@ -172,6 +215,12 @@ async function waitForTerminal(workspaceId) {
   let lastSignature = "";
   while (Date.now() < deadline) {
     const current = await api(`/api/workspaces/${workspaceId}/snapshot`).then((value) => value.snapshot);
+    // Keep the failure report at the same point in time as the poller.
+    // Otherwise a timeout only records the initial POST snapshot and hides
+    // the ticket/agent state that actually caused the timeout.
+    snapshot = current;
+    assertRuntimeSnapshot(current);
+    lastObservedAt = new Date().toISOString();
     const signature = [
       current.status,
       current.agents.map((agent) => `${agent.name}:${agent.status}`).join(","),
@@ -207,6 +256,10 @@ async function waitForTerminal(workspaceId) {
     if (pausedAgent) {
       const taskId = current.activeTask?.id;
       assert.ok(taskId, "Agent 暂停时找不到当前任务");
+      const latestControl = latestAgentControl(current, pausedAgent.id);
+      if (!latestControl || !["provider_retry_wait", "external_service_waiting"].includes(latestControl.status)) {
+        throw new Error(`Agent ${pausedAgent.name} 因 ${latestControl?.status ?? "未知原因"} 暂停；真实验收驱动不会把合同错误或业务阻塞伪装成供应商故障恢复`);
+      }
       if (resumedProviderFailures.has(pausedAgent.id)) {
         throw new Error(`Agent ${pausedAgent.name} 在受控恢复后再次暂停，停止验收以避免继续消耗`);
       }
@@ -222,30 +275,81 @@ async function waitForTerminal(workspaceId) {
     if (["completed", "failed", "paused", "interrupted"].includes(current.status)) return current;
     await sleep(1_000);
   }
-  throw new Error(`真实 Mission 在 ${timeoutMs}ms 内未结束`);
+  throw new AcceptanceDriverTimeoutError({ timeoutMs, lastObservedAt, snapshot });
 }
 
-async function runBrowserAcceptance() {
-  if (browserResult) return browserResult;
-  const indexPath = path.join(workspaceRoot, "index.html");
-  const html = await readFile(indexPath, "utf8");
+/**
+ * Validate only cross-engine persistence invariants that are observable from
+ * a workspace snapshot. This deliberately does not decide whether a domain
+ * goal is complete, whether a role should receive work, or how a Ticket
+ * should be routed; those decisions belong to Agents and the Ticket Engine.
+ */
+function assertRuntimeSnapshot(current, { terminal = false } = {}) {
+  const tickets = Array.isArray(current?.tickets) ? current.tickets : [];
+  const ticketIds = new Set(tickets.map((ticket) => ticket.id));
+  assert.equal(ticketIds.size, tickets.length, "运行快照包含重复 Ticket ID");
+
+  const activeTaskId = current.activeTask?.id;
+  const activeTaskRunId = current.activeTaskRun?.id;
+  for (const [agentId, events] of Object.entries(current.agentThreads ?? {})) {
+    const eventIds = new Set();
+    const sequences = [];
+    for (const event of events ?? []) {
+      assert.equal(event.workspaceAgentId, agentId, `Agent Thread ${agentId} 混入了其他 Agent 的事件`);
+      assert.equal(eventIds.has(event.id), false, `Agent Thread ${agentId} 存在重复事件 ${event.id}`);
+      eventIds.add(event.id);
+      sequences.push(event.sequence);
+      if (activeTaskId) assert.equal(event.taskId, activeTaskId, `Agent Thread ${agentId} 串入了其他任务事件`);
+      if (activeTaskRunId) assert.equal(event.taskRunId, activeTaskRunId, `Agent Thread ${agentId} 串入了其他任务运行事件`);
+    }
+    const ordered = [...sequences].sort((a, b) => a - b);
+    for (let index = 1; index < ordered.length; index += 1) {
+      assert.ok(ordered[index] > ordered[index - 1], `Agent Thread ${agentId} 的事件 sequence 不唯一或不递增`);
+    }
+  }
+
+  if (terminal) {
+    assert.equal(
+      current.agents?.some((agent) => agent.status === "running"),
+      false,
+      "Mission 已进入终态，但仍有 Agent 被投影为 running",
+    );
+  }
+}
+
+function latestAgentControl(current, agentId) {
+  const events = current.agentThreads?.[agentId] ?? [];
+  return [...events].reverse().find((event) => event.kind === "system_note"
+    && event.payload && typeof event.payload === "object"
+    && typeof event.payload.status === "string")?.payload;
+}
+
+async function runBrowserAcceptance({ force = false } = {}) {
+  if (browserResult && !force) return browserResult;
+  const htmlPath = await findHtmlEntryPath();
+  assert.ok(htmlPath, "工作区没有可供浏览器验收的 HTML 入口");
+  const html = await readFile(htmlPath, "utf8");
   assert.match(html, /<html/i, "人工测试前发现 index.html 不是有效 HTML");
   if (!staticServer) {
     const served = await serveDirectory(workspaceRoot);
     staticServer = served.server;
     staticUrl = served.url;
   }
+  const relativeEntry = path.relative(workspaceRoot, htmlPath).split(path.sep).join("/");
+  const artifactUrl = new URL(relativeEntry, new URL(".", staticUrl)).toString();
   browser ??= await chromium.launch({ headless: true, executablePath: resolveBrowserPath() });
   browserResult = scenario === "tank98"
-    ? await verifyTankInBrowser(browser, staticUrl)
-    : await verifyTodoInBrowser(browser, staticUrl);
+    ? await verifyTankInBrowser(browser, artifactUrl)
+    : scenario === "todo"
+      ? await verifyTodoInBrowser(browser, artifactUrl)
+      : await verifyHtmlArtifactInBrowser(browser, artifactUrl);
   return browserResult;
 }
 
 async function runArtifactAcceptance({ force = false } = {}) {
   if (browserResult && !force) return browserResult;
-  const indexPath = path.join(workspaceRoot, "index.html");
-  if (existsSync(indexPath)) return runBrowserAcceptance();
+  const htmlPath = await findHtmlEntryPath();
+  if (htmlPath) return runBrowserAcceptance({ force });
 
   const desktopEntries = [
     path.join(workspaceRoot, "dist", "tank98.py"),
@@ -259,10 +363,30 @@ async function runArtifactAcceptance({ force = false } = {}) {
 
   throw new Error(
     `未找到可验收的交付入口。检查过：${[
-      indexPath,
+      path.join(workspaceRoot, "index.html"),
+      ...(await listHtmlEntryPaths()),
       ...desktopEntries,
     ].join(", ")}`,
   );
+}
+
+async function findHtmlEntryPath() {
+  const indexPath = path.join(workspaceRoot, "index.html");
+  if (existsSync(indexPath)) return indexPath;
+  const candidates = await listHtmlEntryPaths();
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) {
+    throw new Error(`工作区存在多个 HTML 入口，无法在没有明确交付引用时猜测：${candidates.join(", ")}`);
+  }
+  return undefined;
+}
+
+async function listHtmlEntryPaths() {
+  const entries = await readdir(workspaceRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".html"))
+    .map((entry) => path.join(workspaceRoot, entry.name))
+    .sort();
 }
 
 async function runWindowsDesktopAcceptance() {
@@ -371,17 +495,21 @@ async function verifyTodoInBrowser(browserInstance, url) {
   assert.equal(await page.getByText("真实验收任务一", { exact: true }).count(), 1, "新增第一条待办失败");
   assert.equal(await page.getByText("真实验收任务二", { exact: true }).count(), 1, "新增第二条待办失败");
 
-  const firstRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::li[1]");
+  const firstRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
   const firstCheckbox = firstRow.getByRole("checkbox").first();
   await assertVisible(firstCheckbox, "第一条待办没有完成勾选框");
   await firstCheckbox.check();
   assert.equal(await firstCheckbox.isChecked(), true, "勾选完成没有生效");
 
   await page.reload({ waitUntil: "load" });
-  const persistedRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::li[1]");
+  const persistedRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
   assert.equal(await persistedRow.getByRole("checkbox").first().isChecked(), true, "刷新后完成状态没有持久化");
 
-  const secondRow = page.getByText("真实验收任务二", { exact: true }).locator("xpath=ancestor::li[1]");
+  const secondRow = page.getByText("真实验收任务二", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
+  page.once("dialog", async (dialog) => {
+    assert.equal(dialog.type(), "confirm", "删除待办弹出了非预期的浏览器对话框");
+    await dialog.accept();
+  });
   await secondRow.getByRole("button", { name: /删除/ }).first().click();
   assert.equal(await page.getByText("真实验收任务二", { exact: true }).count(), 0, "删除待办失败");
   await page.screenshot({ path: path.join(reportDir, "desktop.png"), fullPage: true });
@@ -399,6 +527,47 @@ async function verifyTodoInBrowser(browserInstance, url) {
     added: 2,
     completionPersistedAfterReload: true,
     deleted: 1,
+    mobileWidth: 390,
+    horizontalOverflow,
+    errors,
+    screenshots: [path.join(reportDir, "desktop.png"), path.join(reportDir, "mobile.png")],
+  };
+}
+
+async function verifyHtmlArtifactInBrowser(browserInstance, url) {
+  await mkdir(reportDir, { recursive: true });
+  const context = await browserInstance.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error" && !message.text().includes("favicon")) errors.push(`console: ${message.text()}`);
+  });
+  await page.goto(url, { waitUntil: "load" });
+
+  const body = page.locator("body");
+  await assertVisible(body, "交付 HTML 没有可见页面主体");
+  const bodyTextLength = (await body.innerText()).trim().length;
+  assert.ok(bodyTextLength > 20, "交付 HTML 页面没有可读内容");
+  const headingCount = await page.locator("h1, h2, h3").count();
+  const linkCount = await page.locator("a[href]").count();
+  await page.screenshot({ path: path.join(reportDir, "desktop.png"), fullPage: true });
+
+  const mobile = await context.newPage();
+  await mobile.setViewportSize({ width: 390, height: 844 });
+  await mobile.goto(url, { waitUntil: "load" });
+  await assertVisible(mobile.locator("body"), "交付 HTML 在 390px 视口下不可见");
+  const horizontalOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  assert.equal(horizontalOverflow, false, "390px 手机视口存在横向滚动");
+  await mobile.screenshot({ path: path.join(reportDir, "mobile.png"), fullPage: true });
+  assert.deepEqual(errors, [], `交付 HTML 浏览器出现错误：${errors.join("；")}`);
+
+  await context.close();
+  return {
+    scenario: "html",
+    bodyTextLength,
+    headingCount,
+    linkCount,
     mobileWidth: 390,
     horizontalOverflow,
     errors,

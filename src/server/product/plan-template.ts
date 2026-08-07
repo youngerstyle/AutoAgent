@@ -25,6 +25,7 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
             "目标、约束、已知事实和团队采用的默认假设被记录",
             "可逆的不确定项不阻塞交接，必要问题作为可选校准项",
             "只有缺少凭证、授权、不可逆操作确认或真实安全边界等不可替代输入时才阻塞",
+            "只提交正式 Mission 基线，不实施或验收后续 Ticket 的代码、文件和服务交付",
           ],
           assignment: { requiredCapabilities: ["mission:intake"] },
           outputContract: { schemaRef: "mission-baseline-v2" },

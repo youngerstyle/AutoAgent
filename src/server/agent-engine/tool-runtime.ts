@@ -1121,7 +1121,7 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     },
     browser: {
       name,
-      description: "在当前 Agent 与 Ticket Attempt 隔离的真实浏览器会话中执行一次浏览器操作。必须直接调用这个一级工具，不得通过 shell 或 npx 间接启动 agent-browser。公网 HTTP/HTTPS 页面可以直接打开；localhost、127.0.0.1 等本地页面只能打开当前工作区由 startService 登记且仍在运行的端口，结果会记录 serviceId 作为证据归属，不得猜测或复用其他项目端口。browserArgs 是参数数组，例如 [\"open\",\"https://example.com\"]、[\"open\",\"http://127.0.0.1:<受管服务端口>\"]、[\"snapshot\",\"-i\"]、[\"press\",\"Enter\"]、[\"screenshot\",\"result.png\"]。每次只执行一个命令，先观察结果再决定下一步。",
+      description: "在当前 Agent 与 Ticket Attempt 隔离的真实浏览器会话中执行一次浏览器操作。必须直接调用这个一级工具，不得通过 shell 或 npx 间接启动 agent-browser。公网 HTTP/HTTPS 页面可以直接打开；localhost、127.0.0.1 等本地页面只能打开当前工作区由 startService 登记且仍在运行的端口，结果会记录 serviceId 作为证据归属，不得猜测或复用其他项目端口。browserArgs 是参数数组，优先逐项传参，例如 [\"open\",\"https://example.com\"]、[\"snapshot\",\"-i\"]、[\"set\",\"viewport\",\"1264\",\"900\"]、[\"press\",\"Enter\"]、[\"screenshot\",\"result.png\"]。外部 Skill 若给出整条命令字符串也会在工具边界归一化。每次只执行一个命令，先观察结果再决定下一步。",
       inputSchema: {
         type: "object",
         properties: {
@@ -1172,7 +1172,7 @@ function normalizeReadLimit(value: number | undefined): number {
   return Math.min(value, MAX_FILE_READ_CHARS);
 }
 
-function requiredBrowserArgs(value: string[] | undefined): string[] {
+export function requiredBrowserArgs(value: string[] | undefined): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
     throw new Error("browserArgs is required");
   }
@@ -1184,11 +1184,71 @@ function requiredBrowserArgs(value: string[] | undefined): string[] {
     "--cdp",
     "--executable-path",
   ]);
-  const forbidden = value.find((item) => platformOwnedOptions.has(item.toLowerCase().split("=")[0]!));
+  const normalized = normalizeBrowserArgs(value);
+  const forbidden = normalized.find((item) => platformOwnedOptions.has(item.toLowerCase().split("=")[0]!));
   if (forbidden) {
     throw new Error(`browserArgs 不能覆盖平台管理的浏览器会话参数：${forbidden}`);
   }
-  return value;
+  return normalized;
+}
+
+/**
+ * External Skills describe CLI calls as one shell-like line, while the first-party
+ * browser tool accepts argv. Keep the boundary tolerant without moving business
+ * decisions into the platform: already-tokenized argv is preserved verbatim.
+ */
+export function normalizeBrowserArgs(value: readonly string[]): string[] {
+  if (value.length !== 1) return [...value];
+  const command = value[0]!.trim();
+  if (!command.includes(" ") && !command.includes("\t")) return [command];
+  return tokenizeBrowserCommand(command);
+}
+
+function tokenizeBrowserCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | undefined;
+  let escaping = false;
+  let tokenStarted = false;
+  for (const character of command) {
+    if (escaping) {
+      token += character;
+      tokenStarted = true;
+      escaping = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaping = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else token += character;
+      tokenStarted = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      tokenStarted = true;
+      continue;
+    }
+    if (character === " " || character === "\t") {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    token += character;
+    tokenStarted = true;
+  }
+  if (escaping) token += "\\";
+  if (quote) throw new Error("browserArgs 包含未闭合的引号");
+  if (tokenStarted) tokens.push(token);
+  if (tokens.length === 0) throw new Error("browserArgs is required");
+  return tokens;
 }
 
 const SAFE_BROWSER_REPLAY_COMMANDS = new Set([

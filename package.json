@@ -12,6 +12,18 @@
     "test:contracts": "vitest run tests/shared/runtime-contracts.test.ts tests/shared/ticket-contract-strengthening.test.ts && tsc --noEmit",
     "test:e2e": "vitest run tests/e2e",
     "test:acceptance:real": "node scripts/real-user-acceptance.mjs",
+    "test:acceptance:real-multi-plan": "node scripts/real-multi-plan-user-acceptance.mjs",
+    "test:acceptance:real-endurance": "npm run build && node scripts/real-agent-endurance-acceptance.mjs",
+    "test:acceptance:real-process-recovery": "npm run build && node scripts/real-provider-process-recovery-acceptance.mjs",
+    "migrate:team-bindings": "tsx scripts/migrate-team-bindings.ts",
+    "migrate:agent-stores": "tsx scripts/migrate-agent-stores.ts",
+    "test:browser:sse": "npm run build && node scripts/verify-browser-sse-reconnect.mjs",
+    "test:browser:ui": "npm run build && node scripts/verify-browser-production-ui.mjs",
+    "test:browser:manual-recovery": "npm run build && node scripts/verify-manual-test-recovery.mjs",
+    "test:acceptance:gateway-recovery": "npm run build && node scripts/verify-mission-provider-recovery.mjs",
+    "test:acceptance:multi-plan": "npm run build && node scripts/verify-multi-plan-acceptance.mjs",
+    "test:acceptance:runtime-soak": "npm run build && node scripts/verify-runtime-soak.mjs",
+    "test:process:recovery": "npm run build && node scripts/verify-process-recovery.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

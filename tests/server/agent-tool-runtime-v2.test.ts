@@ -6,9 +6,30 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
-import { AgentToolRuntime, agentCommandEnvironment } from "../../src/server/agent-engine/tool-runtime.js";
+import {
+  AgentToolRuntime,
+  agentCommandEnvironment,
+  normalizeBrowserArgs,
+  requiredBrowserArgs,
+} from "../../src/server/agent-engine/tool-runtime.js";
 
 describe("AgentToolRuntime", () => {
+  it("normalizes shell-style Skill commands at the browser tool boundary", () => {
+    expect(normalizeBrowserArgs(["set viewport 1264 900"]))
+      .toEqual(["set", "viewport", "1264", "900"]);
+    expect(normalizeBrowserArgs(["fill @e1 \"hello world\""]))
+      .toEqual(["fill", "@e1", "hello world"]);
+    expect(normalizeBrowserArgs(["set", "viewport", "1264", "900"]))
+      .toEqual(["set", "viewport", "1264", "900"]);
+    expect(requiredBrowserArgs(["set viewport 1264 900"]))
+      .toEqual(["set", "viewport", "1264", "900"]);
+  });
+
+  it("rejects an unclosed quoted Skill command instead of executing a partial command", () => {
+    expect(() => normalizeBrowserArgs(["fill @e1 \"unfinished"]))
+      .toThrow("未闭合的引号");
+  });
+
   it("uses explicit configured tools instead of role routing", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-"));
     const runtime = new AgentToolRuntime({

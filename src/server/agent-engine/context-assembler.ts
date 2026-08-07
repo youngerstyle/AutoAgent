@@ -1,5 +1,6 @@
 import type { AgentGoal, AgentThreadSnapshot } from "../../shared/contracts/agent-engine.js";
 import type { AgentModelHistoryItem } from "../providers/types.js";
+import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, effectiveInputTokenBudget } from "../../shared/model-context.js";
 import type { AgentStore } from "./agent-store.js";
@@ -287,7 +288,7 @@ export function compactToolSchemaValidationError(content: string): string {
   const compacted = validation.length <= maxChars
     ? validation
     : `${validation.slice(0, maxChars)}\n...[validation details truncated]`;
-  return `${compacted}\n\n[Rejected arguments omitted from model context; full call remains in the audit record.]`;
+  return `${compacted}\n\n${schemaValidationRecoveryHint(validation)}\n[Rejected arguments omitted from model context; full call remains in the audit record.]`;
 }
 
 interface StoredCompaction {

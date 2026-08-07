@@ -284,6 +284,7 @@ describe("AgentEngine", () => {
     expect(projection.thread?.threadId).toBe(fixture.goal.spec.threadId);
     expect(projection.goal?.spec.id).toBe(fixture.goal.spec.id);
     expect(projection.payloads.size).toBeGreaterThan(0);
+    expect(projection.execution).toEqual({ leaseHeld: false });
   });
 
   it("projects only the newest requested thread window without deleting history", async () => {
@@ -329,6 +330,119 @@ describe("AgentEngine", () => {
     expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
       ready: true,
       reason: "interrupted_turn",
+    });
+  });
+
+  it("schedules the next model decision after an Agent turn boundary", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    await fixture.engine.appendToolItem({
+      itemId: "yielded-turn:boundary",
+      turnId: "yielded-turn",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control",
+      value: {
+        turnId: "yielded-turn",
+        status: "turn_yielded",
+        reason: "turn_boundary",
+      },
+      createdAt: T1,
+    });
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "turn_boundary",
+    });
+  });
+
+  it("pauses repeated idle turns without treating them as completed work", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const appendYielded = (turnId: string) => fixture.engine.appendToolItem({
+      itemId: `${turnId}:boundary`,
+      turnId,
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control" as const,
+      value: {
+        turnId,
+        status: "turn_yielded",
+        reason: "turn_boundary",
+        durableProgress: false,
+        idleResponseFingerprint: "same-idle-response",
+      },
+      createdAt: T1,
+    });
+
+    await appendYielded("idle-1");
+    await appendYielded("idle-2");
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_turn_without_progress",
+    });
+  });
+
+  it("pauses repeated tool observations across turn boundaries", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const appendYielded = (turnId: string) => fixture.engine.appendToolItem({
+      itemId: `${turnId}:boundary`,
+      turnId,
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control" as const,
+      value: {
+        turnId,
+        status: "turn_yielded",
+        reason: "turn_boundary",
+        durableProgress: true,
+        observationFingerprints: ["same-list-observation", "same-read-observation"],
+      },
+      createdAt: T1,
+    });
+
+    await appendYielded("tools-1");
+    await appendYielded("tools-2");
+
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_turn_without_progress",
+    });
+  });
+
+  it("pauses changing but non-durable turns only after the configured no-progress window", async () => {
+    let now = new Date(T1);
+    const fixture = await activeGoalFixture(new RetryPort(), {
+      now: () => now,
+      noProgressWindowMs: 60_000,
+    });
+    const appendYielded = (turnId: string, createdAt: string) => fixture.engine.appendToolItem({
+      itemId: `${turnId}:boundary`,
+      turnId,
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "control" as const,
+      value: {
+        turnId,
+        status: "turn_yielded",
+        reason: "turn_boundary",
+        durableProgress: false,
+        idleResponseFingerprint: `${turnId}-different-observation`,
+      },
+      createdAt,
+    });
+
+    await appendYielded("browser-1", T1);
+    now = new Date(new Date(T1).getTime() + 30_000);
+    await appendYielded("browser-2", now.toISOString());
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "turn_boundary",
+    });
+
+    now = new Date(new Date(T1).getTime() + 60_000);
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: false,
+      reason: "no_durable_progress_window_elapsed",
     });
   });
 
@@ -425,6 +539,59 @@ describe("AgentEngine", () => {
     expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
       ready: false,
       reason: "repeated_host_correction_without_progress",
+    });
+  });
+
+  it("pauses repeated execution retries until a human provides new direction", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const appendAttempt = async (turnId: string) => {
+      await fixture.engine.appendModelItem({
+        itemId: `${turnId}:model`,
+        turnId,
+        threadId: fixture.goal.spec.threadId,
+        goalId: fixture.goal.spec.id,
+        content: "提交终局结论",
+        createdAt: T1,
+      });
+      await fixture.engine.appendToolItem({
+        itemId: `${turnId}:retry`,
+        turnId,
+        threadId: fixture.goal.spec.threadId,
+        goalId: fixture.goal.spec.id,
+        kind: "control",
+        value: {
+          turnId,
+          status: "execution_retry_wait",
+          reason: "terminal_contract",
+        },
+        createdAt: T1,
+      });
+    };
+
+    await appendAttempt("attempt-1");
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "execution_retry_due",
+    });
+
+    await appendAttempt("attempt-2");
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_execution_retry_without_progress",
+    });
+
+    await fixture.engine.sendMessage({
+      messageId: "human-recovery",
+      turnId: "human-recovery",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      senderPrincipalId: "human",
+      content: "请根据最新错误重新提交完整结论",
+      createdAt: T1,
+    });
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "new_input",
     });
   });
 
@@ -665,6 +832,56 @@ describe("AgentEngine", () => {
     });
   });
 
+  it("does not reuse a resolution proposal after a correctable result resumes the Goal", async () => {
+    const port = new CorrectableThenAcceptPort();
+    const fixture = await activeGoalFixture(port);
+    const firstProposal = proposalFor(fixture.goal);
+
+    const corrected = await fixture.engine.proposeGoalResolution(firstProposal);
+
+    expect(corrected).toMatchObject({
+      goal: { status: "active", activeProposalId: undefined },
+      attempt: { settle: true, decision: { accepted: false, disposition: "correctable" } },
+    });
+    await expect(fixture.engine.proposeGoalResolution(firstProposal))
+      .rejects.toThrow("Resolution proposal is stale");
+
+    const secondProposal = {
+      ...proposalFor(corrected.goal),
+      proposalId: "proposal-after-correction",
+    };
+    const accepted = await fixture.engine.proposeGoalResolution(secondProposal);
+
+    expect(accepted).toMatchObject({ goal: { status: "completed" }, attempt: { settle: true, decision: { accepted: true } } });
+    expect(port.resolveCalls).toBe(2);
+    expect((await fixture.store.read()).decisions.every((item) => item.result.applied)).toBe(true);
+  });
+
+  it("does not record a resolution decision when settlement was rejected by a Goal version conflict", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    const proposal = proposalFor(fixture.goal);
+    const resolving = (await fixture.engine.proposeGoalResolution(proposal)).goal;
+    const paused = await fixture.engine.controlGoal({
+      requestId: "pause-before-settlement",
+      goalId: resolving.spec.id,
+      expectedGoalVersion: resolving.version,
+      action: "pause",
+      reason: "operator pause",
+    });
+
+    const rejected = await fixture.engine.settleProposal({
+      decisionId: "rejected-resolution",
+      proposalId: proposal.proposalId,
+      expectedGoalVersion: resolving.version,
+      decision: { accepted: true, committedState: "completed" },
+    });
+
+    expect(rejected).toMatchObject({ applied: false, code: "version_conflict", goal: paused });
+    expect((await fixture.store.read()).decisions).toEqual([]);
+    expect((await fixture.engine.getThread(fixture.goal.spec.threadId)).items)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ payloadRef: "control:decision:rejected-resolution" })]));
+  });
+
   it("keeps a resolving proposal while paused and resumes resolution", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     const proposal = proposalFor(fixture.goal);
@@ -742,7 +959,7 @@ describe("AgentEngine", () => {
 
     expect(result.attempt).toMatchObject({
       settle: true,
-      decision: { accepted: false, disposition: "correctable", reason: "artifact is required" },
+      decision: { accepted: false, disposition: "correctable", reason: expect.stringContaining("artifact is required") },
     });
     expect(result.goal.status).toBe("active");
     const updatedThread = await fixture.engine.getThread(thread.threadId);
@@ -751,7 +968,7 @@ describe("AgentEngine", () => {
     expect(await fixture.engine.getPayload(decisionItem.payloadRef)).toMatchObject({
       type: "goal_resolution_decision",
       status: "correctable",
-      decision: { reason: "artifact is required" },
+      decision: { reason: expect.stringContaining("artifact is required") },
     });
   });
 
@@ -819,6 +1036,21 @@ class AcceptAllPort implements GoalResolutionPort {
   }
 }
 
+class CorrectableThenAcceptPort implements GoalResolutionPort {
+  resolveCalls = 0;
+
+  async resolve<TStatus extends GoalResolutionStatus>(
+    _goal: AgentGoal,
+    proposal: GoalResolutionProposal<TStatus>,
+  ): Promise<GoalResolutionAttemptResult<TStatus>> {
+    this.resolveCalls += 1;
+    if (this.resolveCalls === 1) {
+      return { settle: true, decision: { accepted: false, disposition: "correctable", reason: "new evidence required" } };
+    }
+    return { settle: true, decision: { accepted: true, committedState: proposal.status } };
+  }
+}
+
 function proposalFor(goal: AgentGoal): GoalResolutionProposal<"completed"> {
   return {
     proposalId: "proposal-a",
@@ -834,8 +1066,11 @@ function proposalFor(goal: AgentGoal): GoalResolutionProposal<"completed"> {
   };
 }
 
-async function activeGoalFixture(resolutionPort: GoalResolutionPort) {
-  const fixture = await createFixture({ resolutionPort });
+async function activeGoalFixture(
+  resolutionPort: GoalResolutionPort,
+  options: { now?: () => Date; noProgressWindowMs?: number } = {},
+) {
+  const fixture = await createFixture({ resolutionPort, ...options });
   const thread = await fixture.engine.ensureThread({ agentId: "dev", scopeId: "a", idempotencyKey: "a" });
   const goal = await fixture.engine.startGoal({
     agentId: "dev",
@@ -856,9 +1091,13 @@ async function activeGoalFixture(resolutionPort: GoalResolutionPort) {
 async function createFixture(options: {
   now?: () => Date;
   resolutionPort?: GoalResolutionPort;
+  noProgressWindowMs?: number;
 } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-engine-"));
   const store = new AgentStore(root, "dev");
-  const engine = new AgentEngine(store, options.resolutionPort, { now: options.now });
+  const engine = new AgentEngine(store, options.resolutionPort, {
+    now: options.now,
+    noProgressWindowMs: options.noProgressWindowMs,
+  });
   return { root, store, engine };
 }

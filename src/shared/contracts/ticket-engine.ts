@@ -34,6 +34,10 @@ export interface TicketDeliveryIncrement {
 
 export interface TicketDefinition {
   parentTicketId?: TicketId;
+  correction?: {
+    targetTicketId: TicketId;
+    sourceTicketId: TicketId;
+  };
   title: string;
   objective: string;
   successCriteria: string[];
@@ -57,7 +61,7 @@ export interface TicketDefinition {
   };
 }
 
-export interface PlannedTicketNode extends Omit<TicketDefinition, "parentTicketId"> {
+export interface PlannedTicketNode extends Omit<TicketDefinition, "parentTicketId" | "correction"> {
   clientRef: string;
   parentTicketId?: TicketId;
 }
@@ -340,7 +344,7 @@ export type TicketCommandResult =
       accepted: true;
       commandId: string;
       proposalId: string;
-      ticketStatus: "blocked" | "completed" | "returned" | "failed";
+      ticketStatus: "pending" | "blocked" | "completed" | "returned" | "failed";
       ticketVersion: number;
       planStatus: PlanStatus;
       planVersion: number;
@@ -355,6 +359,7 @@ export type TicketCommandResult =
         | "policy_violation"
         | "version_conflict"
         | "stale_authority"
+        | "plan_paused"
         | "plan_terminal"
         | "idempotency_conflict";
       reason: string;
@@ -481,6 +486,7 @@ export type TicketAggregateEventPayload =
   | { type: "TicketClaimed"; claimId: string; attemptId: string; attemptNumber: number }
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput: TicketRequiredInput }
+  | { type: "TicketAttemptReturned"; correctionTicketId: TicketId }
   | {
       type: "TicketTerminal";
       status: "completed" | "returned" | "failed" | "cancelled";
@@ -502,6 +508,7 @@ export type PlanAggregateEventPayload = {
   type: "TicketCorrectionRequested";
   sourceTicketId: TicketId;
   targetTicketId: TicketId;
+  correctionTicketId: TicketId;
   reason: string;
   handoff: TicketHandoff;
 };

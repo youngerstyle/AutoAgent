@@ -161,14 +161,22 @@ function contentToAgentBubbles(id: string, content: string): AgentThreadBubble[]
 
 export function splitReasoningFromAnswer(content: string): { reasoning: string[]; answer: string } {
   const reasoning: string[] = [];
-  const answer = content
-    .replace(/<thinking>([\s\S]*?)<\/thinking>/gi, (_match, body: string) => {
+  let answer = content
+    .replace(/<thinking\b[^>]*>([\s\S]*?)<\/thinking>/gi, (_match, body: string) => {
       const normalized = normalizeReasoning(body);
       if (normalized) reasoning.push(normalized);
       return "";
-    })
-    .replace(/<\/?thinking>/gi, "")
-    .trim();
+    });
+
+  // A provider can terminate a turn while an internal reasoning tag is still open.
+  // Keep that malformed tail in the folded reasoning view instead of showing it as chat.
+  answer = answer.replace(/<thinking\b[^>]*>([\s\S]*)$/i, (_match, body: string) => {
+    const normalized = normalizeReasoning(body);
+    if (normalized) reasoning.push(normalized);
+    return "";
+  });
+
+  answer = answer.replace(/<\/?thinking\b[^>]*>/gi, "").trim();
   return { reasoning, answer };
 }
 

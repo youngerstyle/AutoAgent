@@ -334,6 +334,11 @@ export class StaffingCoordinator {
       },
       missionStartContract: {
         requiredCapabilities: [...this.requiredCapabilities],
+        staffingDecision: {
+          meaning: "staffed 表示所选团队能够对当前 Mission 的完整交付负责，不只是完成需求接收或计划拆解",
+          memberCoverage: "每个成员必须声明 capabilityCoverage；平台只验证声明能力属于对应人才档案",
+          missingCapability: "如果人才池无法覆盖完整目标，提交 recruitment_required 和能力缺口，不要提交一个只有管理能力的 staffed 团队",
+        },
       },
       currentTeam: projectAgents.map((agent) => {
         const profile = profileById.get(agent.profileId);
@@ -404,7 +409,14 @@ class StaffingResolutionPort implements GoalResolutionPort<TeamStaffingOutcome> 
       const profiles = await this.profiles();
       const byId = new Map(profiles.map((profile) => [profile.id, profile]));
       for (const member of outcome.members) {
-        if (!byId.has(member.profileId)) throw new Error(`人才档案不存在：${member.profileId}`);
+        const profile = byId.get(member.profileId);
+        if (!profile) throw new Error(`人才档案不存在：${member.profileId}`);
+        const invalidCoverage = member.capabilityCoverage.filter((capability) =>
+          !profile.capabilities.includes(capability),
+        );
+        if (invalidCoverage.length) {
+          throw new Error(`成员 ${member.profileId} 声明了档案未提供的能力：${invalidCoverage.join("、")}`);
+        }
       }
       if (outcome.status === "staffed") {
         const selected = outcome.members.map((member) => byId.get(member.profileId)!);

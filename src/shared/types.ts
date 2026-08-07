@@ -293,6 +293,13 @@ export interface WorkspaceSnapshot {
   status: EntityStatus;
   currentStep?: string;
   readOnlyReason?: string;
+  runtimeError?: {
+    source: "scheduler" | "agent_turn";
+    message: string;
+    at: string;
+    agentId?: string;
+    turnId?: string;
+  };
   humanLoop?: {
     latestReply?: {
       agentId?: string;

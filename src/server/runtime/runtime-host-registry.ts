@@ -7,12 +7,19 @@ import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import type { PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { Workspace } from "../../shared/types.js";
-import { RuntimeHost } from "./runtime-host.js";
+import { RuntimeHost, planHasRunnableTickets, runtimeTaskStatusFor } from "./runtime-host.js";
+import { RuntimeHostStore } from "./runtime-host-store.js";
+import { MissionStore } from "../mission-process/mission-store.js";
+import { TicketStore } from "../tickets/ticket-store.js";
+import { StaffingRequestStore } from "../staffing/staffing-request-store.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
+import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
   private readonly pendingHosts = new Map<string, Promise<RuntimeHost>>();
+  private readonly scheduler: RuntimeHostScheduler;
+  private readonly executionGate: RuntimeExecutionGate;
 
   constructor(
     private readonly workspaces: WorkspaceStore,
@@ -21,7 +28,12 @@ export class RuntimeHostRegistry {
     private readonly policyStore: PlanPolicyStore,
     private readonly policyRef: PlanPolicyRef,
     private readonly restoreConcurrency = 2,
-  ) {}
+    options: { executionConcurrency?: number } = {},
+  ) {
+    const executionConcurrency = options.executionConcurrency ?? 2;
+    this.scheduler = new RuntimeHostScheduler(executionConcurrency);
+    this.executionGate = new RuntimeExecutionGate(executionConcurrency);
+  }
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId, false);
@@ -92,6 +104,7 @@ export class RuntimeHostRegistry {
     this.hosts.clear();
     this.pendingHosts.clear();
     await Promise.allSettled([...new Set(hosts)].map((host) => host.stop()));
+    await this.scheduler.stop();
   }
 
   async removeWorkspace(
@@ -108,10 +121,15 @@ export class RuntimeHostRegistry {
 
   async startAll(): Promise<{
     restoredWorkspaceIds: string[];
-    failedWorkspaces: Array<{ workspaceId: string; error: string }>;
+    failedWorkspaces: Array<{
+      workspaceId: string;
+      workspaceName: string;
+      rootPath: string;
+      error: string;
+    }>;
   }> {
     const workspaces = await this.workspaces.list();
-    const failures: Array<{ workspaceId: string; reason: unknown }> = [];
+    const failures: Array<{ workspace: Workspace; reason: unknown }> = [];
     const restoredWorkspaceIds: string[] = [];
     let cursor = 0;
     const worker = async () => {
@@ -119,10 +137,12 @@ export class RuntimeHostRegistry {
         const workspace = workspaces[cursor++];
         if (!workspace) return;
         try {
-          await this.host(workspace.id, true);
-          restoredWorkspaceIds.push(workspace.id);
+          if (await this.workspaceNeedsScheduler(workspace)) {
+            await this.host(workspace.id, true);
+            restoredWorkspaceIds.push(workspace.id);
+          }
         } catch (reason) {
-          failures.push({ workspaceId: workspace.id, reason });
+          failures.push({ workspace, reason });
         }
       }
     };
@@ -131,10 +151,39 @@ export class RuntimeHostRegistry {
     return {
       restoredWorkspaceIds,
       failedWorkspaces: failures.map((failure) => ({
-        workspaceId: failure.workspaceId,
+        workspaceId: failure.workspace.id,
+        workspaceName: failure.workspace.name,
+        rootPath: failure.workspace.rootPath,
         error: failure.reason instanceof Error ? failure.reason.message : String(failure.reason),
       })),
     };
+  }
+
+  /**
+   * Restoration is a fact check, not a replay request. A completed Plan with
+   * a linked Mission is readable history and must not create a RuntimeHost or
+   * a background scheduler during process startup.
+   */
+  private async workspaceNeedsScheduler(workspace: Workspace): Promise<boolean> {
+    const runtimeStore = new RuntimeHostStore(workspace.rootPath);
+    const staffingStore = new StaffingRequestStore(workspace.rootPath);
+    for (const record of await runtimeStore.list()) {
+      if (record.status !== "active") continue;
+      const mission = await new MissionStore(workspace.rootPath, record.missionId).read();
+      if (!mission) {
+        const staffing = await staffingStore.getByTask(record.taskId);
+        if (staffing && !new Set(["blocked", "failed", "completed"]).has(staffing.status)) return true;
+        continue;
+      }
+      const ticketAggregate = await new TicketStore(workspace.rootPath, record.taskId, record.runId).read(mission.record.planId);
+      if (!ticketAggregate) return true;
+      const nextStatus = runtimeTaskStatusFor(ticketAggregate.plan.status, mission.record.status);
+      if (nextStatus !== record.status) {
+        await runtimeStore.save({ ...record, status: nextStatus, updatedAt: new Date().toISOString() });
+      }
+      if (nextStatus === "active" && planHasRunnableTickets(ticketAggregate.tickets)) return true;
+    }
+    return false;
   }
 
   private async host(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
@@ -157,7 +206,11 @@ export class RuntimeHostRegistry {
     try {
       const workspace = await this.workspaces.get(workspaceId);
       await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
-      const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef);
+      const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef, {
+        scheduler: this.scheduler,
+        schedulerKey: workspace.id,
+        executionGate: this.executionGate,
+      });
       if (startScheduler) {
         await host.start();
       } else {

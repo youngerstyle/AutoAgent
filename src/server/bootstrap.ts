@@ -8,6 +8,7 @@ import {
 } from "./tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
+import { RuntimeRestorationController } from "./runtime/runtime-restoration.js";
 import { ServiceInstanceLock } from "./storage/service-instance-lock.js";
 
 export type AutoAgentServer = Server & {
@@ -27,7 +28,7 @@ export async function bootstrapServer(
   await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
   const app = createApp(config);
   if (options.restoreRuntimeHosts !== false) {
-    await restoreRuntimeHosts(app);
+    await (app.locals.runtimeRestorationController as RuntimeRestorationController).restore();
   }
   return app;
 }
@@ -48,7 +49,7 @@ export async function startServer(config: AppConfig = loadConfig()): Promise<Aut
         });
         server.once("close", () => void instanceLock.release());
         resolve(managedServer);
-        void restoreRuntimeHosts(app).catch((error) => {
+        void (app.locals.runtimeRestorationController as RuntimeRestorationController).restore().catch((error) => {
           console.error("Runtime host restoration failed", error);
         });
       });
@@ -56,31 +57,6 @@ export async function startServer(config: AppConfig = loadConfig()): Promise<Aut
     });
   } catch (error) {
     await instanceLock.release();
-    throw error;
-  }
-}
-
-async function restoreRuntimeHosts(app: Express): Promise<void> {
-  const state = app.locals.runtimeHostRestoration as { status: string; error?: string } | undefined;
-  if (state?.status === "restoring" || state?.status === "ready") return;
-  app.locals.runtimeHostRestoration = { status: "restoring" };
-  try {
-    const report = await (app.locals.runtimeHostRegistry as RuntimeHostRegistry).startAll();
-    app.locals.runtimeHostRestoration = report.failedWorkspaces.length
-      ? {
-          status: "degraded",
-          restoredWorkspaceCount: report.restoredWorkspaceIds.length,
-          failedWorkspaces: report.failedWorkspaces,
-        }
-      : {
-          status: "ready",
-          restoredWorkspaceCount: report.restoredWorkspaceIds.length,
-        };
-  } catch (error) {
-    app.locals.runtimeHostRestoration = {
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
     throw error;
   }
 }

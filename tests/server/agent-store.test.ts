@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentStore, AgentStoreConflictError } from "../../src/server/agent-engine/agent-store.js";
 import {
   agentEngineExecutionLeaseFile,
+  agentEngineRolloutIndexFile,
   agentEngineRolloutFile,
 } from "../../src/server/storage/paths.js";
 
@@ -124,6 +125,55 @@ describe("AgentStore", () => {
     expect(commits.every((commit) => commit.payloads.length === 1)).toBe(true);
   });
 
+  it("writes a disposable rollout index and resumes from it without changing the audit log", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
+    roots.push(root);
+    const store = new AgentStore(root, "agent-a", {
+      rolloutSnapshotEveryCommits: 2,
+      rolloutSnapshotBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    for (let index = 0; index < 2; index += 1) {
+      await store.transact((current) => ({
+        ...current,
+        aggregateVersion: current.aggregateVersion + 1,
+        payloads: [...current.payloads, { payloadRef: `indexed-${index}`, value: { index } }],
+      }));
+    }
+
+    const rollout = agentEngineRolloutFile(root, "agent-a");
+    const indexFile = agentEngineRolloutIndexFile(root, "agent-a");
+    const rolloutBefore = await readFile(rollout, "utf8");
+    const index = JSON.parse(await readFile(indexFile, "utf8")) as {
+      type: string;
+      aggregateVersion: number;
+      rolloutOffset: number;
+    };
+    expect(index).toMatchObject({
+      type: "agent_store_rollout_index",
+      aggregateVersion: 2,
+      rolloutOffset: (await stat(rollout)).size,
+    });
+
+    await store.transact((current) => ({
+      ...current,
+      aggregateVersion: current.aggregateVersion + 1,
+      payloads: [...current.payloads, { payloadRef: "indexed-2", value: { index: 2 } }],
+    }));
+
+    const recovered = await new AgentStore(root, "agent-a", {
+      rolloutSnapshotEveryCommits: 2,
+      rolloutSnapshotBytes: Number.MAX_SAFE_INTEGER,
+    }).read();
+    expect(recovered.aggregateVersion).toBe(3);
+    expect(recovered.payloads.map((payload) => payload.payloadRef)).toEqual([
+      "indexed-0",
+      "indexed-1",
+      "indexed-2",
+    ]);
+    expect((await readFile(rollout, "utf8")).startsWith(rolloutBefore)).toBe(true);
+  });
+
   it("rejects an older Goal projection before it can overwrite newer state", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
     roots.push(root);
@@ -167,5 +217,53 @@ describe("AgentStore", () => {
     await expect(new AgentStore(root, "agent-a").read()).resolves.toMatchObject({
       goals: [{ version: 2, status: "paused" }],
     });
+  });
+
+  it("reports a persisted Goal version regression with its Agent and Goal identity", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-store-"));
+    roots.push(root);
+    const store = new AgentStore(root, "agent-a");
+    const goal = {
+      spec: {
+        id: "goal-a",
+        threadId: "thread-a",
+        objective: "deliver",
+        successCriteria: ["done"],
+        contextRefs: [],
+        createdAt: "2026-07-30T00:00:00.000Z",
+      },
+      version: 1,
+      status: "active" as const,
+      updatedAt: "2026-07-30T00:00:00.000Z",
+    };
+    await store.transact((current) => ({
+      ...current,
+      aggregateVersion: current.aggregateVersion + 1,
+      threads: [{ threadId: "thread-a", agentId: "agent-a", scopeId: "scope-a", version: 1, items: [] }],
+      goals: [goal],
+    }));
+    const file = agentEngineRolloutFile(root, "agent-a");
+    const content = await readFile(file, "utf8");
+    const invalidCommit = {
+      schemaVersion: 1,
+      type: "agent_store_commit",
+      agentId: "agent-a",
+      aggregateVersion: 2,
+      occurredAt: "2026-07-30T00:02:00.000Z",
+      threads: [],
+      threadKeys: [],
+      messageIds: [],
+      payloads: [],
+      goals: [goal],
+      goalStartKeys: [],
+      proposals: [],
+      decisions: [],
+      controls: [],
+      outbox: [],
+    };
+    await writeFile(file, `${content.trim()}\n${JSON.stringify(invalidCommit)}\n`, "utf8");
+
+    await expect(new AgentStore(root, "agent-a").read())
+      .rejects.toThrow("Goal goal-a for Agent agent-a has version 1; expected 2");
   });
 });

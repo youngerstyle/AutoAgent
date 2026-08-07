@@ -1,5 +1,7 @@
 # Agent Engine、Mission Control 与 Ticket Engine 契约修复设计
 
+> 历史决策记录：当前可靠性基线以 `2026-08-03-production-runtime-reliability-design.md` 为准。本文件只保留已经被后续契约吸收的原则，冲突的旧兼容行为不再实现。
+
 日期：2026-07-13
 
 状态：根因审计完成，待回归测试与实现

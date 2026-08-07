@@ -104,7 +104,7 @@ describe("parseResolutionProposal", () => {
         { criterionIndex: 3, status: "not_satisfied", evidence: [] },
       ],
       residualRisks: [],
-      domainOutcome: { assuranceReport: { criterionResults: [] } },
+      domainOutcome: { assuranceReport: { missionCriterionResults: [] } },
     }, goal, "turn", "2026-07-16T00:01:00.000Z");
 
     expect(result).toMatchObject({
@@ -178,5 +178,43 @@ describe("parseResolutionProposal", () => {
         evidence: [{ evidenceId: "ev-1" }],
       },
     });
+  });
+
+  it("rejects direct evidence in a final Mission settlement Goal", () => {
+    const goal = {
+      version: 1,
+      spec: {
+        id: "settlement-goal",
+        threadId: "thread",
+        objective: "完成最终验收",
+        successCriteria: ["形成验收结论"],
+        contextRefs: [],
+        outputContract: { schemaRef: "mission-final-acceptance-v1", evidenceMode: "none" },
+        createdAt: "2026-07-16T00:00:00.000Z",
+      },
+    } as any;
+
+    const proposal = (evidence: unknown[] = []) => parseResolutionProposal({
+      status: "completed",
+      summary: "验收完成",
+      evidence,
+      criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [] }],
+      residualRisks: [],
+      domainOutcome: {
+        disposition: "complete",
+        missionResolution: {
+          baselineVersion: 1,
+          summary: "通过",
+          criterionResults: [{ criterionId: "criterion-1", status: "satisfied", assuranceTicketIds: ["qa-ticket"] }],
+          residualRisks: [],
+        },
+      },
+    }, goal, "turn", "2026-07-16T00:01:00.000Z");
+
+    expect(proposal([{ evidenceId: "ticket-id-mistaken-for-evidence" }])).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("不允许最终验收直接提交 evidence"),
+    });
+    expect(proposal()).toMatchObject({ ok: true });
   });
 });

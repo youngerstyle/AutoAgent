@@ -7,6 +7,7 @@ export interface AppConfig {
   useMockProvider: boolean;
   providerRetryCount: number;
   runtimeRestoreConcurrency?: number;
+  runtimeExecutionConcurrency?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -19,6 +20,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!Number.isInteger(runtimeRestoreConcurrency) || runtimeRestoreConcurrency <= 0) {
     throw new Error(`Invalid AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY: ${env.AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY}`);
   }
+  const runtimeExecutionConcurrency = Number(env.AUTOAGENT_RUNTIME_EXECUTION_CONCURRENCY ?? "2");
+  if (!Number.isInteger(runtimeExecutionConcurrency) || runtimeExecutionConcurrency <= 0) {
+    throw new Error(`Invalid AUTOAGENT_RUNTIME_EXECUTION_CONCURRENCY: ${env.AUTOAGENT_RUNTIME_EXECUTION_CONCURRENCY}`);
+  }
 
   return {
     port,
@@ -28,5 +33,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     useMockProvider: env.AUTOAGENT_PROVIDER === "mock" || env.NODE_ENV === "test",
     providerRetryCount: Number(env.AUTOAGENT_PROVIDER_RETRIES ?? "2"),
     runtimeRestoreConcurrency,
+    runtimeExecutionConcurrency,
   };
 }

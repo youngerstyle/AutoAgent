@@ -34,6 +34,7 @@ export function compileMissionGoalOutputContract(
     : missionPlanChangeOutcomeSchema();
   return {
     schemaRef: definition.outputContract.schemaRef,
+    evidenceMode: definition.permissions?.settleMission ? "none" : "optional",
     completionOutcomeSchema: toJsonSchema(completion),
     ...(correction ? { correctionOutcomeSchema: toJsonSchema(correction) } : {}),
     ...(planChange ? { planChangeOutcomeSchema: toJsonSchema(planChange) } : {}),
@@ -93,7 +94,6 @@ export function missionCompletionOutcomeSchema(
     // inconclusive judgments use the dedicated correction, plan-change, or
     // human-input tools so the agent's routing decision remains explicit.
     return Type.Object({
-      disposition,
       assuranceReport: missionAssuranceReportSchema(
         assignedCriterionIds,
         baseline,
@@ -101,7 +101,7 @@ export function missionCompletionOutcomeSchema(
         1,
         true,
       ),
-    });
+    }, { additionalProperties: false });
   }
 
   if (definition.permissions?.settleMission) {
@@ -113,27 +113,19 @@ export function missionCompletionOutcomeSchema(
           ? Type.Literal(baseline.version)
           : Type.Integer({ minimum: 1 }),
         summary: Type.String({ minLength: 1 }),
+        // The final approver selects the authoritative assurance tickets only.
+        // Mission Control materializes evidence and anchor observations from
+        // those immutable assurance deliveries after the model proposal passes.
         criterionResults: Type.Array(Type.Object({
           criterionId: stringEnum(criterionIds),
           status: Type.Literal("satisfied"),
           assuranceTicketIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-          evidence: Type.Array(evidenceRef, { minItems: 1 }),
-          anchorResults: Type.Array(Type.Object({
-            anchorIndex: Type.Integer({ minimum: 0 }),
-            status: Type.Literal("satisfied"),
-            evidence: Type.Array(evidenceRef, { minItems: 1 }),
-            verificationBasis: Type.Object({
-              summary: Type.String({ minLength: 1 }),
-              evidence: Type.Array(evidenceRef),
-            }),
-            observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-            deviations: Type.Array(Type.String({ minLength: 1 }), { maxItems: 0 }),
-            note: Type.Optional(Type.String()),
-          }), { minItems: 1 }),
-          note: Type.Optional(Type.String()),
-        }), { minItems: 1 }),
+        }, { additionalProperties: false }), {
+          minItems: criterionIds.length,
+          maxItems: criterionIds.length,
+        }),
         residualRisks: Type.Array(Type.String({ minLength: 1 })),
-      }),
+      }, { additionalProperties: false }),
     });
   }
 
@@ -268,63 +260,51 @@ function missionAssuranceReportSchema(
   requireAllCriteria: boolean,
 ): TSchema {
   const evidenceRef = Type.Object({ evidenceId: Type.String({ minLength: 1 }) });
-  const criterionSchemas = assignedCriterionIds.map((criterionId) => {
-    const criterion = baseline?.criteria.find((candidate) => candidate.criterionId === criterionId);
-    const anchors = criterion?.verification.anchors ?? [];
-    const anchorSchemas = anchors.map((_anchor, anchorIndex) => Type.Object({
-      anchorIndex: Type.Literal(anchorIndex),
-      status: verificationStatus,
-      evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
-      verificationBasis: Type.Object({
-        summary: Type.String({ minLength: 1 }),
-        evidence: Type.Array(evidenceRef),
-      }),
-      observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-      deviations: Type.Array(Type.String({ minLength: 1 })),
-      note: Type.Optional(Type.String()),
-    }));
-    const anchorCount = anchors.length;
-    return Type.Object({
-      criterionId: Type.Literal(criterionId),
-      status: verificationStatus,
-      evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
-      anchorResults: Type.Array(
-        schemaUnion(anchorSchemas, Type.Object({
-          anchorIndex: Type.Integer({ minimum: 0 }),
-          status: verificationStatus,
-          evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
-          verificationBasis: Type.Object({
-            summary: Type.String({ minLength: 1 }),
-            evidence: Type.Array(evidenceRef),
-          }),
-          observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-          deviations: Type.Array(Type.String({ minLength: 1 })),
-          note: Type.Optional(Type.String()),
-        })),
-        anchorCount > 0
-          ? { minItems: anchorCount, maxItems: anchorCount }
-          : { minItems: 1 },
-      ),
-      note: Type.Optional(Type.String()),
-    });
+  const anchorResultSchema = Type.Object({
+    anchorIndex: Type.Integer({ minimum: 0 }),
+    status: verificationStatus,
+    evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+    verificationBasis: Type.Object({
+      summary: Type.String({ minLength: 1 }),
+      evidence: Type.Array(evidenceRef),
+    }),
+    observations: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+    deviations: Type.Array(Type.String({ minLength: 1 })),
+    note: Type.Optional(Type.String()),
+  }, {
+    description: "逐项对应一个 Mission 验收锚点；实际 anchorIndex 和数量由当前 baseline 的运行时校验确认。",
+  });
+  const anchorCounts = assignedCriterionIds.map((criterionId) =>
+    baseline?.criteria.find((criterion) => criterion.criterionId === criterionId)?.verification.anchors.length ?? 0,
+  );
+  const normalizedAnchorCounts = anchorCounts.map((count) => Math.max(1, count));
+  const minimumAnchorCount = normalizedAnchorCounts.length ? Math.min(...normalizedAnchorCounts) : 1;
+  const maximumAnchorCount = normalizedAnchorCounts.length ? Math.max(...normalizedAnchorCounts) : 1;
+  const criterionResultSchema = Type.Object({
+    criterionId: stringEnum(assignedCriterionIds),
+    status: verificationStatus,
+    evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
+    anchorResults: Type.Array(anchorResultSchema, {
+      minItems: minimumAnchorCount,
+      maxItems: maximumAnchorCount,
+    }),
+    note: Type.Optional(Type.String()),
+  }, {
+    description: "只报告当前 Ticket 声明的一个 Mission criterion，不包含总体结论或其他工单标准。",
   });
   const criterionCount = assignedCriterionIds.length;
   return Type.Object({
     baselineVersion: baseline
       ? Type.Literal(baseline.version)
       : Type.Integer({ minimum: 1 }),
-    criterionResults: Type.Array(
-      schemaUnion(criterionSchemas, Type.Object({
-        criterionId: stringEnum(assignedCriterionIds),
-        status: verificationStatus,
-        evidence: Type.Array(evidenceRef, { minItems: minimumEvidence }),
-        anchorResults: Type.Array(Type.Unknown(), { minItems: 1 }),
-        note: Type.Optional(Type.String()),
-      })),
+    missionCriterionResults: Type.Array(
+      criterionResultSchema,
       requireAllCriteria && criterionCount > 0
         ? { minItems: criterionCount, maxItems: criterionCount }
         : { minItems: 1, ...(criterionCount > 0 ? { maxItems: criterionCount } : {}) },
     ),
+  }, {
+    description: "Mission 验收报告；missionCriterionResults 必须逐项覆盖当前 Ticket 声明的 Mission criteria。顶层 goal_resolution.criterionResults 是另一组工单标准。",
   });
 }
 

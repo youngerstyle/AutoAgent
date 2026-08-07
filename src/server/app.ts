@@ -16,8 +16,10 @@ import { createAttachmentRouter } from "./routes/attachments.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
 import { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
+import { RuntimeRestorationController, type RuntimeHostRestorationState } from "./runtime/runtime-restoration.js";
 import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import { createMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "./tickets/plan-policy-config.js";
+import { asyncHandler } from "./errors.js";
 
 function hasClientEntry(dir: string) {
   return existsSync(path.join(dir, "index.html"));
@@ -53,18 +55,29 @@ export function createApp(config: AppConfig = loadConfig()) {
     policyStore,
     policyRef,
     config.runtimeRestoreConcurrency,
+    { executionConcurrency: config.runtimeExecutionConcurrency },
   );
   app.locals.runtimeHostRegistry = mission;
-  app.locals.runtimeHostRestoration = { status: "not_started" };
+  app.locals.runtimeHostRestoration = { status: "not_started" } satisfies RuntimeHostRestorationState;
+  app.locals.runtimeRestorationController = new RuntimeRestorationController(
+    mission,
+    (state) => { app.locals.runtimeHostRestoration = state; },
+  );
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/api/health", (_req, res) => {
+    const runtimeHosts = app.locals.runtimeHostRestoration;
     res.json({
       ok: true,
+      ready: runtimeHosts?.status === "ready",
       name: "AutoAgent",
-      runtimeHosts: app.locals.runtimeHostRestoration,
+      runtimeHosts,
     });
   });
+  app.post("/api/health/reconcile", asyncHandler(async (_req, res) => {
+    const state = await (app.locals.runtimeRestorationController as RuntimeRestorationController).restore();
+    res.json({ ok: true, ready: state.status === "ready", name: "AutoAgent", runtimeHosts: state });
+  }));
   app.use("/api/agent-profiles", createAgentProfileRouter(profileStore));
   app.use("/api/providers", createProviderRouter(providerRegistry));
   app.use("/api/workspaces", createWorkspaceRouter(
@@ -74,7 +87,16 @@ export function createApp(config: AppConfig = loadConfig()) {
   ));
   app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
-  app.use("/api/workspaces/:workspaceId/events", createEventRouter(ledger));
+  app.use("/api/workspaces/:workspaceId/events", createEventRouter(
+    ledger,
+    async (workspaceId) => {
+      try {
+        return (await workspaceStore.get(workspaceId)).rootPath;
+      } catch {
+        return undefined;
+      }
+    },
+  ));
   app.use("/api/workspaces/:workspaceId", createTaskRouter(mission));
 
   const clientDir = resolveClientDir();

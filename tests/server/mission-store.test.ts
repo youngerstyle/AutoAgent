@@ -32,6 +32,15 @@ describe("MissionStore", () => {
     await expect(store.transact(1, (current) => ({ ...current, version: 2 })))
       .rejects.toBeInstanceOf(MissionStoreConflictError);
   });
+
+  it("rejects an incomplete TeamBinding snapshot at the storage boundary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-mission-store-"));
+    const invalid = structuredClone(record);
+    delete (invalid.teamBinding.members[0] as unknown as { enabledTools?: unknown }).enabledTools;
+
+    await expect(new MissionStore(root, "mission-a").create(invalid))
+      .rejects.toThrow(/capability\/tool snapshot/);
+  });
 });
 
 const record: MissionRecord = {

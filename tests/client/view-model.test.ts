@@ -79,6 +79,7 @@ describe("client view model", () => {
         status: "blocked" as const,
         brief: "计划拆解需要 human 补充",
         expectedArtifact: "执行计划",
+        targetAgentId: "wa_pm",
         targetRole: "pm" as const,
         priority: 0,
         attempt: 1,
@@ -312,6 +313,7 @@ describe("client view model", () => {
         status: "blocked" as const,
         brief: "质量检查",
         expectedArtifact: "测试报告",
+        targetAgentId: "wa_qa",
         targetRole: "qa" as const,
         priority: 0,
         attempt: 1,
@@ -450,6 +452,7 @@ describe("client view model", () => {
         status: "blocked" as const,
         brief: "质量检查",
         expectedArtifact: "测试报告",
+        targetAgentId: "wa_qa",
         targetRole: "qa" as const,
         priority: 0,
         attempt: 1,
@@ -485,6 +488,33 @@ describe("client view model", () => {
       }
     });
     expect(buildHumanFlowPrompt(blocked)?.transcript).toContain("测试:");
+  });
+
+  it("does not guess a concrete Agent from a Ticket role or phase", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      phase: "qa" as const,
+      activeTaskRun: { ...snapshot("blocked").activeTaskRun!, phase: "qa" as const },
+      tickets: [{
+        id: "tk_qa_without_owner",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "qa" as const,
+        status: "blocked" as const,
+        brief: "质量检查",
+        expectedArtifact: "测试报告",
+        priority: 0,
+        attempt: 1,
+        blocker: { type: "manual_test_required" as const, reason: "需要人工测试" },
+        createdAt: "now",
+        updatedAt: "now"
+      }]
+    };
+
+    expect(buildHumanFlowPrompt(blocked)?.agentId).toBeUndefined();
+    expect(buildHumanFlowPrompt(blocked)?.waiter).toBe("当前工单负责人");
+    expect(buildAgentNodes(blocked).find((node) => node.role === "qa")?.needsAttention).toBe(false);
   });
 
   it("shows the Agent as running after it receives the human test result", () => {
@@ -617,6 +647,7 @@ describe("client view model", () => {
         status: "blocked" as const,
         brief: "质量检查",
         expectedArtifact: "测试报告",
+        targetAgentId: "wa_qa",
         targetRole: "qa" as const,
         priority: 0,
         attempt: 1,

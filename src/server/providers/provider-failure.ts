@@ -15,6 +15,7 @@ const TRANSIENT_NETWORK_ERRORS = [
   "http/2 stream",
   "stream reset",
   "stream failed",
+  "response stream was interrupted",
   "connection terminated",
 ];
 

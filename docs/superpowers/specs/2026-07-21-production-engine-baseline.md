@@ -191,11 +191,11 @@ A release is not production-ready until all gates pass:
 4. Real-provider canary: at least three different goals in disposable workspaces.
 5. Artifact acceptance: inspect and execute produced files; browser products are exercised with Playwright at desktop and mobile sizes.
 6. Human-loop acceptance: a real free-form human reply triggers exactly one next turn on the selected Agent.
-7. Rework acceptance: QA correction preserves the returned Ticket as immutable
-   provenance, appends a planner amendment and produces a fresh correction and
-   assurance chain with an explicit failure-resolution edge. It never reopens
-   a terminal Ticket, and downstream work unlocks only after the new resolution
-   Ticket completes.
+7. Rework acceptance: an accepted correction preserves the completed upstream
+   Ticket and the reporting Attempt as immutable provenance, appends one fresh
+   correction Ticket, and keeps the same reporting Ticket pending. The reporting
+   Ticket receives a new Attempt only after the correction completes. A planner
+   amendment is created only for an explicit Plan-change request.
 8. Operational acceptance: provider failure, restart and resume do not duplicate model calls or lose queued input.
 9. Cost acceptance: per-Mission token/cost budget, warning and operator-visible stop reason.
 10. Soak acceptance: repeated Missions run for hours without increasing pending queues, stale claims or memory use.

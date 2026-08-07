@@ -30,7 +30,7 @@ import { effectiveAgentSkills, skillRuntimeAdapterInstructions } from "../agents
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { isRetryableProviderFailure } from "../providers/provider-failure.js";
 import { isInside } from "../policy/path-policy.js";
-import type { AgentModelHistoryItem, AgentModelTurnResult } from "../providers/types.js";
+import { ProviderError, type AgentModelHistoryItem, type AgentModelTurnResult } from "../providers/types.js";
 import { AgentEngineConflictError, type AgentEngine } from "./agent-engine.js";
 import type { AgentContextAssembler } from "./context-assembler.js";
 import type { AgentStore } from "./agent-store.js";
@@ -45,6 +45,7 @@ import {
   type AgentToolResult as WorkspaceAgentToolResult,
 } from "./tool-runtime.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
+import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
 import {
   TEAM_STAFFING_SCHEMA_REF,
   parseTeamStaffingOutcome,
@@ -84,24 +85,17 @@ interface ToolExecutionBinding {
 
 interface RunSafetyBinding {
   failedToolSignatures: Set<string>;
-  terminalSubmissionFailures: number;
   seenUsefulToolSignatures: Set<string>;
-  lastToolBatchFingerprint?: string;
-  repeatedToolBatchCount: number;
-  consecutiveIdleResponses: number;
-  unproductiveToolCalls: number;
+  lastToolObservationFingerprint?: string;
+  lastIdleResponseFingerprint?: string;
   blockReasonKind?: "usage_limit" | "no_progress";
   blockedReason?: string;
 }
 
-const MAX_TERMINAL_SUBMISSION_FAILURES = envPositiveInteger(
-  "AUTOAGENT_MAX_TERMINAL_SUBMISSION_FAILURES",
-  4,
-);
-const MAX_REPEATED_TOOL_BATCHES = envPositiveInteger("AUTOAGENT_MAX_REPEATED_TOOL_BATCHES", 3);
-const MAX_IDLE_CONTINUATIONS = envPositiveInteger("AUTOAGENT_MAX_IDLE_CONTINUATIONS", 3);
-const MAX_UNPRODUCTIVE_TOOL_CALLS = envPositiveInteger("AUTOAGENT_MAX_UNPRODUCTIVE_TOOL_CALLS", 80);
-const MAX_TOOL_CALLS_PER_TURN = envPositiveInteger("AUTOAGENT_MAX_TOOL_CALLS_PER_TURN", 200);
+// The Agent Engine does not impose a default turn-length limit. Operators may
+// opt into a resource ceiling for a deployment, but it is never a completion
+// rule and is disabled unless explicitly configured.
+const MAX_TOOL_CALLS_PER_TURN = envOptionalPositiveInteger("AUTOAGENT_MAX_TOOL_CALLS_PER_TURN");
 const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = envPositiveInteger(
   "AUTOAGENT_TURN_INACTIVITY_TIMEOUT_MS",
   5 * 60_000,
@@ -163,11 +157,32 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     if (input.goalId && !persistedGoal) throw new Error("Goal does not exist");
     const goal = persistedGoal?.status === "active" ? persistedGoal : undefined;
     const thread = await this.engine.getThread(input.threadId);
+    if (input.triggerMessageId && await isConsumedThreadMessage(thread, this.store, input.triggerMessageId)) {
+      return {
+        turnId: input.turnId ?? stableId("turn", input.threadId, input.triggerMessageId),
+        status: "waiting",
+        toolCalls: 0,
+        goal: persistedGoal,
+      };
+    }
     const pending = await pendingThreadInput(thread, this.store, false, false, input.goalId);
     const turnId = input.turnId ?? (pending?.kind === "message" ? pending.turnId : undefined)
       ?? stableId("turn", input.threadId, String(thread.version + 1), this.now().toISOString());
     const triggerMessageId = input.triggerMessageId ?? (pending?.kind === "message" ? pending.itemId : undefined);
-    const state = await this.requireSession({ ...input, triggerMessageId });
+    let state: SessionState;
+    try {
+      state = await this.requireSession({ ...input, triggerMessageId });
+    } catch (error) {
+      // Provider configuration is part of the Agent Engine boundary. A
+      // missing credential must become a typed execution result so Mission
+      // Control can durably block the current Ticket instead of leaving its
+      // claim running after an exception.
+      this.sessions.delete(piWorkSessionKey(input.threadId, input.goalId));
+      if (error instanceof ProviderError) {
+        return this.providerFailure(turnId, input, 0, goal, error.message);
+      }
+      throw error;
+    }
     // RuntimeHost owns cross-turn ordering. Pi's follow-up queue is only for
     // steering one in-flight Pi run and must never bridge two Ticket turns.
     await state.session.waitForIdle();
@@ -184,6 +199,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     });
     let eventWrites: Promise<void> = Promise.resolve();
     let promptWatchdog: PiPromptInactivityWatchdog | undefined;
+    let rebuildModelContext = false;
+    let latestSchemaCorrection: string | undefined;
+    let lastAssistantResponseFingerprint: string | undefined;
+    let lastDurableProgressAt: string | undefined;
+    const turnObservationFingerprints: string[] = [];
     const toolBarrier = createPiToolExecutionBarrier();
     const persistEvent = (operation: () => Promise<unknown>): void => {
       eventWrites = eventWrites.then(async () => { await operation(); });
@@ -202,7 +222,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       if (event.type === "tool_execution_start") {
         toolBarrier.started(event.toolCallId);
         toolCalls += 1;
-        if (toolCalls >= MAX_TOOL_CALLS_PER_TURN && !state.safety.blockedReason) {
+        if (MAX_TOOL_CALLS_PER_TURN !== undefined && toolCalls >= MAX_TOOL_CALLS_PER_TURN && !state.safety.blockedReason) {
           state.safety.blockReasonKind = "usage_limit";
           state.safety.blockedReason = turnToolBudgetMessage(MAX_TOOL_CALLS_PER_TURN);
           void state.session.abort();
@@ -217,7 +237,27 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         toolBarrier.finished(event.toolCallId);
         const toolInput = toolInputs.get(event.toolCallId);
         const toolName = toolInput?.name ?? event.toolName;
+        const observationFingerprint = toolObservationFingerprint(
+          toolName,
+          toolInput?.args,
+          event.result,
+          event.isError,
+        );
+        turnObservationFingerprints.push(observationFingerprint);
+        if (state.safety.lastToolObservationFingerprint === observationFingerprint && !state.safety.blockedReason) {
+          state.safety.blockReasonKind = "no_progress";
+          state.safety.blockedReason = "模型连续重复相同的工具调用并得到相同结果，当前 turn 已暂停以避免无进展空转。";
+          void state.session.abort();
+        }
+        state.safety.lastToolObservationFingerprint = observationFingerprint;
         if (event.isError) {
+          if (isSchemaValidationToolFailure(event.result)) {
+            // The audit thread keeps the exact rejected call. The live Pi
+            // transcript is rebuilt before the next prompt so the model does
+            // not see its own invalid arguments as a template to repeat.
+            rebuildModelContext = true;
+            latestSchemaCorrection = modelFacingToolResultText(event.result, true);
+          }
           if (isTransientInfrastructureToolFailure(event.result) && !state.safety.blockedReason) {
             state.safety.blockReasonKind = "no_progress";
             state.safety.blockedReason = "平台工具连接暂时不可用，当前 Agent Goal 将保持不变并在基础设施恢复后继续。";
@@ -231,28 +271,9 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           } else {
             state.safety.failedToolSignatures.add(fingerprint);
           }
-          if (isTerminalSubmissionTool(toolName)) {
-            state.safety.terminalSubmissionFailures += 1;
-            if (state.safety.terminalSubmissionFailures >= MAX_TERMINAL_SUBMISSION_FAILURES
-              && !state.safety.blockedReason) {
-              state.safety.blockReasonKind = "no_progress";
-              state.safety.blockedReason = `终局提交已连续 ${state.safety.terminalSubmissionFailures} 次不符合当前 Goal 的输出契约，当前 turn 已停止。请检查工具返回的字段路径和合法示例后重新执行。`;
-              void state.session.abort();
-            }
-          }
-        } else {
-          state.safety.lastToolBatchFingerprint = undefined;
-          state.safety.repeatedToolBatchCount = 0;
         }
         if (isUsefulToolProgress(toolName, toolInput?.args, event.result, event.isError, state.safety.seenUsefulToolSignatures)) {
-          state.safety.unproductiveToolCalls = 0;
-        } else {
-          state.safety.unproductiveToolCalls += 1;
-          if (state.safety.unproductiveToolCalls >= MAX_UNPRODUCTIVE_TOOL_CALLS && !state.safety.blockedReason) {
-            state.safety.blockReasonKind = "no_progress";
-            state.safety.blockedReason = `连续 ${state.safety.unproductiveToolCalls} 次工具调用没有产生新的可用进展，当前 turn 已暂停以避免空转。`;
-            void state.session.abort();
-          }
+          lastDurableProgressAt = this.now().toISOString();
         }
         persistEvent(() => this.engine.appendToolItem({
           itemId: `${turnId}:pi:${sequence}:tool-result`, turnId, threadId: input.threadId, goalId: input.goalId,
@@ -271,24 +292,27 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           ? [{ name: item.name, arguments: item.arguments }]
           : []);
         if (toolBatch.length > 0) {
-          const fingerprint = createHash("sha256").update(JSON.stringify(toolBatch)).digest("hex");
-          if (fingerprint === state.safety.lastToolBatchFingerprint) {
-            state.safety.repeatedToolBatchCount += 1;
-          } else {
-            state.safety.lastToolBatchFingerprint = fingerprint;
-            state.safety.repeatedToolBatchCount = 1;
-          }
-          if (state.safety.repeatedToolBatchCount >= MAX_REPEATED_TOOL_BATCHES && !state.safety.blockedReason) {
-            state.safety.blockReasonKind = "no_progress";
-            state.safety.blockedReason = "模型连续三次提交完全相同的工具调用且没有取得进展，当前 turn 已暂停。";
-            void state.session.abort();
-          }
+          state.safety.lastIdleResponseFingerprint = undefined;
         }
         const content = event.message.content.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n").trim();
-        if (content) persistEvent(() => this.engine.appendModelItem({
-          itemId: `${turnId}:pi:${sequence}:assistant`, turnId, threadId: input.threadId, goalId: input.goalId,
-          content, createdAt: this.now().toISOString(),
-        }));
+        if (content) {
+          const fingerprint = createHash("sha256")
+            .update(content.replace(/\s+/g, " ").trim())
+            .digest("hex");
+          if (toolBatch.length === 0) {
+            if (state.safety.lastIdleResponseFingerprint === fingerprint && !state.safety.blockedReason) {
+              state.safety.blockReasonKind = "no_progress";
+              state.safety.blockedReason = "模型连续重复相同的无工具回复且没有提交 Goal 结论，当前 turn 已暂停以避免无进展空转。";
+              void state.session.abort();
+            }
+            state.safety.lastIdleResponseFingerprint = fingerprint;
+          }
+          lastAssistantResponseFingerprint = fingerprint;
+          persistEvent(() => this.engine.appendModelItem({
+            itemId: `${turnId}:pi:${sequence}:assistant`, turnId, threadId: input.threadId, goalId: input.goalId,
+            content, createdAt: this.now().toISOString(),
+          }));
+        }
       }
       if (event.type === "agent_end" && !event.willRetry) {
         const assistant = [...event.messages].reverse()
@@ -304,12 +328,9 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     state.resolution.onProposal = (value) => { proposal = value; };
     state.resolution.mock = input.provider === "mock";
     state.safety.failedToolSignatures.clear();
-    state.safety.terminalSubmissionFailures = 0;
     state.safety.seenUsefulToolSignatures.clear();
-    state.safety.lastToolBatchFingerprint = undefined;
-    state.safety.repeatedToolBatchCount = 0;
-    state.safety.consecutiveIdleResponses = 0;
-    state.safety.unproductiveToolCalls = 0;
+    state.safety.lastToolObservationFingerprint = undefined;
+    state.safety.lastIdleResponseFingerprint = undefined;
     state.safety.blockReasonKind = undefined;
     state.safety.blockedReason = undefined;
     state.resolution.onInvalid = (reason) => {
@@ -334,15 +355,17 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         });
         state.goalVersions.set(goal.spec.id, goal.version);
       }
-      let continuation = 0;
-      let toolCallsBeforePrompt = toolCalls;
-      while (true) {
+      // One Agent turn is one Pi prompt plus the tool calls Pi drains for that
+      // prompt.  A further model decision is a new scheduled turn on the same
+      // Thread/Session/Goal.  Keeping this boundary here prevents a productive
+      // but inconclusive tool sequence from becoming an unbounded inner loop.
+      for (let promptAttempt = 0; promptAttempt < 2; promptAttempt += 1) {
         await this.trace(turnId, input, "context", {
           sessionId: state.session.sessionId,
           promptChars: prompt.text.length,
           imageCount: prompt.images.length,
           persistent: Boolean(state.session.sessionFile),
-          continuation,
+          continuation: promptAttempt,
         });
         promptWatchdog = createPiPromptInactivityWatchdog(
           this.turnInactivityTimeoutMs,
@@ -376,6 +399,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           return this.providerFailure(turnId, input, toolCalls, goal, promptOutcome.message);
         }
         await eventWrites;
+        if (rebuildModelContext && !state.safety.blockedReason) {
+          await this.rebuildLiveModelContext(input, state);
+          rebuildModelContext = false;
+        }
         if (state.safety.blockedReason) {
           return this.block(
             turnId,
@@ -425,23 +452,39 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           return { turnId, status: "waiting", toolCalls, goal };
         }
 
-        state.safety.consecutiveIdleResponses = toolCalls === toolCallsBeforePrompt
-          ? state.safety.consecutiveIdleResponses + 1
-          : 0;
-        if (state.safety.consecutiveIdleResponses >= MAX_IDLE_CONTINUATIONS) {
-          return this.block(
-            turnId,
-            input,
-            toolCalls,
-            goal,
-            "no_progress",
-            "Agent 连续三轮没有调用工具或提交 Goal 结论，当前 turn 已暂停以避免无进展消耗。",
-          );
+        const schemaCorrection = latestSchemaCorrection;
+        latestSchemaCorrection = undefined;
+        if (schemaCorrection && promptAttempt === 0) {
+          // A rejected tool call gets one immediate correction prompt.  If the
+          // correction is rejected again, the scheduler starts a fresh turn so
+          // the normal Agent Engine recovery and human-input rules apply.
+          prompt = { text: structuredCorrectionContinuationPrompt(schemaCorrection), images: [] };
+          continue;
         }
-        toolCallsBeforePrompt = toolCalls;
-        continuation += 1;
-        prompt = { text: unresolvedGoalPrompt(goal), images: [] };
+
+        await this.engine.appendToolItem({
+          itemId: `${turnId}:yielded`,
+          turnId,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          kind: "control",
+          value: {
+            turnId,
+            status: "turn_yielded",
+            reason: "turn_boundary",
+            toolCalls,
+            durableProgress: state.safety.seenUsefulToolSignatures.size > 0,
+            ...(turnObservationFingerprints.length > 0
+              ? { observationFingerprints: [...turnObservationFingerprints] }
+              : {}),
+            ...(lastDurableProgressAt ? { lastDurableProgressAt } : {}),
+            ...(lastAssistantResponseFingerprint ? { idleResponseFingerprint: lastAssistantResponseFingerprint } : {}),
+          },
+          createdAt: this.now().toISOString(),
+        });
+        return { turnId, status: "yielded", toolCalls, goal };
       }
+      throw new Error("Agent turn boundary did not yield a result");
     } catch (error) {
       if (state.safety.blockedReason) {
         return this.block(
@@ -594,16 +637,17 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     };
     const safety: RunSafetyBinding = {
       failedToolSignatures: new Set(),
-      terminalSubmissionFailures: 0,
       seenUsefulToolSignatures: new Set(),
-      repeatedToolBatchCount: 0,
-      consecutiveIdleResponses: 0,
-      unproductiveToolCalls: 0,
     };
     const customTools = [
       ...workspaceTools(this.tools, toolExecution),
       piReadTool(this.tools, skills, toolExecution),
-      goalTool(resolution, this.now, sessionGoal?.spec.outputContract),
+      goalTool(
+        resolution,
+        this.now,
+        sessionGoal?.spec.outputContract,
+        sessionGoal?.spec.successCriteria.length,
+      ),
       staffingTool(resolution, this.now, sessionGoal?.spec.outputContract),
       correctionTool(resolution, this.now, sessionGoal?.spec.outputContract),
       planChangeTool(resolution, this.now, sessionGoal?.spec.outputContract),
@@ -623,6 +667,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       tools: customTools.map((tool) => tool.name),
       thinkingLevel: input.supportsReasoning ? (input.thinkingLevel ?? "medium") : "off",
     });
+    installPiTurnBoundary(session.agent);
     session.setAutoCompactionEnabled(true);
     const goalVersions = promptedGoalVersions(sessionManager.getEntries());
     await this.traces.append({
@@ -641,6 +686,37 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       data: { enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics },
     });
     return { session, goalVersions, resolution, toolExecution, safety };
+  }
+
+  private async rebuildLiveModelContext(
+    input: AgentExecutionSliceInput,
+    state: SessionState,
+  ): Promise<void> {
+    const thread = await this.engine.getThread(input.threadId);
+    const goal = input.goalId ? await this.engine.getGoal(input.goalId) : undefined;
+    const assembled = await this.contextAssembler.assemble({
+      profile: input.profile,
+      agent: input.agent,
+      policy: input.policy,
+      thread,
+      goal,
+    });
+    const modelContext = SessionManager.inMemory(this.workspaceRoot);
+    await restoreSessionHistory(
+      modelContext,
+      assembled.history,
+      state.session.agent.state.model,
+      this.workspaceRoot,
+    );
+    replaceLivePiModelContext(state.session.agent, modelContext);
+    await this.trace(input.turnId ?? stableId("context-rebuild", input.threadId), input, "context", {
+      sessionId: state.session.sessionId,
+      reason: "schema_validation_recovery",
+      modelHistoryRebuilt: true,
+      threadItems: thread.items.length,
+      projectedItems: assembled.history.length,
+      rejectedArgumentsReplayed: false,
+    });
   }
 
   private async nextPrompt(
@@ -694,7 +770,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         "## Host contract correction",
         pending.content,
         "This is an internal contract correction in the current Goal, not missing external input.",
-        "Correct the proposal against the reported violation and resubmit it. Human-input tools are not available in this turn.",
+        "Do not repeat the previous tool call verbatim. Rebuild the complete proposal from the current Goal and facts, change the reported structural violation, and resubmit it.",
+        "Human-input tools are not available in this turn.",
       ].join("\n");
     }
     throw new Error("Agent turn 没有新的按时间序输入");
@@ -863,6 +940,7 @@ export function unresolvedGoalPrompt(goal: AgentGoal): string {
     "当前 Goal 仍处于 active，上一轮普通回复没有结案。",
     `Goal：${goal.spec.objective}`,
     `成功标准：\n${goal.spec.successCriteria.map((item, index) => `${index + 1}. ${item}`).join("\n") || "未定义"}`,
+    "普通文本回复、思考内容或一次 turn 结束都不代表 Goal 已完成。完成或失败必须调用 goal_resolution；不要把 JSON 结论写成普通文本来代替终结工具调用。",
     "继续前先对照上述成功标准盘点已有工具证据：证据已经足够时立即提交结论；只补尚未覆盖的证据缺口，不重复已完成的检查，也不扩展与成功标准无关的探索。",
     "请直接继续执行可推进的工作，不要等待 human 重复确认可逆的实现选择，也不要仅说明下一步计划。",
     "如果已有足够授权，请使用工具创建、修改并验证真实交付物。",
@@ -892,6 +970,7 @@ function activeGoalPrompt(goal: AgentGoal): string {
     `目标：${goal.spec.objective}`,
     `成功标准：\n${goal.spec.successCriteria.map((item) => `- ${item}`).join("\n") || "- 未定义"}`,
     goal.spec.outputContract ? `输出契约：${goal.spec.outputContract.schemaRef}` : undefined,
+    "普通文本回复、思考内容或一次 turn 结束都不代表 Goal 已完成。完成或失败必须调用 goal_resolution；不要把 JSON 结论写成普通文本来代替终结工具调用。",
     goal.spec.contextRefs.length
       ? `上下文引用：\n${goal.spec.contextRefs.map((item) => `- ${item.kind}: ${item.ref}`).join("\n")}`
       : undefined,
@@ -963,6 +1042,32 @@ async function pendingThreadInput(
     }
   }
   return undefined;
+}
+
+async function isConsumedThreadMessage(
+  thread: Awaited<ReturnType<AgentEngine<any>["getThread"]>>,
+  store: AgentStore,
+  messageId: string,
+): Promise<boolean> {
+  const index = thread.items.findIndex((item) => item.itemId === messageId);
+  if (index < 0) return false;
+  const item = thread.items[index]!;
+  const turnId = item.turnId ?? stableId("turn", thread.threadId, messageId);
+  const later = thread.items.slice(index + 1);
+  const payloads = await store.payloads(later.map((candidate) => candidate.payloadRef));
+  const latestSameTurn = [...later].reverse().find((candidate) => candidate.turnId === turnId && candidate.kind !== "message");
+  if (latestSameTurn) {
+    const latestPayload = payloads.get(latestSameTurn.payloadRef);
+    return !(isRecord(latestPayload) && isRetryContinuationPayload(latestPayload));
+  }
+  return later.some((candidate) => {
+    const payload = payloads.get(candidate.payloadRef);
+    return isRecord(payload) && payload.triggerMessageId === messageId;
+  });
+}
+
+function isRetryContinuationPayload(value: unknown): boolean {
+  return isRecord(value) && (value.status === "provider_retry_wait" || value.status === "external_service_waiting");
 }
 
 function isCorrectableDecision(value: unknown): value is Record<string, unknown> & { decision: unknown } {
@@ -1138,8 +1243,10 @@ function staffingTool(
     label: "组建项目团队",
     description: [
       "组织工具：按 profileId 将人才池成员实例化到当前项目，并以所选成员启动 Mission。",
-      "status=staffed 时提交本次 Mission 使用的成员、责任和选择依据。",
-      "现有人才不足时可提交 recruitment_required 及缺少的能力；平台只执行和校验结构化事实。",
+      "status=staffed 只表示所选团队能够对当前 Mission 的完整交付负责，不只是完成接收或计划。",
+      "每个成员必须提交 capabilityCoverage，说明其为当前 Mission 覆盖的档案能力；平台只校验这些能力确实属于该人才档案。",
+      "现有人才不足时提交 recruitment_required 及缺少的能力；不要用只有管理能力的 staffed 提案代替完整团队。",
+      "平台只执行和校验结构化事实，不替负责人判断目标需要哪些业务能力。",
     ].join(""),
     parameters: Type.Unsafe(outputContract?.completionOutcomeSchema ?? {
       type: "object",
@@ -1171,28 +1278,30 @@ function goalTool(
   binding: ResolutionBinding,
   now: () => Date,
   outputContract?: AgentGoal["spec"]["outputContract"],
+  goalCriterionCount?: number,
 ): ToolDefinition {
-  const domainOutcomeSchema = outputContract?.completionOutcomeSchema;
-  const genericCriterionResults = Type.Array(Type.Object({
-    criterionIndex: Type.Integer({ minimum: 0 }),
-    status: Type.Union([Type.Literal("satisfied"), Type.Literal("not_satisfied"), Type.Literal("not_verified")]),
-    evidence: Type.Array(Type.Object({ evidenceId: Type.String() })),
-    note: Type.Optional(Type.String()),
-  }));
+  const finalSettlement = outputContract?.evidenceMode === "none";
+  const evidenceItems = Type.Array(Type.Object({ evidenceId: Type.String() }), finalSettlement ? { maxItems: 0 } : {});
+  const genericCriterionResults = goalResolutionCriterionResultsSchema(finalSettlement, goalCriterionCount);
+  const criterionContract = typeof goalCriterionCount === "number"
+    ? `当前 Goal 有 ${goalCriterionCount} 条 successCriteria；顶层 criterionResults 必须恰好 ${goalCriterionCount} 项，criterionIndex 只能覆盖 0 到 ${Math.max(0, goalCriterionCount - 1)}，每个索引只出现一次。`
+    : "顶层 criterionResults 必须逐项对应当前 Goal 的 successCriteria，不能混入 domainOutcome 中的领域验收标准。";
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: "提交当前 Goal 的正常完成或失败结论。criterionResults 必须逐项对应当前 Goal 的 successCriteria；domainOutcome 按 Ticket 的领域输出契约填写。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。Host 只校验契约并提交，不替你判断结论。",
+    description: `提交当前 Goal 的正常完成或失败结论。最外层必须提供 status，值只能是 completed 或 failed；${criterionContract}${finalSettlement ? "当前为最终验收：顶层 evidence 和每项 criterionResults.evidence 必须为空；业务目标的验收标准只能填写在 domainOutcome.missionResolution.criterionResults 中，并且不能复制到顶层。" : "每项都要包含 criterionIndex、status 和 evidence，没有证据时使用空数组。evidenceId 只能引用本 Goal 中前序工具真实返回的 ID，不能凭空生成。"}domainOutcome 按 Ticket 的领域输出契约填写。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。被拒绝后不要复用旧参数，按当前工具定义重新提交完整对象。Host 只校验契约并提交，不替你判断结论。`,
     parameters: Type.Object({
       status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),
-      evidence: Type.Optional(Type.Array(Type.Object({ evidenceId: Type.String() }))),
+      evidence: Type.Optional(evidenceItems),
       criterionResults: genericCriterionResults,
       residualRisks: Type.Optional(Type.Array(Type.String())),
-      ...(domainOutcomeSchema
-        // Reject malformed domain output inside the current turn. Mission Process
-        // remains authoritative for cross-aggregate facts and committing state.
-        ? { domainOutcome: goalResolutionDomainOutcomeSchema(outputContract) }
+      // Keep the domain result opaque at the provider boundary. The domain
+      // adapter validates outputContract.schemaRef after this generic proposal
+      // is persisted; a deep business schema here makes provider tool-call
+      // boundaries compete with the domain contract and blocks correction.
+      ...(outputContract
+        ? { domainOutcome: goalResolutionTransportDomainOutcomeSchema(outputContract) }
         : { domainOutcome: Type.Optional(Type.Unknown()) }),
     }),
     async execute(_callId, params) {
@@ -1233,6 +1342,27 @@ function goalTool(
   });
 }
 
+export function goalResolutionCriterionResultsSchema(
+  finalSettlement: boolean,
+  goalCriterionCount?: number,
+) {
+  const evidenceItems = Type.Array(Type.Object({ evidenceId: Type.String() }), finalSettlement ? { maxItems: 0 } : {});
+  const criterionOptions = typeof goalCriterionCount === "number"
+    ? { minItems: goalCriterionCount, maxItems: goalCriterionCount }
+    : {};
+  return Type.Array(Type.Object({
+    criterionIndex: Type.Integer({
+      minimum: 0,
+      ...(typeof goalCriterionCount === "number" && goalCriterionCount > 0
+        ? { maximum: goalCriterionCount - 1 }
+        : {}),
+    }),
+    status: Type.Union([Type.Literal("satisfied"), Type.Literal("not_satisfied"), Type.Literal("not_verified")]),
+    evidence: evidenceItems,
+    note: Type.Optional(Type.String()),
+  }), criterionOptions);
+}
+
 export function goalResolutionDomainOutcomeSchema(
   outputContract?: AgentGoal["spec"]["outputContract"],
 ) {
@@ -1241,8 +1371,57 @@ export function goalResolutionDomainOutcomeSchema(
     : Type.Unknown();
 }
 
-export function goalResolutionTransportDomainOutcomeSchema() {
-  return Type.Unknown();
+export function goalResolutionTransportDomainOutcomeSchema(
+  outputContract?: AgentGoal["spec"]["outputContract"],
+) {
+  // Keep the provider boundary structural, not domain-semantic. The domain
+  // adapter remains the authority for field names and business meaning, while
+  // the model still needs to know that a nested collection contains objects.
+  // Without this shallow envelope, providers can serialize an object list as
+  // strings and the same rejected proposal is often repeated verbatim.
+  const schema = outputContract?.completionOutcomeSchema;
+  return schema ? Type.Unsafe(shallowTransportSchema(schema)) : Type.Unknown();
+}
+
+function shallowTransportSchema(schema: Record<string, unknown>, objectDepth = 0): Record<string, unknown> {
+  const type = typeof schema.type === "string" ? schema.type : undefined;
+  if (type === "object" || schema.properties) {
+    const properties = isRecord(schema.properties)
+      ? Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => [
+        key,
+        isRecord(value) ? shallowTransportSchema(value, objectDepth + 1) : { type: ["string", "number", "boolean", "object", "array"] },
+      ]))
+      : undefined;
+    // At the item level keep arbitrary fields. Required domain fields are
+    // checked only after persistence by the domain adapter.
+    if (objectDepth >= 2 || !properties) {
+      return { type: "object", additionalProperties: true };
+    }
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((item): item is string => typeof item === "string" && Object.prototype.hasOwnProperty.call(properties, item))
+      : undefined;
+    return {
+      type: "object",
+      properties,
+      ...(required?.length ? { required } : {}),
+      additionalProperties: true,
+    };
+  }
+  if (type === "array") {
+    const items = isRecord(schema.items) ? shallowTransportSchema(schema.items, objectDepth) : { type: ["string", "number", "boolean", "object", "array"] };
+    return { type: "array", items };
+  }
+  if (type === "string" || type === "number" || type === "integer" || type === "boolean" || type === "null") {
+    return { type };
+  }
+  const union = Array.isArray(schema.anyOf) ? schema.anyOf : Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
+  if (union) {
+    const variants = union
+      .filter(isRecord)
+      .map((item: Record<string, unknown>) => shallowTransportSchema(item, objectDepth));
+    return variants.length ? { anyOf: variants } : { type: ["string", "number", "boolean", "object", "array", "null"] };
+  }
+  return { type: ["string", "number", "boolean", "object", "array", "null"] };
 }
 
 function correctionTool(
@@ -1500,7 +1679,7 @@ async function configureModel(
     return registry.find("mock", modelId)!;
   }
   const config = await providers.runtimeConfig(provider, modelId);
-  if (!config.apiKey) throw new Error(`${provider} 未配置 API Key`);
+  if (!config.apiKey) throw new ProviderError(`${provider} 未配置 API Key`, false, `MISSING_${provider.toUpperCase()}_API_KEY`);
   auth.setRuntimeApiKey(provider, config.apiKey);
   const builtIn = registry.find(provider, modelId);
   if (builtIn && !config.baseUrl) return builtIn;
@@ -1628,6 +1807,31 @@ async function restoreSessionHistory(
   }
 }
 
+export function replaceLivePiModelContext(
+  agent: AgentSession["agent"],
+  modelContext: Pick<SessionManager, "buildSessionContext">,
+): void {
+  agent.clearAllQueues();
+  agent.state.messages = modelContext.buildSessionContext().messages;
+}
+
+/**
+ * Keep Pi's internal loop at one tool batch per platform turn.
+ *
+ * Pi exposes this as a runtime termination hint: every finalized tool result
+ * in the current batch must carry `terminate: true`, then the low-level loop
+ * emits `agent_end` without starting another provider request. Mission
+ * Control can schedule the next turn with the same Goal/Session after the
+ * durable tool result has been recorded.
+ */
+export function installPiTurnBoundary(agent: AgentSession["agent"]): void {
+  const previousAfterToolCall = agent.afterToolCall;
+  agent.afterToolCall = async (context, signal) => {
+    const previous = await previousAfterToolCall?.(context, signal);
+    return { ...previous, terminate: true };
+  };
+}
+
 function toolResultText(result: unknown): string {
   if (isRecord(result) && Array.isArray(result.content)) {
     const text = result.content.flatMap((item) => isRecord(item) && item.type === "text" && typeof item.text === "string"
@@ -1643,12 +1847,28 @@ export function modelFacingToolResultText(result: unknown, isError: boolean): st
   if (!isError) return text;
   const receivedArguments = text.indexOf("\n\nReceived arguments:");
   if (text.startsWith("Validation failed for tool ") && receivedArguments >= 0) {
-    return `${text.slice(0, receivedArguments).trim()}\n\n[Rejected arguments omitted from model context; full call remains in the audit trace.]`;
+    const validation = text.slice(0, receivedArguments).trim();
+    return `${validation}\n\n${schemaValidationRecoveryHint(validation)}\n[Rejected arguments omitted from model context; full call remains in the audit trace.]`;
   }
   const maxErrorChars = 8_000;
   return text.length <= maxErrorChars
     ? text
     : `${text.slice(0, maxErrorChars)}\n...[tool error truncated before model context]`;
+}
+
+function isSchemaValidationToolFailure(result: unknown): boolean {
+  return toolResultText(result).startsWith("Validation failed for tool ");
+}
+
+function structuredCorrectionContinuationPrompt(correction: string): string {
+  return [
+    "## Host contract correction",
+    correction,
+    "这是当前 Goal 内部的结构校验反馈，不是缺少外部输入。",
+    "上一份参数已被拒绝，平台已从本轮模型上下文中移除被拒绝的原始参数；不要复制上一份调用。",
+    "请根据当前 Goal、成功标准和已有事实，重新生成完整的 goal_resolution 参数。只修复结构，保留事实和你已经作出的业务结论。",
+    "不要等待 human 重复确认，也不要把内部纠正信息当作新的业务需求。",
+  ].join("\n");
 }
 
 export function turnToolBudgetMessage(maxToolCalls: number): string {
@@ -1784,6 +2004,20 @@ export function toolFailureFingerprint(name: string, args: unknown, result: unkn
   })).digest("hex");
 }
 
+export function toolObservationFingerprint(
+  name: string,
+  args: unknown,
+  result: unknown,
+  isError: boolean,
+): string {
+  return createHash("sha256").update(JSON.stringify({
+    name,
+    args,
+    result: progressResult(result),
+    isError,
+  })).digest("hex");
+}
+
 function normalizedToolFailure(result: unknown): string {
   return modelFacingToolResultText(result, true)
     .replace(/\b(item|index|criterionIndex)\s+\d+\b/gi, "$1 #")
@@ -1841,6 +2075,13 @@ function envPositiveInteger(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function envOptionalPositiveInteger(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw?.trim()) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function stableSystemPrompt(input: AgentExecutionSliceInput): string {
   const skillInstructions = skillRuntimeAdapterInstructions(
     effectiveAgentSkills(input.profile, input.agent),
@@ -1854,7 +2095,7 @@ function stableSystemPrompt(input: AgentExecutionSliceInput): string {
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
       : "",
-    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。正常完成或失败时调用 goal_resolution；发现上游交付需要纠正时调用 report_goal_correction；当前 Plan 无法支撑目标时调用 request_goal_plan_change；缺少不可替代的 human 输入时调用 request_human_input。evidenceId 只能引用本 Goal 工具调用真实返回的 ID，或 Host 在当前 Goal 中明确注入的继承证据 ID；没有证据时使用空数组。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
+    "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。Skill 说明是参考资料，不是交付物；不要把读取 Skill、探索工具或输出工作计划当成完成。需要创建交付物时，先用最少必要的工作区观察确认现状，空目录或入口缺失时直接创建可逆的最小实现；只有当前成功标准要求时才继续加载并执行 Skill 验证。正常完成或失败时调用 goal_resolution；发现上游交付需要纠正时调用 report_goal_correction；当前 Plan 无法支撑目标时调用 request_goal_plan_change；缺少不可替代的 human 输入时调用 request_human_input。evidenceId 只能引用本 Goal 工具调用真实返回的 ID，或 Host 在当前 Goal 中明确注入的继承证据 ID；没有证据时使用空数组。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
   ].filter(Boolean).join("\n\n");
 }
 

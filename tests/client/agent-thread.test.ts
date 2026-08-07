@@ -77,6 +77,15 @@ describe("agent thread view", () => {
     });
   });
 
+  it("folds an unclosed thinking tag instead of leaking it into chat", () => {
+    expect(splitReasoningFromAnswer(
+      "<thinking>**Inspecting the latest screenshot and checking movement evidence",
+    )).toEqual({
+      reasoning: ["Inspecting the latest screenshot and checking movement evidence"],
+      answer: "",
+    });
+  });
+
   it("folds untagged intermediate model commentary by turn structure", () => {
     const bubbles = buildAgentThreadBubbles([
       threadEvent(1, "evt_progress_1", "agent", "agent_message", {

@@ -7,7 +7,8 @@ const SKILL_TOOL_REQUIREMENTS: Readonly<Record<string, readonly WorkspaceToolNam
 const SKILL_RUNTIME_ADAPTERS: Readonly<Record<string, string>> = {
   "agent-browser": [
     "agent-browser Skill 中写作 `agent-browser <command> ...` 或 `npx agent-browser <command> ...` 的命令，",
-    "在本平台必须调用一级 `browser` 工具，并把 `<command> ...` 逐项放入 browserArgs；不得通过 shell 间接执行。",
+    "在本平台必须调用一级 `browser` 工具，并把 `<command> ...` 逐项放入 browserArgs；例如 `set viewport 1264 900` 必须写成 [\"set\",\"viewport\",\"1264\",\"900\"]；不得通过 shell 间接执行。",
+    "如果外部 Skill 示例把整条命令写成一个字符串，工具边界会做参数归一化，但优先使用逐项数组；每次只执行一个命令，先观察返回再继续。",
     "该工具可以直接打开公网 HTTP/HTTPS 页面；只有 localhost、127.0.0.1 等本地地址要求来自当前工作区由 startService 启动的受管服务。",
   ].join(""),
 };

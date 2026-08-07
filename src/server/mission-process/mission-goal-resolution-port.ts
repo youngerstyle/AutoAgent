@@ -108,6 +108,9 @@ export async function validateEvidenceFacts(
     if (mustBelongToCurrentGoal && (fact.agentId !== agentId || fact.goalId !== goal.spec.id)) {
       return `证据不属于当前 Agent Goal：${ref.evidenceId}`;
     }
+    if (mustBelongToCurrentGoal && goal.spec.attemptId && fact.attemptId !== goal.spec.attemptId) {
+      return `证据不属于当前 Agent Goal attempt：${ref.evidenceId}；请在当前尝试完成最后一次修改后重新取证`;
+    }
     verifiedFacts.push({ ref, fact });
   }
 

@@ -7,9 +7,29 @@ export interface RuntimeTaskRecord {
   missionId: string;
   title: string;
   objective: string;
-  status: "active" | "paused" | "completed" | "failed" | "cancelled";
+  status: "active" | "paused" | "waiting" | "completed" | "failed" | "cancelled";
+  retryStates?: Record<string, RuntimeRetryState>;
+  runtimeError?: RuntimeTaskError;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RuntimeTaskError {
+  source: "scheduler" | "agent_turn";
+  message: string;
+  at: string;
+  agentId?: string;
+  turnId?: string;
+}
+
+export interface RuntimeRetryState {
+  failures: number;
+  retryAt: number;
+  /** The producer of the retry. Older records may omit this field. */
+  kind?: "provider" | "execution";
+  /** Idle-agent retries need the original human turn to be replayed. */
+  turnId?: string;
+  triggerMessageId?: string;
 }
 
 interface RuntimeHostState {

@@ -287,58 +287,41 @@ Ticket and Plan commands. This keeps all three engines independently usable:
 - Ticket Engine owns DAG state and scheduling.
 - Mission Control compiles contracts and translates accepted outcomes.
 
-A correction never reopens or mutates an earlier Ticket Attempt. The reporting
-Ticket becomes the immutable terminal state `returned`; `completed`,
-`returned`, `failed`, and `cancelled` Tickets never re-enter scheduling. The
-correction appends an independently ready planner-amendment Ticket to the same
-Plan and records the reporting and target Ticket ids as provenance. That
-provenance does not reactivate either historical Ticket.
+A correction never reopens or mutates an earlier Ticket or Attempt. The
+reporting Attempt ends as `returned`, while its Ticket returns to `pending` and
+retains its original contract, assurance scope, and downstream position. Ticket
+Engine appends one fresh correction Ticket derived mechanically from the
+completed target Ticket's executable contract and records the reporting and
+target Ticket ids as provenance. It adds ordinary DAG edges from the completed
+target to the correction and from the correction to the reporting Ticket.
 
-The planner then appends fresh correction and re-verification Tickets after the
-amendment Ticket using ordinary DAG dependencies. Any obsolete downstream
-Ticket that has not started may be cancelled by that Plan change. A terminal
-historical Ticket cannot be cancelled, targeted by a new dependency, or used
-as the execution slot for the new work. Instead, the Plan change declares a
-`failureResolution` edge from each historical unsuccessful Ticket that affects
-the required closure to one newly added correction or assurance Ticket. The
-edge is a settlement relation, not a mutation or scheduling dependency: it
-preserves the old status and Attempt while declaring which new result is
-responsible for resolving it.
+After the correction completes, the same reporting Ticket receives a new
+Attempt. Its earlier Attempt remains immutable evidence of what was checked at
+that point in time. Required terminal references do not change, unaffected
+branches are not replayed, and no planner-amendment Ticket is created. Ticket
+Engine performs only this graph operation; it does not infer a role, phase,
+defect category, or business decision from prose.
 
-An unsuccessful Ticket is effectively satisfied only after its declared
-resolution Ticket completes. If the resolution Ticket is returned or failed,
-the Plan remains blocked and a later amendment may resolve that newer failure
-with another explicit edge. This relation may therefore form an auditable
-chain, but never a cycle. A new required-terminal closure that contains an
-unsuccessful Ticket without such a resolution relation is rejected. Prior
-Attempts remain immutable evidence of what was delivered and checked at that
-point in time.
+If the reporting Agent concludes that scope, dependencies, required terminals,
+or the Plan structure must change, it uses the separate Plan-change action.
+That explicit action may create a planner-amendment Ticket and may use
+`failureResolution` relations for immutable unsuccessful Tickets. Ordinary
+correction and Plan maintenance are different domain operations.
 
-`failed` and `returned` are intentionally different. `failed` is an explicit,
+`failed` and `returned` Attempts are intentionally different. `failed` is an explicit,
 immutable statement that the entrusted Ticket itself could not be completed.
 With `fail_fast` it terminates the Plan. With `require_resolution` it blocks the
 Plan and appends a planner-amendment Ticket whose provenance is the failed
 Ticket; PM, not platform code, decides whether to replace work, change scope, or
-terminate through the resulting Plan change. `returned` is produced by an
-accepted correction or Plan-change action when the reporting Agent already
-knows that upstream work or the Plan structure must change. Mission Control
-never converts one into the other by inspecting role names or natural-language
-reasons.
+terminate through the resulting Plan change. `returned` is produced when a
+reporting Attempt requests correction and therefore cannot yet settle its own
+Ticket. Mission Control never converts one into the other by inspecting role
+names or natural-language reasons.
 
-The first correction chain for an already declared delivery increment starts
-from the planner-amendment Ticket. The returned assurance Ticket remains
-immutable provenance, and its explicit resolution edge names the new assurance
-result that must complete before existing downstream dependencies can unlock.
-That historical failure is therefore no longer an active exit for
-delivery-increment ordering. A pending obsolete terminal cancelled by the same
-change is no longer an active exit either. If no active exit remains in the
-previous increment, the replacement branch may start from the amendment
-Ticket; the scheduler must not require an invented dependency on completed or
-failed history.
-The planning Agent selects that result from the DAG it proposes; platform code
-does not infer it from roles or prose. When one amendment affects several
-delivery increments in a shared workspace, the first affected increment must
-produce a new independent assurance result before work on the next affected
+When a genuine Plan change affects several delivery increments in a shared
+workspace, the planning Agent selects the replacement graph; platform code does
+not infer it from roles or prose. The first affected increment must produce a
+new independent assurance result before work on the next affected
 increment becomes ready. This preserves ordinary DAG scheduling without
 reviving history or allowing verification to race with later writes to the
 same artifact.
@@ -418,15 +401,13 @@ non-runnable game is a failed platform test.
     a completion schema contains no top-level `anyOf` for workflow decisions.
 21. Deleting a workspace stops and unregisters its Runtime Host before removing
     workspace state, so no scheduler can tick a deleted Mission.
-22. A correction Plan cannot use a terminal unsuccessful Ticket as a new
-    dependency or required terminal.
-23. Correction work for an existing increment may start after the amendment
-    Ticket, while later affected increments wait for the corrected increment's
-    new assurance result.
-24. A failed assurance cannot be resolved by adding only an equivalent
-    assurance Ticket. The same Plan change must add upstream execution work
-    that contributes to at least one Mission criterion covered by the new
-    assurance, so every retry has a traceable source of new evidence.
+22. A correction appends one fresh Ticket derived from the target contract,
+    leaves completed history untouched, and retries the same reporting Ticket
+    in a new Attempt only after that correction completes.
+23. A correction preserves required terminals and unaffected branches; it does
+    not create a planner-amendment Ticket or invent a new assurance endpoint.
+24. A Plan change remains explicit and separate. Only that action may alter
+    scope, dependencies, required terminals, or delivery-increment structure.
 25. A stale browser daemon or local tool transport timeout is recovered inside
     the current Agent Goal. It cannot be submitted as an assurance conclusion,
     converted into a product correction, or used to amend the Plan.

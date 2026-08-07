@@ -9,6 +9,23 @@ import { AgentProfileStore } from "../../src/server/agents/profile-store";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store";
 
 describe("workspaces route", () => {
+  it("keeps concurrent workspace creation in one registry", async () => {
+    const { app } = await createFixture();
+    const roots = await Promise.all(
+      Array.from({ length: 8 }, async (_value, index) => mkdtemp(path.join(os.tmpdir(), `autoagent-concurrent-ws-${index}-`))),
+    );
+
+    const created = await Promise.all(roots.map((rootPath, index) => request(app)
+      .post("/api/workspaces")
+      .send({ name: `Concurrent ${index + 1}`, rootPath, policyProfile: "development" })
+      .expect(201)));
+
+    const listed = await request(app).get("/api/workspaces").expect(200);
+    expect(new Set(created.map((response) => response.body.workspace.id)).size).toBe(roots.length);
+    expect(new Set(listed.body.workspaces.map((workspace: { id: string }) => workspace.id)).size).toBe(roots.length);
+    expect(listed.body.workspaces).toHaveLength(roots.length);
+  });
+
   it("removes a workspace from AutoAgent without deleting the local folder by default", async () => {
     const { app, rootPath } = await createFixture();
     await writeFile(path.join(rootPath, "keep.txt"), "still here", "utf8");

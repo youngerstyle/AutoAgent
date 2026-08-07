@@ -49,6 +49,44 @@ describe("MockProvider current Ticket contract", () => {
     };
     expect(outcome.domainOutcome.change.dependencyAdditions[0]).toMatchObject({ from: { ticketId } });
   });
+
+  it("declares a new delivery increment after a plan revision instead of repeating the existing one", async () => {
+    const currentPlan = {
+      currentPlan: {
+        tickets: [{
+          deliveryIncrement: {
+            incrementId: "increment-1",
+            sequence: 1,
+            title: "第一版交付",
+            objective: "形成可验证结果",
+          },
+        }],
+        missionBaseline: {
+          version: 1,
+          criteria: [{ criterionId: "criterion-1" }],
+        },
+      },
+    };
+    const result = await runMock([
+      "[current-ticket]\noutput-schema=plan-change-set-v3\nsettle-mission=false\n[/current-ticket]",
+      "- ticket: 68f8882f-9598-4b8f-8d61-39df2b00f8ef",
+      `当前工作上下文：${JSON.stringify(currentPlan)}`,
+    ].join("\n"));
+
+    const outcome = toolArguments(result) as {
+      domainOutcome: {
+        result: { deliveryStrategy: { increments: Array<{ incrementId: string; sequence: number }> } };
+        change: { additions: Array<{ deliveryIncrement: { incrementId: string } }> };
+      };
+    };
+    expect(outcome.domainOutcome.result.deliveryStrategy.increments).toEqual([{
+      incrementId: "increment-2",
+      sequence: 2,
+      title: "mock-verifiable-delivery-2",
+      objective: "produce a new verifiable delivery on top of the existing result",
+    }]);
+    expect(new Set(outcome.domainOutcome.change.additions.map((item) => item.deliveryIncrement.incrementId))).toEqual(new Set(["increment-2"]));
+  });
 });
 
 async function runMock(instructions: string) {

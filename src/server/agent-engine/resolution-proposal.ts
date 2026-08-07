@@ -16,11 +16,16 @@ export function parseResolutionProposal(
   if (value.evidence !== undefined && !Array.isArray(value.evidence)) {
     return { ok: false, reason: "evidence 必须是数组" };
   }
-  const submittedEvidence = Array.isArray(value.evidence)
-    ? value.evidence
-    : collectCriterionEvidence(value.criterionResults);
+  const criterionEvidence = collectCriterionEvidence(value.criterionResults);
+  const submittedEvidence = Array.isArray(value.evidence) ? value.evidence : criterionEvidence;
+  if (goal.spec.outputContract?.evidenceMode === "none" && (submittedEvidence.length > 0 || criterionEvidence.length > 0)) {
+    return {
+      ok: false,
+      reason: "当前输出契约不允许最终验收直接提交 evidence；请只在 domainOutcome.missionResolution.criterionResults 中选择 assuranceTicketIds，由平台装配验收事实",
+    };
+  }
   for (const [index, item] of submittedEvidence.entries()) {
-    if (!isEvidence(item)) return { ok: false, reason: `evidence[${index}] 必须是包含 kind 和 ref 字符串的对象` };
+    if (!isEvidence(item)) return { ok: false, reason: `evidence[${index}] 必须是包含 evidenceId 字符串的对象` };
   }
   if (!Array.isArray(value.criterionResults)) {
     return { ok: false, reason: "criterionResults 必须是数组" };
@@ -75,7 +80,7 @@ export function parseResolutionProposal(
   return {
     ok: true,
     value: {
-      proposalId: stableId("proposal", goal.spec.id, turnId),
+      proposalId: stableId("proposal", goal.spec.id, String(goal.version), turnId),
       turnId,
       goalId: goal.spec.id,
       expectedGoalVersion: goal.version,
@@ -111,7 +116,7 @@ export function createHumanInputProposal(
   createdAt: string,
 ): GoalResolutionProposal<"blocked"> {
   return {
-    proposalId: stableId("proposal", goal.spec.id, turnId),
+    proposalId: stableId("proposal", goal.spec.id, String(goal.version), turnId),
     turnId,
     goalId: goal.spec.id,
     expectedGoalVersion: goal.version,

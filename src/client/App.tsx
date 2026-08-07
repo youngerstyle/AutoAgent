@@ -39,6 +39,7 @@ import {
   createWorkspace,
   deleteWorkspace,
   getLoopDebugLog,
+  getHealth,
   getSnapshot,
   listAgentProfiles,
   listAvailableSkills,
@@ -47,6 +48,7 @@ import {
   listWorkspaces,
   pauseTask,
   removeWorkspaceAgent,
+  reconcileHealth,
   resumeTask,
   agentProfileUpdateInput,
   sendAgentMessage,
@@ -60,6 +62,7 @@ import {
   uploadAttachment,
   type AvailableSkill,
   type AgentProfileCreateInput,
+  type RuntimeHealth,
   type WorkspaceAgentConfig,
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
@@ -76,6 +79,7 @@ import {
   type AgentThreadBubble,
 } from "./agent-thread";
 import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-inspector";
+import { mergeEventBuffer } from "./live-events";
 
 const LIVE_EVENT_BUFFER_LIMIT = 80;
 type AppView = "office" | "projects" | "people" | "providers" | "operations";
@@ -141,6 +145,7 @@ type DeleteWorkspaceDialogState = {
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [health, setHealth] = useState<RuntimeHealth>();
   const [selectedId, setSelectedId] = useState<string>("");
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>();
   const [events, setEvents] = useState<AutoAgentEvent[]>([]);
@@ -194,6 +199,7 @@ export function App() {
 
   useEffect(() => {
     void refreshWorkspaces();
+    void refreshHealth();
     void refreshAgentProfiles();
     void refreshAvailableSkills();
     void refreshModelConfigs();
@@ -208,10 +214,13 @@ export function App() {
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
-      setEvents((current) => [...current, event].slice(-LIVE_EVENT_BUFFER_LIMIT));
+      setEvents((current) => mergeEventBuffer(current, event, LIVE_EVENT_BUFFER_LIMIT));
       void refreshSnapshot(selectedId);
     });
-    source.onerror = () => setError("Live event stream disconnected");
+    source.onopen = () => setError("");
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) setError("Live event stream disconnected");
+    };
     return () => source.close();
   }, [selectedId]);
 
@@ -226,7 +235,7 @@ export function App() {
       void getSnapshot(selectedId).then((result) => {
         if (disposed) return;
         setSnapshot(result.snapshot);
-        setEvents(result.snapshot.recentEvents);
+        setEvents((current) => mergeEventBuffer(current, result.snapshot.recentEvents, LIVE_EVENT_BUFFER_LIMIT));
       }).catch((err: Error) => {
         if (!disposed) setError(err.message);
       }).finally(() => {
@@ -281,8 +290,25 @@ export function App() {
     try {
       const result = await getSnapshot(workspaceId);
       setSnapshot(result.snapshot);
-      setEvents(result.snapshot.recentEvents);
+      setEvents((current) => mergeEventBuffer(current, result.snapshot.recentEvents, LIVE_EVENT_BUFFER_LIMIT));
       void refreshLoopDebugLog(workspaceId);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function refreshHealth() {
+    try {
+      setHealth(await getHealth());
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function reconcileRuntimeHealth() {
+    try {
+      setHealth(await reconcileHealth());
       setError("");
     } catch (err) {
       setError((err as Error).message);
@@ -405,6 +431,7 @@ export function App() {
     try {
       setDeleteDialog({ ...deleteDialog, busy: true });
       await deleteWorkspace(target.id, { deleteLocalFolder: deleteDialog.deleteLocalFolder });
+      await refreshHealth();
       await refreshWorkspaces(selectedId === target.id ? "" : selectedId);
       if (selectedId === target.id) {
         setSnapshot(undefined);
@@ -577,9 +604,7 @@ export function App() {
   const blockedPanelCopy = buildBlockedPanelCopy(snapshot);
   const displayedStatus = mode === "blocked"
     ? "blocked"
-    : nodes.some((node) => node.needsAttention)
-      ? "waiting"
-      : snapshot?.status ?? "idle";
+    : snapshot?.status ?? "idle";
   const primaryPanelTitle = mode === "blocked"
     ? "任务控制"
     : mode === "terminal"
@@ -684,6 +709,11 @@ export function App() {
                   </div>
                 </div>
                 {snapshot?.readOnlyReason ? <p className="error-text">{snapshot.readOnlyReason}</p> : null}
+                {snapshot?.runtimeError ? (
+                  <p className="error-text" role="status">
+                    运行时刚刚遇到异常：{snapshot.runtimeError.message}。系统会继续恢复；如长时间没有变化，请查看对应 Agent 的运行记录。
+                  </p>
+                ) : null}
                 {error ? <p className="error-text">{error}</p> : null}
               </section>
 
@@ -864,7 +894,9 @@ export function App() {
               snapshot={snapshot}
               events={events}
               ticketCount={ticketItems.length}
+              health={health}
               onOpenOffice={() => setView("office")}
+              onRefreshHealth={() => void reconcileRuntimeHealth()}
             />
           ) : null}
         </section>
@@ -2376,7 +2408,9 @@ function OperationsHub(props: {
   snapshot?: WorkspaceSnapshot;
   events: AutoAgentEvent[];
   ticketCount: number;
+  health?: RuntimeHealth;
   onOpenOffice: () => void;
+  onRefreshHealth: () => void;
 }) {
   const runningAgents = props.snapshot?.agents.filter((agent) => agent.status === "running").length ?? 0;
   const attentionAgents = props.snapshot?.agents.filter((agent) => agent.status === "waiting" || agent.status === "blocked" || agent.status === "failed").length ?? 0;
@@ -2399,6 +2433,34 @@ function OperationsHub(props: {
         <div><span>运行成员</span><strong>{runningAgents}</strong><small>正在执行工作轮次</small></div>
         <div><span>等待处理</span><strong>{attentionAgents}</strong><small>等待、受阻或失败</small></div>
         <div><span>当前工单</span><strong>{props.ticketCount}</strong><small>当前项目工单</small></div>
+      </section>
+
+      <section className={`runtime-health-panel ${props.health?.ready ? "ready" : "degraded"}`} aria-label="服务恢复状态">
+        <header>
+          <div>
+            <span className="section-kicker">服务就绪检查</span>
+            <h3>{runtimeHealthTitle(props.health)}</h3>
+            <p>{runtimeHealthDescription(props.health)}</p>
+          </div>
+          <button type="button" onClick={props.onRefreshHealth} disabled={!props.health || props.health.runtimeHosts.status === "restoring"}>
+            <RefreshCw size={15} />重新检查
+          </button>
+        </header>
+        {props.health?.runtimeHosts.failedWorkspaces?.length ? (
+          <details className="runtime-health-failures" open>
+            <summary>有 {props.health.runtimeHosts.failedWorkspaces.length} 个项目未恢复</summary>
+            <div>
+              {props.health.runtimeHosts.failedWorkspaces.map((failure) => (
+                <article key={failure.workspaceId}>
+                  <strong>{failure.workspaceName}</strong>
+                  <code>{failure.rootPath}</code>
+                  <small>{failure.error}</small>
+                </article>
+              ))}
+            </div>
+            <p>请在项目页明确迁移或删除对应项目后，再点“重新检查”。系统不会自动改写历史数据。</p>
+          </details>
+        ) : null}
       </section>
 
       <div className="operations-grid">
@@ -2445,6 +2507,21 @@ function OperationsHub(props: {
       </div>
     </section>
   );
+}
+
+function runtimeHealthTitle(health?: RuntimeHealth): string {
+  if (!health) return "正在读取服务状态";
+  if (health.ready) return "服务已就绪";
+  if (health.runtimeHosts.status === "restoring") return "正在恢复项目运行时";
+  if (health.runtimeHosts.status === "failed") return "服务恢复失败";
+  return "服务未就绪";
+}
+
+function runtimeHealthDescription(health?: RuntimeHealth): string {
+  if (!health) return "正在读取服务恢复结果。";
+  if (health.ready) return `已恢复 ${health.runtimeHosts.restoredWorkspaceCount ?? 0} 个项目，可以接收新任务。`;
+  if (health.runtimeHosts.failedWorkspaces?.length) return `已恢复 ${health.runtimeHosts.restoredWorkspaceCount ?? 0} 个项目，仍有历史项目需要明确处理。`;
+  return "服务仍在恢复或尚未完成就绪检查。";
 }
 
 function operationsActivityCopy(title: string, detail: string | undefined, actor: string, eventType: AutoAgentEvent["type"]) {

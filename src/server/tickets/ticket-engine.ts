@@ -391,6 +391,7 @@ export class TicketEngine {
     const replay = replayCommand<TicketCommandResult>(aggregate, command.commandId, fingerprint);
     if (replay) return replay;
     if (TERMINAL_PLAN.has(aggregate.plan.status)) return this.persistTicketRejection(aggregate, command, fingerprint, "plan_terminal", "Plan is terminal");
+    if (aggregate.plan.status === "paused") return this.persistTicketRejection(aggregate, command, fingerprint, "plan_paused", "Plan is paused");
     const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
     if (!ticket || ticket.version !== command.expectedTicketVersion) return this.persistTicketRejection(aggregate, command, fingerprint, "version_conflict", "Ticket version conflict");
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
@@ -420,6 +421,7 @@ export class TicketEngine {
       if (command.payload.type === "complete") status = "completed";
       else if (command.payload.type === "block") status = "blocked";
       else if (command.payload.type === "fail") status = "failed";
+      else if (command.payload.type === "request_correction") status = "pending";
       else status = "returned";
       const ownership: BlockedOwnershipReceipt | undefined = status === "blocked" ? {
         ownershipId: randomUUID(), planId: command.planId, ticketId: command.ticketId,
@@ -465,7 +467,44 @@ export class TicketEngine {
       const requiresPlanResolution = command.payload.type === "fail"
         && current.plan.completionPolicy.failurePolicy === "require_resolution";
       const failureReason = command.payload.type === "fail" ? command.payload.reason : undefined;
-      if (command.payload.type === "request_correction" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
+      if (command.payload.type === "request_correction") {
+        if (graph.ticketIds.length + 1 > DEFAULT_GRAPH_LIMITS.maxTickets || graph.dependencyEdges.length + 2 > DEFAULT_GRAPH_LIMITS.maxEdges) {
+          throw new PlanGraphError("Plan cannot append another correction Ticket within graph limits");
+        }
+        const targetDefinition = current.definitionsByTicketId[String(correctionTargetId)];
+        if (!targetDefinition) throw new PlanGraphError(`Correction target ${correctionTargetId} has no definition`);
+        const correctionId = randomUUID() as TicketId;
+        appendedTicket = {
+          ticketId: correctionId,
+          planId: command.planId,
+          version: 1,
+          status: "pending",
+          parentTicketId: command.ticketId,
+          attempts: [],
+        };
+        tickets = [...tickets, appendedTicket];
+        graph = {
+          ...graph,
+          ticketIds: [...graph.ticketIds, correctionId],
+          dependencyEdges: [
+            ...graph.dependencyEdges,
+            { fromTicketId: correctionTargetId!, toTicketId: correctionId },
+            { fromTicketId: correctionId, toTicketId: command.ticketId },
+          ],
+        };
+        definitionsByTicketId = {
+          ...definitionsByTicketId,
+          [String(correctionId)]: {
+            ...structuredClone(targetDefinition),
+            parentTicketId: command.ticketId,
+            correction: {
+              targetTicketId: correctionTargetId!,
+              sourceTicketId: command.ticketId,
+            },
+            permissions: undefined,
+          },
+        };
+      } else if (command.payload.type === "request_plan_change" || requiresPlanResolution) {
         if (graph.ticketIds.length + 1 > DEFAULT_GRAPH_LIMITS.maxTickets || graph.dependencyEdges.length + 1 > DEFAULT_GRAPH_LIMITS.maxEdges) {
           throw new PlanGraphError("Plan cannot append another amendment Ticket within graph limits");
         }
@@ -489,9 +528,7 @@ export class TicketEngine {
           [String(amendmentId)]: {
             parentTicketId: command.ticketId,
             title: current.plan.amendmentTemplate.title,
-            objective: command.payload.type === "request_correction"
-              ? `处理工单 ${command.ticketId} 对已完成上游工单 ${correctionTargetId} 提出的交付缺陷：${command.payload.reason}`
-              : command.payload.type === "request_plan_change"
+            objective: command.payload.type === "request_plan_change"
                 ? `处理工单 ${command.ticketId} 提出的计划结构问题：${command.payload.reason}`
                 : `处理工单 ${command.ticketId} 的失败事实并修订 Plan：${failureReason}`,
             successCriteria: [...current.plan.amendmentTemplate.successCriteria],
@@ -505,14 +542,14 @@ export class TicketEngine {
       tickets = changed.tickets;
       const statuses = statusMap(tickets);
       let planStatus = evaluatePlanOutcome({ graph, completionPolicy, ticketStatuses: statuses });
-      if (status === "blocked" || command.payload.type === "request_correction" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
+      if (status === "blocked" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
         planStatus = "blocked";
       }
       const plan = { ...current.plan, version: current.plan.version + 1, status: planStatus, graph, completionPolicy };
       const settled = tickets.find((item) => item.ticketId === command.ticketId)!;
       const result: TicketCommandResult = {
         accepted: true, commandId: command.commandId, proposalId: command.proposalId,
-        ticketStatus: status as "blocked" | "completed" | "returned" | "failed",
+        ticketStatus: status as "pending" | "blocked" | "completed" | "returned" | "failed",
         ticketVersion: settled.version, planStatus: plan.status, planVersion: plan.version,
         ...(ownership ? { nextAuthority: settled.activeAuthority } : {}),
       };
@@ -520,7 +557,9 @@ export class TicketEngine {
         settled,
         command.payload.type === "block"
           ? { type: "TicketBlocked", requiredInput: structuredClone(command.payload.requiredInput) }
-          : { type: "TicketTerminal", status: status as "completed" | "returned" | "failed" },
+          : command.payload.type === "request_correction"
+            ? { type: "TicketAttemptReturned", correctionTicketId: appendedTicket!.ticketId }
+            : { type: "TicketTerminal", status: status as "completed" | "returned" | "failed" },
         command.issuedAt,
       )];
       for (const ready of changed.ready) pendingEvents.push(ticketEvent(ready, { type: "TicketReady", ticketVersion: ready.version }, command.issuedAt));
@@ -529,10 +568,10 @@ export class TicketEngine {
           type: "TicketCorrectionRequested",
           sourceTicketId: command.ticketId,
           targetTicketId: correctionTargetId!,
+          correctionTicketId: appendedTicket!.ticketId,
           reason: command.payload.reason,
           handoff: structuredClone(command.payload.handoff),
         }, command.issuedAt));
-        pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [appendedTicket!.ticketId] }, command.issuedAt));
       } else if (command.payload.type === "request_plan_change") {
         pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanAmendmentRequested", sourceTicketId: command.ticketId, amendmentTicketId: appendedTicket!.ticketId, reason: command.payload.reason }, command.issuedAt));

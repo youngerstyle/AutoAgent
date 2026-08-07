@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
-import type { MissionLink, MissionRecord } from "../../shared/contracts/mission-control.js";
+import type { MissionLink, MissionRecord, TeamBinding, TeamBindingMigration } from "../../shared/contracts/mission-control.js";
+import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { missionProcessFile } from "../storage/paths.js";
 
 export interface MissionCursorRecord {
@@ -33,6 +34,7 @@ const RENAME_RETRY_BACKOFF_MS = 25;
 
 export class MissionStoreConflictError extends Error {}
 export class LegacyMissionPlanError extends Error {}
+export class MissionStoreCorruptionError extends Error {}
 
 export class MissionStore {
   private readonly file: string;
@@ -72,6 +74,36 @@ export class MissionStore {
     }
   }
 
+  /**
+   * Upgrade an incomplete historical TeamBinding only when an operator has
+   * explicitly requested the migration. Normal reads remain strict: runtime
+   * recovery must never invent permissions for an old snapshot.
+   */
+  async migrateTeamBinding(input: {
+    teamBinding: TeamBinding;
+    migration: TeamBindingMigration;
+  }): Promise<MissionAggregate> {
+    return this.enqueue(async () => {
+      const raw = await this.readRaw();
+      if (!raw) throw new Error("Mission does not exist");
+      assertRawMissionIdentity(raw, this.missionId);
+      const current = raw as MissionAggregate;
+      const currentRecord = current.record as MissionRecord;
+      const next: MissionAggregate = {
+        ...current,
+        version: current.version + 1,
+        record: {
+          ...currentRecord,
+          teamBinding: structuredClone(input.teamBinding),
+          teamBindingMigration: structuredClone(input.migration),
+        },
+      };
+      validate(next, this.missionId);
+      await writeDurable(this.file, next);
+      return structuredClone(next);
+    });
+  }
+
   async transact(
     expectedVersion: number,
     mutate: (current: MissionAggregate) => MissionAggregate | Promise<MissionAggregate>,
@@ -97,6 +129,15 @@ export class MissionStore {
     return next.finally(() => {
       if (queues.get(key) === next) queues.delete(key);
     });
+  }
+
+  private async readRaw(): Promise<unknown> {
+    try {
+      return JSON.parse(await readFile(this.file, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
   }
 
   private async withLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -165,28 +206,115 @@ function isProcessAlive(pid: number): boolean {
 }
 
 function validate(value: MissionAggregate, missionId: string): void {
-  if (value.schemaVersion !== 4) {
+  const candidate = value as unknown as Record<string, unknown>;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new MissionStoreCorruptionError("Mission aggregate must be an object");
+  }
+  if (candidate.schemaVersion !== 4) {
     throw new LegacyMissionPlanError("Mission uses a legacy aggregate schema");
   }
-  if (value.missionId !== missionId || value.record.missionId !== missionId) {
+  const record = candidate.record;
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new MissionStoreCorruptionError("Mission record is invalid");
+  }
+  const missionRecord = record as Record<string, unknown>;
+  if (candidate.missionId !== missionId || missionRecord.missionId !== missionId) {
     throw new Error("Mission aggregate identity is invalid");
   }
-  if (!Number.isInteger(value.version) || value.version < 1) throw new Error("Mission version is invalid");
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value.record.planId))) {
+  if (!Number.isInteger(candidate.version) || Number(candidate.version) < 1) throw new Error("Mission version is invalid");
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(missionRecord.planId))) {
     throw new LegacyMissionPlanError("Mission uses a legacy non-UUID Plan identity");
   }
-  if (typeof value.record.objective !== "string" || value.record.objective.trim().length === 0) {
+  if (typeof missionRecord.objective !== "string" || missionRecord.objective.trim().length === 0) {
     throw new Error("Mission objective is invalid");
   }
-  if (!value.record.ownerPrincipalId || !value.record.teamBinding?.contentHash) {
+  if (typeof missionRecord.ownerPrincipalId !== "string" || !missionRecord.ownerPrincipalId) {
     throw new Error("Mission owner or TeamBinding snapshot is invalid");
   }
-  for (const field of [value.links, value.cursors, value.steps]) if (!Array.isArray(field)) throw new Error("Mission collection is invalid");
-  unique(value.links.map((item) => item.dispatchId), "dispatchId");
-  unique(value.cursors.map((item) => item.partition), "cursor partition");
-  unique(value.steps.map((item) => item.stepId), "stepId");
-  for (const link of value.links) {
-    if (link.missionId !== missionId || link.planId !== value.record.planId) throw new Error("Mission link identity is invalid");
+  validateTeamBinding(missionRecord.teamBinding, missionId);
+  if (missionRecord.teamBindingMigration !== undefined) {
+    validateTeamBindingMigration(missionRecord.teamBindingMigration, missionId);
+  }
+  const aggregate = value as MissionAggregate;
+  for (const field of [aggregate.links, aggregate.cursors, aggregate.steps]) if (!Array.isArray(field)) throw new Error("Mission collection is invalid");
+  unique(aggregate.links.map((item) => item.dispatchId), "dispatchId");
+  unique(aggregate.cursors.map((item) => item.partition), "cursor partition");
+  unique(aggregate.steps.map((item) => item.stepId), "stepId");
+  for (const link of aggregate.links) {
+    if (link.missionId !== missionId || link.planId !== missionRecord.planId) throw new Error("Mission link identity is invalid");
+  }
+}
+
+function assertRawMissionIdentity(value: unknown, missionId: string): asserts value is MissionAggregate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new MissionStoreCorruptionError("Mission aggregate must be an object");
+  }
+  const candidate = value as Record<string, unknown>;
+  const record = candidate.record;
+  if (candidate.schemaVersion !== 4 || candidate.missionId !== missionId
+    || !record || typeof record !== "object" || Array.isArray(record)
+    || (record as Record<string, unknown>).missionId !== missionId
+    || !Number.isInteger(candidate.version) || Number(candidate.version) < 1) {
+    throw new MissionStoreCorruptionError("Mission aggregate cannot be migrated safely");
+  }
+}
+
+function validateTeamBindingMigration(value: unknown, missionId: string): asserts value is TeamBindingMigration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding migration metadata is invalid`);
+  }
+  const migration = value as Record<string, unknown>;
+  if (migration.kind !== "reconstruct_enabled_tools"
+    || migration.source !== "workspace_agent_policy"
+    || typeof migration.fromContentHash !== "string" || !migration.fromContentHash
+    || typeof migration.migratedAt !== "string" || !migration.migratedAt) {
+    throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding migration metadata is invalid`);
+  }
+}
+
+function validateTeamBinding(value: unknown, missionId: string): asserts value is TeamBinding {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding snapshot is invalid`);
+  }
+  const binding = value as Record<string, unknown>;
+  if (typeof binding.teamBindingId !== "string" || !binding.teamBindingId
+    || !Number.isInteger(binding.version) || Number(binding.version) < 1
+    || typeof binding.contentHash !== "string" || !binding.contentHash
+    || !Array.isArray(binding.members)) {
+    throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding snapshot is incomplete`);
+  }
+  const agentIds = new Set<string>();
+  const principalIds = new Set<string>();
+  for (const memberValue of binding.members) {
+    if (!memberValue || typeof memberValue !== "object" || Array.isArray(memberValue)) {
+      throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding member is invalid`);
+    }
+    const member = memberValue as Record<string, unknown>;
+    const capabilities = member.capabilities;
+    const enabledTools = member.enabledTools;
+    if (typeof member.agentId !== "string" || !member.agentId
+      || typeof member.principalId !== "string" || !member.principalId
+      || agentIds.has(member.agentId) || principalIds.has(member.principalId)
+      || !Array.isArray(capabilities) || capabilities.some((item) => typeof item !== "string")
+      || !Array.isArray(enabledTools)
+      || enabledTools.some((item) => typeof item !== "string" || !isKnownToolName(item))) {
+      throw new MissionStoreCorruptionError(
+        `Mission ${missionId} TeamBinding member ${String(member.agentId ?? "unknown")} has an invalid capability/tool snapshot`,
+      );
+    }
+    agentIds.add(member.agentId);
+    principalIds.add(member.principalId);
+  }
+  if (binding.deliveryPolicy !== undefined) {
+    const policy = binding.deliveryPolicy;
+    const requiredTerminalCapabilities = policy && typeof policy === "object" && !Array.isArray(policy)
+      ? (policy as Record<string, unknown>).requiredTerminalCapabilities
+      : undefined;
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)
+      || !Array.isArray(requiredTerminalCapabilities)
+      || requiredTerminalCapabilities.some((item) => typeof item !== "string")) {
+      throw new MissionStoreCorruptionError(`Mission ${missionId} TeamBinding delivery policy is invalid`);
+    }
   }
 }
 

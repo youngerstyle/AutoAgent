@@ -58,6 +58,7 @@ describe("server bootstrap", () => {
         .expect(({ body }) => {
           expect(body).toMatchObject({
             ok: true,
+            ready: false,
             runtimeHosts: { status: "restoring" },
           });
         });
@@ -103,7 +104,12 @@ describe("server bootstrap", () => {
       .spyOn(RuntimeHostRegistry.prototype, "startAll")
       .mockResolvedValue({
         restoredWorkspaceIds: ["workspace-healthy"],
-        failedWorkspaces: [{ workspaceId: "workspace-invalid", error: "Goal version must advance by exactly one" }],
+        failedWorkspaces: [{
+          workspaceId: "workspace-invalid",
+          workspaceName: "旧项目",
+          rootPath: "C:\\workspace\\old-project",
+          error: "Goal version must advance by exactly one",
+        }],
       });
     try {
       const app = await bootstrapServer(config(home));
@@ -113,6 +119,7 @@ describe("server bootstrap", () => {
         .expect(({ body }) => {
           expect(body).toMatchObject({
             ok: true,
+            ready: false,
             runtimeHosts: {
               status: "degraded",
               restoredWorkspaceCount: 1,
@@ -120,6 +127,61 @@ describe("server bootstrap", () => {
             },
           });
         });
+    } finally {
+      restore.mockRestore();
+    }
+  });
+
+  it("reconciles runtime health after an explicit recovery operation", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-reconcile-"));
+    const restore = vi
+      .spyOn(RuntimeHostRegistry.prototype, "startAll")
+      .mockResolvedValueOnce({
+        restoredWorkspaceIds: ["workspace-healthy"],
+        failedWorkspaces: [{
+          workspaceId: "workspace-invalid",
+          workspaceName: "旧项目",
+          rootPath: "C:\\workspace\\old-project",
+          error: "invalid snapshot",
+        }],
+      })
+      .mockResolvedValueOnce({
+        restoredWorkspaceIds: ["workspace-healthy"],
+        failedWorkspaces: [],
+      });
+    try {
+      const app = await bootstrapServer(config(home));
+      await request(app).get("/api/health").expect(({ body }) => {
+        expect(body.runtimeHosts.status).toBe("degraded");
+      });
+      await request(app)
+        .post("/api/health/reconcile")
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({ ok: true, ready: true, runtimeHosts: { status: "ready" } });
+        });
+    } finally {
+      restore.mockRestore();
+    }
+  });
+
+  it("serializes concurrent recovery requests into one restoration pass", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-reconcile-"));
+    const restore = vi
+      .spyOn(RuntimeHostRegistry.prototype, "startAll")
+      .mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { restoredWorkspaceIds: [], failedWorkspaces: [] };
+      });
+    try {
+      const app = await bootstrapServer(config(home), { restoreRuntimeHosts: false });
+      const responses = await Promise.all([
+        request(app).post("/api/health/reconcile"),
+        request(app).post("/api/health/reconcile"),
+      ]);
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(responses.map((response) => response.body.ready)).toEqual([true, true]);
+      expect(restore).toHaveBeenCalledTimes(1);
     } finally {
       restore.mockRestore();
     }

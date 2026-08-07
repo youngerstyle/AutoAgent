@@ -56,6 +56,8 @@ describe("skill tool requirements", () => {
     );
 
     expect(instructions).toContain("一级 `browser` 工具");
+    expect(instructions).toContain("set viewport 1264 900");
+    expect(instructions).toContain("逐项数组");
     expect(instructions).toContain("公网 HTTP/HTTPS 页面");
     expect(instructions).toContain("不得通过 shell");
   });

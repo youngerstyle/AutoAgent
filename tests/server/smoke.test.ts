@@ -11,6 +11,7 @@ describe("health", () => {
 
     expect(response.body).toEqual({
       ok: true,
+      ready: false,
       name: "AutoAgent",
       runtimeHosts: { status: "not_started" },
     });

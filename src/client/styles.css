@@ -1965,6 +1965,93 @@ button:disabled {
   font-size: 24px;
 }
 
+.runtime-health-panel {
+  margin-bottom: 20px;
+  border: 1px solid #e0a52a;
+  border-left: 4px solid #c88700;
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 16px 18px;
+}
+
+.runtime-health-panel.ready {
+  border-color: #b8ddd0;
+  border-left-color: #168b78;
+  background: #f3fbf8;
+}
+
+.runtime-health-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.runtime-health-panel h3 {
+  margin: 4px 0 4px;
+  font-size: 17px;
+}
+
+.runtime-health-panel p {
+  margin: 0;
+  color: #5f6872;
+  line-height: 1.5;
+}
+
+.runtime-health-panel > header button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  border: 1px solid #b7c8d2;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #1f5360;
+  padding: 8px 11px;
+}
+
+.runtime-health-panel > header button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.runtime-health-failures {
+  margin-top: 14px;
+  border-top: 1px solid rgba(200, 135, 0, 0.25);
+  padding-top: 12px;
+}
+
+.runtime-health-failures summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.runtime-health-failures > div {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.runtime-health-failures article {
+  display: grid;
+  gap: 2px;
+  border: 1px solid #ecd8a5;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px 10px;
+}
+
+.runtime-health-failures code,
+.runtime-health-failures small {
+  color: #6e5b38;
+  overflow-wrap: anywhere;
+}
+
+.runtime-health-failures > p {
+  margin-top: 12px;
+  font-size: 12px;
+}
+
 .operations-grid {
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(380px, 1fr);

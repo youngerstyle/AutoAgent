@@ -1,9 +1,10 @@
-export const TEAM_STAFFING_SCHEMA_REF = "team-staffing-v1";
+export const TEAM_STAFFING_SCHEMA_REF = "team-staffing-v2";
 
 export interface StaffingMemberProposal {
   profileId: string;
   responsibility: string;
   rationale: string;
+  capabilityCoverage: string[];
 }
 
 export interface RecruitmentRequest {
@@ -37,11 +38,16 @@ export const TEAM_STAFFING_OUTCOME_SCHEMA: Record<string, unknown> = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["profileId", "responsibility", "rationale"],
+        required: ["profileId", "responsibility", "rationale", "capabilityCoverage"],
         properties: {
           profileId: { type: "string", minLength: 1 },
           responsibility: { type: "string", minLength: 1 },
           rationale: { type: "string", minLength: 1 },
+          capabilityCoverage: {
+            type: "array",
+            minItems: 1,
+            items: { type: "string", minLength: 1 },
+          },
         },
       },
     },
@@ -79,6 +85,10 @@ export function parseTeamStaffingOutcome(value: unknown): TeamStaffingOutcome {
       profileId: requiredText(member.profileId, `第 ${index + 1} 个成员缺少 profileId`),
       responsibility: requiredText(member.responsibility, `第 ${index + 1} 个成员缺少 responsibility`),
       rationale: requiredText(member.rationale, `第 ${index + 1} 个成员缺少 rationale`),
+      capabilityCoverage: requiredTexts(
+        member.capabilityCoverage,
+        `第 ${index + 1} 个成员缺少 capabilityCoverage`,
+      ),
     };
   });
   const recruitmentRequests = value.recruitmentRequests.map((request, index) => {
@@ -111,6 +121,11 @@ export function parseTeamStaffingOutcome(value: unknown): TeamStaffingOutcome {
 function requiredText(value: unknown, message: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(message);
   return value.trim();
+}
+
+function requiredTexts(value: unknown, message: string): string[] {
+  if (!Array.isArray(value) || !value.length) throw new Error(message);
+  return value.map((item, index) => requiredText(item, `${message}（第 ${index + 1} 项无效）`));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

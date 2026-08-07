@@ -318,7 +318,7 @@ export function buildHumanFlowPrompt(snapshot?: WorkspaceSnapshot): HumanFlowPro
   if (!flowProblem) return undefined;
   if (flowProblem.agentId && hasRunningHumanTurn(snapshot, flowProblem.agentId)) return undefined;
   const phase = snapshot.activeTaskRun?.phase ?? snapshot.phase;
-  const owner = flowProblem.owner ?? waiterForPhase(phase);
+  const owner = flowProblem.owner ?? "团队";
   const manualTest = flowProblem.manualTest;
   const latestReply = snapshot.humanLoop?.latestReply;
   const rawOutput = latestReply?.text ?? flowProblem.rawOutput;
@@ -461,18 +461,6 @@ function agentProfile(agent: WorkspaceSnapshot["agents"][number], profileDef?: A
   };
 }
 
-function waiterForPhase(phase: string): string {
-  const labels: Record<string, string> = {
-    boss_intake: "老板",
-    boss_acceptance: "老板",
-    pm_plan: "产品/项目",
-    architect_plan: "架构师",
-    implementation: "开发",
-    qa: "测试"
-  };
-  return labels[phase] ?? "团队";
-}
-
 function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgentProblem | undefined {
   const ticket = snapshot.tickets?.slice().reverse().find((item) => {
     return item.status === "blocked" && item.blocker?.type === "manual_test_required";
@@ -480,7 +468,7 @@ function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgen
   if (!ticket) return undefined;
   const manualTest = buildManualTestAction(ticket);
   const phase = ticket.type;
-  const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : waiterForPhase(phase);
+  const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : "当前工单负责人";
   const testLines = manualTest ? [
     manualTest.summary,
     manualTest.testFile ? `打开：${manualTest.testFile}` : undefined,
@@ -488,7 +476,9 @@ function latestManualTestTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgen
     manualTest.expectedResult ? `通过标准：${manualTest.expectedResult}` : undefined
   ].filter((line): line is string => Boolean(line)) : [];
   return {
-    agentId: ticket.targetAgentId ?? agentIdForRole(snapshot, ticket.targetRole) ?? agentIdForPhase(snapshot, phase),
+    // The server projection is the only authority for which concrete Agent owns a Ticket.
+    // A role or phase is descriptive UI data, not an addressable runtime identity.
+    agentId: ticket.targetAgentId,
     owner,
     phase: phaseLabelForHuman(phase),
     title: "需要人工测试",
@@ -501,10 +491,10 @@ function latestBlockedTicketProblem(snapshot: WorkspaceSnapshot): BlockedAgentPr
   const ticket = latestBlockedTicket(snapshot);
   if (!ticket?.blocker) return undefined;
   const phase = ticket.type;
-  const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : waiterForPhase(phase);
+  const owner = ticket.targetRole ? roleLabel(ticket.targetRole) : "当前工单负责人";
   const rawOutput = ticket.blocker?.reason ?? ticket.returnReason ?? ticket.brief;
   return {
-    agentId: ticket.targetAgentId ?? agentIdForRole(snapshot, ticket.targetRole) ?? agentIdForPhase(snapshot, phase),
+    agentId: ticket.targetAgentId,
     owner,
     phase: phaseLabelForHuman(phase),
     title: titleForBlocker(ticket.blocker.type),
@@ -521,23 +511,6 @@ function titleForBlocker(type: NonNullable<Ticket["blocker"]>["type"]): string {
     external_dependency: "需要外部信息"
   };
   return labels[type];
-}
-
-function agentIdForPhase(snapshot: WorkspaceSnapshot, phase: string): string | undefined {
-  const roleByPhase: Record<string, string> = {
-    boss_intake: "boss",
-    boss_acceptance: "boss",
-    pm_plan: "pm",
-    architect_plan: "architect",
-    implementation: "dev",
-    qa: "qa"
-  };
-  const role = roleByPhase[phase];
-  return snapshot.agents.find((agent) => agent.roleInWorkspace === role)?.id;
-}
-
-function agentIdForRole(snapshot: WorkspaceSnapshot, role?: string): string | undefined {
-  return role ? snapshot.agents.find((agent) => agent.roleInWorkspace === role)?.id : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {

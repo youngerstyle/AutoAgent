@@ -1,5 +1,7 @@
 # Codex 风格 Agent Engine Turn 协议修复
 
+> 历史决策记录：当前 Agent Engine 的生产可靠性、状态和上线门槛以 `2026-08-03-production-runtime-reliability-design.md` 为准。本文件只保留通用 Agent Thread/Turn 原则，冲突的旧协议不再指导实现。
+
 日期：2026-07-13
 
 状态：已确认方向，作为本轮 Agent Engine 修复的实现依据。

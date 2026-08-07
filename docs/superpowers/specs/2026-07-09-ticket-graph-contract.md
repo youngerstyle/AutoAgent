@@ -1,5 +1,7 @@
 # TicketGraphContract v1
 
+> 历史决策记录：当前生产可靠性与实现状态以 `2026-08-03-production-runtime-reliability-design.md` 和 `2026-07-14-single-plan-ticket-flow-design.md` 为准。本文的 v1 固定角色、固定终点、`human_action` 和旧阶段规则不再指导新实现。
+
 AutoAgent 的工单系统是项目 flow 的事实来源。PM 可以用 LLM 判断业务拆解，但 PM 输出的 `ticketGraph` 必须先满足工单合约；平台只做结构性校验和投递，不替 PM 做业务决策，也不接受不完整流程继续执行。
 
 ## 合约位置

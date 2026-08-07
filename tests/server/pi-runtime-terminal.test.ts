@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
   abortPiSessionPromptly,
   awaitPiPromptOutcome,
@@ -8,10 +9,14 @@ import {
   createPiToolExecutionBarrier,
   createPiPromptInactivityWatchdog,
   goalResolutionDomainOutcomeSchema,
+  goalResolutionCriterionResultsSchema,
   goalResolutionTransportDomainOutcomeSchema,
+  installPiTurnBoundary,
   isUsefulToolProgress,
   modelFacingToolResultText,
+  replaceLivePiModelContext,
   toolFailureFingerprint,
+  toolObservationFingerprint,
   turnToolBudgetMessage,
   unresolvedGoalPrompt,
   waitForCleanupPromptly,
@@ -47,9 +52,52 @@ describe("Pi tool error projection", () => {
     const projected = modelFacingToolResultText(raw, true);
 
     expect(projected).toContain("criterionResults/0 must be object");
+    expect(projected).toContain("重新提交完整参数");
+    expect(projected).toContain("不会替你推断缺失字段");
     expect(projected).toContain("Rejected arguments omitted");
     expect(projected).not.toContain("recursive-payload");
     expect(projected.length).toBeLessThan(1_000);
+  });
+
+  it("explains an array-boundary error without deciding the domain result", () => {
+    const raw = {
+      content: [{
+        type: "text",
+        text: `Validation failed for tool "goal_resolution":\n- domainOutcome/assuranceReport/missionCriterionResults/4 must be object\n\nReceived arguments:\n{"domainOutcome":{"assuranceReport":{"missionCriterionResults":[{},"disposition"]}}}`,
+      }],
+    };
+
+    const projected = modelFacingToolResultText(raw, true);
+
+    expect(projected).toContain("数组项");
+    expect(projected).toContain("完整对象");
+    expect(projected).toContain("数组外字段必须放回父对象");
+    expect(projected).toContain("只修复参数结构");
+    expect(projected).not.toContain("disposition");
+  });
+});
+
+describe("Pi live context recovery", () => {
+  it("replaces the in-memory transcript from the projected session context", () => {
+    const modelContext = SessionManager.inMemory("C:\\workspace");
+    modelContext.appendMessage({
+      role: "user",
+      content: "根据纠正后的结构重新提交完整结论",
+      timestamp: Date.now(),
+    });
+    let queuesCleared = false;
+    const agent = {
+      clearAllQueues() {
+        queuesCleared = true;
+      },
+      state: { messages: [] },
+    } as unknown as Parameters<typeof replaceLivePiModelContext>[0];
+
+    replaceLivePiModelContext(agent, modelContext);
+
+    expect(queuesCleared).toBe(true);
+    expect(agent.state.messages).toEqual(modelContext.buildSessionContext().messages);
+    expect(JSON.stringify(agent.state.messages)).toContain("根据纠正后的结构");
   });
 });
 
@@ -64,6 +112,47 @@ describe("Pi turn execution budget", () => {
   });
 });
 
+describe("Pi terminal submission recovery", () => {
+  it("groups terminal contract failures by semantic error instead of attempt count", () => {
+    const first = toolFailureFingerprint(
+      "goal_resolution",
+      { domainOutcome: { objective: "目标 A" } },
+      { content: [{ type: "text", text: "domainOutcome.assuranceReport is required" }] },
+    );
+    const second = toolFailureFingerprint(
+      "goal_resolution",
+      { domainOutcome: { objective: "目标 B", summary: "仍在修正" } },
+      { content: [{ type: "text", text: "domainOutcome.assuranceReport is required" }] },
+    );
+
+    expect(first).toBe(second);
+  });
+
+  it("treats an identical tool observation as the same no-progress cycle", () => {
+    const first = toolObservationFingerprint(
+      "readFile",
+      { path: "src/index.ts" },
+      { ok: true, content: "export const ready = true;", timestamp: "ignored" },
+      false,
+    );
+    const second = toolObservationFingerprint(
+      "readFile",
+      { path: "src/index.ts" },
+      { ok: true, content: "export const ready = true;", timestamp: "changed" },
+      false,
+    );
+    const changed = toolObservationFingerprint(
+      "readFile",
+      { path: "src/index.ts" },
+      { ok: true, content: "export const ready = false;", timestamp: "changed" },
+      false,
+    );
+
+    expect(second).toBe(first);
+    expect(changed).not.toBe(first);
+  });
+});
+
 describe("Pi workspace tool execution", () => {
   it("serializes stateful tools while preserving parallel reads", () => {
     expect(workspaceToolExecutionMode("browser")).toBe("sequential");
@@ -71,6 +160,24 @@ describe("Pi workspace tool execution", () => {
     expect(workspaceToolExecutionMode("writeFile")).toBe("sequential");
     expect(workspaceToolExecutionMode("readFile")).toBe("parallel");
     expect(workspaceToolExecutionMode("listFiles")).toBe("parallel");
+  });
+});
+
+describe("Pi platform turn boundary", () => {
+  it("marks each completed tool batch to stop before Pi starts another provider request", async () => {
+    let previousCalls = 0;
+    const agent = {
+      afterToolCall: async () => {
+        previousCalls += 1;
+        return { details: { preserved: true } };
+      },
+    } as unknown as Parameters<typeof installPiTurnBoundary>[0];
+
+    installPiTurnBoundary(agent);
+    const result = await agent.afterToolCall?.({} as never, new AbortController().signal);
+
+    expect(previousCalls).toBe(1);
+    expect(result).toEqual({ details: { preserved: true }, terminate: true });
   });
 });
 
@@ -87,12 +194,58 @@ describe("Pi goal resolution transport boundary", () => {
     const malformed = {
       assuranceReport: {
         baselineVersion: 3,
-        criterionResults: ["not-a-domain-result"],
+        missionCriterionResults: [{ unexpected: "provider-side envelope remains opaque" }],
       },
     };
 
-    expect(Value.Check(goalResolutionTransportDomainOutcomeSchema(), malformed)).toBe(true);
+    expect(Value.Check(goalResolutionTransportDomainOutcomeSchema(contract), malformed)).toBe(true);
+    const transportSchema = JSON.stringify(goalResolutionTransportDomainOutcomeSchema(contract));
+    expect(transportSchema).not.toContain("criterionId");
+    expect(transportSchema).not.toContain("anchorResults");
     expect(Value.Check(goalResolutionDomainOutcomeSchema(contract), malformed)).toBe(false);
+
+    const wrongCollectionItem = {
+      assuranceReport: {
+        baselineVersion: 3,
+        missionCriterionResults: ["not-an-object"],
+      },
+    };
+   expect(Value.Check(goalResolutionTransportDomainOutcomeSchema(contract), wrongCollectionItem)).toBe(false);
+ });
+
+  it("keeps positive assurance completion separate from routing dispositions", () => {
+    const contract = compileMissionGoalOutputContract({
+      title: "质量检查",
+      objective: "验证交付",
+      successCriteria: ["形成结论"],
+      assignment: {},
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1"] },
+    }, baseline);
+    const report = {
+      assuranceReport: {
+        baselineVersion: 3,
+        missionCriterionResults: [{
+          criterionId: "criterion-1",
+          status: "satisfied",
+          evidence: [{ evidenceId: "evidence-1" }],
+          anchorResults: [{
+            anchorIndex: 0,
+            status: "satisfied",
+            evidence: [{ evidenceId: "evidence-1" }],
+            verificationBasis: { summary: "按当前验收锚点检查", evidence: [{ evidenceId: "evidence-1" }] },
+            observations: ["实际观察到目标行为"],
+            deviations: [],
+          }],
+        }],
+      },
+    };
+    expect(contract.completionOutcomeSchema).toBeDefined();
+    const schema = contract.completionOutcomeSchema as Parameters<typeof Value.Check>[0];
+
+    expect(Value.Check(schema, report)).toBe(true);
+    expect(Value.Check(schema, { ...report, disposition: "complete" })).toBe(false);
+    expect(Value.Check(schema, { ...report, disposition: "verified" })).toBe(false);
   });
 
   it("rejects undeclared assurance criteria before creating a durable proposal", () => {
@@ -107,7 +260,7 @@ describe("Pi goal resolution transport boundary", () => {
     const malformed = {
       assuranceReport: {
         baselineVersion: 3,
-        criterionResults: [{
+        missionCriterionResults: [{
           criterionId: "criterion-1",
           status: "satisfied",
           evidence: [{ evidenceId: "evidence-1" }],
@@ -132,6 +285,65 @@ describe("Pi goal resolution transport boundary", () => {
     };
 
     expect(Value.Check(goalResolutionDomainOutcomeSchema(contract), malformed)).toBe(false);
+  });
+
+  it("requires the assurance report to contain exactly the criteria assigned to the Ticket", () => {
+    const threeCriterionBaseline: MissionBaseline = {
+      ...baseline,
+      criteria: [
+        baseline.criteria[0]!,
+        {
+          ...baseline.criteria[0]!,
+          criterionId: "criterion-2",
+          text: "第二条可观察标准",
+        },
+        {
+          ...baseline.criteria[0]!,
+          criterionId: "criterion-3",
+          text: "第三条可观察标准",
+        },
+      ],
+    };
+    const contract = compileMissionGoalOutputContract({
+      title: "质量检查",
+      objective: "验证交付",
+      successCriteria: ["形成结论"],
+      assignment: {},
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1", "criterion-2", "criterion-3"] },
+    }, threeCriterionBaseline);
+    const result = (criterionId: string) => ({
+      criterionId,
+      status: "satisfied" as const,
+      evidence: [{ evidenceId: `evidence-${criterionId}` }],
+      anchorResults: [{
+        anchorIndex: 0,
+        status: "satisfied" as const,
+        evidence: [{ evidenceId: `evidence-${criterionId}` }],
+        verificationBasis: { summary: "browser observation", evidence: [] },
+        observations: ["observed the declared outcome"],
+        deviations: [],
+      }],
+    });
+    const report = (missionCriterionResults: unknown[]) => ({
+      assuranceReport: {
+        baselineVersion: 3,
+        missionCriterionResults,
+      },
+    });
+
+    expect(Value.Check(
+      goalResolutionDomainOutcomeSchema(contract),
+      report([result("criterion-1"), result("criterion-2"), result("criterion-3")]),
+    )).toBe(true);
+    expect(Value.Check(
+      goalResolutionDomainOutcomeSchema(contract),
+      report([result("criterion-1"), result("criterion-2")]),
+    )).toBe(false);
+    expect(Value.Check(
+      goalResolutionDomainOutcomeSchema(contract),
+      report([result("criterion-1"), result("criterion-2"), result("criterion-3"), result("criterion-extra")]),
+    )).toBe(false);
   });
 
   it("encodes every baseline verification anchor in the correction tool schema", () => {
@@ -182,7 +394,7 @@ describe("Pi goal resolution transport boundary", () => {
       }],
       assuranceReport: {
         baselineVersion: 3,
-        criterionResults: [{
+        missionCriterionResults: [{
           criterionId: "criterion-1",
           status: "not_satisfied",
           evidence: [],
@@ -192,7 +404,7 @@ describe("Pi goal resolution transport boundary", () => {
     };
 
     expect(Value.Check(contract.correctionOutcomeSchema!, correction)).toBe(false);
-    correction.assuranceReport.criterionResults[0]!.anchorResults.push(anchor(1));
+    correction.assuranceReport.missionCriterionResults[0]!.anchorResults.push(anchor(1));
     expect(Value.Check(contract.correctionOutcomeSchema!, correction)).toBe(true);
   });
 });
@@ -272,7 +484,7 @@ describe("Pi runtime terminal propagation", () => {
       domainOutcome: {
         assuranceReport: {
           baselineVersion: 3,
-          criterionResults: [{
+          missionCriterionResults: [{
             criterionId: "criterion-1",
             status: "not_verified",
             evidence: [],
@@ -319,6 +531,16 @@ describe("Pi runtime terminal propagation", () => {
     }, proposalGoal(), "turn-generic", "2026-07-28T00:01:00.000Z");
 
     expect(parsed).toMatchObject({ ok: false });
+  });
+
+  it("bounds top-level resolution criteria to the current Goal", () => {
+    const schema = goalResolutionCriterionResultsSchema(true, 3);
+    const result = (count: number, indexes = Array.from({ length: count }, (_, index) => index)) =>
+      indexes.map((criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] }));
+
+    expect(Value.Check(schema, result(3))).toBe(true);
+    expect(Value.Check(schema, result(5))).toBe(false);
+    expect(Value.Check(schema, result(3, [0, 1, 3]))).toBe(false);
   });
 
   it("never counts a failed terminal submission as useful progress", () => {
@@ -551,6 +773,7 @@ describe("Pi runtime terminal propagation", () => {
   });
 
   it("extends the Pi inactivity window whenever the session emits progress", async () => {
+    vi.useFakeTimers();
     const prompt = deferred<void>();
     const terminal = deferred<string>();
     const watchdog = createPiPromptInactivityWatchdog(30, () => undefined);
@@ -561,13 +784,17 @@ describe("Pi runtime terminal propagation", () => {
       watchdog.timeout,
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    watchdog.touch();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    prompt.resolve();
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      watchdog.touch();
+      await vi.advanceTimersByTimeAsync(20);
+      prompt.resolve();
 
-    await expect(outcome).resolves.toEqual({ kind: "settled" });
-    watchdog.dispose();
+      await expect(outcome).resolves.toEqual({ kind: "settled" });
+    } finally {
+      watchdog.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps tool event metadata without duplicating large text payloads", () => {
@@ -686,7 +913,7 @@ describe("Pi runtime terminal propagation", () => {
         }],
         assuranceReport: {
           baselineVersion: 3,
-          criterionResults: [{
+          missionCriterionResults: [{
             criterionId: "criterion-1",
             status: "not_satisfied",
             evidence: [{ evidenceId: "ev-failure" }],
@@ -740,7 +967,7 @@ describe("Pi runtime terminal propagation", () => {
         }],
         assuranceReport: {
           baselineVersion: 3,
-          criterionResults: [{
+          missionCriterionResults: [{
             criterionId: "criterion-lifecycle",
             status: "not_satisfied",
             evidence: [{ evidenceId: "ev-entry-failure" }],
@@ -798,18 +1025,6 @@ describe("Pi runtime terminal propagation", () => {
           criterionId: "criterion-1",
           status: "satisfied",
           assuranceTicketIds: ["ticket-qa"],
-          evidence: [{ evidenceId: "evidence-1" }],
-          anchorResults: [{
-            anchorIndex: 0,
-            status: "satisfied",
-            evidence: [{ evidenceId: "evidence-1" }],
-            verificationBasis: {
-              summary: "按 Mission baseline 验收锚点判断",
-              evidence: [{ evidenceId: "evidence-1" }],
-            },
-            observations: ["实际观察结果与锚点一致"],
-            deviations: [],
-          }],
         }],
         residualRisks: [],
       },
@@ -822,10 +1037,41 @@ describe("Pi runtime terminal propagation", () => {
         ...valid.missionResolution,
         criterionResults: [{
           ...valid.missionResolution.criterionResults[0],
+          evidence: [{ evidenceId: "evidence-1" }],
+        }],
+      },
+    })).toBe(false);
+    expect(Value.Check(schema, {
+      ...valid,
+      missionResolution: {
+        ...valid.missionResolution,
+        criterionResults: [{
+          ...valid.missionResolution.criterionResults[0],
           status: "not_verified",
         }],
       },
     })).toBe(false);
+  });
+
+  it("lets Mission settlement select assurance tickets without copying evidence", () => {
+    const schema = outputSchema({
+      outputContract: { schemaRef: "mission-final-acceptance-v1" },
+      permissions: { settleMission: true },
+    }, baseline);
+
+    expect(Value.Check(schema, {
+      disposition: "complete",
+      missionResolution: {
+        baselineVersion: 3,
+        summary: "all baseline criteria accepted",
+        criterionResults: [{
+          criterionId: "criterion-1",
+          status: "satisfied",
+          assuranceTicketIds: ["ticket-qa"],
+        }],
+        residualRisks: [],
+      },
+    })).toBe(true);
   });
 
   it("binds an assurance Goal to its assigned criteria and baseline version", () => {
@@ -836,7 +1082,7 @@ describe("Pi runtime terminal propagation", () => {
     const valid = {
       assuranceReport: {
         baselineVersion: 3,
-        criterionResults: [{
+        missionCriterionResults: [{
           criterionId: "criterion-1",
           status: "satisfied",
           evidence: [{ evidenceId: "evidence-1" }],
@@ -857,25 +1103,25 @@ describe("Pi runtime terminal propagation", () => {
 
     expect(Value.Check(schema, valid)).toBe(true);
     expect(Value.Check(schema, {
-      assuranceReport: {
-        ...valid.assuranceReport,
+        assuranceReport: {
+          ...valid.assuranceReport,
         baselineVersion: 2,
       },
     })).toBe(false);
     expect(Value.Check(schema, {
-      assuranceReport: {
-        baselineVersion: 3,
-        criterionResults: [{
-          ...valid.assuranceReport.criterionResults[0],
+        assuranceReport: {
+          baselineVersion: 3,
+          missionCriterionResults: [{
+            ...valid.assuranceReport.missionCriterionResults[0],
           criterionId: "criterion-outside-ticket",
         }],
       },
     })).toBe(false);
     expect(Value.Check(schema, {
-      assuranceReport: {
-        baselineVersion: 3,
-        criterionResults: [{
-          ...valid.assuranceReport.criterionResults[0],
+        assuranceReport: {
+          baselineVersion: 3,
+          missionCriterionResults: [{
+            ...valid.assuranceReport.missionCriterionResults[0],
           status: "not_verified",
         }],
       },

@@ -11,6 +11,7 @@ describe("versioned plan product data", () => {
     expect(definition.initialChange.additions[0]?.successCriteria).toEqual(expect.arrayContaining([
       expect.stringContaining("可逆的不确定项不阻塞交接"),
       expect.stringContaining("不可替代输入时才阻塞"),
+      expect.stringContaining("只提交正式 Mission 基线"),
     ]));
     expect(definition.initialChange.additions.map((node) => node.clientRef)).toEqual(["intake", "planning"]);
     expect(definition.initialChange.additions.map((node) => node.contextPolicy?.includeOriginalRequest ?? false)).toEqual([true, true]);

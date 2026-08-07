@@ -168,6 +168,35 @@ describe("event view model", () => {
     expect(item.detail).not.toContain("tools_used");
   });
 
+  it("keeps protocol payloads out of the default timeline detail while preserving the event for raw inspection", () => {
+    const item = buildEventTimelineItem(event("agent.message_handled", "测试已回复 human 私聊", {
+      role: "qa",
+      response: JSON.stringify({
+        status: "manual_test_required",
+        report: { summary: "请在真实浏览器中验证移动、射击和碰撞。" },
+        tools_used: ["browser", "readFile"]
+      })
+    }));
+
+    expect(item).toMatchObject({
+      actor: "测试",
+      title: "已回复私聊",
+      detail: "请在真实浏览器中验证移动、射击和碰撞。"
+    });
+    expect(item.detail).not.toContain("tools_used");
+    expect(item.detail).not.toContain("manual_test_required");
+  });
+
+  it("removes leaked thinking markup and truncates long internal details", () => {
+    const item = buildEventTimelineItem(event("run.failed", "任务失败", {
+      reason: `<thinking>检查运行状态</thinking>${"实际失败原因。".repeat(80)}`
+    }));
+
+    expect(item.detail).not.toContain("<thinking>");
+    expect(item.detail?.length).toBeLessThanOrEqual(240);
+    expect(item.detail).toContain("实际失败原因");
+  });
+
   it("groups consecutive timeline events by actor and phase without reordering", () => {
     const events = [
       event("task.phase_changed", "进入阶段：需求接收", { phase: "boss_intake" }, "ev_1"),

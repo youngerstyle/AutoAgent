@@ -7,6 +7,8 @@ import { HttpError } from "../errors.js";
 import { globalWorkspacesFile, workspaceAutoAgentDir, workspaceFile } from "./paths.js";
 import { readJson, writeJson } from "./json.js";
 
+const registryMutationQueues = new Map<string, Promise<void>>();
+
 export class WorkspaceStore {
   constructor(private readonly homeDir: string) {}
 
@@ -31,28 +33,45 @@ export class WorkspaceStore {
       createdAt: new Date().toISOString()
     };
     await this.ensureWorkspaceFiles(workspace);
-    const all = await this.list();
-    const withoutDuplicate = all.filter((item) => path.resolve(item.rootPath).toLowerCase() !== rootPath.toLowerCase());
-    withoutDuplicate.push(workspace);
-    await writeJson(globalWorkspacesFile(this.homeDir), withoutDuplicate);
-    return workspace;
+    return withRegistryMutation(globalWorkspacesFile(this.homeDir), async () => {
+      const all = await this.list();
+      const withoutDuplicate = all.filter((item) => path.resolve(item.rootPath).toLowerCase() !== rootPath.toLowerCase());
+      withoutDuplicate.push(workspace);
+      await writeJson(globalWorkspacesFile(this.homeDir), withoutDuplicate);
+      return workspace;
+    });
   }
 
   async remove(workspaceId: string, options: { deleteLocalFolder?: boolean } = {}): Promise<Workspace> {
-    const workspace = await this.get(workspaceId);
-    if (options.deleteLocalFolder) {
-      assertSafeWorkspaceRemovalPath(workspace.rootPath);
-      await rm(workspace.rootPath, { recursive: true, force: true });
-    }
-    const remaining = (await this.list()).filter((item) => item.id !== workspaceId);
-    await writeJson(globalWorkspacesFile(this.homeDir), remaining);
-    return workspace;
+    return withRegistryMutation(globalWorkspacesFile(this.homeDir), async () => {
+      const workspace = await this.get(workspaceId);
+      if (options.deleteLocalFolder) {
+        assertSafeWorkspaceRemovalPath(workspace.rootPath);
+        await rm(workspace.rootPath, { recursive: true, force: true });
+      }
+      const remaining = (await this.list()).filter((item) => item.id !== workspaceId);
+      await writeJson(globalWorkspacesFile(this.homeDir), remaining);
+      return workspace;
+    });
   }
 
   async ensureWorkspaceFiles(workspace: Workspace): Promise<void> {
     await mkdir(workspaceAutoAgentDir(workspace.rootPath), { recursive: true });
     await writeJson(workspaceFile(workspace.rootPath), workspace);
     await ensureGitignore(workspace.rootPath);
+  }
+}
+
+async function withRegistryMutation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filePath).toLowerCase();
+  const previous = registryMutationQueues.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  const settled = next.then(() => undefined, () => undefined);
+  registryMutationQueues.set(key, settled);
+  try {
+    return await next;
+  } finally {
+    if (registryMutationQueues.get(key) === settled) registryMutationQueues.delete(key);
   }
 }
 

@@ -57,6 +57,14 @@ export function agentEngineRolloutFile(workspaceRoot: string, agentId: string): 
   return path.join(agentEngineDir(workspaceRoot, agentId), "rollout.jsonl");
 }
 
+/**
+ * Read-only projection used to resume a long append-only rollout quickly.
+ * The rollout remains the source of truth; this file can always be rebuilt.
+ */
+export function agentEngineRolloutIndexFile(workspaceRoot: string, agentId: string): string {
+  return path.join(agentEngineDir(workspaceRoot, agentId), "rollout.index.json");
+}
+
 export function agentEngineLegacyAggregateFile(workspaceRoot: string, agentId: string): string {
   return path.join(
     path.resolve(workspaceAutoAgentDir(workspaceRoot), "agent-engine"),

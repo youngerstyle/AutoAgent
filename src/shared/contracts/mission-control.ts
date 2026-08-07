@@ -73,7 +73,19 @@ interface MissionRecordBase {
   planCreateCommandId: string;
   ownerPrincipalId: string;
   teamBinding: TeamBinding;
+  teamBindingMigration?: TeamBindingMigration;
   baseline?: MissionBaseline;
+}
+
+/**
+ * Explicit metadata for a one-time storage migration. It is never produced by
+ * the runtime scheduler and does not change the historical Mission outcome.
+ */
+export interface TeamBindingMigration {
+  kind: "reconstruct_enabled_tools";
+  source: "workspace_agent_policy";
+  fromContentHash: string;
+  migratedAt: string;
 }
 
 export interface MissionBaselineCriterion {

@@ -3,15 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
-import { ensureWorkspaceAgent, listWorkspaceAgents } from "../../src/server/agents/roster.js";
+import { ensureWorkspaceAgent, listWorkspaceAgents, updateWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { createTeamBinding } from "../../src/server/product/team-binding.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { ProviderError } from "../../src/server/providers/types.js";
 import {
+  canContinueClaimedTicketWork,
+  canContinueRecoveredBlockedWork,
   planAllowsActiveAgentExecution,
+  projectWorkspaceLifecycle,
   presentationStatus,
   projectTicketBlocker,
+  projectedAgentStatus,
   queuedMessageRoute,
+  runtimeTaskStatusFor,
   RuntimeHost,
 } from "../../src/server/runtime/runtime-host.js";
 import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
@@ -24,6 +29,38 @@ describe("RuntimeHost", () => {
     expect(presentationStatus("blocked", "active", [{ status: "running" }])).toBe("running");
     expect(presentationStatus("blocked", "active", [{ status: "blocked", blocker: { type: "external_dependency", reason: "human input" } }])).toBe("blocked");
     expect(presentationStatus("failed", "linked", [{ status: "pending" }])).toBe("failed");
+    expect(presentationStatus("active", "linked", [{ status: "pending" }])).toBe("running");
+    expect(presentationStatus("completed", "linked", [])).toBe("waiting");
+    expect(presentationStatus("completed", "completed", [])).toBe("completed");
+  });
+
+  it("derives the user-facing status and phase from one lifecycle projection", () => {
+    expect(projectWorkspaceLifecycle("active", "linked", [{ status: "pending" }])).toEqual({
+      status: "running",
+      phase: "running",
+    });
+    expect(projectWorkspaceLifecycle("blocked", "active", [{ status: "running" }])).toEqual({
+      status: "running",
+      phase: "running",
+    });
+    expect(projectWorkspaceLifecycle("blocked", "active", [{ status: "blocked" }])).toEqual({
+      status: "blocked",
+      phase: "blocked",
+    });
+    expect(projectWorkspaceLifecycle("completed", "linked", [])).toEqual({
+      status: "waiting",
+      phase: "idle",
+    });
+    expect(projectWorkspaceLifecycle("completed", "completed", [])).toEqual({
+      status: "completed",
+      phase: "completed",
+    });
+  });
+
+  it("removes a completed Plan from the runtime scheduler without completing its Mission", () => {
+    expect(runtimeTaskStatusFor("completed", "linked")).toBe("waiting");
+    expect(runtimeTaskStatusFor("active", "linked")).toBe("active");
+    expect(runtimeTaskStatusFor("completed", "completed")).toBe("completed");
   });
 
   it("never delivers a queued private message into a later Goal", () => {
@@ -33,13 +70,91 @@ describe("RuntimeHost", () => {
     expect(queuedMessageRoute("goal-a", undefined)).toBe("idle");
   });
 
-  it("keeps an active Agent runnable while its Plan waits on the same blocked Ticket", () => {
+  it("uses the durable execution lease and shows provider waits instead of guessing from process memory", () => {
+    const waitingEvent = {
+      source: "system",
+      payload: { status: "provider_retry_wait" },
+    } as never;
+
+    expect(projectedAgentStatus("running", "active", [waitingEvent], true)).toBe("waiting");
+    expect(projectedAgentStatus("running", "active", [], true)).toBe("running");
+    expect(projectedAgentStatus("running", "active", [], false)).toBe("waiting");
+  });
+
+  it("does not schedule new Agent turns while the Plan is blocked", () => {
     expect(planAllowsActiveAgentExecution("active")).toBe(true);
-    expect(planAllowsActiveAgentExecution("blocked")).toBe(true);
+    expect(planAllowsActiveAgentExecution("blocked")).toBe(false);
     expect(planAllowsActiveAgentExecution("paused")).toBe(false);
     expect(planAllowsActiveAgentExecution("completed")).toBe(false);
     expect(planAllowsActiveAgentExecution("failed")).toBe(false);
     expect(planAllowsActiveAgentExecution("cancelled")).toBe(false);
+  });
+
+  it("continues only the recovered blocked owner while its Plan remains blocked", () => {
+    expect(canContinueRecoveredBlockedWork({
+      planStatus: "blocked",
+      ticketStatus: "blocked",
+      linkStatus: "running",
+      authorityKind: "blocked_owner",
+      goalStatus: "active",
+    })).toBe(true);
+    expect(canContinueRecoveredBlockedWork({
+      planStatus: "blocked",
+      ticketStatus: "blocked",
+      linkStatus: "running",
+      authorityKind: "claim",
+      goalStatus: "active",
+    })).toBe(false);
+    expect(canContinueRecoveredBlockedWork({
+      planStatus: "blocked",
+      ticketStatus: "completed",
+      linkStatus: "running",
+      authorityKind: "blocked_owner",
+      goalStatus: "active",
+    })).toBe(false);
+    expect(canContinueRecoveredBlockedWork({
+      planStatus: "blocked",
+      ticketStatus: "blocked",
+      linkStatus: "running",
+      authorityKind: "blocked_owner",
+      goalStatus: "blocked",
+    })).toBe(false);
+  });
+
+  it("continues a currently claimed Ticket while its aggregate Plan is blocked", () => {
+    const authority = { kind: "claim", claimId: "claim-1", fencingToken: 3 };
+    expect(canContinueClaimedTicketWork({
+      planStatus: "blocked",
+      ticketStatus: "running",
+      ticketAuthority: authority,
+      linkStatus: "running",
+      linkAuthority: authority,
+      goalStatus: "active",
+    })).toBe(true);
+    expect(canContinueClaimedTicketWork({
+      planStatus: "blocked",
+      ticketStatus: "running",
+      ticketAuthority: authority,
+      linkStatus: "running",
+      linkAuthority: { ...authority, fencingToken: 2 },
+      goalStatus: "active",
+    })).toBe(false);
+    expect(canContinueClaimedTicketWork({
+      planStatus: "blocked",
+      ticketStatus: "pending",
+      ticketAuthority: undefined,
+      linkStatus: "running",
+      linkAuthority: authority,
+      goalStatus: "active",
+    })).toBe(false);
+    expect(canContinueClaimedTicketWork({
+      planStatus: "active",
+      ticketStatus: "running",
+      ticketAuthority: authority,
+      linkStatus: "running",
+      linkAuthority: authority,
+      goalStatus: "active",
+    })).toBe(false);
   });
 
   it("projects typed manual-test input into the QA human-loop contract", () => {
@@ -193,6 +308,10 @@ describe("RuntimeHost", () => {
     );
     await restarted.recover();
     expect(await restarted.listTasks()).toContainEqual(expect.objectContaining({ taskId: "task-a", status: "completed" }));
+    const restoredSnapshot = await restarted.snapshot();
+    expect(restoredSnapshot.status).toBe("completed");
+    expect(restoredSnapshot.activeTask?.status).toBe("completed");
+    expect(restoredSnapshot.tickets?.length).toBeGreaterThan(0);
     await restarted.stop();
   }, 60_000);
 
@@ -252,7 +371,7 @@ describe("RuntimeHost", () => {
     const snapshot = await fixture.host.snapshot();
 
     expect(snapshot.status).toBe("running");
-    expect(snapshot.phase).not.toBe("paused");
+    expect(snapshot.phase).toBe("running");
     expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("idle");
   });
 
@@ -392,7 +511,7 @@ describe("RuntimeHost", () => {
             arguments: {
               status: "completed",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -441,7 +560,7 @@ describe("RuntimeHost", () => {
     expect(modelInputs.every((value) => !value.instructions.includes("handoffLineage"))).toBe(true);
   });
 
-  it("backs off an active goal after an idle turn without replaying it immediately", async () => {
+  it("pauses an active goal after repeated idle turns without replaying it forever", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
     fixture.providers.get = async () => ({
@@ -457,22 +576,62 @@ describe("RuntimeHost", () => {
     const boss = context.engines.get("wa_boss")!;
     const thread = await boss.getThreadForAgent("wa_boss", "task-resume-active");
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
-    await boss.appendToolItem({
-      itemId: "legacy-waiting",
-      threadId: thread!.threadId,
-      goalId: link.agentGoalId,
-      kind: "control",
-      value: { status: "waiting" },
-      createdAt: "2026-07-10T00:02:00.000Z",
-    });
-
+    await fixture.host.tick();
     await fixture.host.tick();
 
+    expect(modelTurns).toBe(2);
     const updated = await boss.getThread(thread!.threadId);
-    expect(modelTurns).toBe(3);
-    expect(updated.items.at(-1)?.itemId).toBe("legacy-waiting");
-    expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
-    expect(fixture.host.providerRetryState("task-resume-active", "wa_boss")).toMatchObject({ failures: 1 });
+    expect(updated.items.some((item) => item.kind === "control")).toBe(true);
+    expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect(fixture.host.providerRetryState("task-resume-active", "wa_boss")).toBeUndefined();
+  });
+
+  it("does not replace a long goal with a fixed short idle-turn limit", async () => {
+    const fixture = await createFixture();
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        if (modelTurns <= 5) {
+          return { items: [{ type: "assistant_message" as const, content: `阶段性进展 ${modelTurns}` }] };
+        }
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "resolve-after-distinct-progress",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "完成了连续的阶段性工作",
+              evidence: [],
+              criterionResults: satisfiedCriteria(4),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({
+      taskId: "task-distinct-idle-progress",
+      title: "阶段性进展",
+      objective: "验证不同进展不会被固定短轮次截断",
+    });
+    const context = fixture.host.context("task-distinct-idle-progress")!;
+    const boss = context.engines.get("wa_boss")!;
+    await fixture.host.tick();
+    const bossLink = (await context.manager.current()).links.find((link) => link.agentId === "wa_boss")!;
+    await waitFor(async () => {
+      await fixture.host.tick();
+      return (await boss.getGoal(bossLink.agentGoalId!))?.status === "completed";
+    }, 5_000);
+
+    expect(modelTurns).toBeGreaterThanOrEqual(6);
+    expect(await boss.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "completed" });
+    const snapshot = await fixture.host.snapshot();
+    expect(snapshot.status).toBe("running");
   });
 
   it("coalesces concurrent timer ticks instead of queueing repeated model turns", async () => {
@@ -503,7 +662,79 @@ describe("RuntimeHost", () => {
 
     expect(second).toBe(first);
     await Promise.all([first, second]);
-    expect(modelTurns).toBe(3);
+    expect(modelTurns).toBe(2);
+  });
+
+  it("coalesces concurrent resume requests with a scheduler tick for one paused Agent", async () => {
+    let now = new Date("2026-07-24T09:00:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
+    let providerAvailable = false;
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        if (!providerAvailable) throw new ProviderError("502 Bad Gateway", true, "UPSTREAM_ERROR");
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "complete-after-resume-race",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "恢复后完成",
+              evidence: [],
+              criterionResults: satisfiedCriteria(4),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({
+      taskId: "task-resume-race",
+      title: "恢复竞争",
+      objective: "验证重复恢复不会创建第二个 Agent 回合",
+    });
+    await fixture.host.tick();
+    const context = fixture.host.context("task-resume-race")!;
+    const before = await context.manager.current();
+    const beforeLink = before.links.find((link) => link.agentId === "wa_boss")!;
+    const beforeGoalId = beforeLink.agentGoalId;
+    expect(modelTurns).toBe(1);
+    await fixture.host.pauseTask("task-resume-race");
+    expect(await context.engines.get("wa_boss")!.getGoal(beforeGoalId!)).toMatchObject({ status: "paused" });
+
+    providerAvailable = true;
+    now = new Date(now.getTime() + 5_000);
+    await Promise.all([
+      fixture.host.resumeTask("task-resume-race"),
+      fixture.host.resumeTask("task-resume-race"),
+      fixture.host.tick(),
+    ]);
+
+    const boss = context.engines.get("wa_boss")!;
+    await waitFor(async () => {
+      await fixture.host.tick();
+      const goal = await boss.getGoal(beforeGoalId!);
+      return goal?.status === "completed";
+    }, 5_000);
+    const after = await context.manager.current();
+    const afterLink = after.links.find((link) => link.agentId === "wa_boss")!;
+    expect(afterLink.agentGoalId).toBe(beforeGoalId);
+    const bossThread = await boss.getThread(beforeLink.agentThreadId!);
+    const startedTurns = bossThread.items.filter((item) => item.kind === "control" && item.itemId.endsWith(":started"));
+    expect(startedTurns).toHaveLength(2);
+    expect(new Set(startedTurns.map((item) => item.turnId)).size).toBe(2);
+    expect(modelTurns).toBeGreaterThanOrEqual(2);
+    await fixture.host.stop();
   });
 
   it("atomically reserves an Agent turn when a private message races the scheduler", async () => {
@@ -523,7 +754,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "需求接收完成",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -586,7 +817,7 @@ describe("RuntimeHost", () => {
                 status: "completed",
                 summary: "需求接收完成",
                 evidence: [],
-                criterionResults: satisfiedCriteria(3),
+                criterionResults: satisfiedCriteria(4),
                 residualRisks: [],
                 domainOutcome: missionBaselineOutcome(),
               },
@@ -650,7 +881,7 @@ describe("RuntimeHost", () => {
       name: "mock",
       async runModelTurn(input) {
         modelTurns += 1;
-        if (modelTurns > 1 && input.history.at(-1)?.type === "tool_result") correlatedResults += 1;
+        if (modelTurns > 1 && input.history.some((item) => item.type === "tool_result")) correlatedResults += 1;
         if (modelTurns <= 25) {
           return {
             items: [{
@@ -670,7 +901,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "完成需求接收",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -680,7 +911,7 @@ describe("RuntimeHost", () => {
     });
 
     await fixture.host.createTask({ taskId: "task-many-tools", title: "演示", objective: "构建演示" });
-    await fixture.host.tick();
+    for (let index = 0; index < 40 && modelTurns < 26; index += 1) await fixture.host.tick();
 
     expect(modelTurns).toBe(26);
     expect(correlatedResults).toBe(25);
@@ -718,7 +949,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "已继续处理并完成目标",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -729,8 +960,13 @@ describe("RuntimeHost", () => {
 
     await fixture.host.createTask({ taskId: "task-goal-continuation", title: "演示", objective: "构建演示" });
     await fixture.host.tick();
+    await fixture.host.tick();
+    await fixture.host.tick();
 
-    expect(modelTurns).toBe(3);
+    // Each model decision is now a separate scheduled turn. Background ticks
+    // may drain more than one turn while the task is active, but completion
+    // must still come from the third provider decision (the resolution).
+    expect(modelTurns).toBeGreaterThanOrEqual(3);
     const context = fixture.host.context("task-goal-continuation")!;
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
     expect(await context.engines.get("wa_boss")!.getGoal(link.agentGoalId!)).toMatchObject({ status: "completed" });
@@ -756,7 +992,7 @@ describe("RuntimeHost", () => {
     const boss = context.engines.get("wa_boss")!;
     expect(modelTurns).toBe(1);
     expect(await boss.getGoal(bossLink.agentGoalId!)).toMatchObject({ status: "paused" });
-    expect((await context.tickets.getPlan((await context.manager.current()).record.planId)).status).toBe("active");
+    expect((await context.tickets.getPlan((await context.manager.current()).record.planId)).status).toBe("blocked");
     const thread = await boss.getThreadForAgent("wa_boss", "task-provider-blocked");
     await boss.appendToolItem({
       itemId: "stale-running-after-pause",
@@ -768,7 +1004,7 @@ describe("RuntimeHost", () => {
     });
 
     const snapshot = await fixture.host.snapshot();
-    expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("paused");
+    expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("blocked");
   });
 
   it("keeps the same Goal active and retries a transient provider failure after backoff", async () => {
@@ -804,7 +1040,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "Provider 恢复后完成原 Goal",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -819,8 +1055,12 @@ describe("RuntimeHost", () => {
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
     const boss = context.engines.get("wa_boss")!;
 
-    expect(modelTurns).toBe(2);
+    expect(modelTurns).toBe(1);
     expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "active" });
+    expect(fixture.host.providerRetryState("task-provider-retry", "wa_boss")).toBeUndefined();
+
+    await fixture.host.tick();
+    expect(modelTurns).toBe(2);
     expect(fixture.host.providerRetryState("task-provider-retry", "wa_boss")).toMatchObject({ failures: 1 });
 
     await fixture.host.tick();
@@ -872,7 +1112,7 @@ describe("RuntimeHost", () => {
                   status: "completed",
                   summary: "鍚堟硶缁堝眬鎻愪氦",
                   evidence: [],
-                  criterionResults: satisfiedCriteria(3),
+                  criterionResults: satisfiedCriteria(4),
                   residualRisks: [],
                   domainOutcome: missionBaselineOutcome(),
                 }
@@ -926,6 +1166,186 @@ describe("RuntimeHost", () => {
 
     expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "completed" });
     expect(fixture.host.providerRetryState("task-terminal-retry", "wa_boss")).toBeUndefined();
+  });
+
+  it("persists provider backoff across host restart without changing Ticket state", async () => {
+    let now = new Date("2026-07-24T07:00:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
+    let providerAvailable = false;
+    let modelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        modelTurns += 1;
+        if (!providerAvailable) throw new ProviderError("502 Bad Gateway", true, "UPSTREAM_ERROR");
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: `complete-after-retry-${modelTurns}`,
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: "Provider 恢复后完成",
+              evidence: [],
+              criterionResults: satisfiedCriteria(4),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-provider-restart", title: "重启恢复", objective: "验证 Provider 退避可恢复" });
+    await fixture.host.tick();
+    expect(modelTurns).toBe(1);
+    expect(fixture.host.providerRetryState("task-provider-restart", "wa_boss")).toMatchObject({ failures: 1, retryAt: now.getTime() + 5_000 });
+    expect((await fixture.host.context("task-provider-restart")!.tickets.getPlan((await fixture.host.context("task-provider-restart")!.manager.current()).record.planId)).status).toBe("active");
+
+    await fixture.host.stop();
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000, now: () => now, providerRetryBaseMs: 5_000, providerRetryMaxMs: 5_000 },
+    );
+    await restarted.recover();
+    expect(restarted.providerRetryState("task-provider-restart", "wa_boss")).toMatchObject({ failures: 1, retryAt: now.getTime() + 5_000 });
+    await restarted.tick();
+    expect(modelTurns).toBe(1);
+    const restartedContext = restarted.context("task-provider-restart")!;
+    const restartedLink = (await restartedContext.manager.current()).links.find((link) => link.agentId === "wa_boss")!;
+    const restartedBoss = restartedContext.engines.get("wa_boss")!;
+
+    providerAvailable = true;
+    now = new Date(now.getTime() + 5_000);
+    let retryDebug = "";
+    await waitFor(async () => {
+      await restarted.tick();
+      const snapshot = await restarted.snapshot();
+      const goal = await restartedBoss.getGoal(restartedLink.agentGoalId!);
+      retryDebug = JSON.stringify({
+        modelTurns,
+        status: snapshot.status,
+        phase: snapshot.phase,
+        goalStatus: goal?.status,
+        retry: restarted.providerRetryState("task-provider-restart", "wa_boss"),
+        tickets: snapshot.tickets?.map((ticket) => ({ id: ticket.id, status: ticket.status })),
+      });
+      return goal?.status === "completed";
+    }, 5_000).catch((error) => {
+      throw new Error(`${String(error)} ${retryDebug}`);
+    });
+    expect(modelTurns).toBe(2);
+    expect(restarted.providerRetryState("task-provider-restart", "wa_boss")).toBeUndefined();
+    await restarted.stop();
+  });
+
+  it("restores a queued human message with the same Goal after Provider backoff and restart", async () => {
+    let now = new Date("2026-07-24T08:00:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
+    let providerAvailable = false;
+    let modelTurns = 0;
+    const modelTurnsByTicket = new Map<string, number>();
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        modelTurns += 1;
+        const prompt = [...input.history].reverse().find((item) => item.type === "user_message")?.content ?? "";
+        const ticketId = prompt.match(/- ticket: ([^\r\n]+)/)?.[1];
+        if (ticketId) modelTurnsByTicket.set(ticketId, (modelTurnsByTicket.get(ticketId) ?? 0) + 1);
+        if (!providerAvailable) throw new ProviderError("502 Bad Gateway", true, "UPSTREAM_ERROR");
+        const latestHuman = [...input.history]
+          .reverse()
+          .find((item) => item.type === "user_message")
+          ?.content ?? "";
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "complete-after-human-recovery",
+            name: "goal_resolution",
+            arguments: {
+              status: "completed",
+              summary: `恢复后完成：${latestHuman}`,
+              evidence: [],
+              criterionResults: satisfiedCriteria(4),
+              residualRisks: [],
+              domainOutcome: missionBaselineOutcome(),
+            },
+          }],
+        };
+      },
+    });
+
+    await fixture.host.createTask({
+      taskId: "task-provider-human-restart",
+      title: "Provider 与人工消息恢复",
+      objective: "验证 Provider 中断后人工补充仍进入原 Goal",
+    });
+    await fixture.host.tick();
+    const context = fixture.host.context("task-provider-human-restart")!;
+    const before = await context.manager.current();
+    const link = before.links.find((item) => item.agentId === "wa_boss")!;
+    const beforeGoalId = link.agentGoalId!;
+    const beforeThreadId = link.agentThreadId!;
+    const beforeTicketId = link.ticketId;
+    expect(modelTurns).toBe(1);
+    expect(fixture.host.providerRetryState("task-provider-human-restart", "wa_boss")).toBeDefined();
+
+    await fixture.host.pauseTask("task-provider-human-restart");
+    await fixture.host.sendAgentMessage(
+      "task-provider-human-restart",
+      "wa_boss",
+      "Provider 恢复后请继续，并保留这条人工事实",
+      "human-after-provider-failure",
+    );
+    expect(modelTurns).toBe(1);
+    await fixture.host.stop();
+
+    providerAvailable = true;
+    now = new Date(now.getTime() + 5_000);
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000, now: () => now, providerRetryBaseMs: 5_000, providerRetryMaxMs: 5_000 },
+    );
+    await restarted.recover();
+    await restarted.resumeTask("task-provider-human-restart");
+
+    const restartedContext = restarted.context("task-provider-human-restart")!;
+    const restartedLink = (await restartedContext.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
+    const restartedBoss = restartedContext.engines.get("wa_boss")!;
+    await waitFor(async () => {
+      await restarted.tick();
+      return (await restartedBoss.getGoal(restartedLink.agentGoalId!))?.status === "completed";
+    }, 5_000);
+
+    expect(restartedLink.agentGoalId).toBe(beforeGoalId);
+    expect(restartedLink.agentThreadId).toBe(beforeThreadId);
+    expect(modelTurnsByTicket.get(beforeTicketId)).toBe(2);
+    expect(modelTurns).toBeGreaterThanOrEqual(2);
+    const thread = await restartedBoss.getThread(beforeThreadId);
+    const payloads = await restartedBoss.getPayloads(thread!.items.map((item) => item.payloadRef));
+    const restoredPayloads = [...payloads.values()] as Array<{ messageId?: string }>;
+    expect(restoredPayloads.filter((payload) => payload.messageId === "human-after-provider-failure")).toHaveLength(1);
+    expect([...payloads.values()]).toContainEqual(expect.objectContaining({
+      messageId: "human-after-provider-failure",
+      content: "Provider 恢复后请继续，并保留这条人工事实",
+    }));
+    await restarted.stop();
   });
 
   it("resumes a provider-paused Agent when human sends a new private message", async () => {
@@ -1033,7 +1453,7 @@ describe("RuntimeHost", () => {
             arguments: {
               status: "completed",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -1209,6 +1629,50 @@ describe("RuntimeHost", () => {
     ]));
   });
 
+  it("re-schedules a downstream Agent without waiting for another timer tick", async () => {
+    const fixture = await createFixture({ intervalMs: 60_000 });
+    await fixture.host.createTask({
+      taskId: "task-downstream-wakeup",
+      title: "下游唤醒",
+      objective: "验证上游结算后下游会自动开始",
+    });
+    await fixture.host.start();
+    await fixture.host.tick();
+
+    await waitFor(async () => {
+      const mission = await fixture.host.context("task-downstream-wakeup")!.manager.current();
+      return mission.links.some((link) => link.agentId === "wa_pm");
+    }, 5_000);
+
+    const mission = await fixture.host.context("task-downstream-wakeup")!.manager.current();
+    expect(mission.links).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: "wa_boss", status: "settled" }),
+      expect.objectContaining({ agentId: "wa_pm" }),
+    ]));
+    await fixture.host.stop();
+  });
+
+  it("persists a scheduler exception in the task snapshot instead of hiding it in the console", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({
+      taskId: "task-visible-scheduler-error",
+      title: "可见调度异常",
+      objective: "验证运行时错误可恢复且可见",
+    });
+    const context = fixture.host.context("task-visible-scheduler-error")!;
+    context.manager.tick = async () => {
+      throw new Error("scheduler test failure");
+    };
+
+    await fixture.host.tick();
+
+    expect((await fixture.host.snapshot()).runtimeError).toMatchObject({
+      source: "scheduler",
+      message: "scheduler test failure",
+    });
+    await fixture.host.stop();
+  });
+
   it("keeps production control responsive while an Agent turn is still running", async () => {
     const fixture = await createFixture({ intervalMs: 100 });
     await fixture.host.start();
@@ -1242,6 +1706,86 @@ describe("RuntimeHost", () => {
 
     expect(controlResult).toBe("paused");
     expect(releasedGoalResources).toBe(1);
+  });
+
+  it("does not convert an aborted in-flight Agent turn into a blocker after operator pause", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    await fixture.host.start();
+    await fixture.host.createTask({
+      taskId: "task-late-result-after-pause",
+      title: "暂停后的晚到结果",
+      objective: "验证暂停不会被晚到的 Agent 结果改写",
+    });
+    const context = fixture.host.context("task-late-result-after-pause")!;
+    let releaseTurn!: () => void;
+    let invocation = 0;
+    const turnStarted = new Promise<void>((resolve) => {
+      const loop = context.loops.get("wa_boss")!;
+      loop.runSlice = async (input) => {
+        resolve();
+        invocation += 1;
+        if (invocation === 1) {
+          await new Promise<void>((release) => { releaseTurn = release; });
+          const goal = input.goalId ? await context.engines.get("wa_boss")!.getGoal(input.goalId) : undefined;
+          return {
+            turnId: "late-provider-abort",
+            status: "execution_blocked" as const,
+            toolCalls: 0,
+            goal: goal ? { ...goal, status: "active" as const } : undefined,
+            blockReason: "provider_error" as const,
+            blockedMessage: "Request was aborted by operator pause",
+          };
+        }
+        return { turnId: input.turnId ?? "after-resume", status: "waiting" as const, toolCalls: 0 };
+      };
+      loop.releaseGoalResources = async () => { releaseTurn(); };
+    });
+
+    await turnStarted;
+    await fixture.host.pauseTask("task-late-result-after-pause");
+    const paused = await fixture.host.snapshot();
+    expect(paused.status).toBe("paused");
+    expect((paused.tickets ?? []).some((ticket) => ticket.status === "blocked")).toBe(false);
+
+    await fixture.host.resumeTask("task-late-result-after-pause");
+    expect((await fixture.host.snapshot()).status).not.toBe("paused");
+    await fixture.host.stop();
+  });
+
+  it("releases Agent resources when operator cancellation stops a running turn", async () => {
+    const fixture = await createFixture({ intervalMs: 100 });
+    await fixture.host.start();
+    await fixture.host.createTask({
+      taskId: "task-cancel-running-agent",
+      title: "运行中取消验证",
+      objective: "验证取消不会留下运行中的 Agent",
+    });
+    const context = fixture.host.context("task-cancel-running-agent")!;
+    let releaseTurn!: () => void;
+    let releasedGoalResources = 0;
+    const turnStarted = new Promise<void>((resolve) => {
+      const loop = context.loops.get("wa_boss")!;
+      loop.runSlice = async () => {
+        resolve();
+        await new Promise<void>((release) => { releaseTurn = release; });
+        return { turnId: "cancelled-turn", status: "waiting", toolCalls: 0 };
+      };
+      loop.releaseGoalResources = async () => {
+        releasedGoalResources += 1;
+        releaseTurn();
+      };
+    });
+
+    await turnStarted;
+    const cancellation = await Promise.race([
+      fixture.host.cancelTask("task-cancel-running-agent", "operator cancelled acceptance run").then(() => "cancelled"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 2_000)),
+    ]);
+    await fixture.host.stop();
+
+    expect(cancellation).toBe("cancelled");
+    expect(releasedGoalResources).toBe(1);
+    expect((await fixture.host.snapshot()).agents.every((agent) => agent.status !== "running")).toBe(true);
   });
 
   it("queues a private message while the Plan is paused and delivers it to the same Goal after resume", async () => {
@@ -1314,7 +1858,7 @@ describe("RuntimeHost", () => {
               status: "completed",
               summary: "completed after the queued human reply",
               evidence: [],
-              criterionResults: satisfiedCriteria(3),
+              criterionResults: satisfiedCriteria(4),
               residualRisks: [],
               domainOutcome: missionBaselineOutcome(),
             },
@@ -1398,6 +1942,66 @@ describe("RuntimeHost", () => {
 
     expect(maxActiveTurns).toBe(1);
     expect(inputs[1]).toMatchObject({ triggerMessageId: "human-message-during-active-turn" });
+  });
+
+  it("keeps a long chronological Human conversation on one Goal without duplicate turns", async () => {
+    const fixture = await createFixture({ intervalMs: 10 });
+    await fixture.host.createTask({
+      taskId: "task-long-human-conversation",
+      title: "Long Human conversation",
+      objective: "verify durable sequential Human input",
+    });
+    const context = fixture.host.context("task-long-human-conversation")!;
+    const loop = context.loops.get("wa_boss")!;
+    const engine = context.engines.get("wa_boss")!;
+    let activeTurns = 0;
+    let maxActiveTurns = 0;
+    const inputs: Array<{ turnId?: string; triggerMessageId?: string }> = [];
+    loop.runSlice = async (input) => {
+      activeTurns += 1;
+      maxActiveTurns = Math.max(maxActiveTurns, activeTurns);
+      inputs.push({ turnId: input.turnId, triggerMessageId: input.triggerMessageId });
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      activeTurns -= 1;
+      if (input.triggerMessageId) {
+        await engine.appendToolItem({
+          itemId: `consumed-${input.triggerMessageId}`,
+          turnId: input.turnId,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          kind: "observation",
+          value: { type: "human_turn_consumed", triggerMessageId: input.triggerMessageId },
+          createdAt: new Date().toISOString(),
+        });
+      }
+      return { turnId: input.turnId ?? `turn-long-human-${inputs.length}`, status: "waiting", toolCalls: 0 };
+    };
+
+    await fixture.host.tick();
+    await waitFor(() => Promise.resolve(inputs.length >= 1), 5_000);
+    const initialThread = (await engine.getThreadForAgent("wa_boss", "task-long-human-conversation"))!;
+    const initialGoalId = (await context.manager.current()).links.find((link) => link.agentId === "wa_boss")!.agentGoalId!;
+
+    const messageIds = Array.from({ length: 32 }, (_value, index) => `long-human-message-${String(index + 1).padStart(2, "0")}`);
+    for (const [index, messageId] of messageIds.entries()) {
+      await fixture.host.sendAgentMessage(
+        "task-long-human-conversation",
+        "wa_boss",
+        `按时间顺序处理第 ${index + 1} 条补充信息`,
+        messageId,
+      );
+      await waitFor(() => Promise.resolve(inputs.some((input) => input.triggerMessageId === messageId)), 5_000);
+    }
+
+    const thread = (await engine.getThreadForAgent("wa_boss", "task-long-human-conversation"))!;
+    const humanItems = messageIds.map((messageId) => thread.items.filter((item) => item.itemId === messageId));
+    expect(humanItems.every((items) => items.length === 1)).toBe(true);
+    expect(inputs.filter((input) => input.triggerMessageId && messageIds.includes(input.triggerMessageId))).toHaveLength(messageIds.length);
+    expect(maxActiveTurns).toBe(1);
+    expect(new Set(inputs.map((input) => input.turnId)).size).toBe(inputs.length);
+    expect(thread.items.filter((item) => item.itemId === initialThread.items[0]?.itemId)).toHaveLength(1);
+    expect((await context.manager.current()).links.find((link) => link.agentId === "wa_boss")?.agentGoalId).toBe(initialGoalId);
+    await fixture.host.stop();
   });
 
   it("prioritizes the oldest pending human turn over a later correctable control on an active Goal", async () => {
@@ -1486,6 +2090,164 @@ describe("RuntimeHost", () => {
     expect(thread?.items.map((item) => item.kind)).toEqual(expect.arrayContaining(["message", "control", "model"]));
     expect(thread?.items.filter((item) => item.kind === "model")).toHaveLength(1);
     expect(await architect.getGoalByStartKey("does-not-exist")).toBeUndefined();
+  });
+
+  it("persists a missing provider credential as a blocked Ticket and stops rescheduling", async () => {
+    const fixture = await createFixture();
+    await updateWorkspaceAgent(fixture.workspace, "wa_boss", {
+      provider: "openai",
+      model: "gpt-4o-mini",
+    });
+
+    await fixture.host.createTask({
+      taskId: "task-missing-provider-credential",
+      title: "missing provider credential",
+      objective: "prove a configuration failure becomes durable work state",
+    });
+    await fixture.host.tick();
+
+    const firstSnapshot = await fixture.host.snapshot();
+    const blockedTicket = firstSnapshot.tickets?.find((ticket) => ticket.status === "blocked");
+    expect(blockedTicket).toMatchObject({
+      status: "blocked",
+      blocker: {
+        type: "external_dependency",
+        reason: expect.stringContaining("API Key"),
+        details: { source: "agent_engine.provider" },
+      },
+    });
+
+    const context = fixture.host.context("task-missing-provider-credential")!;
+    const firstMission = await context.manager.current();
+    const blockedLink = firstMission.links.find((link) => link.agentId === "wa_boss");
+    expect(blockedLink?.status).toBe("blocked");
+    const goal = blockedLink?.agentGoalId
+      ? await context.engines.get("wa_boss")?.getGoal(blockedLink.agentGoalId)
+      : undefined;
+    expect(goal?.status).toBe("paused");
+
+    const firstAttempt = blockedTicket?.attempt;
+    await fixture.host.tick();
+    const secondSnapshot = await fixture.host.snapshot();
+    const secondTicket = secondSnapshot.tickets?.find((ticket) => ticket.id === blockedTicket?.id);
+    expect(secondTicket).toMatchObject({
+      status: "blocked",
+      attempt: firstAttempt,
+    });
+    await fixture.host.stop();
+  });
+
+  it("retries a transient Provider failure for an idle private message on the same turn after recovery", async () => {
+    let now = new Date("2026-07-24T05:00:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
+    let architectModelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        if (!input.history.some((item) => item.type === "user_message" && item.content.includes("请继续检查这项工作"))) {
+          return { items: [{ type: "assistant_message" as const, content: "非目标 Agent 已收到" }] };
+        }
+        architectModelTurns += 1;
+        if (architectModelTurns === 1) throw new ProviderError("502 status code (no body)", true, "OPENAI_ERROR");
+        return { items: [{ type: "assistant_message" as const, content: "已收到，继续处理" }] };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-idle-provider-retry", title: "空闲私聊恢复", objective: "验证空闲 Agent 的私聊恢复" });
+    await fixture.host.sendAgentMessage("task-idle-provider-retry", "wa_architect", "请继续检查这项工作", "idle-provider-message");
+    await waitFor(async () => fixture.host.providerRetryState("task-idle-provider-retry", "wa_architect")?.kind === "provider", 5_000);
+
+    const retry = fixture.host.providerRetryState("task-idle-provider-retry", "wa_architect");
+    expect(architectModelTurns).toBe(1);
+    expect(retry).toMatchObject({
+      failures: 1,
+      turnId: expect.stringContaining("turn_"),
+      triggerMessageId: "idle-provider-message",
+    });
+
+    await fixture.host.tick();
+    expect(architectModelTurns).toBe(1);
+
+    now = new Date(now.getTime() + 5_000);
+    await waitFor(async () => {
+      await fixture.host.tick();
+      return architectModelTurns === 2;
+    }, 5_000);
+
+    const architect = fixture.host.context("task-idle-provider-retry")!.engines.get("wa_architect")!;
+    const thread = await architect.getThreadForAgent("wa_architect", "task-idle-provider-retry");
+    expect(fixture.host.providerRetryState("task-idle-provider-retry", "wa_architect")).toBeUndefined();
+    expect(thread?.items.filter((item) => item.kind === "message")).toHaveLength(1);
+    expect(thread?.items.filter((item) => item.kind === "model")).toHaveLength(1);
+    expect(thread?.items.some((item) => item.turnId === retry?.turnId && item.kind === "model")).toBe(true);
+  });
+
+  it("restores an idle private-message Provider retry after host restart", async () => {
+    let now = new Date("2026-07-24T05:30:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
+    let providerAvailable = false;
+    let architectModelTurns = 0;
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        const isTargetTurn = input.history.some((item) => item.type === "user_message" && item.content.includes("重启后继续处理这条私聊"));
+        if (!isTargetTurn) return { items: [{ type: "assistant_message" as const, content: "非目标 Agent 已收到" }] };
+        architectModelTurns += 1;
+        if (!providerAvailable) throw new ProviderError("502 status code (no body)", true, "OPENAI_ERROR");
+        return { items: [{ type: "assistant_message" as const, content: "重启后已恢复处理" }] };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-idle-provider-restart", title: "空闲私聊重启恢复", objective: "验证空闲 Agent 私聊在重启后恢复" });
+    await fixture.host.sendAgentMessage(
+      "task-idle-provider-restart",
+      "wa_architect",
+      "重启后继续处理这条私聊",
+      "idle-provider-restart-message",
+    );
+    await waitFor(async () => fixture.host.providerRetryState("task-idle-provider-restart", "wa_architect")?.kind === "provider", 5_000);
+    const beforeContext = fixture.host.context("task-idle-provider-restart")!;
+    const beforeThread = await beforeContext.engines.get("wa_architect")!.getThreadForAgent("wa_architect", "task-idle-provider-restart");
+    const beforeRetry = fixture.host.providerRetryState("task-idle-provider-restart", "wa_architect")!;
+    expect(architectModelTurns).toBe(1);
+    expect(beforeRetry.turnId).toBe(beforeThread?.items.find((item) => item.itemId === "idle-provider-restart-message")?.turnId);
+
+    await fixture.host.stop();
+    providerAvailable = true;
+    now = new Date(now.getTime() + 5_000);
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000, now: () => now, providerRetryBaseMs: 5_000, providerRetryMaxMs: 5_000 },
+    );
+    await restarted.recover();
+    expect(restarted.providerRetryState("task-idle-provider-restart", "wa_architect")).toMatchObject({
+      failures: 1,
+      turnId: beforeRetry.turnId,
+      triggerMessageId: "idle-provider-restart-message",
+    });
+    await waitFor(async () => {
+      await restarted.tick();
+      return architectModelTurns === 2;
+    }, 5_000);
+
+    const afterContext = restarted.context("task-idle-provider-restart")!;
+    const afterThread = await afterContext.engines.get("wa_architect")!.getThreadForAgent("wa_architect", "task-idle-provider-restart");
+    expect(restarted.providerRetryState("task-idle-provider-restart", "wa_architect")).toBeUndefined();
+    expect(afterThread?.items.some((item) => item.turnId === beforeRetry.turnId && item.kind === "model")).toBe(true);
+    expect(afterThread?.items.filter((item) => item.itemId === "idle-provider-restart-message")).toHaveLength(1);
+    await restarted.stop();
   });
 
   it("acknowledges a persisted human message without waiting for the model turn", async () => {

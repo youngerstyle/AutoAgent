@@ -1,6 +1,23 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
 
+export type RuntimeHealth = {
+  ok: boolean;
+  ready: boolean;
+  name: string;
+  runtimeHosts: {
+    status: "not_started" | "restoring" | "ready" | "degraded" | "failed";
+    restoredWorkspaceCount?: number;
+    failedWorkspaces?: Array<{
+      workspaceId: string;
+      workspaceName: string;
+      rootPath: string;
+      error: string;
+    }>;
+    error?: string;
+  };
+};
+
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...options,
@@ -18,6 +35,14 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 
 export function listWorkspaces(): Promise<{ workspaces: Workspace[] }> {
   return api("/api/workspaces");
+}
+
+export function getHealth(): Promise<RuntimeHealth> {
+  return api("/api/health");
+}
+
+export function reconcileHealth(): Promise<RuntimeHealth> {
+  return api("/api/health/reconcile", { method: "POST" });
 }
 
 export function createWorkspace(input: { name: string; rootPath: string; policyProfile: Workspace["policyProfile"] }): Promise<{ workspace: Workspace }> {

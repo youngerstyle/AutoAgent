@@ -21,6 +21,7 @@ import type {
   TicketId,
   PlanId,
   PlannedTicketAssignment,
+  TicketRequiredInput,
 } from "../../shared/contracts/ticket-engine.js";
 import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
@@ -51,6 +52,11 @@ import { compileMissionGoalOutputContract } from "./mission-output-contract.js";
 export interface MissionAgentDirectory {
   get(agentId: string): AgentPort<MissionTicketOutcome>;
 }
+
+export class MissionRecoveryError extends Error {}
+
+/** A completed Mission is an immutable historical run, not a reusable slot. */
+export class MissionTerminalError extends Error {}
 
 export function correctionTargetMissionCriterionIds(
   definition: Pick<TicketDefinition, "missionContribution" | "assurance">,
@@ -83,18 +89,32 @@ export class MissionProcessManager {
     let aggregate = await this.store.read();
     if (!aggregate) {
       const planId = randomUUID() as PlanId;
-      aggregate = await this.store.create({
-        missionId: input.missionId,
-        objective: input.objective,
-        planId,
-        planCreateCommandId: commandId,
-        ownerPrincipalId: input.ownerPrincipalId,
-        teamBinding: structuredClone(input.teamBinding),
-        status: "starting",
-      });
+      try {
+        aggregate = await this.store.create({
+          missionId: input.missionId,
+          objective: input.objective,
+          planId,
+          planCreateCommandId: commandId,
+          ownerPrincipalId: input.ownerPrincipalId,
+          teamBinding: structuredClone(input.teamBinding),
+          status: "starting",
+        });
+      } catch (error) {
+        // A duplicate publish may race between the initial read and create.
+        // The durable Mission is the idempotency record; reuse it instead of
+        // turning a successful first request into a user-visible failure.
+        if (!(error instanceof MissionStoreConflictError)) throw error;
+        aggregate = await this.store.read();
+        if (!aggregate) throw error;
+      }
     }
     if (aggregate.record.objective !== input.objective) throw new Error("Mission objective mismatch");
     if (aggregate.record.teamBinding.contentHash !== this.team.contentHash) throw new Error("Persisted TeamBinding does not match runtime TeamBinding");
+    if (aggregate.record.status === "completed") {
+      throw new MissionTerminalError(
+        `Mission ${aggregate.missionId} is completed; create a new Mission and Plan for a new run`,
+      );
+    }
     const planId = aggregate.record.planId;
     const replay = await this.tickets.getPlanCommandResult(planId, commandId);
     const result = replay ?? await this.tickets.createPlan({
@@ -105,18 +125,33 @@ export class MissionProcessManager {
       payload: { type: "create_plan", missionId: input.missionId, definition: input.resolvedStart.planDefinition },
     });
     if (!result.accepted) {
-      return this.store.transact(aggregate.version, (current) => ({
-        ...current,
-        version: current.version + 1,
-        record: { ...current.record, status: "start_failed", failure: result.reason },
-      }));
+      return this.finalizeMissionStart(aggregate, "start_failed", result.reason);
     }
-    if (aggregate.record.status === "linked") return aggregate;
-    return this.store.transact(aggregate.version, (current) => ({
-      ...current,
-      version: current.version + 1,
-      record: { ...current.record, status: "linked", linkedAt: this.now().toISOString() },
-    }));
+    return this.finalizeMissionStart(aggregate, "linked");
+  }
+
+  private async finalizeMissionStart(
+    aggregate: MissionAggregate,
+    status: "linked" | "start_failed",
+    failure?: string,
+  ): Promise<MissionAggregate> {
+    let expected = aggregate;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (expected.record.status === status) return expected;
+      try {
+        return await this.store.transact(expected.version, (current) => ({
+          ...current,
+          version: current.version + 1,
+          record: status === "linked"
+            ? { ...current.record, status: "linked", linkedAt: this.now().toISOString() }
+            : { ...current.record, status: "start_failed", failure: failure ?? "Plan creation was rejected" },
+        }));
+      } catch (error) {
+        if (!(error instanceof MissionStoreConflictError) || attempt === 4) throw error;
+        expected = await this.requireAggregate();
+      }
+    }
+    return this.requireAggregate();
   }
 
   async tick(): Promise<MissionAggregate> {
@@ -150,6 +185,74 @@ export class MissionProcessManager {
     const link = aggregate.links.find((item) => item.agentId === agentId && item.status === "blocked");
     if (!link || !isActiveLink(link)) return aggregate;
     return this.updateLink(aggregate, link.dispatchId, { ...link, status: "running" });
+  }
+
+  /**
+   * Convert an unrecoverable Agent Engine execution failure into the same
+   * durable Ticket lifecycle as any other missing external prerequisite.
+   * The Ticket owns the claim and blocked ownership; Mission only coordinates
+   * the Agent Goal and link. No role or business route is inferred here.
+   */
+  async blockAgentExecution(input: {
+    agentId: string;
+    turnId: string;
+    reason: string;
+    requiredInput: TicketRequiredInput;
+  }): Promise<MissionAggregate> {
+    let aggregate = await this.requireAggregate();
+    if (aggregate.record.status !== "linked") return aggregate;
+    const link = aggregate.links.find((item) => item.agentId === input.agentId && item.status === "running");
+    if (!link || !isActiveLink(link)) return aggregate;
+    const ticket = await this.tickets.getTicket(link.ticketId);
+    if (!ticket || (ticket.status !== "running" && ticket.status !== "blocked")) return aggregate;
+    const commandId = stableId("agent_execution_block", link.dispatchId, String(ticket.version), input.turnId);
+    const proposalId = stableId("agent_execution_block_proposal", link.dispatchId, input.turnId);
+    const command = {
+      commandId,
+      proposalId,
+      planId: link.planId,
+      ticketId: link.ticketId,
+      expectedTicketVersion: ticket.version,
+      actorPrincipalId: link.agentPrincipalId,
+      executionRef: link.agentGoalId,
+      authority: link.authority,
+      issuedAt: this.now().toISOString(),
+      payload: { type: "block" as const, reason: input.reason, requiredInput: structuredClone(input.requiredInput) },
+    };
+    const result = await this.tickets.getTicketCommandResult(link.planId, commandId)
+      ?? await this.tickets.applyTicket(command);
+    if (!result.accepted && result.code === "plan_paused") return aggregate;
+    if (!result.accepted || result.ticketStatus !== "blocked") {
+      // A concurrent Mission tick owns the newer authority. Reconcile from
+      // the durable aggregate rather than attempting a second command.
+      return this.recover();
+    }
+    // Ticket application and Mission link persistence live in separate durable
+    // stores. Re-read the Mission after the Ticket command so a concurrent
+    // event-pump update is not overwritten with a stale aggregate version.
+    aggregate = await this.requireAggregate();
+    const currentLink = aggregate.links.find((item) => item.dispatchId === link.dispatchId);
+    if (!currentLink || !isActiveLink(currentLink)) return aggregate;
+    const goal = await this.agents.get(currentLink.agentId).getGoal(currentLink.agentGoalId);
+    if (goal && goal.status === "active") {
+      await this.agents.get(currentLink.agentId).controlGoal({
+        requestId: stableId("agent_execution_block_goal", currentLink.dispatchId, input.turnId),
+        goalId: goal.spec.id,
+        expectedGoalVersion: goal.version,
+        action: "pause",
+        reason: input.reason,
+      });
+    }
+    if (currentLink.status === "blocked") return aggregate;
+    aggregate = await this.updateLink(aggregate, currentLink.dispatchId, {
+      ...currentLink,
+      status: "blocked",
+      authority: result.nextAuthority ?? ticket.activeAuthority ?? link.authority,
+      ticketVersion: result.ticketVersion,
+      claimLeaseUntil: undefined,
+      lastCommandId: commandId,
+    });
+    return aggregate;
   }
 
   async current(): Promise<MissionAggregate> {
@@ -408,7 +511,10 @@ export class MissionProcessManager {
                    missionContribution: work.definition.missionContribution,
                   assurance: work.definition.assurance,
                   permissions: work.definition.permissions,
-                  reworkRequests: await this.listReworkRequests(link.planId, link.ticketId),
+                  reworkRequests: await this.listReworkRequests(
+                    link.planId,
+                    work.definition.correction?.targetTicketId ?? link.ticketId,
+                  ),
                 },
               },
               work.definition.permissions?.settleMission && authoritativeMission.record.baseline
@@ -713,9 +819,10 @@ export class MissionProcessManager {
     for (const persisted of aggregate.links) {
       const link = current.links.find((item) => item.dispatchId === persisted.dispatchId);
       if (!link || !isActiveLink(link)) continue;
+      const agent = this.agents.get(link.agentId);
       const [ticket, goal] = await Promise.all([
         this.tickets.getTicket(link.ticketId),
-        this.agents.get(link.agentId).getGoal(link.agentGoalId),
+        agent.getGoal(link.agentGoalId),
       ]);
       if (!ticket) throw new Error(`Ticket ${link.ticketId} is missing during Mission recovery`);
 
@@ -729,20 +836,38 @@ export class MissionProcessManager {
         continue;
       }
 
-      if (new Set(["completed", "returned", "failed", "cancelled"]).has(ticket.status)) {
-        current = await this.updateLink(current, link.dispatchId, ticket.status === "cancelled"
-          ? {
-              ...link,
-              status: "cancelled",
-              finalTicketVersion: ticket.version,
-              finalGoalVersion: goal?.version,
-            }
-          : {
-              ...link,
-              status: "settled",
-              finalTicketVersion: ticket.version,
-              finalGoalVersion: goal?.version ?? 1,
-            });
+      const goalIsTerminal = goal !== undefined
+        && new Set(["completed", "failed", "cancelled"]).has(goal.status);
+      const ticketIsTerminal = new Set(["completed", "returned", "failed", "cancelled"]).has(ticket.status);
+      if (goalIsTerminal) {
+        const proposal = link.lastProposalId ? await agent.getProposal(link.lastProposalId) : undefined;
+        if (!proposal) {
+          throw new MissionRecoveryError(
+            `Mission Link ${link.dispatchId} has terminal Agent/Ticket state without its persisted Agent Proposal`,
+          );
+        }
+        current = await this.updateLink(current, link.dispatchId, {
+          ...link,
+          status: "resolving",
+          lastProposalId: proposal.proposalId,
+        });
+        current = await this.continueSettlement(current, link.dispatchId, proposal.proposalId);
+        continue;
+      }
+
+      if (ticketIsTerminal) {
+        const proposal = link.lastProposalId ? await agent.getProposal(link.lastProposalId) : undefined;
+        if (!proposal) {
+          throw new MissionRecoveryError(
+            `Mission Link ${link.dispatchId} has terminal Ticket ${link.ticketId} without a persisted Agent settlement proposal`,
+          );
+        }
+        current = await this.updateLink(current, link.dispatchId, {
+          ...link,
+          status: "resolving",
+          lastProposalId: proposal.proposalId,
+        });
+        current = await this.continueSettlement(current, link.dispatchId, proposal.proposalId);
         continue;
       }
 
@@ -826,9 +951,41 @@ export class MissionProcessManager {
     const agent = this.agents.get(link.agentId);
     const storedProposal = await agent.getProposal(proposalId);
     if (!storedProposal) throw new Error("Goal proposal is missing");
+    const currentGoal = await agent.getGoal(link.agentGoalId);
+    if (!currentGoal) throw new Error("Goal is missing");
+    if (currentGoal.status === "resolving" && currentGoal.activeProposalId === proposalId) {
+      const resolution = await agent.retryProposalResolution(proposalId);
+      const resolvedGoal = resolution.goal;
+      if (resolvedGoal.status !== "resolving" || resolvedGoal.activeProposalId !== proposalId) {
+        if (resolvedGoal.status === "active" || resolvedGoal.status === "blocked" || resolvedGoal.status === "paused") {
+          return this.updateLink(aggregate, dispatchId, {
+            ...active,
+            status: resolvedGoal.status === "blocked" ? "blocked" : "running",
+            ...(resolvedGoal.status === "blocked" ? { claimLeaseUntil: undefined } : {}),
+          });
+        }
+        return aggregate;
+      }
+    }
     const plan = await this.tickets.getPlan(link.planId);
     const goal = await agent.getGoal(link.agentGoalId);
     if (!goal) throw new Error("Goal is missing");
+    const currentTicket = await this.tickets.getTicket(link.ticketId);
+    if (!currentTicket) throw new Error("Ticket is missing");
+    // The persisted Agent Goal is the settlement gate. A proposal can still
+    // say "completed" after the Agent Engine has rejected it as correctable;
+    // never project that stale proposal into a Ticket command. A paused Goal
+    // is the one recoverable exception: if the Ticket already has a durable
+    // terminal result, the process may finish the same settlement after an
+    // interruption between the Ticket commit and the Goal commit.
+    const ticketIsTerminal = new Set(["completed", "returned", "failed", "cancelled"]).has(currentTicket.status);
+    if (goal.status === "active" || goal.status === "blocked" || (goal.status === "paused" && !ticketIsTerminal)) {
+      return this.updateLink(aggregate, dispatchId, {
+        ...active,
+        status: goal.status === "blocked" ? "blocked" : goal.status === "paused" ? "paused" : "running",
+        ...(goal.status !== "active" ? { claimLeaseUntil: undefined } : {}),
+      });
+    }
     if (await agent.hasPendingHumanTurn?.(goal.spec.id, storedProposal.turnId)) {
       const decisionId = stableId("pending_human_turn", proposalId);
       const settled = await this.settleAgentProposal(
@@ -1024,6 +1181,8 @@ export class MissionProcessManager {
     );
     if (!settled.applied && settled.code === "version_conflict") return aggregate;
     let currentAggregate = aggregate;
+    let settlementBaseline = currentAggregate.record.baseline;
+    let recordMutation: ((record: MissionAggregate["record"]) => MissionAggregate["record"]) | undefined;
     if (result.accepted && result.ticketStatus === "completed") {
       if (work.definition.contextPolicy?.establishesMissionBaseline) {
         const baseline = createMissionBaseline(
@@ -1032,14 +1191,12 @@ export class MissionProcessManager {
           (currentAggregate.record.baseline?.version ?? 0) + 1,
           this.now().toISOString(),
         );
-        currentAggregate = await this.store.transact(currentAggregate.version, (current) => ({
-          ...current,
-          version: current.version + 1,
-          record: { ...current.record, baseline },
-        }));
+        settlementBaseline = baseline;
+        recordMutation = (record) => ({ ...record, baseline });
       }
       if (work.definition.permissions?.settleMission) {
-        const baseline = currentAggregate.record.baseline!;
+        const baseline = settlementBaseline;
+        if (!baseline) throw new Error("Mission baseline is missing during settlement");
         const resolution = (proposal.domainOutcome as MissionTicketOutcome).missionResolution as {
           baselineVersion: number;
           summary: string;
@@ -1064,22 +1221,19 @@ export class MissionProcessManager {
           residualRisks: string[];
         };
         const linkedAt = "linkedAt" in currentAggregate.record ? currentAggregate.record.linkedAt : this.now().toISOString();
-        currentAggregate = await this.store.transact(currentAggregate.version, (current) => ({
-          ...current,
-          version: current.version + 1,
-          record: {
-            ...current.record,
-            status: "completed",
-            linkedAt,
-            baseline,
-            settlement: {
-              ...structuredClone(resolution),
-              acceptedByTicketId: link.ticketId,
-              acceptedByPrincipalId: link.agentPrincipalId,
-              settledAt: this.now().toISOString(),
-            },
-          },
-        }));
+        const settlement = {
+          ...structuredClone(resolution),
+          acceptedByTicketId: link.ticketId,
+          acceptedByPrincipalId: link.agentPrincipalId,
+          settledAt: this.now().toISOString(),
+        };
+        recordMutation = (record) => ({
+          ...record,
+          status: "completed",
+          linkedAt,
+          baseline,
+          settlement,
+        });
       }
     }
     let nextLink: MissionLink;
@@ -1106,7 +1260,7 @@ export class MissionProcessManager {
           finalGoalVersion: settled.goal.version,
       };
     }
-    return this.updateLink(currentAggregate, dispatchId, nextLink);
+    return this.updateLinkAndRecord(currentAggregate, dispatchId, nextLink, recordMutation);
   }
 
   private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string; missionCriterionIds?: string[] }>> {
@@ -1182,6 +1336,15 @@ export class MissionProcessManager {
   }
 
   private async updateLink(aggregate: MissionAggregate, dispatchId: string, next: MissionLink): Promise<MissionAggregate> {
+    return this.updateLinkAndRecord(aggregate, dispatchId, next);
+  }
+
+  private async updateLinkAndRecord(
+    aggregate: MissionAggregate,
+    dispatchId: string,
+    next: MissionLink,
+    recordMutation?: (record: MissionAggregate["record"]) => MissionAggregate["record"],
+  ): Promise<MissionAggregate> {
     let expected = aggregate;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
@@ -1194,6 +1357,7 @@ export class MissionProcessManager {
           return {
             ...current,
             version: current.version + 1,
+            ...(recordMutation ? { record: recordMutation(current.record) } : {}),
             links: current.links.map((item) => {
               if (item.dispatchId !== dispatchId) return item;
               return { ...currentLink, ...next, updatedAt: this.now().toISOString() } as MissionLink;
