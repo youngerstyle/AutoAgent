@@ -409,6 +409,28 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed");
   });
 
+  it("gives the initial planning agent assignable member boundaries and terminal policy", () => {
+    const instruction = missionOutcomeInstruction("plan-intent-v1", ["delivery:implement", "delivery:verify", "delivery:accept"], [], undefined, {
+      planId: "plan-a",
+      version: 1,
+      tickets: [],
+      dependencyEdges: [],
+      requiredTerminalTicketIds: [],
+      requiredTerminalCapabilities: ["delivery:accept"],
+      teamMembers: [
+        { principalId: "principal:dev", name: "Developer", capabilities: ["delivery:implement"], enabledTools: ["writeFile", "shell"] },
+        { principalId: "principal:qa", name: "QA", capabilities: ["delivery:verify"], enabledTools: ["browser", "shell"] },
+        { principalId: "principal:boss", name: "Boss", capabilities: ["delivery:accept"], enabledTools: [] },
+      ],
+    });
+
+    expect(instruction).toContain('"requiredTerminalCapabilities":["delivery:accept"]');
+    expect(instruction).toContain('"capabilities":["delivery:implement"],"enabledTools":["writeFile","shell"]');
+    expect(instruction).toContain("同一个成员完整满足");
+    expect(instruction).toContain("不要把多个角色的能力或工具合并到一张工单");
+    expect(instruction).toContain("独立质量检查不能代替最终交付验收");
+  });
+
   it("describes the complete Plan change contract to the planning Agent", () => {
     const instruction = missionOutcomeInstruction("plan-change-set-v3", ["delivery:implement"], [], undefined, {
       planId: "plan-a",
