@@ -207,12 +207,20 @@ export function App() {
 
   useEffect(() => {
     if (!selectedId) return;
+    // A workspace owns its entire projection. Clear the previous projection
+    // before loading the next one so events and Agents never cross projects.
+    setSnapshot(undefined);
+    setEvents([]);
+    setLoopDebugLog({ entries: [] });
+    setAgents([]);
+    setSelectedAgentId("");
     void refreshSnapshot(selectedId);
     void refreshAgents(selectedId);
     void refreshAgentProfiles();
     void refreshModelConfigs();
     const source = new EventSource(`/api/workspaces/${selectedId}/events`);
     source.addEventListener("autoagent", (message) => {
+      if (selectedWorkspaceIdRef.current !== selectedId) return;
       const event = JSON.parse((message as MessageEvent).data) as AutoAgentEvent;
       setEvents((current) => mergeEventBuffer(current, event, LIVE_EVENT_BUFFER_LIMIT));
       void refreshSnapshot(selectedId);
@@ -289,6 +297,7 @@ export function App() {
     if (!workspaceId) return;
     try {
       const result = await getSnapshot(workspaceId);
+      if (selectedWorkspaceIdRef.current !== workspaceId) return;
       setSnapshot(result.snapshot);
       setEvents((current) => mergeEventBuffer(current, result.snapshot.recentEvents, LIVE_EVENT_BUFFER_LIMIT));
       void refreshLoopDebugLog(workspaceId);
@@ -319,6 +328,7 @@ export function App() {
     if (!workspaceId) return;
     try {
       const result = await listAgents(workspaceId);
+      if (selectedWorkspaceIdRef.current !== workspaceId) return;
       setAgents(result.agents);
       setSnapshot((current) => current ? { ...current, agents: mergeSnapshotAgents(current.agents, result.agents) } : current);
     } catch (err) {
@@ -330,6 +340,7 @@ export function App() {
     if (!workspaceId) return;
     try {
       const result = await getLoopDebugLog(workspaceId);
+      if (selectedWorkspaceIdRef.current !== workspaceId) return;
       setLoopDebugLog(result.log);
     } catch (err) {
       setError((err as Error).message);

@@ -114,8 +114,11 @@ export function buildAgentNodes(snapshot?: WorkspaceSnapshot): AgentNodeView[] {
       };
       const currentStep = displayText(agent.currentStep);
       const processingHumanReply = Boolean(problemAgentId === agent.id && hasRunningHumanTurn(snapshot, agent.id));
-      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id && !processingHumanReply)
-        || (agent.status === "waiting" && Boolean(currentStep));
+      // Human attention is an explicit workflow contract, never something the
+      // client infers from a generic Agent lifecycle state. Provider backoff,
+      // capacity waits, and other runtime failures may all leave an Agent
+      // waiting with a descriptive currentStep, but none is a human question.
+      const needsAttention = Boolean(problemAgentId && problemAgentId === agent.id && !processingHumanReply);
       const displayStep = needsAttention ? "需要你回复" : canvasStepLabel(currentStep);
       return {
         id: agent.id,

@@ -24,7 +24,7 @@ describe("client view model", () => {
     expect(dev!.currentStep!.length).toBeLessThanOrEqual(18);
   });
 
-  it("marks an active waiting Agent as needing a human reply", () => {
+  it("keeps an ordinary waiting Agent visible without inventing a human reply", () => {
     const nodes = buildAgentNodes({
       ...snapshot("running"),
       agents: snapshot("running").agents.map((agent) => agent.id === "wa_dev" ? { ...agent, status: "waiting" as const, currentStep: "已保存进度，等待继续" } : agent)
@@ -32,8 +32,8 @@ describe("client view model", () => {
     const dev = nodes.find((node) => node.id === "wa_dev");
 
     expect(dev?.active).toBe(false);
-    expect(dev?.needsAttention).toBe(true);
-    expect(dev?.currentStep).toBe("需要你回复");
+    expect(dev?.needsAttention).toBe(false);
+    expect(dev?.currentStep).toBe("已保存进度，等待继续");
     expect(dev?.currentStepTitle).toBe("已保存进度，等待继续");
   });
 
@@ -147,6 +147,24 @@ describe("client view model", () => {
     expect(buildAgentNodes(blockedPm).find((node) => node.id === "wa_pm")).toMatchObject({
       needsAttention: false,
       status: "blocked"
+    });
+  });
+
+  it("does not infer a human question from a waiting Agent during a Provider outage", () => {
+    const providerBlocked: WorkspaceSnapshot = {
+      ...snapshot("blocked"),
+      agents: snapshot("blocked").agents.map((agent) => agent.id === "wa_boss" ? {
+        ...agent,
+        status: "waiting" as const,
+        currentStep: "模型服务连续失败 3 次，已停止自动重试。请检查 Provider 配置或网络连接后重试。"
+      } : agent),
+      tickets: []
+    };
+
+    expect(buildHumanFlowPrompt(providerBlocked)).toBeUndefined();
+    expect(buildAgentNodes(providerBlocked).find((node) => node.id === "wa_boss")).toMatchObject({
+      needsAttention: false,
+      currentStep: "模型服务连续失败 3 次..."
     });
   });
 
