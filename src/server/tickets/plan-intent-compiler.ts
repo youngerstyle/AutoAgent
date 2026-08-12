@@ -82,7 +82,9 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
         objective: work.objective.trim(),
         successCriteria: work.successCriteria.map((item) => item.trim()),
         assignment: structuredClone(work.assignment),
-        outputContract: structuredClone(work.outputContract),
+        outputContract: work.permissions?.settleMission
+          ? { schemaRef: "mission-settlement-v1" }
+          : structuredClone(work.outputContract),
         deliveryIncrement: increment,
         ...(work.missionContribution ? { missionContribution: structuredClone(work.missionContribution) } : {}),
         ...(work.assurance ? { assurance: structuredClone(work.assurance) } : {}),

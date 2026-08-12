@@ -22,6 +22,8 @@ describe("compilePlanIntent", () => {
       { from: { clientRef: "qa" }, to: { clientRef: "accept" } },
     ]));
     expect(change.requiredTerminalRefs).toEqual([{ clientRef: "accept" }]);
+    expect(change.additions.find((node) => node.clientRef === "accept")?.outputContract)
+      .toEqual({ schemaRef: "mission-settlement-v1" });
   });
 
   it("gates a new increment on every exit of the latest existing increment", () => {

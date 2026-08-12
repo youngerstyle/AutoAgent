@@ -1086,6 +1086,31 @@ describe("Pi runtime terminal propagation", () => {
     })).toBe(false);
   });
 
+  it("uses the settlement schema when a terminal ticket was mistakenly labeled as assurance", () => {
+    const schema = outputSchema({
+      outputContract: { schemaRef: "mission-assurance-v1" },
+      assurance: { missionCriterionIds: ["criterion-1"] },
+      permissions: { settleMission: true },
+    }, baseline);
+
+    expect(Value.Check(schema, {
+      disposition: "complete",
+      missionResolution: {
+        baselineVersion: 3,
+        summary: "accepted from authoritative assurance",
+        criterionResults: [{
+          criterionId: "criterion-1",
+          status: "satisfied",
+          assuranceTicketIds: ["ticket-qa"],
+        }],
+        residualRisks: [],
+      },
+    })).toBe(true);
+    expect(Value.Check(schema, {
+      assuranceReport: { baselineVersion: 3, missionCriterionResults: [] },
+    })).toBe(false);
+  });
+
   it("lets Mission settlement select assurance tickets without copying evidence", () => {
     const schema = outputSchema({
       outputContract: { schemaRef: "mission-final-acceptance-v1" },

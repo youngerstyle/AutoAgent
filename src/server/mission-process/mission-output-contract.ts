@@ -90,21 +90,6 @@ export function missionCompletionOutcomeSchema(
     });
   }
 
-  if (definition.outputContract.schemaRef === "mission-assurance-v1") {
-    // A completed assurance ticket is the positive terminal path. Negative or
-    // inconclusive judgments use the dedicated correction, plan-change, or
-    // human-input tools so the agent's routing decision remains explicit.
-    return Type.Object({
-      assuranceReport: missionAssuranceReportSchema(
-        assignedCriterionIds,
-        baseline,
-        Type.Literal("satisfied"),
-        1,
-        true,
-      ),
-    }, { additionalProperties: false });
-  }
-
   if (definition.permissions?.settleMission) {
     const criterionIds = baseline?.criteria.map((criterion) => criterion.criterionId) ?? [];
     return Type.Object({
@@ -128,6 +113,21 @@ export function missionCompletionOutcomeSchema(
         residualRisks: Type.Array(Type.String({ minLength: 1 })),
       }, { additionalProperties: false }),
     });
+  }
+
+  if (definition.outputContract.schemaRef === "mission-assurance-v1") {
+    // A completed assurance ticket is the positive terminal path. Negative or
+    // inconclusive judgments use the dedicated correction, plan-change, or
+    // human-input tools so the agent's routing decision remains explicit.
+    return Type.Object({
+      assuranceReport: missionAssuranceReportSchema(
+        assignedCriterionIds,
+        baseline,
+        Type.Literal("satisfied"),
+        1,
+        true,
+      ),
+    }, { additionalProperties: false });
   }
 
   if (definition.outputContract.schemaRef === "plan-intent-v1") {
