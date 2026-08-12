@@ -609,6 +609,7 @@ export class RuntimeHost {
   private async resumeTaskUnlocked(taskId: string): Promise<void> {
     if (!this.contexts.has(taskId)) {
       const record = await this.requireTaskRecord(taskId);
+      await this.staffing.resume(taskId);
       await this.store.save({ ...record, status: "active", updatedAt: this.now().toISOString() });
       this.startScheduler();
       if (this.started) {

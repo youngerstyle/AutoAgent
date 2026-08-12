@@ -238,6 +238,63 @@ describe("automatic project staffing", () => {
     expect(snapshot.agents.find((agent) => agent.roleInWorkspace === "boss")?.status).toBe("blocked");
     await host.stop();
   });
+
+  it("retries the same blocked staffing Goal after an explicit task resume", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-resume-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-resume-ws-"));
+    const workspace: Workspace = {
+      id: "workspace-staffing-resume",
+      name: "Staffing resume",
+      rootPath: root,
+      policyProfile: "development",
+      createdAt: new Date().toISOString(),
+    };
+    const profiles = new AgentProfileStore(home);
+    await ensureProjectOwner(workspace, await profiles.list());
+    const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
+    let providerAvailable = false;
+    providers.get = async () => ({
+      name: "mock",
+      async runModelTurn(input) {
+        if (!providerAvailable) throw new ProviderError("Connection error.", true, "CONNECTION_ERROR");
+        return {
+          items: [{
+            type: "tool_call" as const,
+            callId: "staff-after-resume",
+            name: "staff_project",
+            arguments: {
+              status: "staffed",
+              members: [
+                member("prof_boss", "Own acceptance"),
+                member("prof_pm", "Plan the work"),
+                member("prof_dev", "Implement the work"),
+                member("prof_qa", "Verify the work"),
+              ],
+              recruitmentRequests: [],
+            },
+          }],
+        };
+      },
+    });
+    const policyStore = new PlanPolicyStore(home);
+    const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+    const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, {
+      intervalMs: 60_000,
+      staffingProviderFailureLimit: 1,
+    });
+
+    await host.createTask({ taskId: "task-staffing-resume", title: "Build", objective: "Build a product" });
+    await host.tick();
+    expect((await host.snapshot()).status).toBe("blocked");
+
+    providerAvailable = true;
+    await host.resumeTask("task-staffing-resume");
+    await host.tick();
+
+    expect(host.context("task-staffing-resume")).toBeDefined();
+    expect((await host.snapshot()).status).toBe("running");
+    await host.stop();
+  });
 });
 
 function member(profileId: string, responsibility: string) {

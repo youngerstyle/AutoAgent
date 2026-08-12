@@ -99,6 +99,34 @@ export class StaffingCoordinator {
     return this.store.getByTask(taskId);
   }
 
+  async resume(taskId: string): Promise<StaffingRequestRecord> {
+    const request = await this.requireRequest(taskId);
+    if (request.status !== "blocked") return request;
+    const runtime = await this.runtime(request);
+    if (request.goalId) {
+      const goal = await runtime.engine.getGoal(request.goalId);
+      if (goal && new Set(["blocked", "paused", "usage_limited"]).has(goal.status)) {
+        await runtime.engine.controlGoal({
+          requestId: stableId("staffing-operator-resume", request.staffingRequestId, String(goal.version)),
+          goalId: goal.spec.id,
+          expectedGoalVersion: goal.version,
+          action: "resume",
+          reason: "operator explicitly retried blocked staffing",
+        });
+      }
+    }
+    const resumed: StaffingRequestRecord = {
+      ...request,
+      status: "pending",
+      blockReason: undefined,
+      retryAt: undefined,
+      providerFailures: 0,
+      updatedAt: this.now().toISOString(),
+    };
+    await this.store.save(resumed);
+    return resumed;
+  }
+
   async runOnce(taskId: string): Promise<StaffingRunResult> {
     let request = await this.requireRequest(taskId);
     if (request.status === "completed" || request.status === "blocked" || request.status === "failed") {
