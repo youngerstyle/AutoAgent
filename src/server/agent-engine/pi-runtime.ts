@@ -92,10 +92,11 @@ interface RunSafetyBinding {
   blockedReason?: string;
 }
 
-// The Agent Engine does not impose a default turn-length limit. Operators may
-// opt into a resource ceiling for a deployment, but it is never a completion
-// rule and is disabled unless explicitly configured.
 const MAX_TOOL_CALLS_PER_TURN = envOptionalPositiveInteger("AUTOAGENT_MAX_TOOL_CALLS_PER_TURN");
+const DEFAULT_TURN_TIMEOUT_MS = envPositiveInteger(
+  "AUTOAGENT_TURN_TIMEOUT_MS",
+  5 * 60_000,
+);
 const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = envPositiveInteger(
   "AUTOAGENT_TURN_INACTIVITY_TIMEOUT_MS",
   5 * 60_000,
@@ -109,6 +110,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   private readonly sessions = new Map<string, Promise<SessionState>>();
   private readonly turnTails = new Map<string, Promise<AgentExecutionSliceResult>>();
   private readonly now: () => Date;
+  private readonly turnTimeoutMs: number;
   private readonly turnInactivityTimeoutMs: number;
 
   constructor(
@@ -119,9 +121,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     private readonly providers: ProviderRegistry,
     private readonly tools: AgentToolRuntime,
     private readonly traces: AgentTraceStore,
-    options: { now?: () => Date; turnInactivityTimeoutMs?: number } = {},
+    options: { now?: () => Date; turnTimeoutMs?: number; turnInactivityTimeoutMs?: number } = {},
   ) {
     this.now = options.now ?? (() => new Date());
+    this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
     this.turnInactivityTimeoutMs = options.turnInactivityTimeoutMs ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
   }
 
@@ -198,7 +201,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       resolveTerminalProviderError = resolve;
     });
     let eventWrites: Promise<void> = Promise.resolve();
-    let promptWatchdog: PiPromptInactivityWatchdog | undefined;
+    let promptWatchdog: PiPromptWatchdog | undefined;
     let rebuildModelContext = false;
     let latestSchemaCorrection: string | undefined;
     let lastAssistantResponseFingerprint: string | undefined;
@@ -367,7 +370,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           persistent: Boolean(state.session.sessionFile),
           continuation: promptAttempt,
         });
-        promptWatchdog = createPiPromptInactivityWatchdog(
+        promptWatchdog = createPiPromptWatchdog(
+          this.turnTimeoutMs,
           this.turnInactivityTimeoutMs,
           () => state.session.abort(),
         );
@@ -892,17 +896,19 @@ export function createPiToolExecutionBarrier(): PiToolExecutionBarrier {
   };
 }
 
-interface PiPromptInactivityWatchdog {
+interface PiPromptWatchdog {
   timeout: Promise<string>;
   touch(): void;
   dispose(): void;
 }
 
-export function createPiPromptInactivityWatchdog(
+export function createPiPromptWatchdog(
+  turnTimeoutMs: number,
   inactivityMs: number,
   abort: () => void | Promise<void>,
-): PiPromptInactivityWatchdog {
-  let timer: NodeJS.Timeout | undefined;
+): PiPromptWatchdog {
+  let inactivityTimer: NodeJS.Timeout | undefined;
+  let turnTimer: NodeJS.Timeout | undefined;
   let settled = false;
   let resolveTimeout!: (message: string) => void;
   const timeout = new Promise<string>((resolve) => {
@@ -910,23 +916,32 @@ export function createPiPromptInactivityWatchdog(
   });
   const arm = () => {
     if (settled) return;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
       resolveTimeout(`Provider turn produced no events for ${inactivityMs}ms (inactivity timeout)`);
       void Promise.resolve(abort()).catch(() => undefined);
     }, inactivityMs);
-    timer.unref?.();
+    inactivityTimer.unref?.();
   };
+  turnTimer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    resolveTimeout(`Provider turn exceeded ${turnTimeoutMs}ms (turn timeout)`);
+    void Promise.resolve(abort()).catch(() => undefined);
+  }, turnTimeoutMs);
+  turnTimer.unref?.();
   arm();
   return {
     timeout,
     touch: arm,
     dispose() {
       settled = true;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      if (turnTimer) clearTimeout(turnTimer);
+      inactivityTimer = undefined;
+      turnTimer = undefined;
     },
   };
 }

@@ -7,7 +7,7 @@ import {
   awaitPiPromptOutcome,
   compactPiToolEventDetails,
   createPiToolExecutionBarrier,
-  createPiPromptInactivityWatchdog,
+  createPiPromptWatchdog,
   goalResolutionDomainOutcomeSchema,
   goalResolutionCriterionResultsSchema,
   goalResolutionTransportDomainOutcomeSchema,
@@ -755,7 +755,7 @@ describe("Pi runtime terminal propagation", () => {
     const prompt = deferred<void>();
     const terminal = deferred<string>();
     let aborted = 0;
-    const watchdog = createPiPromptInactivityWatchdog(10, () => {
+    const watchdog = createPiPromptWatchdog(100, 10, () => {
       aborted += 1;
     });
 
@@ -776,7 +776,7 @@ describe("Pi runtime terminal propagation", () => {
     vi.useFakeTimers();
     const prompt = deferred<void>();
     const terminal = deferred<string>();
-    const watchdog = createPiPromptInactivityWatchdog(30, () => undefined);
+    const watchdog = createPiPromptWatchdog(100, 30, () => undefined);
     const outcome = awaitPiPromptOutcome(
       prompt.promise,
       terminal.promise,
@@ -791,6 +791,39 @@ describe("Pi runtime terminal propagation", () => {
       prompt.resolve();
 
       await expect(outcome).resolves.toEqual({ kind: "settled" });
+    } finally {
+      watchdog.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts a Pi turn at the total deadline even while progress keeps arriving", async () => {
+    vi.useFakeTimers();
+    const prompt = deferred<void>();
+    const terminal = deferred<string>();
+    let aborted = 0;
+    const watchdog = createPiPromptWatchdog(50, 30, () => {
+      aborted += 1;
+    });
+    const outcome = awaitPiPromptOutcome(
+      prompt.promise,
+      terminal.promise,
+      undefined,
+      watchdog.timeout,
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      watchdog.touch();
+      await vi.advanceTimersByTimeAsync(20);
+      watchdog.touch();
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(outcome).resolves.toEqual({
+        kind: "provider_error",
+        message: "Provider turn exceeded 50ms (turn timeout)",
+      });
+      expect(aborted).toBe(1);
     } finally {
       watchdog.dispose();
       vi.useRealTimers();
