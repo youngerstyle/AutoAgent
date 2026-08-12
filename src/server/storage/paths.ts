@@ -29,6 +29,10 @@ export function workspaceFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "workspace.json");
 }
 
+export function workspaceEventCursorFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "event-cursor.json");
+}
+
 export function workspaceAgentDir(workspaceRoot: string, workspaceAgentId: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "agents", workspaceAgentId);
 }

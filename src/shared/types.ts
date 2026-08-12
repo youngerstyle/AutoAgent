@@ -251,6 +251,7 @@ export interface AutoAgentEvent<TPayload = Record<string, unknown>> {
   payload: TPayload;
   timestamp: string;
   sequence?: number;
+  workspaceSequence?: number;
 }
 
 export type MissionPhase =
