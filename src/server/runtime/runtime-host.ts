@@ -88,6 +88,9 @@ export class RuntimeHost {
       now?: () => Date;
       providerRetryBaseMs?: number;
       providerRetryMaxMs?: number;
+      staffingProviderFailureLimit?: number;
+      staffingProviderRetryBaseMs?: number;
+      staffingProviderRetryMaxMs?: number;
       initialTeamBinding?: TeamBinding | (() => Promise<TeamBinding>);
       scheduler?: RuntimeHostScheduler;
       schedulerKey?: string;
@@ -102,6 +105,11 @@ export class RuntimeHost {
       REQUIRED_TEAM_CAPABILITIES,
       () => this.store.list(),
       () => this.now(),
+      {
+        maxProviderFailures: options.staffingProviderFailureLimit ?? 3,
+        baseDelayMs: options.staffingProviderRetryBaseMs ?? 5_000,
+        maxDelayMs: options.staffingProviderRetryMaxMs ?? 60_000,
+      },
     );
   }
 
@@ -432,7 +440,9 @@ export class RuntimeHost {
       if (!request || new Set(["blocked", "failed"]).has(request.status)) continue;
       const key = `staffing:${record.taskId}`;
       const run = this.agentRuns.get(key) ?? this.trackAgentRun(key, this.runStaffingOnce(record));
-      if (awaitAgentRuns) await run;
+      const handled = run.catch((error) => this.recordStaffingRunError(record.taskId, error));
+      if (awaitAgentRuns) await handled;
+      else void handled;
     }
     for (const context of this.contexts.values()) {
       try {
@@ -769,17 +779,23 @@ export class RuntimeHost {
       const staffing = await this.staffing.get(record.taskId);
       if (staffing) {
         const projection = await this.staffing.projection(record.taskId).catch(() => undefined);
-        const projectOwner = presentedAgents.find((agent) => agent.id === staffing.staffingAgentId);
+        const projectOwner = presentedAgents.find((agent) => agent.id === staffing.staffingAgentId)
+          ?? presentedAgents.find((agent) => agent.profileId === staffing.staffingProfileId);
         if (!projectOwner) throw new Error("项目负责人实例不存在，无法投影目标处理状态");
+        const staffingFailure = record.runtimeError?.source === "staffing"
+          ? record.runtimeError.message
+          : staffing.blockReason;
+        const staffingFailed = record.status === "failed" || staffing.status === "failed";
+        const staffingBlocked = staffing.status === "blocked";
         const staffer: WorkspaceSnapshot["agents"][number] = {
           ...projectOwner,
-          status: staffing.status === "running" ? "running" : staffing.status === "blocked" ? "blocked" : "waiting",
-          currentStep: staffing.status === "blocked" ? staffing.blockReason : "处理收到的目标",
+          status: staffingFailed || staffingBlocked ? "blocked" : staffing.status === "running" ? "running" : "waiting",
+          currentStep: staffingFailed || staffingBlocked ? staffingFailure : "处理收到的目标",
         };
         const threadEvents = projection?.thread
           ? projectThread(projection.thread, projection.payloads, record)
           : [];
-        const status = staffing.status === "blocked" || staffing.status === "failed" ? "blocked" : "running";
+        const status = staffingFailed ? "failed" : staffingBlocked ? "blocked" : "running";
         const staffingAgents = presentedAgents.map((agent) =>
           agent.id === staffing.staffingAgentId ? staffer : { ...agent, status: "idle" as const },
         );
@@ -820,8 +836,8 @@ export class RuntimeHost {
           })),
           phase: status === "blocked" ? "blocked" : "running",
           status,
-          currentStep: staffing.status === "blocked"
-            ? staffing.blockReason
+          currentStep: staffingFailed || staffingBlocked
+            ? staffingFailure
             : `${staffer.name ?? "负责人"}正在处理收到的目标`,
           runtimeError: record.runtimeError,
         };
@@ -850,7 +866,10 @@ export class RuntimeHost {
       const work = workItems[index];
       if (!work) continue;
       const link = linksByTicket.get(String(ticketId));
-      const targetAgent = agents.find((agent) => agent.id === link?.agentId);
+      const plannedMember = link
+        ? undefined
+        : eligibleMember(mission.record.teamBinding, work.definition.assignment);
+      const targetAgent = agents.find((agent) => agent.id === (link?.agentId ?? plannedMember?.agentId));
       const activeAttempt = work.ticket.attempts.find((attempt) => attempt.attemptId === work.ticket.activeAttemptId)
         ?? work.ticket.attempts.at(-1);
       tickets.push({
@@ -862,7 +881,7 @@ export class RuntimeHost {
         status: legacyTicketStatus(work.ticket.status),
         brief: work.definition.objective,
         expectedArtifact: work.definition.outputContract.schemaRef,
-        targetAgentId: link?.agentId,
+        targetAgentId: targetAgent?.id,
         targetRole: targetAgent?.roleInWorkspace,
         capabilityTags: work.definition.assignment.requiredCapabilities,
         priority: 0,
@@ -995,11 +1014,21 @@ export class RuntimeHost {
       if (this.agentRuns.has(runKey)) continue;
       const providerBackoff = this.providerBackoffs.get(runKey);
       if (providerBackoff && providerBackoff.retryAt > this.now().getTime()) continue;
+      const ticket = await context.tickets.getTicket(link.ticketId);
       const engine = context.engines.get(link.agentId);
       const goal = await engine?.getGoal(link.agentGoalId);
+      if (goal?.status === "paused" && ticket?.status === "running") {
+        await context.manager.blockAgentExecution({
+          agentId: link.agentId,
+          turnId: stableId("recover_paused_owner", context.record.taskId, link.agentId, goal.spec.id, String(goal.version)),
+          reason: "Agent execution stopped while its Ticket was still running",
+          requiredInput: agentRecoveryInput("goal_paused", goal.spec.id),
+        });
+        await this.clearRetryState(context, link.agentId);
+        continue;
+      }
       if (goal?.status !== "active") continue;
       const pendingHumanTurn = await context.loops.get(link.agentId)?.pendingHumanTurn(link.agentThreadId);
-      const ticket = await context.tickets.getTicket(link.ticketId);
       const recoveredBlockedWork = canContinueRecoveredBlockedWork({
         planStatus: planBeforeRuns.status,
         ticketStatus: ticket?.status,
@@ -1019,20 +1048,15 @@ export class RuntimeHost {
       const readiness = await engine!.executionReadiness(goal.spec.id);
       if (!readiness.ready) {
         if (readiness.reason === "agent_busy") continue;
-        if (readiness.reason === "repeated_host_correction_without_progress") {
-          const createdAt = this.now().toISOString();
-          await engine!.appendToolItem({
-            itemId: stableId("agent_contract_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version)),
-            threadId: link.agentThreadId,
-            goalId: goal.spec.id,
-            kind: "observation",
-            value: {
-              type: "agent_contract_stalled",
-              reason: readiness.reason,
-              message: "Agent repeated the same Host contract violation without any accepted state change.",
-            },
-            createdAt,
+        if (AGENT_STALL_REASONS.has(readiness.reason)) {
+          await context.manager.blockAgentExecution({
+            agentId: link.agentId,
+            turnId: stableId("agent_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
+            reason: `Agent execution stalled: ${readiness.reason}`,
+            requiredInput: agentRecoveryInput(readiness.reason, goal.spec.id),
           });
+          await this.clearRetryState(context, link.agentId);
+          continue;
         }
         if (readiness.reason === "repeated_turn_without_progress"
           || readiness.reason === "no_durable_progress_window_elapsed") {
@@ -1236,6 +1260,24 @@ export class RuntimeHost {
       updatedAt: this.now().toISOString(),
     };
     await this.store.save(context.record);
+  }
+
+  private async recordStaffingRunError(taskId: string, error: unknown): Promise<void> {
+    console.error(`RuntimeHost staffing failed for ${taskId}`, error);
+    const record = await this.store.get(taskId);
+    if (!record || record.status !== "active") return;
+    await this.store.save({
+      ...record,
+      status: "failed",
+      runtimeError: {
+        source: "staffing",
+        message: error instanceof Error ? error.message : String(error),
+        at: this.now().toISOString(),
+      },
+      updatedAt: this.now().toISOString(),
+    }).catch((recordError) => {
+      console.error(`RuntimeHost could not persist staffing failure for ${taskId}`, recordError);
+    });
   }
 
   private runAgentOnce(context: RuntimeContext, link: ActiveMissionLink): Promise<void> {
@@ -1775,6 +1817,8 @@ export function projectTicketBlocker(reason: string, requiredInput: TicketRequir
       ? "human_authorization_required"
       : requiredInput.kind === "tool_policy"
         ? "tool_policy_blocked"
+        : requiredInput.kind === "agent_recovery"
+          ? "agent_stalled"
         : "external_dependency";
   return {
     type,
@@ -1893,12 +1937,30 @@ export function canContinueClaimedTicketWork(input: {
     && input.ticketAuthority.fencingToken === input.linkAuthority.fencingToken;
 }
 
-function hasEligibleMember(team: TeamBinding, assignment: PlannedTicketAssignment): boolean {
-  return team.members.some((member) => {
+function eligibleMember(team: TeamBinding, assignment: PlannedTicketAssignment) {
+  return team.members.find((member) => {
     if (assignment.principalId && member.principalId !== assignment.principalId) return false;
     return (assignment.requiredCapabilities ?? []).every((capability) => member.capabilities.includes(capability))
       && (assignment.requiredTools ?? []).every((tool) => configuredToolsInclude(member.enabledTools, tool));
   });
+}
+
+function hasEligibleMember(team: TeamBinding, assignment: PlannedTicketAssignment): boolean {
+  return Boolean(eligibleMember(team, assignment));
+}
+
+const AGENT_STALL_REASONS = new Set([
+  "repeated_execution_retry_without_progress",
+  "repeated_turn_without_progress",
+  "no_durable_progress_window_elapsed",
+]);
+
+function agentRecoveryInput(reason: string, goalId: string): TicketRequiredInput {
+  return {
+    kind: "agent_recovery",
+    description: "负责 Agent 已停止推进，项目需要重试、重新分派或调整工作方案。",
+    details: { reason, goalId },
+  };
 }
 
 function assignmentGapReason(assignment: PlannedTicketAssignment): string {

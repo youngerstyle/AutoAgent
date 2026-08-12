@@ -506,7 +506,7 @@ describe("AgentEngine", () => {
     });
   });
 
-  it("stops a host-correction episode when the same violation repeats without Host state progress", async () => {
+  it("keeps a host-correction episode executable without comparing error prose", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     const appendModel = (itemId: string) => fixture.engine.appendModelItem({
       itemId,
@@ -537,8 +537,8 @@ describe("AgentEngine", () => {
     await appendCorrection("correction-2");
 
     expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
-      ready: false,
-      reason: "repeated_host_correction_without_progress",
+      ready: true,
+      reason: "host_correction",
     });
   });
 

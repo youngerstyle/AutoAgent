@@ -15,7 +15,7 @@ export interface RuntimeTaskRecord {
 }
 
 export interface RuntimeTaskError {
-  source: "scheduler" | "agent_turn";
+  source: "scheduler" | "staffing" | "agent_turn";
   message: string;
   at: string;
   agentId?: string;

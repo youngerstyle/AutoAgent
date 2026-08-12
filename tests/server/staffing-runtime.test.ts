@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ensureProjectOwner, listWorkspaceAgents } from "../../src/server/agents/roster.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
+import { ProviderError } from "../../src/server/providers/types.js";
 import { RuntimeHost } from "../../src/server/runtime/runtime-host.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
@@ -192,6 +193,49 @@ describe("automatic project staffing", () => {
       taskId: "task-cancelled-staffing",
       status: "cancelled",
     }));
+    await host.stop();
+  });
+
+  it("blocks visibly after the staffing Provider exhausts its retry budget", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-provider-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-provider-ws-"));
+    const workspace: Workspace = {
+      id: "workspace-staffing-provider",
+      name: "Staffing provider failure",
+      rootPath: root,
+      policyProfile: "development",
+      createdAt: new Date().toISOString(),
+    };
+    const profiles = new AgentProfileStore(home);
+    await ensureProjectOwner(workspace, await profiles.list());
+    const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
+    providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        throw new ProviderError("Connection error.", true, "CONNECTION_ERROR");
+      },
+    });
+    const policyStore = new PlanPolicyStore(home);
+    const policyRef = await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+    let now = new Date("2026-08-11T00:00:00.000Z");
+    const host = new RuntimeHost(workspace, profiles, providers, policyStore, policyRef, {
+      intervalMs: 60_000,
+      now: () => now,
+      staffingProviderFailureLimit: 2,
+      staffingProviderRetryBaseMs: 1,
+      staffingProviderRetryMaxMs: 1,
+    });
+
+    await host.createTask({ taskId: "task-provider-failure", title: "Build", objective: "Build a product" });
+    await host.tick();
+    expect((await host.snapshot()).status).toBe("running");
+    now = new Date(now.getTime() + 1);
+    await host.tick();
+
+    const snapshot = await host.snapshot();
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.currentStep).toContain("模型服务连续失败 2 次");
+    expect(snapshot.agents.find((agent) => agent.roleInWorkspace === "boss")?.status).toBe("blocked");
     await host.stop();
   });
 });

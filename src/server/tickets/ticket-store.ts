@@ -407,7 +407,7 @@ export class TicketStore {
 function isTicketRequiredInput(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const input = value as Record<string, unknown>;
-  return new Set(["manual_test", "authorization", "credential", "external_fact", "irreversible_confirmation", "tool_policy"]).has(String(input.kind))
+  return new Set(["manual_test", "authorization", "credential", "external_fact", "irreversible_confirmation", "tool_policy", "agent_recovery"]).has(String(input.kind))
     && typeof input.description === "string"
     && Boolean(input.description.trim())
     && (input.details === undefined || (typeof input.details === "object" && input.details !== null && !Array.isArray(input.details)));

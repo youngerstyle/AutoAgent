@@ -163,6 +163,32 @@ describe("ProviderRegistry", () => {
     ]);
   });
 
+  it("does not write provider state while listing model configs", async () => {
+    const home = await tempHome();
+    const registry = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+
+    await expect(registry.modelConfigs()).resolves.toHaveLength(2);
+    await expect(readFile(path.join(home, "providers.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("serializes concurrent model config updates and preserves both changes", async () => {
+    const home = await tempHome();
+    const first = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+    await first.saveConfig("openai", { provider: "openai", model: "old-openai" });
+    const second = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+
+    await Promise.all([
+      first.updateModelConfig("mc_openai", { model: "gpt-5.6-luna" }),
+      second.updateModelConfig("mc_anthropic", { model: "claude-new" }),
+    ]);
+
+    const restarted = new ProviderRegistry({ homeDir: home, env: {}, retryCount: 0 });
+    await expect(restarted.modelConfigs()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "mc_openai", model: "gpt-5.6-luna" }),
+      expect.objectContaining({ id: "mc_anthropic", model: "claude-new" }),
+    ]));
+  });
+
   it("rejects invalid context windows", async () => {
     const registry = new ProviderRegistry({ homeDir: await tempHome(), env: {}, retryCount: 0 });
     await expect(registry.createModelConfig({ provider: "openai", contextWindowTokens: 0 }))

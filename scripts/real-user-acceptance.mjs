@@ -105,7 +105,7 @@ try {
     baseUrl,
     service: serviceIdentity,
     workspace: workspace ? { id: workspace.id, rootPath: workspaceRoot } : { rootPath: workspaceRoot },
-    terminal: Boolean(snapshot && ["completed", "failed", "paused", "interrupted"].includes(snapshot.status)),
+    terminal: Boolean(snapshot && ["completed", "failed", "blocked", "paused", "cancelled", "interrupted"].includes(snapshot.status)),
     error: error instanceof Error ? error.stack ?? error.message : String(error),
     snapshot,
   };
@@ -272,7 +272,7 @@ async function waitForTerminal(workspaceId) {
       await sleep(1_000);
       continue;
     }
-    if (["completed", "failed", "paused", "interrupted"].includes(current.status)) return current;
+    if (["completed", "failed", "blocked", "paused", "cancelled", "interrupted"].includes(current.status)) return current;
     await sleep(1_000);
   }
   throw new AcceptanceDriverTimeoutError({ timeoutMs, lastObservedAt, snapshot });

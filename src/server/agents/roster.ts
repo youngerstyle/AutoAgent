@@ -75,6 +75,7 @@ export async function listWorkspaceAgents(workspace: Workspace): Promise<Workspa
     );
     return agents
       .filter((agent): agent is WorkspaceAgent => Boolean(agent))
+      .filter((agent) => agent.workspaceId === workspace.id)
       .sort((left, right) => {
         const roleDiff = ROLE_ORDER[left.roleInWorkspace] - ROLE_ORDER[right.roleInWorkspace];
         if (roleDiff !== 0) return roleDiff;

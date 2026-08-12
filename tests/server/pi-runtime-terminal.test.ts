@@ -1128,7 +1128,7 @@ describe("Pi runtime terminal propagation", () => {
     })).toBe(false);
   });
 
-  it("exposes the Plan change contract without duplicating delivery increment definitions", () => {
+  it("keeps an explicitly versioned plan-change-set-v3 contract stable", () => {
     const schema = outputSchema({
       outputContract: { schemaRef: "plan-change-set-v3" },
       permissions: { amendPlan: true },
@@ -1209,6 +1209,59 @@ describe("Pi runtime terminal propagation", () => {
             title: "不应在 Ticket 中重复定义",
             objective: "不应在 Ticket 中重复定义",
           },
+        }],
+      },
+    })).toBe(false);
+  });
+
+  it("exposes semantic Plan intent without platform graph fields", () => {
+    const schema = outputSchema({
+      outputContract: { schemaRef: "plan-intent-v1" },
+      permissions: { amendPlan: true },
+    }, baseline);
+    const valid = {
+      intent: {
+        rationale: "deliver a verified increment",
+        increments: [{
+          intentRef: "delivery",
+          title: "Playable delivery",
+          objective: "Build and accept the game",
+          workItems: [{
+            intentRef: "implementation",
+            title: "Build",
+            objective: "Implement the game",
+            successCriteria: ["The artifact runs"],
+            assignment: { requiredCapabilities: ["delivery:implement"], requiredTools: ["writeFile"] },
+            outputContract: { schemaRef: "tank-delivery-v1" },
+            missionContribution: { missionCriterionIndexes: [0] },
+          }, {
+            intentRef: "acceptance",
+            title: "Accept",
+            objective: "Settle against the baseline",
+            successCriteria: ["Acceptance is traceable"],
+            assignment: { requiredCapabilities: ["delivery:accept"] },
+            outputContract: { schemaRef: "mission-settlement-v1" },
+            dependsOn: ["implementation"],
+            permissions: { settleMission: true },
+          }],
+        }],
+      },
+    };
+
+    expect(Value.Check(schema, valid)).toBe(true);
+    expect(Value.Check(schema, {
+      ...valid,
+      dependencyAdditions: [],
+    })).toBe(false);
+    expect(Value.Check(schema, {
+      intent: {
+        ...valid.intent,
+        increments: [{
+          ...valid.intent.increments[0],
+          workItems: [{
+            ...valid.intent.increments[0].workItems[0],
+            assignment: { principalId: "principal-dev", requiredCapabilities: ["delivery:implement"] },
+          }],
         }],
       },
     })).toBe(false);

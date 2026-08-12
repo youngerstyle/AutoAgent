@@ -1,4 +1,4 @@
-import { readJson, writeJson } from "../storage/json.js";
+import { readJson, updateJson } from "../storage/json.js";
 import { globalProvidersFile } from "../storage/paths.js";
 import { createId } from "../../shared/ids.js";
 import { AnthropicProvider } from "./anthropic-provider.js";
@@ -71,23 +71,24 @@ export class ProviderRegistry {
   }
 
   async saveConfig(provider: RealProviderName, config: Partial<ProviderConfig>): Promise<ProviderConfig> {
-    const configs = await this.readConfigFile();
-    const existing = configs[provider];
-    const next: ProviderConfig = {
-      provider,
-      model: config.model?.trim() || existing?.model || defaultModel(provider),
-      apiKey: config.apiKey === undefined || config.apiKey === "" ? existing?.apiKey : config.apiKey,
-      baseUrl: config.baseUrl === undefined ? existing?.baseUrl : config.baseUrl || undefined
-    };
-    configs[provider] = next;
-    configs.modelConfigs = await this.upsertLegacyModelConfig(configs, next);
-    await writeJson(globalProvidersFile(this.options.homeDir), configs);
-    return redactRequiredConfig(next);
+    const stored = await this.updateConfigFile(async (configs) => {
+      const existing = configs[provider];
+      const next: ProviderConfig = {
+        provider,
+        model: config.model?.trim() || existing?.model || defaultModel(provider),
+        apiKey: config.apiKey === undefined || config.apiKey === "" ? existing?.apiKey : config.apiKey,
+        baseUrl: config.baseUrl === undefined ? existing?.baseUrl : config.baseUrl || undefined
+      };
+      configs[provider] = next;
+      configs.modelConfigs = await this.upsertLegacyModelConfig(configs, next);
+      return configs;
+    });
+    return redactRequiredConfig(stored[provider]!);
   }
 
   async modelConfigs(): Promise<ModelConfig[]> {
-    const stored = await this.ensureStoredModelConfigs();
-    return stored.map(redactModelConfig);
+    const stored = await this.readConfigFile();
+    return (await this.materializeModelConfigs(stored)).map(redactModelConfig);
   }
 
   async contextWindowTokens(provider: ProviderName, model: string): Promise<number> {
@@ -118,10 +119,7 @@ export class ProviderRegistry {
   }
 
   async createModelConfig(config: Partial<ModelConfig> & Pick<ModelConfig, "provider">): Promise<ModelConfig> {
-    const stored = await this.readConfigFile();
-    const configs = await this.ensureStoredModelConfigs(stored);
     const now = new Date().toISOString();
-    const shouldBeDefault = Boolean(config.isDefault) || configs.length === 0;
     const next: ModelConfig = {
       id: createId("mc"),
       name: config.name?.trim() || `${providerLabel(config.provider)} 配置`,
@@ -133,56 +131,60 @@ export class ProviderRegistry {
       thinkingLevel: normalizeThinkingLevel(config.thinkingLevel, Boolean(config.supportsReasoning)),
       apiKey: config.apiKey || undefined,
       baseUrl: config.baseUrl || undefined,
-      isDefault: shouldBeDefault,
+      isDefault: false,
       createdAt: now,
       updatedAt: now
     };
-    stored.modelConfigs = shouldBeDefault
-      ? [...configs.map((item) => ({ ...item, isDefault: false })), next]
-      : [...configs, next];
-    await writeJson(globalProvidersFile(this.options.homeDir), stored);
-    return redactModelConfig(next);
+    const stored = await this.updateConfigFile(async (current) => {
+      const configs = ensureSingleDefault(await this.materializeModelConfigs(current));
+      const shouldBeDefault = Boolean(config.isDefault) || configs.length === 0;
+      next.isDefault = shouldBeDefault;
+      current.modelConfigs = shouldBeDefault
+        ? [...configs.map((item) => ({ ...item, isDefault: false })), next]
+        : [...configs, next];
+      return current;
+    });
+    return redactModelConfig(stored.modelConfigs!.find((item) => item.id === next.id)!);
   }
 
   async updateModelConfig(configId: string, patch: ModelConfigPatch): Promise<ModelConfig> {
-    const stored = await this.readConfigFile();
-    const configs = await this.ensureStoredModelConfigs(stored);
-    const existing = configs.find((config) => config.id === configId);
-    if (!existing) throw new Error(`Model config not found: ${configId}`);
-    const updated: ModelConfig = {
-      ...existing,
-      name: patch.name !== undefined ? String(patch.name).trim() || existing.name : existing.name,
-      provider: patch.provider ?? existing.provider,
-      model: patch.model !== undefined ? String(patch.model).trim() || existing.model : existing.model,
-      contextWindowTokens: patch.contextWindowTokens === undefined
-        ? existing.contextWindowTokens
-        : normalizeContextWindowTokens(patch.contextWindowTokens),
-      supportsReasoning: patch.supportsReasoning ?? existing.supportsReasoning,
-      supportsImages: patch.supportsImages ?? existing.supportsImages,
-      thinkingLevel: normalizeThinkingLevel(
-        patch.thinkingLevel ?? existing.thinkingLevel,
-        patch.supportsReasoning ?? existing.supportsReasoning,
-      ),
-      apiKey: patch.apiKey === undefined || patch.apiKey === "" ? existing.apiKey : patch.apiKey,
-      baseUrl: patch.baseUrl === undefined ? existing.baseUrl : patch.baseUrl || undefined,
-      updatedAt: new Date().toISOString()
-    };
-    stored.modelConfigs = configs.map((config) => config.id === configId ? updated : config);
-    if (patch.isDefault) {
-      stored.modelConfigs = setOnlyDefault(stored.modelConfigs, configId);
-    }
-    await writeJson(globalProvidersFile(this.options.homeDir), stored);
-    return redactModelConfig(stored.modelConfigs.find((config) => config.id === configId) ?? updated);
+    const stored = await this.updateConfigFile(async (current) => {
+      const configs = ensureSingleDefault(await this.materializeModelConfigs(current));
+      const existing = configs.find((config) => config.id === configId);
+      if (!existing) throw new Error(`Model config not found: ${configId}`);
+      const updated: ModelConfig = {
+        ...existing,
+        name: patch.name !== undefined ? String(patch.name).trim() || existing.name : existing.name,
+        provider: patch.provider ?? existing.provider,
+        model: patch.model !== undefined ? String(patch.model).trim() || existing.model : existing.model,
+        contextWindowTokens: patch.contextWindowTokens === undefined
+          ? existing.contextWindowTokens
+          : normalizeContextWindowTokens(patch.contextWindowTokens),
+        supportsReasoning: patch.supportsReasoning ?? existing.supportsReasoning,
+        supportsImages: patch.supportsImages ?? existing.supportsImages,
+        thinkingLevel: normalizeThinkingLevel(
+          patch.thinkingLevel ?? existing.thinkingLevel,
+          patch.supportsReasoning ?? existing.supportsReasoning,
+        ),
+        apiKey: patch.apiKey === undefined || patch.apiKey === "" ? existing.apiKey : patch.apiKey,
+        baseUrl: patch.baseUrl === undefined ? existing.baseUrl : patch.baseUrl || undefined,
+        updatedAt: new Date().toISOString()
+      };
+      current.modelConfigs = configs.map((item) => item.id === configId ? updated : item);
+      if (patch.isDefault) current.modelConfigs = setOnlyDefault(current.modelConfigs, configId);
+      return current;
+    });
+    return redactModelConfig(stored.modelConfigs!.find((config) => config.id === configId)!);
   }
 
   async setDefaultModelConfig(configId: string): Promise<ModelConfig> {
-    const stored = await this.readConfigFile();
-    const configs = await this.ensureStoredModelConfigs(stored);
-    const existing = configs.find((config) => config.id === configId);
-    if (!existing) throw new Error(`Model config not found: ${configId}`);
-    stored.modelConfigs = setOnlyDefault(configs, configId);
-    await writeJson(globalProvidersFile(this.options.homeDir), stored);
-    return redactModelConfig(stored.modelConfigs.find((config) => config.id === configId) ?? existing);
+    const stored = await this.updateConfigFile(async (current) => {
+      const configs = ensureSingleDefault(await this.materializeModelConfigs(current));
+      if (!configs.some((config) => config.id === configId)) throw new Error(`Model config not found: ${configId}`);
+      current.modelConfigs = setOnlyDefault(configs, configId);
+      return current;
+    });
+    return redactModelConfig(stored.modelConfigs!.find((config) => config.id === configId)!);
   }
 
   private async configFor(provider: RealProviderName): Promise<ProviderConfig> {
@@ -211,12 +213,8 @@ export class ProviderRegistry {
     return readJson(globalProvidersFile(this.options.homeDir), {});
   }
 
-  private async ensureStoredModelConfigs(stored?: StoredProviderConfigFile): Promise<ModelConfig[]> {
-    const target = stored ?? await this.readConfigFile();
-    const configs = ensureSingleDefault(await this.materializeModelConfigs(target));
-    target.modelConfigs = configs;
-    await writeJson(globalProvidersFile(this.options.homeDir), target);
-    return configs;
+  private async updateConfigFile(update: (stored: StoredProviderConfigFile) => StoredProviderConfigFile | Promise<StoredProviderConfigFile>): Promise<StoredProviderConfigFile> {
+    return updateJson(globalProvidersFile(this.options.homeDir), {}, update);
   }
 
   private async materializeModelConfigs(stored: StoredProviderConfigFile): Promise<ModelConfig[]> {

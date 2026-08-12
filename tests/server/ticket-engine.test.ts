@@ -752,6 +752,93 @@ describe("TicketEngine single Plan flow", () => {
     expect(await fixture.engine.getTicket(replacement!)).toMatchObject({ status: "ready" });
   });
 
+  it("cancels obsolete ready branches outside the replacement completion closure", async () => {
+    const fixture = await createFixture();
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({
+      requestId: "claim-planning-before-supersede",
+      planId: fixture.planId,
+      ticketId: planning,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    await fixture.engine.applyPlan({
+      commandId: "append-parallel-old-branch",
+      planId: fixture.planId,
+      actorPrincipalId: "planner",
+      issuedAt: now,
+      payload: {
+        type: "apply_change",
+        expectedPlanVersion: 2,
+        sourceTicketId: planning,
+        sourceAuthority: {
+          kind: "claim",
+          claimId: planningClaim!.claimId,
+          fencingToken: planningClaim!.fencingToken,
+        },
+        change: {
+          additions: [
+            draft("obsolete", "旧待执行分支"),
+            { ...draft("amendment", "计划修订"), permissions: { amendPlan: true } },
+          ],
+          dependencyAdditions: [
+            { from: { ticketId: planning }, to: { clientRef: "obsolete" } },
+            { from: { ticketId: planning }, to: { clientRef: "amendment" } },
+          ],
+          cancelTicketIds: [],
+          requiredTerminalRefs: [{ clientRef: "obsolete" }, { clientRef: "amendment" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      planning,
+      planningClaim!,
+      "complete-planning-before-supersede",
+      completePayload(),
+    ));
+    const preparedPlan = await fixture.engine.getPlan(fixture.planId);
+    const obsoleteTicketId = preparedPlan.graph.ticketIds[1]!;
+    const amendmentTicketId = preparedPlan.graph.ticketIds[2]!;
+    expect(await fixture.engine.getTicket(obsoleteTicketId)).toMatchObject({ status: "ready" });
+    const amendmentClaim = await fixture.engine.claimReady({
+      requestId: "claim-amendment-for-supersede",
+      planId: fixture.planId,
+      ticketId: amendmentTicketId,
+      expectedTicketVersion: 2,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    const planBeforeReplacement = await fixture.engine.getPlan(fixture.planId);
+
+    const changed = await fixture.engine.applyPlan({
+      commandId: "supersede-without-explicit-cancel",
+      planId: fixture.planId,
+      actorPrincipalId: "planner",
+      issuedAt: now,
+      payload: {
+        type: "apply_change",
+        expectedPlanVersion: planBeforeReplacement.version,
+        sourceTicketId: amendmentTicketId,
+        sourceAuthority: {
+          kind: "claim",
+          claimId: amendmentClaim!.claimId,
+          fencingToken: amendmentClaim!.fencingToken,
+        },
+        change: {
+          additions: [draft("replacement", "替代交付链")],
+          dependencyAdditions: [{ from: { ticketId: amendmentTicketId }, to: { clientRef: "replacement" } }],
+          cancelTicketIds: [],
+          requiredTerminalRefs: [{ clientRef: "replacement" }],
+        },
+      },
+    });
+
+    expect(changed).toMatchObject({ accepted: true, planStatus: "active" });
+    expect(await fixture.engine.getTicket(obsoleteTicketId)).toMatchObject({ status: "cancelled" });
+  });
+
   it("restores a blocked Plan to blocked after an operator pause and resume", async () => {
     const fixture = await createFixture();
     const ticketId = fixture.plan.graph.ticketIds[0]!;

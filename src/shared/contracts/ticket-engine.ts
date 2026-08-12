@@ -80,6 +80,39 @@ export interface PlanChangeSet {
   requiredTerminalRefs: PlanTicketRef[];
 }
 
+/**
+ * Semantic planning input produced by an Agent. It deliberately contains no
+ * Ticket ids, graph edges, increment sequence numbers, or terminal refs.
+ * Those platform invariants are owned by the deterministic Plan compiler.
+ */
+export interface PlanIntent {
+  rationale: string;
+  increments: PlanIncrementIntent[];
+}
+
+export interface PlanIncrementIntent {
+  intentRef: string;
+  title: string;
+  objective: string;
+  workItems: PlanWorkItemIntent[];
+}
+
+export interface PlanWorkItemIntent {
+  intentRef: string;
+  title: string;
+  objective: string;
+  successCriteria: string[];
+  assignment: {
+    requiredCapabilities: string[];
+    requiredTools?: WorkspaceToolName[];
+  };
+  outputContract: TicketOutputContract;
+  dependsOn?: string[];
+  missionContribution?: { missionCriterionIds: string[] };
+  assurance?: { missionCriterionIds: string[] };
+  permissions?: { amendPlan?: boolean; settleMission?: boolean };
+}
+
 export interface PlannedTicketGraph {
   schemaVersion: 3;
   nodes: PlannedTicketNode[];
@@ -285,7 +318,8 @@ export type TicketRequiredInputKind =
   | "credential"
   | "external_fact"
   | "irreversible_confirmation"
-  | "tool_policy";
+  | "tool_policy"
+  | "agent_recovery";
 
 export interface TicketRequiredInput {
   kind: TicketRequiredInputKind;

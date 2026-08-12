@@ -321,7 +321,7 @@ describe("MissionProcessManager", () => {
     expect(initialPlanningWork?.definition).toMatchObject({
       title: "计划拆解",
       successCriteria: expect.arrayContaining(["新增实际执行工单，形成完成 Mission 所需的真实交付链"]),
-      outputContract: { schemaRef: "plan-change-set-v3" },
+      outputContract: { schemaRef: "plan-intent-v1" },
       contextPolicy: {
         includeOriginalRequest: true,
         requiresMissionBaseline: true,
@@ -382,18 +382,18 @@ describe("MissionProcessManager", () => {
     ));
     expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"missionObjective"') });
     expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"build"') });
-    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"currentPlan"') });
+    expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"currentPlan"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"missionBaseline"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"successCriteria"') });
-    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"outputContract"') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('outputContract') });
     expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"currentTicket":{"ticketId"'),
+      content: expect.stringContaining('"currentWork"'),
     });
     expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"handoffLineage":[{"ticketId"'),
+      content: expect.not.stringContaining('"handoffLineage"'),
     });
     expect(missionInstruction).toMatchObject({
-      content: expect.stringContaining('"summary":"需求已接收"'),
+      content: expect.stringContaining('"objective":"build the agreed product"'),
     });
     expect(missionInstruction).toMatchObject({
       content: expect.stringContaining('"objective":"build the agreed product"'),
@@ -422,7 +422,19 @@ describe("MissionProcessManager", () => {
       ownerPrincipalId: "principal-boss",
       teamBinding: fixture.team,
       resolvedStart: {
-        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "deliver the complete agreed product"),
+        planDefinition: (() => {
+          const definition = createMinimalTeamPlanDefinition(fixture.policy.ref, "deliver the complete agreed product");
+          return {
+            ...definition,
+            amendmentTemplate: { ...definition.amendmentTemplate, outputContract: { schemaRef: "plan-change-set-v3" } },
+            initialChange: {
+              ...definition.initialChange,
+              additions: definition.initialChange.additions.map((node) => node.permissions?.amendPlan
+                ? { ...node, outputContract: { schemaRef: "plan-change-set-v3" } }
+                : node),
+            },
+          };
+        })(),
         teamBindingId: fixture.team.teamBindingId,
       },
     });

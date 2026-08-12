@@ -329,6 +329,75 @@ describe("client view model", () => {
     });
   });
 
+  it("explains mock-provider blockers as model-service configuration", () => {
+    const blocked = {
+      ...snapshot("blocked"),
+      tickets: [{
+        id: "tk_dev",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "work" as const,
+        status: "blocked" as const,
+        brief: "实现真实交付",
+        expectedArtifact: "delivery-v1",
+        targetAgentId: "wa_dev",
+        targetRole: "dev" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: {
+          type: "external_dependency" as const,
+          reason: "当前项目使用模拟模型服务，无法真实写文件、启动服务或完成浏览器验收。",
+          details: { provider: "mock", requiredFor: "delivery-v1" },
+        },
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+
+    expect(buildBlockedPanelCopy(blocked)).toEqual({
+      title: "模型服务未配置",
+      hint: "当前项目使用模拟模型服务，无法真实写文件、启动服务或完成浏览器验收。",
+    });
+  });
+
+  it("presents a stalled Agent as an explicit recovery responsibility", () => {
+    const stalled = {
+      ...snapshot("blocked"),
+      tickets: [{
+        id: "tk_qa",
+        workspaceId: "ws_1",
+        taskId: "task_1",
+        taskRunId: "tr_1",
+        type: "work" as const,
+        status: "blocked" as const,
+        brief: "提交验收结论",
+        expectedArtifact: "assurance-v1",
+        targetAgentId: "wa_qa",
+        targetRole: "qa" as const,
+        priority: 0,
+        attempt: 1,
+        blocker: {
+          type: "agent_stalled" as const,
+          reason: "负责 Agent 已停止推进，项目需要重试、重新分派或调整工作方案。",
+          details: { reason: "repeated_execution_retry_without_progress" },
+        },
+        createdAt: "now",
+        updatedAt: "now",
+      }],
+    };
+
+    expect(taskControlMode(stalled)).toBe("blocked");
+    expect(buildBlockedPanelCopy(stalled)).toEqual({
+      title: "工单执行已停滞",
+      hint: "负责 Agent 已停止推进，项目需要重试、重新分派或调整工作方案。",
+    });
+    expect(buildHumanFlowPrompt(stalled)).toMatchObject({
+      agentId: "wa_qa",
+      waiter: "测试",
+    });
+  });
+
   it("turns manual QA blockers into explicit human test actions", () => {
     const ticket = {
       id: "tk_qa",

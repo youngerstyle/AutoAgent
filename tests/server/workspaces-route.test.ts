@@ -26,6 +26,38 @@ describe("workspaces route", () => {
     expect(listed.body.workspaces).toHaveLength(roots.length);
   });
 
+  it("keeps one durable workspace identity when the same project folder is opened again", async () => {
+    const { app, rootPath } = await createFixture();
+
+    const first = await request(app)
+      .post("/api/workspaces")
+      .send({ name: "First name", rootPath, policyProfile: "development" })
+      .expect(201);
+    const second = await request(app)
+      .post("/api/workspaces")
+      .send({ name: "Second name", rootPath, policyProfile: "development" })
+      .expect(201);
+
+    expect(second.body.workspace.id).toBe(first.body.workspace.id);
+    expect(second.body.workspace.name).toBe("First name");
+    const listed = await request(app).get("/api/workspaces").expect(200);
+    expect(listed.body.workspaces).toEqual([first.body.workspace]);
+  });
+
+  it("recovers the workspace identity from the project manifest when the global registry is lost", async () => {
+    const firstHome = await mkdtemp(path.join(os.tmpdir(), "autoagent-workspaces-first-home-"));
+    const secondHome = await mkdtemp(path.join(os.tmpdir(), "autoagent-workspaces-second-home-"));
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "autoagent-workspaces-durable-root-"));
+    const firstStore = new WorkspaceStore(firstHome);
+    const secondStore = new WorkspaceStore(secondHome);
+
+    const first = await firstStore.create({ name: "Durable project", rootPath, policyProfile: "development" });
+    const recovered = await secondStore.create({ name: "Imported project", rootPath, policyProfile: "production" });
+
+    expect(recovered).toEqual(first);
+    await expect(secondStore.list()).resolves.toEqual([first]);
+  });
+
   it("removes a workspace from AutoAgent without deleting the local folder by default", async () => {
     const { app, rootPath } = await createFixture();
     await writeFile(path.join(rootPath, "keep.txt"), "still here", "utf8");

@@ -20,12 +20,16 @@ import type {
   TicketHandoff,
   TicketId,
   PlanId,
+  PlanIntent,
+  PlanChangeSet,
   PlannedTicketAssignment,
   TicketRequiredInput,
 } from "../../shared/contracts/ticket-engine.js";
+import { compilePlanIntent, PlanIntentError, type PlanCompilerSnapshot } from "../tickets/plan-intent-compiler.js";
 import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
 import {
+  proposalToCompiledPlanCommand,
   proposalToPlanChangeCommand,
   planResultToGoalDecision,
   proposalToTicketCommand,
@@ -571,6 +575,10 @@ export class MissionProcessManager {
         fromTicketId: String(edge.fromTicketId),
         toTicketId: String(edge.toTicketId),
       })),
+      failureResolutionEdges: (plan.graph.failureResolutionEdges ?? []).map((edge) => ({
+        failedTicketId: String(edge.failedTicketId),
+        resolutionTicketId: String(edge.resolutionTicketId),
+      })),
       requiredTerminalTicketIds: plan.completionPolicy.requiredTerminalTicketIds.map(String),
       requiredTerminalCapabilities: this.team.deliveryPolicy?.requiredTerminalCapabilities ?? [],
       ...(missionBaseline ? { missionBaseline } : {}),
@@ -1011,10 +1019,10 @@ export class MissionProcessManager {
     const schemaRef = goal.spec.outputContract?.schemaRef;
     const authoritativeMission = await this.requireAggregate();
     const missionBaseline = authoritativeMission.record.baseline ?? aggregate.record.baseline;
-    const planContext = schemaRef === "plan-change-set-v3"
+    const planContext = isPlanningSchema(schemaRef)
       ? await this.sharedPlanContext(link.planId, missionBaseline)
       : undefined;
-    let proposal = schemaRef === "plan-change-set-v3"
+    let proposal = isPlanningSchema(schemaRef)
       ? {
           ...storedProposal,
           domainOutcome: normalizeMissionPlanCriterionIndexes(
@@ -1140,9 +1148,11 @@ export class MissionProcessManager {
         lastDecisionId: decisionId,
       });
     }
-    const planCommand = schemaRef === "plan-change-set-v3"
-      ? proposalToPlanChangeCommand(proposal as never, active, plan.version, this.now().toISOString(), planContext)
-      : undefined;
+    const planCommand = schemaRef === "plan-intent-v1" && planContext
+      ? proposalToCompiledPlanCommand(proposal as never, active, plan.version, this.now().toISOString(), planContext)
+      : schemaRef === "plan-change-set-v3"
+        ? proposalToPlanChangeCommand(proposal as never, active, plan.version, this.now().toISOString(), planContext)
+        : undefined;
     if (planCommand) {
       const planResult = await this.tickets.getPlanCommandResult(link.planId, planCommand.commandId)
         ?? await this.tickets.applyPlan(planCommand);
@@ -1426,8 +1436,39 @@ export async function validateTeamAssignments(
   tickets?: Pick<TicketPort, "getWorkItem">,
   currentPlan?: SharedPlanContext,
 ): Promise<string | undefined> {
-  if (schemaRef !== "plan-change-set-v3" || !outcome?.change || typeof outcome.change !== "object" || Array.isArray(outcome.change)) return undefined;
-  const change = outcome.change as unknown as {
+  if (schemaRef !== "plan-intent-v1" && schemaRef !== "plan-change-set-v3") return undefined;
+  let compiledChange: PlanChangeSet | undefined;
+  if (schemaRef === "plan-intent-v1") {
+    if (!outcome?.intent || typeof outcome.intent !== "object" || Array.isArray(outcome.intent) || !currentPlan) {
+      return "plan-intent-v1 缺少可编译的 intent 或当前 Plan 快照";
+    }
+    try {
+      compiledChange = compilePlanIntent(outcome.intent as unknown as PlanIntent, {
+        planId: currentPlan.planId,
+        sourceTicketId: "plan-intent-validation" as TicketId,
+        tickets: currentPlan.tickets.map((ticket) => ({
+          ticketId: ticket.ticketId as TicketId,
+          status: ticket.status as PlanCompilerSnapshot["tickets"][number]["status"],
+          ...(ticket.deliveryIncrement ? { deliveryIncrement: structuredClone(ticket.deliveryIncrement) } : {}),
+          ...(ticket.assurance ? { assurance: structuredClone(ticket.assurance) } : {}),
+        })),
+        dependencyEdges: currentPlan.dependencyEdges.map((edge) => ({
+          fromTicketId: edge.fromTicketId as TicketId,
+          toTicketId: edge.toTicketId as TicketId,
+        })),
+        requiredTerminalTicketIds: currentPlan.requiredTerminalTicketIds.map((ticketId) => ticketId as TicketId),
+        failureResolutionEdges: (currentPlan.failureResolutionEdges ?? []).map((edge) => ({
+          failedTicketId: edge.failedTicketId as TicketId,
+          resolutionTicketId: edge.resolutionTicketId as TicketId,
+        })),
+      });
+    } catch (error) {
+      return error instanceof PlanIntentError ? error.message : String(error);
+    }
+  }
+  const rawChange = compiledChange ?? outcome?.change;
+  if (!rawChange || typeof rawChange !== "object" || Array.isArray(rawChange)) return undefined;
+  const change = rawChange as unknown as {
     additions: Array<{ clientRef: string; assignment: PlannedTicketAssignment; permissions?: { settleMission?: boolean } }>;
     requiredTerminalRefs: Array<{ clientRef?: string; ticketId?: TicketId }>;
   };
@@ -1466,7 +1507,7 @@ export async function validateTeamAssignments(
     }
   }
   if (currentPlan?.missionBaseline) {
-    const assurance = validateMissionPlanAssurance(currentPlan.missionBaseline, outcome.change, currentPlan, outcome.result);
+    const assurance = validateMissionPlanAssurance(currentPlan.missionBaseline, rawChange, currentPlan, outcome?.result);
     if (!assurance.valid) return assurance.reason;
   }
   return undefined;
@@ -1506,4 +1547,8 @@ function isActiveLink(link: MissionLink): link is ActiveMissionLink {
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(JSON.stringify(parts)).digest("base64url")}`;
+}
+
+function isPlanningSchema(schemaRef: string | undefined): boolean {
+  return schemaRef === "plan-intent-v1" || schemaRef === "plan-change-set-v3";
 }

@@ -373,6 +373,7 @@ describe("RuntimeHost", () => {
     expect(snapshot.status).toBe("running");
     expect(snapshot.phase).toBe("running");
     expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("idle");
+    expect(snapshot.tickets?.every((ticket) => Boolean(ticket.targetAgentId && ticket.targetRole))).toBe(true);
   });
 
   it("recovers an unconsumed private message for an idle Agent after host restart", async () => {
@@ -793,13 +794,13 @@ describe("RuntimeHost", () => {
     expect(startsAfter - startsBefore).toBe(1);
   });
 
-  it("pauses after the same schema-invalid plan proposal repeats without progress", async () => {
+  it("stops repeated schema-invalid provider output at the Agent contract boundary", async () => {
     const fixture = await createFixture();
     let planningTurns = 0;
     fixture.providers.get = async () => ({
       name: "mock",
       async runModelTurn(input) {
-        const planning = JSON.stringify(input.history).includes("输出契约 plan-change-set-v3");
+        const planning = JSON.stringify(input.history).includes("plan-intent-v1");
         if (planning) planningTurns += 1;
         const structured = planning
           ? {
@@ -835,14 +836,18 @@ describe("RuntimeHost", () => {
 
     await fixture.host.createTask({ taskId: "task-no-progress", title: "演示", objective: "构建演示" });
     for (let index = 0; index < 12 && planningTurns < 2; index += 1) await fixture.host.tick();
-
     expect(planningTurns).toBe(2);
     for (let index = 0; index < 4; index += 1) await fixture.host.tick();
     expect(planningTurns).toBe(2);
   });
 
-  it("backs off one turn after the same invalid tool call repeats without progress", async () => {
-    const fixture = await createFixture();
+  it("blocks and exposes ownership after repeated invalid terminal submissions", async () => {
+    let now = new Date("2026-07-24T07:00:00.000Z");
+    const fixture = await createFixture({
+      now: () => now,
+      providerRetryBaseMs: 5_000,
+      providerRetryMaxMs: 5_000,
+    });
     let modelTurns = 0;
     fixture.providers.get = async () => ({
       name: "mock",
@@ -871,6 +876,21 @@ describe("RuntimeHost", () => {
 
     await fixture.host.tick();
     expect(modelTurns).toBe(2);
+
+    now = new Date(now.getTime() + 5_000);
+    await fixture.host.tick();
+    expect(modelTurns).toBe(4);
+    now = new Date(now.getTime() + 5_000);
+    await fixture.host.tick();
+
+    const snapshot = await fixture.host.snapshot();
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.tickets?.find((ticket) => ticket.status === "blocked")).toMatchObject({
+      targetAgentId: "wa_boss",
+      targetRole: "boss",
+      blocker: { type: "agent_stalled" },
+    });
+    expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("blocked");
   });
 
   it("continues beyond twenty successful Pi tool calls and returns each result to the next model turn", async () => {
@@ -1573,6 +1593,31 @@ describe("RuntimeHost", () => {
     const fixture = await createFixture();
     await fixture.host.start();
     await fixture.host.stop();
+  });
+
+  it("contains a background staffing failure inside the affected task", async () => {
+    const fixture = await createFixture({ useStaffing: true });
+    await fixture.host.createTask({ taskId: "task-staffing-failure", title: "Build", objective: "Build a product" });
+    const host = fixture.host as unknown as {
+      staffing: { runOnce(taskId: string): Promise<never> };
+      tickUnlocked(awaitAgentRuns?: boolean): Promise<void>;
+    };
+    host.staffing.runOnce = async () => {
+      throw new Error("staffing state is inconsistent");
+    };
+
+    await expect(host.tickUnlocked(false)).resolves.toBeUndefined();
+    let snapshot = await fixture.host.snapshot();
+    for (let attempt = 0; attempt < 20 && snapshot.status !== "failed"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      snapshot = await fixture.host.snapshot();
+    }
+
+    expect(snapshot.status).toBe("failed");
+    expect(snapshot.runtimeError).toMatchObject({
+      source: "staffing",
+      message: "staffing state is inconsistent",
+    });
   });
 
   it("drains a wake requested while a background tick is already running", async () => {
@@ -2332,6 +2377,7 @@ async function createFixture(options: {
   now?: () => Date;
   providerRetryBaseMs?: number;
   providerRetryMaxMs?: number;
+  useStaffing?: boolean;
 } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-home-"));
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-ws-"));
@@ -2354,12 +2400,14 @@ async function createFixture(options: {
     now: options.now,
     providerRetryBaseMs: options.providerRetryBaseMs,
     providerRetryMaxMs: options.providerRetryMaxMs,
-    initialTeamBinding: async () => createTeamBinding(
-      workspace,
-      await listWorkspaceAgents(workspace),
-      await profiles.list(),
-      "minimal-team",
-    ),
+    initialTeamBinding: options.useStaffing
+      ? undefined
+      : async () => createTeamBinding(
+          workspace,
+          await listWorkspaceAgents(workspace),
+          await profiles.list(),
+          "minimal-team",
+        ),
   });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
 }

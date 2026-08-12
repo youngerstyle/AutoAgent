@@ -59,6 +59,11 @@ export class StaffingCoordinator {
     private readonly requiredCapabilities: readonly string[],
     private readonly projectHistory: () => Promise<ProjectTaskFact[]> = async () => [],
     private readonly now: () => Date = () => new Date(),
+    private readonly retryPolicy: {
+      maxProviderFailures: number;
+      baseDelayMs: number;
+      maxDelayMs: number;
+    } = { maxProviderFailures: 3, baseDelayMs: 5_000, maxDelayMs: 60_000 },
   ) {
     this.store = new StaffingRequestStore(workspace.rootPath);
   }
@@ -180,11 +185,28 @@ export class StaffingCoordinator {
     if (request.proposal) return { request, outcome: request.proposal };
     if (result.status === "yielded" && result.providerRetryable) {
       const failures = (request.providerFailures ?? 0) + 1;
+      if (failures >= this.retryPolicy.maxProviderFailures) {
+        request = {
+          ...request,
+          status: "blocked",
+          providerFailures: failures,
+          retryAt: undefined,
+          blockReason: result.blockedMessage
+            ? `模型服务连续失败 ${failures} 次，已停止自动重试：${result.blockedMessage}`
+            : `模型服务连续失败 ${failures} 次，已停止自动重试。请检查 Provider 配置或网络连接后重试。`,
+          updatedAt: this.now().toISOString(),
+        };
+        await this.store.save(request);
+        return { request };
+      }
       request = {
         ...request,
         status: "pending",
         providerFailures: failures,
-        retryAt: new Date(this.now().getTime() + Math.min(60_000, 5_000 * (2 ** Math.min(failures - 1, 4)))).toISOString(),
+        retryAt: new Date(this.now().getTime() + Math.min(
+          this.retryPolicy.maxDelayMs,
+          this.retryPolicy.baseDelayMs * (2 ** Math.min(failures - 1, 4)),
+        )).toISOString(),
         blockReason: result.blockedMessage,
         updatedAt: this.now().toISOString(),
       };

@@ -25,19 +25,29 @@ export class WorkspaceStore {
   async create(input: { name: string; rootPath: string; policyProfile?: PolicyProfile }): Promise<Workspace> {
     const rootPath = path.resolve(input.rootPath);
     await mkdir(rootPath, { recursive: true });
-    const workspace: Workspace = {
-      id: createId("ws"),
-      name: input.name.trim() || path.basename(rootPath),
-      rootPath,
-      policyProfile: input.policyProfile ?? "production",
-      createdAt: new Date().toISOString()
-    };
-    await this.ensureWorkspaceFiles(workspace);
     return withRegistryMutation(globalWorkspacesFile(this.homeDir), async () => {
       const all = await this.list();
-      const withoutDuplicate = all.filter((item) => path.resolve(item.rootPath).toLowerCase() !== rootPath.toLowerCase());
-      withoutDuplicate.push(workspace);
-      await writeJson(globalWorkspacesFile(this.homeDir), withoutDuplicate);
+      const registered = all.find((item) => normalizePath(item.rootPath) === normalizePath(rootPath));
+      if (registered) {
+        await this.ensureWorkspaceFiles(registered);
+        return registered;
+      }
+
+      const manifest = await readJson<Workspace | undefined>(workspaceFile(rootPath), undefined);
+      const workspace: Workspace = isWorkspaceManifest(manifest)
+        ? { ...manifest, rootPath }
+        : {
+            id: createId("ws"),
+            name: input.name.trim() || path.basename(rootPath),
+            rootPath,
+            policyProfile: input.policyProfile ?? "production",
+            createdAt: new Date().toISOString()
+          };
+      await this.ensureWorkspaceFiles(workspace);
+      await writeJson(globalWorkspacesFile(this.homeDir), [
+        ...all.filter((item) => item.id !== workspace.id),
+        workspace,
+      ]);
       return workspace;
     });
   }
@@ -89,6 +99,16 @@ function assertSafeWorkspaceRemovalPath(rootPath: string): void {
 
 function normalizePath(value: string): string {
   return path.resolve(value).toLowerCase();
+}
+
+function isWorkspaceManifest(value: Workspace | undefined): value is Workspace {
+  return Boolean(value
+    && typeof value.id === "string"
+    && value.id.length > 0
+    && typeof value.name === "string"
+    && typeof value.rootPath === "string"
+    && (value.policyProfile === "development" || value.policyProfile === "production")
+    && typeof value.createdAt === "string");
 }
 
 async function ensureGitignore(rootPath: string): Promise<void> {

@@ -31,6 +31,25 @@ export async function writeJson(filePath: string, value: unknown): Promise<void>
   }
 }
 
+export async function updateJson<T>(filePath: string, fallback: T, update: (current: T) => T | Promise<T>): Promise<T> {
+  const key = path.resolve(filePath).toLowerCase();
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  const operation = previous.catch(() => undefined).then(async () => {
+    const next = await update(await readJson(filePath, fallback));
+    await writeJsonNow(filePath, next);
+    return next;
+  });
+  const queued = operation.then(() => undefined, () => undefined);
+  writeQueues.set(key, queued);
+  try {
+    return await operation;
+  } finally {
+    if (writeQueues.get(key) === queued) {
+      writeQueues.delete(key);
+    }
+  }
+}
+
 async function writeJsonNow(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;

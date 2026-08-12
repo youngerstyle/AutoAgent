@@ -16,3 +16,6 @@ dist/
 .tank*-snapshot.json
 .env
 .env.*
+.gstack/
+acceptance/
+runtime-logs/

@@ -65,6 +65,39 @@ export class MockProvider implements AgentModelProvider {
         };
       }
     }
+    if (isRealDeliveryTicket(ticket) && !mockDeliveryAllowed()) {
+      if (input.tools.some((tool) => tool.name === "request_human_input")) {
+        return {
+          items: [{
+            type: "tool_call",
+            callId: `mock-delivery-blocked-${input.history.length}`,
+            name: "request_human_input",
+            arguments: {
+              kind: "credential",
+              description: "当前项目使用模拟模型服务，无法真实写文件、启动服务或完成浏览器验收。请在模型服务页配置 OpenAI 或 Anthropic 后继续。",
+              details: { provider: "mock", requiredFor: ticket.outputSchema ?? "real-delivery" },
+            },
+          }],
+          usage: { inputTokens: 20, outputTokens: 18, totalTokens: 38 },
+        };
+      }
+      return {
+        items: [{
+          type: "tool_call",
+          callId: `mock-delivery-blocked-${input.history.length}`,
+          name: "goal_resolution",
+          arguments: {
+            status: "failed",
+            summary: "模拟服务不能执行真实交付",
+            evidence: [],
+            criterionResults: failedCriteria(prompt),
+            residualRisks: ["请为项目成员配置 OpenAI 或 Anthropic Provider 后重新运行；模拟服务只用于协议测试，不会真实写文件、启动服务或完成浏览器验收"],
+            domainOutcome: { reason: "真实交付工单不能由模拟服务完成" },
+          },
+        }],
+        usage: { inputTokens: 20, outputTokens: 18, totalTokens: 38 },
+      };
+    }
     if (ticket.outputSchema === "mission-assurance-v1"
       && evidenceIds.length === 0
       && input.tools.some((tool) => tool.name === "request_human_input")
@@ -105,6 +138,22 @@ export class MockProvider implements AgentModelProvider {
       usage: { inputTokens: 20, outputTokens: 15, totalTokens: 35 },
     };
   }
+}
+
+function isRealDeliveryTicket(ticket: { outputSchema?: string; settleMission: boolean }): boolean {
+  return ticket.outputSchema === "delivery-v1"
+    || ticket.outputSchema === "mission-assurance-v1"
+    || (ticket.outputSchema === "acceptance-v1" && ticket.settleMission);
+}
+
+function mockDeliveryAllowed(): boolean {
+  return process.env.NODE_ENV === "test" || process.env.AUTOAGENT_ALLOW_MOCK_DELIVERY === "1";
+}
+
+function failedCriteria(instructions: string) {
+  const criteria = completedCriteria(instructions);
+  const source = criteria.length ? criteria : [{ criterionIndex: 0, status: "satisfied", evidence: [] }];
+  return source.map((criterion) => ({ ...criterion, status: "not_verified" as const }));
 }
 
 /**
@@ -251,6 +300,42 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
             anchors: [{ observableOutcome: "真实交付物可运行且关键结果可观察", evidenceRequirements: ["工具产生的可追溯验收证据"] }],
           }],
           constraints: [], assumptions: [], exclusions: [],
+        },
+      },
+    };
+  }
+  if (ticket.outputSchema === "plan-intent-v1" && !ticket.settleMission) {
+    const criterionIndexes = missionCriterionIndexes(instructions);
+    return {
+      status: "completed",
+      summary: "已形成可编译的交付意图",
+      evidence: [],
+      criterionResults: completedCriteria(instructions),
+      residualRisks: [],
+      domainOutcome: {
+        intent: {
+          rationale: "形成实现、独立验证和最终验收的可验证交付",
+          increments: [{
+            intentRef: "delivery",
+            title: "可验证交付",
+            objective: "实现目标并完成独立验收",
+            workItems: [
+              {
+                ...intentNode("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
+                missionContribution: { missionCriterionIndexes: criterionIndexes },
+              },
+              {
+                ...intentNode("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
+                dependsOn: ["implementation"],
+                assurance: { missionCriterionIndexes: criterionIndexes },
+              },
+              {
+                ...intentNode("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
+                dependsOn: ["qa"],
+                permissions: { settleMission: true },
+              },
+            ],
+          }],
         },
       },
     };
@@ -448,7 +533,8 @@ function missionCriterionIds(instructions: string): string[] {
 }
 
 function missionCriterionIndexes(instructions: string): number[] {
-  return workContext(instructions).currentPlan?.missionBaseline?.criteria?.map((_criterion, index) => index) ?? [];
+  const declared = [...instructions.matchAll(/"criterionIndex":(\d+)/g)].map((match) => Number(match[1]));
+  return declared.length ? [...new Set(declared)] : workContext(instructions).currentPlan?.missionBaseline?.criteria?.map((_criterion, index) => index) ?? [];
 }
 
 function missionBaselineVersion(instructions: string): number {
@@ -613,10 +699,34 @@ function node(clientRef: string, title: string, objective: string, requiredCapab
     title,
     objective,
     successCriteria: [`${title}达到验收标准`],
-    assignment: { requiredCapabilities, requiredTools: [] },
+    assignment: { requiredCapabilities, requiredTools: mockRequiredTools(schemaRef) },
     outputContract: { schemaRef },
     deliveryIncrement: { incrementId: MOCK_INCREMENT.incrementId },
   };
+}
+
+function intentNode(intentRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
+  const { deliveryIncrement: _deliveryIncrement, clientRef: _clientRef, ...work } = node(
+    intentRef,
+    title,
+    objective,
+    requiredCapabilities,
+    schemaRef,
+  );
+  return { intentRef, ...work };
+}
+
+function mockRequiredTools(schemaRef: string): string[] {
+  if (schemaRef === "delivery-v1") {
+    return ["listFiles", "readFile", "writeFile", "editFile", "shell"];
+  }
+  if (schemaRef === "mission-assurance-v1") {
+    return ["listFiles", "readFile", "shell", "browser"];
+  }
+  if (schemaRef === "acceptance-v1") {
+    return ["listFiles", "readFile"];
+  }
+  return [];
 }
 
 let MOCK_INCREMENT = {

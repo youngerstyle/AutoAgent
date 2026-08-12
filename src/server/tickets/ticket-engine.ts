@@ -26,6 +26,7 @@ import type {
   TransferBlockedOwnershipRequest,
 } from "../../shared/contracts/ticket-engine.js";
 import {
+  computeRequiredClosure,
   DEFAULT_GRAPH_LIMITS,
   evaluatePlanOutcome,
   findUnresolvedRequiredFailures,
@@ -229,7 +230,17 @@ export class TicketEngine {
             );
           }
           const added = createTickets(materialized, command.planId).filter((ticket) => materialized.addedTicketIds.includes(ticket.ticketId));
-          const cancellationIds = new Set(payload.change.cancelTicketIds.map(String));
+          const requiredClosure = new Set([...computeRequiredClosure(
+            materialized.graph,
+            materialized.completionPolicy.requiredTerminalTicketIds,
+          )].map(String));
+          const cancellationIds = new Set([
+            ...payload.change.cancelTicketIds.map(String),
+            ...current.tickets
+              .filter((ticket) => (ticket.status === "pending" || ticket.status === "ready")
+                && !requiredClosure.has(String(ticket.ticketId)))
+              .map((ticket) => String(ticket.ticketId)),
+          ]);
           const cancelled = tickets
             .filter((ticket) => cancellationIds.has(String(ticket.ticketId)))
             .map((ticket) => cancelTicket(ticket, command.issuedAt, "Cancelled by Plan change"));

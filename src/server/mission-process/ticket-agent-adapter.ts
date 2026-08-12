@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { AgentHumanInputRequest, GoalResolutionDecision, GoalResolutionProposal, GoalResolutionStatus } from "../../shared/contracts/agent-engine.js";
 import type { ActiveMissionLink, MissionBaseline } from "../../shared/contracts/mission-control.js";
-import type { PlanChangeSet, PlanCommandEnvelope, PlanCommandResult, TicketAttemptChangeSet, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
+import type { PlanChangeSet, PlanCommandEnvelope, PlanCommandResult, PlanIntent, TicketAttemptChangeSet, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
 import type { WorkspaceToolName } from "../../shared/types.js";
+import { compilePlanIntent, PlanIntentError, type PlanCompilerSnapshot } from "../tickets/plan-intent-compiler.js";
 
 export type MissionTicketOutcome = Record<string, unknown>;
 
@@ -112,6 +113,7 @@ export interface SharedPlanContext {
     satisfiedMissionCriterionIds?: string[];
   }>;
   dependencyEdges: Array<{ fromTicketId: string; toTicketId: string }>;
+  failureResolutionEdges?: Array<{ failedTicketId: string; resolutionTicketId: string }>;
   requiredTerminalTicketIds: string[];
   requiredTerminalCapabilities?: string[];
   missionBaseline?: MissionBaseline;
@@ -127,7 +129,7 @@ export function normalizeMissionPlanCriterionIndexes(
   value: unknown,
   baseline?: MissionBaseline,
 ): MissionTicketOutcome {
-  if (!isRecord(value) || !baseline || !isRecord(value.change) || !Array.isArray(value.change.additions)) {
+  if (!isRecord(value) || !baseline) {
     return isRecord(value) ? value : {};
   }
 
@@ -143,11 +145,7 @@ export function normalizeMissionPlanCriterionIndexes(
     return { ...rest, missionCriterionIds };
   };
 
-  return {
-    ...value,
-    change: {
-      ...value.change,
-      additions: value.change.additions.map((candidate) => {
+  const mapItems = (items: unknown[]): unknown[] => items.map((candidate) => {
         if (!isRecord(candidate)) return candidate;
         const missionContribution = mapCriterionIndexes(candidate.missionContribution);
         const assurance = mapCriterionIndexes(candidate.assurance);
@@ -156,9 +154,21 @@ export function normalizeMissionPlanCriterionIndexes(
           ...(missionContribution ? { missionContribution } : {}),
           ...(assurance ? { assurance } : {}),
         };
-      }),
+      });
+  if (isRecord(value.intent) && Array.isArray(value.intent.increments)) return {
+    ...value,
+    intent: {
+      ...value.intent,
+      increments: value.intent.increments.map((increment) => isRecord(increment) && Array.isArray(increment.workItems)
+        ? { ...increment, workItems: mapItems(increment.workItems) }
+        : increment),
     },
   };
+  if (isRecord(value.change) && Array.isArray(value.change.additions)) return {
+    ...value,
+    change: { ...value.change, additions: mapItems(value.change.additions) },
+  };
+  return value;
 }
 
 const MAX_HANDOFF_OUTPUT_CHARS = 6_000;
@@ -180,6 +190,12 @@ export function validateMissionTicketOutcome(
   if (status !== "completed") return { valid: true };
   if (!isRecord(value)) return { valid: false, reason: `输出契约 ${schemaRef ?? "未定义"} 要求结构化领域结果` };
   const disposition = value.disposition;
+  if (schemaRef === "plan-intent-v1" && disposition !== undefined && disposition !== "complete") {
+    return {
+      valid: false,
+      reason: "plan-intent-v1 的 goal_resolution 只能省略 disposition 或使用 complete；纠错和计划变更必须调用独立工作流工具",
+    };
+  }
   if (schemaRef === "mission-assurance-v1" && disposition === "complete") {
     return { valid: false, reason: "mission-assurance-v1 正向完成只由顶层 status=completed 表示，domainOutcome 只能包含 assuranceReport" };
   }
@@ -197,7 +213,7 @@ export function validateMissionTicketOutcome(
     return { valid: true };
   }
   if (disposition === "plan_change_required") {
-    if (schemaRef === "plan-change-set-v3") return { valid: false, reason: "计划修订工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 change" };
+    if (schemaRef === "plan-intent-v1" || schemaRef === "plan-change-set-v3") return { valid: false, reason: "计划工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 intent" };
     return isNonEmptyString(value.reason) ? { valid: true } : { valid: false, reason: "plan_change_required 需要 reason" };
   }
   if (schemaRef === "plan-change-set-v3") {
@@ -206,6 +222,16 @@ export function validateMissionTicketOutcome(
     if (error) return { valid: false, reason: error };
     const strategyError = validateDeliveryStrategy(value.result, value.change, currentPlan);
     if (strategyError) return { valid: false, reason: strategyError };
+  }
+  if (schemaRef === "plan-intent-v1") {
+    if (!isRecord(value.intent)) return { valid: false, reason: "plan-intent-v1 requires an intent object" };
+    try {
+      // Structural compilation is performed again with the authoritative Plan
+      // snapshot at commit time. This pass rejects malformed semantic intent.
+      validatePlanIntentShape(value.intent);
+    } catch (error) {
+      return { valid: false, reason: error instanceof Error ? error.message : String(error) };
+    }
   }
   if (schemaRef === "mission-baseline-v1") {
     const error = validateBaselineValue(value.baseline);
@@ -708,6 +734,8 @@ export function validateMissionPlanAssurance(
         .filter((node) => node.incrementSequence === previousSequence)
         .filter((node) => !node.closed)
         .filter((node) => !resolvedHistoricalFailures.has(node.key))
+        .filter((node) => ![...resolvedHistoricalFailures]
+          .some((failedKey) => ancestorsOf(node.key).has(failedKey)))
         .filter((node) => !cancelledPendingTickets.has(node.key))
         .filter((node) => !(forward.get(node.key) ?? [])
           .some((childKey) => nodes.get(childKey)?.incrementSequence === previousSequence))
@@ -1050,6 +1078,42 @@ function truncateText(value: string, maxChars: number): string {
 }
 
 export function missionOutcomeInstruction(schemaRef: string, availableCapabilities: readonly string[] = [], correctionTargets: readonly CorrectionTargetContext[] = [], sourceTicketId?: TicketId, sharedPlanContext?: SharedPlanContext, upstreamDeliveries: readonly UpstreamDeliveryContext[] = [], assignmentContext?: TicketAssignmentContext, settlementEvidence?: MissionSettlementEvidence): string {
+  if (schemaRef === "plan-intent-v1") {
+    const criterionIndexTable = sharedPlanContext?.missionBaseline?.criteria.map((criterion, criterionIndex) => ({
+      criterionIndex,
+      criterion: criterion.text,
+    })) ?? [];
+    const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队实际拥有的能力";
+    const planningContext = {
+      missionBaseline: sharedPlanContext?.missionBaseline ? {
+        objective: sharedPlanContext.missionBaseline.objective,
+        criteria: sharedPlanContext.missionBaseline.criteria.map((criterion, criterionIndex) => ({
+          criterionIndex,
+          text: criterion.text,
+          anchors: criterion.verification.anchors,
+        })),
+        constraints: sharedPlanContext.missionBaseline.constraints,
+        assumptions: sharedPlanContext.missionBaseline.assumptions,
+        exclusions: sharedPlanContext.missionBaseline.exclusions,
+      } : undefined,
+      deliveryHistory: uniqueDeliveryIncrements(sharedPlanContext).map((increment) => ({
+        title: increment.title,
+        objective: increment.objective,
+      })),
+      currentWork: assignmentContext ? {
+        title: assignmentContext.ticket.title,
+        objective: assignmentContext.ticket.objective,
+        successCriteria: assignmentContext.ticket.successCriteria,
+      } : undefined,
+      teamCapabilities: sharedPlanContext?.teamMembers.map((member) => ({
+        capabilities: member.capabilities,
+        enabledTools: member.enabledTools,
+      })) ?? [],
+    };
+    const ticketCriteria = assignmentContext?.ticket.successCriteria ?? [];
+    const goalEnvelope = `[current-ticket]\noutput-schema=plan-intent-v1\nsettle-mission=false\n[/current-ticket]\n成功标准：\n${ticketCriteria.map((criterion) => `- ${criterion}`).join("\n")}\n`;
+    return `${goalEnvelope}当前 Goal 是规划工作。规划上下文：${JSON.stringify(planningContext)}。你只描述业务交付意图，不得生成 Ticket UUID、DAG edge、增量 sequence、底层终点引用、成员 ID 或证据 ID。输出契约 plan-intent-v1：domainOutcome 使用 {intent:{rationale,increments:[{intentRef,title,objective,workItems:[{intentRef,title,objective,successCriteria,assignment:{requiredCapabilities,requiredTools?},outputContract,dependsOn?,missionContribution?,assurance?,permissions?}]}]}}。dependsOn 只能引用同一增量内的 work intentRef；增量之间的严格顺序、上一增量全部出口依赖、当前规划工单依赖、平台 ID 和最终终点由 Plan Compiler 确定性生成。每个 Mission criterion 必须由 missionContribution.missionCriterionIndexes 指派给执行工作，并由下游 mission-assurance-v1 工作通过 assurance.missionCriterionIndexes 验证。最后一个增量必须包含一个 permissions.settleMission=true 的最终验收工作，且该工作必须是该增量出口。成功标准索引：${JSON.stringify(criterionIndexTable)}。assignment.requiredCapabilities 只能使用：${capabilities}。缺少不可替代外部输入时调用 request_human_input 进入 blocked，不要编造补充事实。完成时调用 goal_resolution 提交 intent。`;
+  }
   const domainGuidance = legacyMissionOutcomeInstruction(
     schemaRef,
     availableCapabilities,
@@ -1146,6 +1210,49 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
     return `${base} 当前 Ticket 获得 Mission 结算权限。只有你依据当前 Mission baseline 和已完成祖先 Ticket 的 mission-assurance-v1 交付形成最终验收结论后才能正常完成。${evidenceMatrix}全部通过时，domainOutcome 必须使用 {disposition:"complete",missionResolution:{baselineVersion,summary,criterionResults,residualRisks}}；missionResolution 的每个 criterionResult 只提交 {criterionId,status:"satisfied",assuranceTicketIds}，从证据矩阵中选择实际验证该 criterion 的 assurance Ticket。不要手抄 evidenceId、evidence、anchorResults、verificationBasis、observations 或 deviations；Mission Control 会从所选 Ticket 的权威交付中机械装配这些不可变事实。你必须将所选 assurance 的 observations 与 baseline 原文逐项比较；如果 QA 的事实只支持较弱命题、缺少必要对照依据、存在任何 deviations，或 note/observations 与 satisfied 自相矛盾，必须发起纠正或计划变更，不能结算。residualRisks 必须是字符串数组；需要结构化描述时先自行归纳为字符串。若上游 assurance 未覆盖、未满足或未验证，使用 report_goal_correction 或 request_goal_plan_change 提交对应工作流动作，不得同时提交尚未通过的 missionResolution。不得用阶段性交付、自报完成或任意字符串证据代替 Mission 验收。`;
   }
   return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整时才调用 request_human_input；kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，调用 request_human_input(kind="manual_test")；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
+}
+
+export function proposalToCompiledPlanCommand(
+  proposal: GoalResolutionProposal<GoalResolutionStatus, MissionTicketOutcome>,
+  link: ActiveMissionLink,
+  planVersion: number,
+  issuedAt: string,
+  currentPlan: SharedPlanContext,
+): PlanCommandEnvelope | undefined {
+  const outcome = proposal.domainOutcome;
+  if (proposal.status !== "completed" || !outcome || !isRecord(outcome.intent)) return undefined;
+  const change = compilePlanIntent(outcome.intent as unknown as PlanIntent, {
+    planId: currentPlan.planId,
+    sourceTicketId: link.ticketId,
+    tickets: currentPlan.tickets.map((ticket) => ({
+      ticketId: ticket.ticketId as TicketId,
+      status: ticket.status as PlanCompilerSnapshot["tickets"][number]["status"],
+      ...(ticket.deliveryIncrement ? { deliveryIncrement: structuredClone(ticket.deliveryIncrement) } : {}),
+      ...(ticket.assurance ? { assurance: structuredClone(ticket.assurance) } : {}),
+    })),
+    dependencyEdges: currentPlan.dependencyEdges.map((edge) => ({
+      fromTicketId: edge.fromTicketId as TicketId,
+      toTicketId: edge.toTicketId as TicketId,
+    })),
+    requiredTerminalTicketIds: currentPlan.requiredTerminalTicketIds.map((ticketId) => ticketId as TicketId),
+    failureResolutionEdges: (currentPlan.failureResolutionEdges ?? []).map((edge) => ({
+      failedTicketId: edge.failedTicketId as TicketId,
+      resolutionTicketId: edge.resolutionTicketId as TicketId,
+    })),
+  });
+  return {
+    commandId: stableId("plan_intent", JSON.stringify([link.planId, link.ticketId, proposal.proposalId, planVersion, change])),
+    planId: link.planId,
+    actorPrincipalId: link.agentPrincipalId,
+    issuedAt,
+    payload: {
+      type: "apply_change",
+      expectedPlanVersion: planVersion,
+      sourceTicketId: link.ticketId,
+      sourceAuthority: link.authority,
+      change,
+    },
+  };
 }
 
 export function proposalToPlanChangeCommand(
@@ -1341,6 +1448,60 @@ function validateChangeSet(value: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+function validatePlanIntentShape(value: Record<string, unknown>): void {
+  if (!isNonEmptyString(value.rationale)) throw new PlanIntentError("intent.rationale must be non-empty text");
+  if (!Array.isArray(value.increments) || value.increments.length === 0) {
+    throw new PlanIntentError("intent.increments must contain at least one increment");
+  }
+  const incrementRefs = new Set<string>();
+  const workRefs = new Set<string>();
+  for (const [incrementIndex, rawIncrement] of value.increments.entries()) {
+    const incrementPath = `intent.increments[${incrementIndex}]`;
+    if (!isRecord(rawIncrement)) throw new PlanIntentError(`${incrementPath} must be an object`);
+    if (!isNonEmptyString(rawIncrement.intentRef)) throw new PlanIntentError(`${incrementPath}.intentRef must be non-empty text`);
+    if (!isNonEmptyString(rawIncrement.title)) throw new PlanIntentError(`${incrementPath}.title must be non-empty text`);
+    if (!isNonEmptyString(rawIncrement.objective)) throw new PlanIntentError(`${incrementPath}.objective must be non-empty text`);
+    if (!Array.isArray(rawIncrement.workItems) || rawIncrement.workItems.length === 0) {
+      throw new PlanIntentError(`${incrementPath}.workItems must contain at least one work item`);
+    }
+    if (incrementRefs.has(rawIncrement.intentRef)) throw new PlanIntentError(`duplicate increment intentRef ${rawIncrement.intentRef}`);
+    incrementRefs.add(rawIncrement.intentRef);
+    const localRefs = new Set<string>();
+    for (const [workIndex, rawWork] of rawIncrement.workItems.entries()) {
+      const workPath = `${incrementPath}.workItems[${workIndex}]`;
+      if (!isRecord(rawWork)) throw new PlanIntentError(`${workPath} must be an object`);
+      if (!isNonEmptyString(rawWork.intentRef)) throw new PlanIntentError(`${workPath}.intentRef must be non-empty text`);
+      if (!isNonEmptyString(rawWork.title)) throw new PlanIntentError(`${workPath}.title must be non-empty text`);
+      if (!isNonEmptyString(rawWork.objective)) throw new PlanIntentError(`${workPath}.objective must be non-empty text`);
+      if (!isStringArray(rawWork.successCriteria) || rawWork.successCriteria.length === 0) {
+        throw new PlanIntentError(`${workPath}.successCriteria must contain non-empty text`);
+      }
+      if (!isRecord(rawWork.assignment)) throw new PlanIntentError(`${workPath}.assignment must be an object`);
+      if (!isStringArray(rawWork.assignment.requiredCapabilities) || rawWork.assignment.requiredCapabilities.length === 0) {
+        throw new PlanIntentError(`${workPath}.assignment.requiredCapabilities must contain non-empty capability names`);
+      }
+      if (rawWork.assignment.requiredTools !== undefined && !isStringArray(rawWork.assignment.requiredTools)) {
+        throw new PlanIntentError(`${workPath}.assignment.requiredTools must be an array of tool names`);
+      }
+      if (!isRecord(rawWork.outputContract)) {
+        throw new PlanIntentError(`${workPath}.outputContract must be an object with schemaRef`);
+      }
+      if (!isNonEmptyString(rawWork.outputContract.schemaRef)) {
+        throw new PlanIntentError(`${workPath}.outputContract.schemaRef must be non-empty text`);
+      }
+      if (workRefs.has(rawWork.intentRef)) throw new PlanIntentError(`duplicate work intentRef ${rawWork.intentRef}`);
+      workRefs.add(rawWork.intentRef);
+      localRefs.add(rawWork.intentRef);
+    }
+    for (const rawWork of rawIncrement.workItems) {
+      if (!isRecord(rawWork) || rawWork.dependsOn === undefined) continue;
+      if (!Array.isArray(rawWork.dependsOn) || rawWork.dependsOn.some((ref) => !isNonEmptyString(ref) || !localRefs.has(ref))) {
+        throw new PlanIntentError(`${String(rawWork.intentRef)}.dependsOn must reference work in the same increment`);
+      }
+    }
+  }
+}
+
 function normalizePlanChangeSet(
   result: Record<string, unknown>,
   change: Record<string, unknown>,
@@ -1393,6 +1554,7 @@ const REQUIRED_INPUT_KINDS = new Set<TicketRequiredInputKind>([
   "external_fact",
   "irreversible_confirmation",
   "tool_policy",
+  "agent_recovery",
 ]);
 function requiredInputValue(value: unknown): TicketRequiredInput | undefined {
   if (!isRecord(value) || !isNonEmptyString(value.kind) || !REQUIRED_INPUT_KINDS.has(value.kind as TicketRequiredInputKind)

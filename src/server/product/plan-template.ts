@@ -1,7 +1,7 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 7;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 8;
 
 export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, originalRequest: string): PlanDefinition {
   if (!originalRequest.trim()) throw new Error("Mission original request is required");
@@ -13,7 +13,7 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
     amendmentTemplate: {
       title: "计划修订",
       successCriteria: ["核对结构变更原因和证据", "追加完成 Mission 所需的新工单和依赖", "保持 Plan 无环且具有可验证终点"],
-      outputContract: { schemaRef: "plan-change-set-v3" },
+      outputContract: { schemaRef: "plan-intent-v1" },
     },
     initialChange: {
       additions: [
@@ -34,7 +34,7 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
         {
           clientRef: "planning",
           title: "计划拆解",
-          objective: "根据需求接收工单的正式交付，把已对齐目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan。正式 handoff 是执行权威；human 原始诉求是不可变的来源审计材料，只用于核对正式 handoff 是否无依据地遗漏、缩小或改写了明确目标，不得用它绕过或覆盖已经记录的澄清、假设与决策。",
+          objective: "根据需求接收工单的正式交付，描述可执行、可验证的业务交付意图；由 Plan Compiler 生成当前 Plan 的 Ticket DAG。正式 handoff 是执行权威，human 原始诉求仅作为不可变的来源审计材料。",
           successCriteria: [
             "逐项核对正式 handoff 与 human 原始诉求中的明确目标；若发现无已记录澄清、假设或排除依据的遗漏、缩小或语义降级，先把需求接收工单作为 correction_required 目标，不得继续生成失真的执行计划",
             "新增实际执行工单，形成完成 Mission 所需的真实交付链",
@@ -42,10 +42,10 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
             "每个新增节点都有成功标准、负责人能力要求和输出契约",
             "新增交付链包含实现、必要验证和最终可验收终点",
             "提交前按目标规模、不确定性、依赖和验收风险审查交付策略；单次增量必须说明为何可可靠交付，否则拆成按依赖自动衔接、各自可验证的多个增量",
-            "DAG 无环，requiredTerminalRefs 指向新增交付链的真实终点",
+            "只提交业务意图，不生成 Ticket ID、依赖边、增量序号或终点引用",
           ],
           assignment: { requiredCapabilities: ["plan:plan"] },
-          outputContract: { schemaRef: "plan-change-set-v3" },
+          outputContract: { schemaRef: "plan-intent-v1" },
           contextPolicy: { includeOriginalRequest: true, requiresMissionBaseline: true },
           permissions: { amendPlan: true },
         },

@@ -451,15 +451,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     const latestCorrection = [...afterOutput].reverse()
       .map((item) => correctionReason(payloads, item.payloadRef))
       .find((reason): reason is string => Boolean(reason));
-    if (latestCorrection) {
-      const correctionReasons = thread.items
-        .map((item) => correctionReason(payloads, item.payloadRef))
-        .filter((reason): reason is string => Boolean(reason));
-      if (correctionReasons.slice(0, -1).includes(latestCorrection)) {
-        return { ready: false, reason: "repeated_host_correction_without_progress" };
-      }
-      return { ready: true, reason: "host_correction" };
-    }
+    if (latestCorrection) return { ready: true, reason: "host_correction" };
     return { ready: false, reason: "no_new_input_after_agent_output" };
   }
 

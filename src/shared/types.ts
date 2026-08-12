@@ -120,6 +120,7 @@ export type TicketBlockerType =
   | "human_authorization_required"
   | "waiting_for_agent_capacity"
   | "tool_policy_blocked"
+  | "agent_stalled"
   | "external_dependency";
 
 export interface TicketBlocker {
@@ -294,7 +295,7 @@ export interface WorkspaceSnapshot {
   currentStep?: string;
   readOnlyReason?: string;
   runtimeError?: {
-    source: "scheduler" | "agent_turn";
+    source: "scheduler" | "staffing" | "agent_turn";
     message: string;
     at: string;
     agentId?: string;

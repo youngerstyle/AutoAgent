@@ -29,6 +29,7 @@ export function compileMissionGoalOutputContract(
     ? missionCorrectionOutcomeSchema(definition, baseline, eligibleCorrectionTargets)
     : undefined;
   const planChange = definition.permissions?.amendPlan
+    || definition.outputContract.schemaRef === "plan-intent-v1"
     || definition.outputContract.schemaRef === "plan-change-set-v3"
     ? undefined
     : missionPlanChangeOutcomeSchema();
@@ -129,8 +130,49 @@ export function missionCompletionOutcomeSchema(
     });
   }
 
-  if (definition.permissions?.amendPlan
-    || definition.outputContract.schemaRef === "plan-change-set-v3") {
+  if (definition.outputContract.schemaRef === "plan-intent-v1") {
+    const missionCriterionIndex = Type.Integer({
+      minimum: 0,
+      ...(baseline?.criteria.length ? { maximum: baseline.criteria.length - 1 } : {}),
+    });
+    const workItem = Type.Object({
+      intentRef: Type.String({ minLength: 1, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+      title: Type.String({ minLength: 1 }),
+      objective: Type.String({ minLength: 1 }),
+      successCriteria: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      assignment: Type.Object({
+        requiredCapabilities: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+        requiredTools: Type.Optional(Type.Array(workspaceToolName, { uniqueItems: true })),
+      }, { additionalProperties: false }),
+      outputContract: Type.Object({ schemaRef: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+      dependsOn: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true })),
+      missionContribution: Type.Optional(Type.Object({
+        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
+      }, { additionalProperties: false })),
+      assurance: Type.Optional(Type.Object({
+        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
+      }, { additionalProperties: false })),
+      permissions: Type.Optional(Type.Object({
+        amendPlan: Type.Optional(Type.Boolean()),
+        settleMission: Type.Optional(Type.Boolean()),
+      }, { additionalProperties: false })),
+    }, { additionalProperties: false });
+    return Type.Object({
+      disposition,
+      summary: Type.Optional(Type.String()),
+      intent: Type.Object({
+        rationale: Type.String({ minLength: 1 }),
+        increments: Type.Array(Type.Object({
+          intentRef: Type.String({ minLength: 1, pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" }),
+          title: Type.String({ minLength: 1 }),
+          objective: Type.String({ minLength: 1 }),
+          workItems: Type.Array(workItem, { minItems: 1 }),
+        }, { additionalProperties: false }), { minItems: 1 }),
+      }, { additionalProperties: false }),
+    }, { additionalProperties: false });
+  }
+
+  if (definition.outputContract.schemaRef === "plan-change-set-v3") {
     const missionCriterionIndex = Type.Integer({
       minimum: 0,
       ...(baseline?.criteria.length ? { maximum: baseline.criteria.length - 1 } : {}),

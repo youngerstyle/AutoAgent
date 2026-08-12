@@ -222,6 +222,18 @@ export function buildBlockedPanelCopy(snapshot?: WorkspaceSnapshot): { title: st
       hint: "当前工单触碰了工具、权限或安全策略，需要你明确授权或调整项目策略。"
     };
   }
+  if (ticket?.blocker?.type === "agent_stalled") {
+    return {
+      title: `${label}执行已停滞`,
+      hint: ticket.blocker.reason || "负责 Agent 已停止推进；请重试、重新分派或调整工作方案。"
+    };
+  }
+  if (ticket?.blocker?.type === "external_dependency" && ticket.blocker.details?.provider === "mock") {
+    return {
+      title: "模型服务未配置",
+      hint: ticket.blocker.reason || "当前使用模拟模型服务，无法执行真实交付；请配置 OpenAI 或 Anthropic 后继续。"
+    };
+  }
   return {
     title: `${label}已阻塞`,
     hint: "当前工单没有被识别为人工授权或人工测试边界。"
@@ -508,6 +520,7 @@ function titleForBlocker(type: NonNullable<Ticket["blocker"]>["type"]): string {
     human_authorization_required: "需要授权",
     waiting_for_agent_capacity: "等待可用 Agent",
     tool_policy_blocked: "需要调整工具权限",
+    agent_stalled: "Agent 执行已停滞",
     external_dependency: "需要外部信息"
   };
   return labels[type];

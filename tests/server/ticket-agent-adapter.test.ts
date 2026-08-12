@@ -1307,6 +1307,77 @@ describe("Ticket Agent resolution adapter", () => {
     expect(validateMissionPlanAssurance(baseline, valid, currentPlan, planningResult)).toEqual({ valid: true });
   });
 
+  it("treats a failure-resolution chain as a new increment boundary", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 1,
+      objective: "deliver the agreed product",
+      criteria: [baselineCriterion("criterion-a", "artifact runs")],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const currentPlan: SharedPlanContext = {
+      planId: "plan-a",
+      version: 1,
+      missionBaseline: baseline,
+      tickets: [{
+        ticketId: "failed-qa",
+        status: "returned",
+        title: "Failed QA",
+        objective: "Verify",
+        successCriteria: ["Verify"],
+        outputContract: { schemaRef: "mission-assurance-v1" },
+        deliveryIncrement: { incrementId: "old-qa", sequence: 5, title: "Old QA", objective: "Verify" },
+        assurance: { missionCriterionIds: ["criterion-a"] },
+      }, {
+        ticketId: "blocked-acceptance",
+        status: "pending",
+        title: "Blocked acceptance",
+        objective: "Accept",
+        successCriteria: ["Accept"],
+        outputContract: { schemaRef: "acceptance-v1" },
+        deliveryIncrement: { incrementId: "old-acceptance", sequence: 6, title: "Old acceptance", objective: "Accept" },
+      }, {
+        ticketId: "planner",
+        status: "running",
+        title: "Replan",
+        objective: "Replace failed delivery",
+        successCriteria: ["Plan"],
+        outputContract: { schemaRef: "plan-intent-v1" },
+      }],
+      dependencyEdges: [{ fromTicketId: "failed-qa", toTicketId: "blocked-acceptance" }],
+      requiredTerminalTicketIds: ["blocked-acceptance"],
+      teamMembers: [],
+    };
+    const increment = { incrementId: "replacement", sequence: 7, title: "Replacement", objective: "Replace" };
+    const result = validateMissionPlanAssurance(baseline, {
+      additions: [{
+        ...draft("replacement-work"),
+        deliveryIncrement: increment,
+        missionContribution: { missionCriterionIds: ["criterion-a"] },
+      }, {
+        ...draft("replacement-assurance", "mission-assurance-v1"),
+        deliveryIncrement: increment,
+        assurance: { missionCriterionIds: ["criterion-a"] },
+      }, {
+        ...draft("replacement-acceptance", "acceptance-v1"),
+        deliveryIncrement: increment,
+        permissions: { settleMission: true },
+      }],
+      dependencyAdditions: [
+        { from: { ticketId: "planner" }, to: { clientRef: "replacement-work" } },
+        { from: { clientRef: "replacement-work" }, to: { clientRef: "replacement-assurance" } },
+        { from: { clientRef: "replacement-assurance" }, to: { clientRef: "replacement-acceptance" } },
+      ],
+      failureResolutions: [{ failedTicketId: "failed-qa", resolvedBy: { clientRef: "replacement-assurance" } }],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "replacement-acceptance" }],
+    }, currentPlan);
+
+    expect(result).toEqual({ valid: true });
+  });
+
   it("allows correction work inside an existing increment to start after the amendment Ticket", () => {
     const baseline = {
       baselineId: "baseline-a",
@@ -1730,7 +1801,7 @@ describe("Ticket Agent resolution adapter", () => {
       reason: "再次修订",
     })).toEqual({
       valid: false,
-      reason: "计划修订工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 change",
+      reason: "计划工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 intent",
     });
     expect(missionOutcomeInstruction("plan-change-set-v3")).toContain("不能再次请求计划修订");
   });

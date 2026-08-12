@@ -35,7 +35,7 @@ npm.cmd run dev
 
 ## 模型服务配置
 
-模拟模型服务始终可用，并用于测试。OpenAI 和 Anthropic 可以在网页的“模型服务”页配置模型、接口密钥和可选服务地址。密钥保存在 `AUTOAGENT_HOME/providers.json`，通过 API 读取时会脱敏。
+模拟模型服务始终可用，并用于协议与故障恢复测试。它不会真实写文件、启动服务或完成浏览器验收；当任务要求真实交付时，模拟服务会明确阻塞并要求配置真实 Provider，不会伪报完成。OpenAI 和 Anthropic 可以在网页的“模型服务”页配置模型、接口密钥和可选服务地址。密钥保存在 `AUTOAGENT_HOME/providers.json`，通过 API 读取时会脱敏。
 
 也可以用环境变量配置：
 

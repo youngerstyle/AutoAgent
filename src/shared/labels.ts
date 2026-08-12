@@ -15,6 +15,7 @@ export function roleLabel(role: AgentRole | string): string {
 
 export function assignmentLabel(type: AssignmentType | string): string {
   const labels: Record<string, string> = {
+    work: "工单",
     boss_intake: "需求接收",
     pm_plan: "计划拆解",
     architect_plan: "架构设计",
