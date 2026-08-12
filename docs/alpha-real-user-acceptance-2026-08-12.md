@@ -74,6 +74,33 @@ STDERR=error: line 2: invalid JSON
 
 Result: pass after a real user-discovered defect and autonomous repair loop.
 
+## Project 3 — publishable npm library
+
+- Project: `Alpha Redact Library v1`
+- Workspace: `C:\Users\xieyizhi\Desktop\AutoAgentAlphaQA\redact-lib-v1`
+- Goal: a zero-runtime-dependency Node.js 20+ log-redaction package with ESM, CommonJS and TypeScript consumers, immutable cyclic-object handling, configurable sensitive keys, string detectors, documentation, tests and a minimal tarball
+- Real team delivery: architecture contract, implementation, package metadata, README, LICENSE, runtime tests and `alpha-redact-log-1.0.0.tgz`
+- First external consumer project proved ESM, CommonJS and strict TypeScript consumption, but found that the source package had no standard `npm test` script; the runtime test only passed when invoked manually
+- Defect handling: the missing package entry point and a stray literal `%ROOT%` test directory were reported as a new task through AutoAgent; the team added runtime-plus-typecheck npm scripts, kept TypeScript as a development-only dependency, cleaned the stray directory, repacked and reran QA
+- Repaired repository verification: `npm test` passed the Node runtime suite and strict `tsc --noEmit`
+- Repaired tarball: exactly six entries (`package.json`, README, LICENSE, ESM, CJS and declarations), with no runtime dependencies
+- A second fresh external consumer installed only the repaired tarball and produced:
+
+```text
+ESM_V2_OK
+CJS_V2_OK
+```
+
+- The same fresh consumer passed strict TypeScript checking; its production dependency tree contained only `@alpha/redact-log@1.0.0`
+
+Result: pass after a real external-consumer defect and autonomous repair loop.
+
+## Product defect discovered during Project 3
+
+Luna returned the statusless message `Upstream service temporarily unavailable`. The provider classifier did not recognize that wording as transient, so Agent Engine treated it as terminal and Runtime Host projected it as a credential request requiring human input. The classifier now recognizes bounded service-unavailable/overload/retry-later phrases as retryable, with regression coverage. After rebuilding and restarting AutoAgent, the same PM Goal resumed and completed without another false human-input request. A later `external_service_waiting` during the repair task automatically recovered, confirming the corrected path in a live run.
+
+The activity list also caps visible records at 80 without saying that it is a display limit. Backend audit files and the execution lock continued updating while the UI appeared unchanged. This is an observability/UX gap, not an execution failure.
+
 ## Repository verification
 
 - Production build: pass
@@ -89,7 +116,10 @@ Result: pass after a real user-discovered defect and autonomous repair loop.
 | Use the configured Luna provider, not mock acceptance | Pass |
 | Produce a runnable browser product | Pass |
 | Produce a runnable non-browser CLI product | Pass |
+| Produce a packable dual-module npm library and consume it externally | Pass |
 | Detect and repair an actual user-found defect through the product | Pass |
+| Recover a transient provider failure without false human approval | Pass after fix |
 | Independent QA and authoritative settlement | Pass |
 | Deterministic compiler owns platform graph/state | Pass |
 | Durable post-completion preview UX | Known gap |
+| Explain the 80-record activity display cap | Known gap |

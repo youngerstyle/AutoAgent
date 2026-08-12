@@ -17,6 +17,11 @@ const TRANSIENT_NETWORK_ERRORS = [
   "stream failed",
   "response stream was interrupted",
   "connection terminated",
+  "temporarily unavailable",
+  "service unavailable",
+  "server overloaded",
+  "service overloaded",
+  "try again later",
 ];
 
 export function isRetryableProviderFailure(message: string): boolean {

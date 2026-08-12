@@ -11,6 +11,9 @@ describe("provider failure classification", () => {
     "Upstream HTTP/2 stream failed",
     "HTTP/2 stream reset by peer",
     "Upstream response stream was interrupted",
+    "Upstream service temporarily unavailable",
+    "503 Service Unavailable",
+    "Server overloaded; please try again later",
   ])("classifies transient transport failures as retryable: %s", (message) => {
     expect(isRetryableProviderFailure(message)).toBe(true);
   });
