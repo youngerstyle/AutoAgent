@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import type { ActiveMissionLink } from "../../src/shared/contracts/mission-control.js";
 import type { PlanCommandResult, PlanId, TicketCommandResult, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { materializeMissionSettlement, missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, projectMissionAssuranceContext, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
+import { materializeMissionSettlement, materializeSimpleAssuranceCorrection, materializeSimpleAssuranceOutcome, materializeSimpleMissionSettlement, missionOutcomeInstruction, normalizeMissionPlanCriterionIndexes, planResultToGoalDecision, projectMissionAssuranceContext, proposalToPlanChangeCommand, proposalToTicketCommand, ticketResultToGoalDecision, validateMissionAssuranceReport, validateMissionCorrectionOwnership, validateMissionPlanAssurance, validateMissionSettlement, validateMissionTicketOutcome, type MissionTicketOutcome, type SharedPlanContext } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("Ticket Agent resolution adapter", () => {
   it("maps Agent-facing Mission criterion indexes to canonical internal IDs", () => {
@@ -409,7 +409,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed");
   });
 
-  it("gives the initial planning agent assignable member boundaries and terminal policy", () => {
+  it("keeps assignment and terminal policy out of the planner contract", () => {
     const instruction = missionOutcomeInstruction("plan-intent-v1", ["delivery:implement", "delivery:verify", "delivery:accept"], [], undefined, {
       planId: "plan-a",
       version: 1,
@@ -424,11 +424,11 @@ describe("Ticket Agent resolution adapter", () => {
       ],
     });
 
-    expect(instruction).toContain('"requiredTerminalCapabilities":["delivery:accept"]');
-    expect(instruction).toContain('"capabilities":["delivery:implement"],"enabledTools":["writeFile","shell"]');
-    expect(instruction).toContain("同一个成员完整满足");
-    expect(instruction).toContain("不要把多个角色的能力或工具合并到一张工单");
-    expect(instruction).toContain("独立质量检查不能代替最终交付验收");
+    expect(instruction).toContain("像负责人写 TodoList 一样");
+    expect(instruction).toContain("Plan Compiler 会固定追加独立验证和最终验收");
+    expect(instruction).toContain("不要生成 capability、tool、schemaRef");
+    expect(instruction).not.toContain('"requiredTerminalCapabilities"');
+    expect(instruction).not.toContain('"enabledTools"');
   });
 
   it("describes the complete Plan change contract to the planning Agent", () => {
@@ -692,6 +692,139 @@ describe("Ticket Agent resolution adapter", () => {
     }
   });
 
+  it("materializes a flat assurance checklist into the authoritative audit report", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 2,
+      objective: "deliver",
+      criteria: [baselineCriterion("criterion-a", "artifact runs")],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const outcome = materializeSimpleAssuranceOutcome(
+      baseline,
+      ["criterion-a"],
+      {
+        summary: "checked the artifact",
+        checks: [{ verificationBasis: "npm test", observations: ["all tests passed"] }],
+      },
+      [{ evidenceId: "ev-npm-test" }],
+    );
+
+    expect(outcome).toEqual({
+      assuranceReport: {
+        baselineVersion: 2,
+        missionCriterionResults: [{
+          criterionId: "criterion-a",
+          status: "satisfied",
+          evidence: [{ evidenceId: "ev-npm-test" }],
+          anchorResults: [{
+            anchorIndex: 0,
+            status: "satisfied",
+            evidence: [{ evidenceId: "ev-npm-test" }],
+            verificationBasis: { summary: "npm test", evidence: [{ evidenceId: "ev-npm-test" }] },
+            observations: ["all tests passed"],
+            deviations: [],
+          }],
+        }],
+      },
+    });
+    expect(validateMissionAssuranceReport(baseline, ["criterion-a"], outcome)).toEqual({ valid: true });
+  });
+
+  it("derives correction scope and evidence from platform-owned facts", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 2,
+      objective: "deliver",
+      criteria: [baselineCriterion("criterion-a", "artifact runs")],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const outcome = materializeSimpleAssuranceCorrection(
+      baseline,
+      {
+        disposition: "correction_required",
+        targetTicketId: "ticket-dev",
+        reason: "startup failed",
+        findings: [{ summary: "entrypoint broken", details: "process exited with code 1" }],
+      },
+      [{ evidenceId: "ev-startup" }],
+      [{ ticketId: "ticket-dev" as TicketId, title: "implementation", missionCriterionIds: ["criterion-a"] }],
+    );
+
+    expect(outcome).toMatchObject({
+      correctionMissionCriterionIds: ["criterion-a"],
+      findings: [{ evidence: [{ evidenceId: "ev-startup" }], affectedMissionCriterionIds: ["criterion-a"] }],
+      assuranceReport: {
+        baselineVersion: 2,
+        missionCriterionResults: [{ criterionId: "criterion-a", status: "not_satisfied" }],
+      },
+    });
+    expect(validateMissionAssuranceReport(baseline, ["criterion-a"], outcome, "correction")).toEqual({ valid: true });
+  });
+
+  it("materializes final acceptance from satisfied authoritative assurance", () => {
+    const baseline = {
+      baselineId: "baseline-a",
+      version: 2,
+      objective: "deliver",
+      criteria: [
+        baselineCriterion("criterion-a", "artifact runs"),
+        baselineCriterion("criterion-b", "behavior is verified"),
+      ],
+      constraints: [], assumptions: [], exclusions: [],
+      establishedByTicketId: "ticket-intake" as TicketId,
+      establishedAt: NOW,
+    };
+    const assuranceSources = baseline.criteria.map(({ criterionId }) => ({
+      ticketId: `assurance-${criterionId}` as TicketId,
+      baselineVersion: 2,
+      criterionResults: [{
+        criterionId,
+        status: "satisfied" as const,
+        evidence: [{ evidenceId: `ev-${criterionId}` }],
+        anchorResults: [anchorResult(`ev-${criterionId}`)],
+      }],
+    }));
+
+    const simple = materializeSimpleMissionSettlement(
+      baseline,
+      { summary: "accepted", residualRisks: [] },
+      assuranceSources,
+    );
+    expect(simple).toMatchObject({
+      valid: true,
+      outcome: {
+        disposition: "complete",
+        missionResolution: {
+          baselineVersion: 2,
+          criterionResults: [
+            { criterionId: "criterion-a", assuranceTicketIds: ["assurance-criterion-a"] },
+            { criterionId: "criterion-b", assuranceTicketIds: ["assurance-criterion-b"] },
+          ],
+        },
+      },
+    });
+    if (!simple.valid) throw new Error(simple.reason);
+    const materialized = materializeMissionSettlement(
+      baseline,
+      simple.outcome.missionResolution,
+      assuranceSources,
+    );
+    expect(materialized).toMatchObject({
+      valid: true,
+      resolution: {
+        criterionResults: [
+          { criterionId: "criterion-a", evidence: [{ evidenceId: "ev-criterion-a" }] },
+          { criterionId: "criterion-b", evidence: [{ evidenceId: "ev-criterion-b" }] },
+        ],
+      },
+    });
+  });
+
   it("gives the settlement agent a criterion-scoped authoritative evidence matrix", () => {
     const instruction = missionOutcomeInstruction(
       "mission-acceptance-v1",
@@ -735,7 +868,8 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain('\"criterionId\":\"criterion-a\"');
     expect(instruction).toContain('\"evidenceId\":\"ev-npm-test\"');
     expect(instruction).toContain("不替你作出验收判断");
-    expect(instruction).toContain('domainOutcome 必须使用 {disposition:"complete"');
+    expect(instruction).toContain("domainOutcome 只提交 {summary,residualRisks}");
+    expect(instruction).toContain("Mission Control 会从权威状态机械装配最终结算");
     expect(instruction).toContain("不得把 disposition 嵌入 missionResolution");
   });
 
@@ -862,7 +996,7 @@ describe("Ticket Agent resolution adapter", () => {
     )).toMatchObject({ valid: false, reason: expect.stringContaining("完全一致") });
   });
 
-  it("describes the exact mission assurance result shape", () => {
+  it("describes the flat mission assurance checklist", () => {
     const instruction = missionOutcomeInstruction(
       "mission-assurance-v1",
       [],
@@ -900,21 +1034,13 @@ describe("Ticket Agent resolution adapter", () => {
       },
     );
 
-    expect(instruction).toContain("domainOutcome.assuranceReport");
-    expect(instruction).toContain("baselineVersion:3");
-    expect(instruction).toContain('criterionId:"<Mission criterionId>"');
-    expect(instruction).toContain('["criterion-a"]');
-    expect(instruction).toContain("assuranceReport.missionCriterionResults 必须恰好有 1 项");
-    expect(instruction).toContain("数组长度必须严格等于当前声明的 criteria 数量");
-    expect(instruction).toContain("不得添加总体结论、汇总项或额外的 criterion");
-    expect(instruction).toContain("domainOutcome 是本 Ticket 唯一的权威结论");
+    expect(instruction).toContain("orderedCheckList");
+    expect(instruction).toContain("domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}");
+    expect(instruction).toContain("平台自动绑定 criterion、anchor、satisfied 状态");
+    expect(instruction).toContain("本 Goal 的真实工具证据");
     expect(instruction).toContain("verificationBasis");
-    expect(instruction).toContain("不得降低强度");
-    expect(instruction).toContain("goal_resolution 顶层 criterionResults");
-    expect(instruction).toContain("两组数组不是同一组数据");
-    expect(instruction).toContain("mission-assurance-v1 的正向 domainOutcome 只包含 assuranceReport");
-    expect(instruction).toContain("不要使用 verified 或其他自定义 disposition");
-    expect(instruction).toContain("不要把 disposition、summary 或 residualRisks 作为 missionCriterionResults 的数组项");
+    expect(instruction).toContain("不要填写 criterionId、anchorIndex、status 或 evidenceId");
+    expect(instruction).toContain("发现缺陷时调用 report_goal_correction");
   });
 
   it("isolates the current assurance scope from unrelated Plan criteria", () => {

@@ -48,14 +48,8 @@ describe("MockProvider current Ticket contract", () => {
 
     expect(toolArguments(result)).toMatchObject({
       domainOutcome: {
-        missionResolution: {
-          baselineVersion: 1,
-          criterionResults: [{
-            criterionId: "criterion-1",
-            status: "satisfied",
-            assuranceTicketIds: [assuranceTicketId],
-          }],
-        },
+        summary: "mock acceptance",
+        residualRisks: [],
       },
     });
   });

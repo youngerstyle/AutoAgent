@@ -11,6 +11,13 @@ import type {
 export interface PlanCompilerSnapshot {
   planId: string;
   sourceTicketId: TicketId;
+  missionCriterionIds: string[];
+  requiredTerminalCapabilities: string[];
+  teamMembers: Array<{
+    principalId: string;
+    capabilities: string[];
+    enabledTools: Array<"listFiles" | "readFile" | "readImage" | "writeFile" | "editFile" | "shell" | "startService" | "pollProcess" | "browser">;
+  }>;
   tickets: Array<{
     ticketId: TicketId;
     status?: "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "returned" | "cancelled";
@@ -24,99 +31,91 @@ export interface PlanCompilerSnapshot {
 
 export class PlanIntentError extends Error {}
 
-/** Compile semantic work into the only graph shape accepted by Ticket Engine. */
+/** Compile Mission work intent into the graph shape accepted by Ticket Engine. */
 export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnapshot): PlanChangeSet {
   requireText(intent.rationale, "intent.rationale");
-  if (!Array.isArray(intent.increments) || intent.increments.length === 0) {
-    throw new PlanIntentError("intent.increments must contain at least one delivery increment");
+  if (!Array.isArray(intent.todos) || intent.todos.length === 0) {
+    throw new PlanIntentError("intent.todos must contain at least one delivery todo");
+  }
+  if (!intent.todos.some((todo) => todo.kind === "implementation")) {
+    throw new PlanIntentError("intent.todos must contain at least one implementation todo");
   }
 
-  const incrementRefs = new Set<string>();
-  const workRefs = new Set<string>();
+  const implementationMember = memberForCapabilities(snapshot, ["delivery:implement"], "implementation");
+  const assuranceMember = memberForCapabilities(snapshot, ["delivery:verify"], "independent verification");
+  const terminalCapabilities = snapshot.requiredTerminalCapabilities.length
+    ? snapshot.requiredTerminalCapabilities
+    : ["delivery:accept"];
+  const acceptanceMember = memberForCapabilities(snapshot, terminalCapabilities, "final acceptance");
+  const architectureMember = intent.todos.some((todo) => todo.kind === "architecture")
+    ? memberForCapabilities(snapshot, ["architecture:design"], "architecture")
+    : undefined;
+
   const existingIncrements = uniqueIncrements(snapshot.tickets);
-  let nextSequence = Math.max(0, ...existingIncrements.map((item) => item.sequence)) + 1;
+  const nextSequence = Math.max(0, ...existingIncrements.map((item) => item.sequence)) + 1;
   const additions: PlannedTicketNode[] = [];
   const dependencyAdditions: PlanChangeSet["dependencyAdditions"] = [];
-  let precedingExits: PlanTicketRef[] = exitsOfLatestIncrement(snapshot, existingIncrements);
-
-  for (const [incrementIndex, incrementIntent] of intent.increments.entries()) {
-    requireIdentifier(incrementIntent.intentRef, "increment.intentRef");
-    if (incrementRefs.has(incrementIntent.intentRef)) {
-      throw new PlanIntentError(`duplicate increment intentRef ${incrementIntent.intentRef}`);
-    }
-    incrementRefs.add(incrementIntent.intentRef);
-    requireText(incrementIntent.title, `${incrementIntent.intentRef}.title`);
-    requireText(incrementIntent.objective, `${incrementIntent.intentRef}.objective`);
-    if (!Array.isArray(incrementIntent.workItems) || incrementIntent.workItems.length === 0) {
-      throw new PlanIntentError(`${incrementIntent.intentRef}.workItems must not be empty`);
-    }
-
-    const increment: TicketDeliveryIncrement = {
-      incrementId: deterministicId("increment", snapshot.planId, snapshot.sourceTicketId, incrementIntent.intentRef),
-      sequence: nextSequence++,
-      title: incrementIntent.title.trim(),
-      objective: incrementIntent.objective.trim(),
-    };
-    const localRefs = new Set<string>();
-    for (const work of incrementIntent.workItems) {
-      requireIdentifier(work.intentRef, `${incrementIntent.intentRef}.workItems.intentRef`);
-      if (workRefs.has(work.intentRef)) throw new PlanIntentError(`duplicate work intentRef ${work.intentRef}`);
-      workRefs.add(work.intentRef);
-      localRefs.add(work.intentRef);
-    }
-
-    const dependedOn = new Set<string>();
-    for (const work of incrementIntent.workItems) {
-      validateWork(work, incrementIntent.intentRef);
-      for (const dependency of work.dependsOn ?? []) {
-        if (!localRefs.has(dependency)) {
-          throw new PlanIntentError(`${work.intentRef}.dependsOn references work outside its increment: ${dependency}`);
-        }
-        if (dependency === work.intentRef) throw new PlanIntentError(`${work.intentRef} cannot depend on itself`);
-        dependedOn.add(dependency);
-        dependencyAdditions.push({ from: { clientRef: dependency }, to: { clientRef: work.intentRef } });
-      }
-      additions.push({
-        clientRef: work.intentRef,
-        title: work.title.trim(),
-        objective: work.objective.trim(),
-        successCriteria: work.successCriteria.map((item) => item.trim()),
-        assignment: structuredClone(work.assignment),
-        outputContract: work.permissions?.settleMission
-          ? { schemaRef: "mission-settlement-v1" }
-          : structuredClone(work.outputContract),
-        deliveryIncrement: increment,
-        ...(work.missionContribution ? { missionContribution: structuredClone(work.missionContribution) } : {}),
-        ...(work.assurance ? { assurance: structuredClone(work.assurance) } : {}),
-        ...(work.permissions ? { permissions: structuredClone(work.permissions) } : {}),
-      });
-    }
-    assertAcyclicIncrement(incrementIntent.intentRef, incrementIntent.workItems);
-
-    const roots = incrementIntent.workItems.filter((work) => !(work.dependsOn?.length));
-    const gates: PlanTicketRef[] = incrementIndex === 0
-      ? [{ ticketId: snapshot.sourceTicketId }, ...precedingExits]
-      : precedingExits;
-    for (const gate of gates) {
-      for (const root of roots) dependencyAdditions.push({ from: gate, to: { clientRef: root.intentRef } });
-    }
-    precedingExits = incrementIntent.workItems
-      .filter((work) => !dependedOn.has(work.intentRef))
-      .map((work) => ({ clientRef: work.intentRef }));
+  const increment: TicketDeliveryIncrement = {
+    incrementId: deterministicId("increment", snapshot.planId, snapshot.sourceTicketId, "delivery"),
+    sequence: nextSequence,
+    title: `Verified delivery ${nextSequence}`,
+    objective: intent.rationale.trim(),
+  };
+  const todoRefs = intent.todos.map((_todo, index) => `todo-${String(index + 1).padStart(2, "0")}`);
+  let lastImplementationIndex = -1;
+  for (const [index, todo] of intent.todos.entries()) {
+    if (todo.kind === "implementation") lastImplementationIndex = index;
   }
 
-  const terminalRefs = additions
-    .filter((node) => node.permissions?.settleMission === true)
-    .map((node) => ({ clientRef: node.clientRef }));
-  if (terminalRefs.length === 0) {
-    throw new PlanIntentError("plan intent must contain at least one settleMission work item");
+  for (const [index, todo] of intent.todos.entries()) {
+    validateTodo(todo, index);
+    const member = todo.kind === "architecture" ? architectureMember! : implementationMember;
+    additions.push({
+      clientRef: todoRefs[index]!,
+      title: todo.title.trim(),
+      objective: todo.objective.trim(),
+      successCriteria: todo.successCriteria.map((item) => item.trim()),
+      assignment: assignmentFor(member, todo.kind === "architecture" ? ["architecture:design"] : ["delivery:implement"]),
+      outputContract: { schemaRef: "delivery-v1" },
+      deliveryIncrement: increment,
+      ...(index === lastImplementationIndex && snapshot.missionCriterionIds.length
+        ? { missionContribution: { missionCriterionIds: [...snapshot.missionCriterionIds] } }
+        : {}),
+    });
   }
-  const finalExitRefs = new Set(precedingExits.flatMap((ref) => "clientRef" in ref ? [ref.clientRef] : []));
-  for (const terminal of terminalRefs) {
-    if (!finalExitRefs.has(terminal.clientRef)) {
-      throw new PlanIntentError(`settleMission work item ${terminal.clientRef} must be an exit of the final increment`);
-    }
+
+  additions.push({
+    clientRef: "assurance",
+    title: "Independent acceptance verification",
+    objective: "Independently verify the complete delivery against every Mission criterion and verification anchor",
+    successCriteria: ["Every assigned Mission criterion is verified from current observable evidence"],
+    assignment: assignmentFor(assuranceMember, ["delivery:verify"]),
+    outputContract: { schemaRef: "mission-assurance-v1" },
+    deliveryIncrement: increment,
+    assurance: { missionCriterionIds: [...snapshot.missionCriterionIds] },
+  });
+  additions.push({
+    clientRef: "acceptance",
+    title: "Final Mission acceptance",
+    objective: "Decide final acceptance from the authoritative baseline and independent assurance",
+    successCriteria: ["The final decision is traceable to authoritative Mission assurance"],
+    assignment: assignmentFor(acceptanceMember, terminalCapabilities),
+    outputContract: { schemaRef: "mission-settlement-v1" },
+    deliveryIncrement: increment,
+    permissions: { settleMission: true },
+  });
+
+  const gates: PlanTicketRef[] = [
+    { ticketId: snapshot.sourceTicketId },
+    ...exitsOfLatestIncrement(snapshot, existingIncrements),
+  ];
+  const firstRef = todoRefs[0]!;
+  for (const gate of gates) dependencyAdditions.push({ from: gate, to: { clientRef: firstRef } });
+  for (let index = 1; index < todoRefs.length; index += 1) {
+    dependencyAdditions.push({ from: { clientRef: todoRefs[index - 1]! }, to: { clientRef: todoRefs[index]! } });
   }
+  dependencyAdditions.push({ from: { clientRef: todoRefs.at(-1)! }, to: { clientRef: "assurance" } });
+  dependencyAdditions.push({ from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } });
 
   const failureResolutions = compileHistoricalFailureResolutions(snapshot, additions);
 
@@ -125,8 +124,30 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     dependencyAdditions: dedupeEdges(dependencyAdditions),
     failureResolutions,
     cancelTicketIds: [],
-    requiredTerminalRefs: terminalRefs,
+    requiredTerminalRefs: [{ clientRef: "acceptance" }],
   };
+}
+
+function assignmentFor(
+  member: PlanCompilerSnapshot["teamMembers"][number],
+  requiredCapabilities: string[],
+) {
+  return {
+    principalId: member.principalId,
+    requiredCapabilities,
+    requiredTools: [...member.enabledTools],
+  };
+}
+
+function memberForCapabilities(
+  snapshot: PlanCompilerSnapshot,
+  requiredCapabilities: string[],
+  label: string,
+): PlanCompilerSnapshot["teamMembers"][number] {
+  const member = snapshot.teamMembers.find((candidate) =>
+    requiredCapabilities.every((capability) => candidate.capabilities.includes(capability)));
+  if (!member) throw new PlanIntentError(`team has no member assignable to ${label}: ${requiredCapabilities.join(", ")}`);
+  return member;
 }
 
 function compileHistoricalFailureResolutions(
@@ -231,32 +252,17 @@ function uniqueIncrements(tickets: PlanCompilerSnapshot["tickets"]): TicketDeliv
   return [...result.values()].sort((a, b) => a.sequence - b.sequence || a.incrementId.localeCompare(b.incrementId));
 }
 
-function validateWork(work: PlanIntent["increments"][number]["workItems"][number], incrementRef: string): void {
-  requireText(work.title, `${incrementRef}.${work.intentRef}.title`);
-  requireText(work.objective, `${incrementRef}.${work.intentRef}.objective`);
-  if (!Array.isArray(work.successCriteria) || work.successCriteria.length === 0) {
-    throw new PlanIntentError(`${work.intentRef}.successCriteria must not be empty`);
+function validateTodo(todo: PlanIntent["todos"][number], index: number): void {
+  const label = `intent.todos[${index}]`;
+  if (todo.kind !== "architecture" && todo.kind !== "implementation") {
+    throw new PlanIntentError(`${label}.kind must be architecture or implementation`);
   }
-  work.successCriteria.forEach((criterion) => requireText(criterion, `${work.intentRef}.successCriteria`));
-  if (!work.assignment || typeof work.assignment !== "object") throw new PlanIntentError(`${work.intentRef}.assignment is required`);
-  requireText(work.outputContract?.schemaRef, `${work.intentRef}.outputContract.schemaRef`);
-}
-
-function assertAcyclicIncrement(
-  incrementRef: string,
-  workItems: PlanIntent["increments"][number]["workItems"],
-): void {
-  const state = new Map<string, "visiting" | "visited">();
-  const byRef = new Map(workItems.map((work) => [work.intentRef, work]));
-  const visit = (workRef: string): void => {
-    const current = state.get(workRef);
-    if (current === "visiting") throw new PlanIntentError(`${incrementRef} contains a dependency cycle at ${workRef}`);
-    if (current === "visited") return;
-    state.set(workRef, "visiting");
-    for (const dependency of byRef.get(workRef)?.dependsOn ?? []) visit(dependency);
-    state.set(workRef, "visited");
-  };
-  for (const work of workItems) visit(work.intentRef);
+  requireText(todo.title, `${label}.title`);
+  requireText(todo.objective, `${label}.objective`);
+  if (!Array.isArray(todo.successCriteria) || todo.successCriteria.length === 0) {
+    throw new PlanIntentError(`${label}.successCriteria must not be empty`);
+  }
+  todo.successCriteria.forEach((criterion) => requireText(criterion, `${label}.successCriteria`));
 }
 
 function dedupeEdges(edges: PlanChangeSet["dependencyAdditions"]): PlanChangeSet["dependencyAdditions"] {
@@ -275,9 +281,4 @@ function deterministicId(prefix: string, ...parts: Array<string | TicketId>): st
 
 function requireText(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || !value.trim()) throw new PlanIntentError(`${label} must be non-empty text`);
-}
-
-function requireIdentifier(value: unknown, label: string): asserts value is string {
-  requireText(value, label);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) throw new PlanIntentError(`${label} must be an identifier`);
 }

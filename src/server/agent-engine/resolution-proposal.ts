@@ -16,26 +16,31 @@ export function parseResolutionProposal(
   if (value.evidence !== undefined && !Array.isArray(value.evidence)) {
     return { ok: false, reason: "evidence 必须是数组" };
   }
+  const automaticEnvelope = value.criterionResults === undefined;
   const criterionEvidence = collectCriterionEvidence(value.criterionResults);
   const submittedEvidence = Array.isArray(value.evidence) ? value.evidence : criterionEvidence;
   if (goal.spec.outputContract?.evidenceMode === "none" && (submittedEvidence.length > 0 || criterionEvidence.length > 0)) {
     return {
       ok: false,
-      reason: "当前输出契约不允许最终验收直接提交 evidence；请只在 domainOutcome.missionResolution.criterionResults 中选择 assuranceTicketIds，由平台装配验收事实",
+      reason: "当前输出契约不允许最终验收直接提交 evidence；只提交 domainOutcome.summary 和 residualRisks，由平台从权威 assurance 装配验收事实",
     };
   }
   for (const [index, item] of submittedEvidence.entries()) {
     if (!isEvidence(item)) return { ok: false, reason: `evidence[${index}] 必须是包含 evidenceId 字符串的对象` };
   }
-  if (!Array.isArray(value.criterionResults)) {
-    return { ok: false, reason: "criterionResults 必须是数组" };
-  }
-  if (value.criterionResults !== undefined && !Array.isArray(value.criterionResults)) {
+  if (!automaticEnvelope && !Array.isArray(value.criterionResults)) {
     return { ok: false, reason: "criterionResults 必须是数组" };
   }
 
-  const criterionResults: GoalResolutionProposal["criterionResults"] = [];
+  const criterionResults: GoalResolutionProposal["criterionResults"] = automaticEnvelope
+    ? goal.spec.successCriteria.map((_criterion, criterionIndex) => ({
+        criterionIndex,
+        status: value.status === "completed" ? "satisfied" as const : "not_verified" as const,
+        evidence: submittedEvidence.map((item) => ({ evidenceId: item.evidenceId as string })),
+      }))
+    : [];
   const seen = new Set<number>();
+  if (automaticEnvelope) goal.spec.successCriteria.forEach((_criterion, criterionIndex) => seen.add(criterionIndex));
   for (const [index, item] of (Array.isArray(value.criterionResults) ? value.criterionResults : []).entries()) {
     if (!isRecord(item)
       || !Number.isInteger(item.criterionIndex)

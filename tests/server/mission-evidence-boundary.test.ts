@@ -8,6 +8,49 @@ import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js
 import { validateEvidenceFacts } from "../../src/server/mission-process/mission-goal-resolution-port.js";
 
 describe("Mission completion evidence boundary", () => {
+  it("lists only recorded facts owned by the current Goal attempt", async () => {
+    const fixture = await evidenceFixture();
+    const ledger = new EvidenceLedger(fixture.root);
+    await ledger.append({
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "other-attempt",
+      turnId: "turn-other-attempt",
+      toolCallId: "tool-other-attempt",
+      toolName: "readFile",
+      kind: "file_read",
+      capture: { status: "recorded" },
+      observation: { status: "observed", result: { path: "other.ts" } },
+      workspaceRoot: fixture.root,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+      input: { path: "other.ts" },
+    });
+    await ledger.append({
+      agentId: "qa",
+      threadId: "thread-qa",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-other-agent",
+      toolCallId: "tool-other-agent",
+      toolName: "shell",
+      kind: "command",
+      capture: { status: "recorded" },
+      observation: { status: "observed", result: { exitCode: 0 } },
+      workspaceRoot: fixture.root,
+      createdAt: new Date(Date.now() + 2_000).toISOString(),
+      input: { command: "npm test" },
+    });
+
+    const facts = await ledger.listForGoal({
+      agentId: "dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+    });
+
+    expect(facts.map((fact) => fact.evidenceId)).toEqual([fixture.evidenceId]);
+  });
+
   it("accepts a successful tool fact from the current Agent Goal", async () => {
     const fixture = await evidenceFixture();
 

@@ -1,41 +1,67 @@
 import { describe, expect, it } from "vitest";
 import type { PlanIntent, TicketId } from "../../src/shared/contracts/ticket-engine.js";
-import { compilePlanIntent, PlanIntentError } from "../../src/server/tickets/plan-intent-compiler.js";
+import {
+  compilePlanIntent,
+  PlanIntentError,
+  type PlanCompilerSnapshot,
+} from "../../src/server/mission-process/plan-intent-compiler.js";
 
 const sourceTicketId = "ticket-planner" as TicketId;
 
 describe("compilePlanIntent", () => {
-  it("derives increment boundaries, dependencies, and terminal refs", () => {
-    const change = compilePlanIntent(intent(), {
-      planId: "plan-a",
-      sourceTicketId,
-      tickets: [],
-      dependencyEdges: [],
-    });
+  it("compiles a flat TodoList into a verified delivery lifecycle", () => {
+    const change = compilePlanIntent(intent(), snapshot());
 
-    expect(change.additions.map((node) => node.clientRef)).toEqual(["research", "build", "qa", "accept"]);
-    expect(change.additions.map((node) => node.deliveryIncrement?.sequence)).toEqual([1, 2, 2, 2]);
-    expect(change.dependencyAdditions).toEqual(expect.arrayContaining([
-      { from: { ticketId: sourceTicketId }, to: { clientRef: "research" } },
-      { from: { clientRef: "research" }, to: { clientRef: "build" } },
-      { from: { clientRef: "build" }, to: { clientRef: "qa" } },
-      { from: { clientRef: "qa" }, to: { clientRef: "accept" } },
-    ]));
-    expect(change.requiredTerminalRefs).toEqual([{ clientRef: "accept" }]);
-    expect(change.additions.find((node) => node.clientRef === "accept")?.outputContract)
-      .toEqual({ schemaRef: "mission-settlement-v1" });
+    expect(change.additions.map((node) => node.clientRef)).toEqual([
+      "todo-01", "todo-02", "assurance", "acceptance",
+    ]);
+    expect(change.additions.map((node) => node.assignment.requiredCapabilities)).toEqual([
+      ["architecture:design"],
+      ["delivery:implement"],
+      ["delivery:verify"],
+      ["delivery:accept"],
+    ]);
+    expect(change.additions.find((node) => node.clientRef === "todo-02")?.missionContribution)
+      .toEqual({ missionCriterionIds: ["criterion-a", "criterion-b"] });
+    expect(change.additions.find((node) => node.clientRef === "assurance")?.assurance)
+      .toEqual({ missionCriterionIds: ["criterion-a", "criterion-b"] });
+    expect(change.additions.find((node) => node.clientRef === "acceptance")).toMatchObject({
+      outputContract: { schemaRef: "mission-settlement-v1" },
+      permissions: { settleMission: true },
+    });
+    expect(change.dependencyAdditions).toEqual([
+      { from: { ticketId: sourceTicketId }, to: { clientRef: "todo-01" } },
+      { from: { clientRef: "todo-01" }, to: { clientRef: "todo-02" } },
+      { from: { clientRef: "todo-02" }, to: { clientRef: "assurance" } },
+      { from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } },
+    ]);
+    expect(change.requiredTerminalRefs).toEqual([{ clientRef: "acceptance" }]);
   });
 
-  it("gates a new increment on every exit of the latest existing increment", () => {
+  it("does not require an architect when the planner only asks for implementation", () => {
+    const value = intent();
+    value.todos = value.todos.filter((todo) => todo.kind === "implementation");
+    const base = snapshot();
+    base.teamMembers = base.teamMembers.filter((member) => !member.capabilities.includes("architecture:design"));
+
+    expect(() => compilePlanIntent(value, base)).not.toThrow();
+  });
+
+  it("rejects a list with no implementation work", () => {
+    const value = intent();
+    value.todos = value.todos.filter((todo) => todo.kind === "architecture");
+    expect(() => compilePlanIntent(value, snapshot())).toThrow("at least one implementation todo");
+  });
+
+  it("rejects a lifecycle the team cannot actually staff", () => {
+    const base = snapshot();
+    base.teamMembers = base.teamMembers.filter((member) => !member.capabilities.includes("delivery:verify"));
+    expect(() => compilePlanIntent(intent(), base)).toThrow("independent verification");
+  });
+
+  it("gates a new delivery on every healthy exit of the latest existing increment", () => {
     const existingIncrement = { incrementId: "existing", sequence: 3, title: "Existing", objective: "Ship baseline" };
-    const nextIncrement = intent().increments[0]!;
-    nextIncrement.workItems[0]!.permissions = { settleMission: true };
-    const change = compilePlanIntent({
-      rationale: "Extend delivery",
-      increments: [nextIncrement],
-    }, {
-      planId: "plan-a",
-      sourceTicketId,
+    const base = snapshot({
       tickets: [
         { ticketId: "a" as TicketId, deliveryIncrement: existingIncrement },
         { ticketId: "b" as TicketId, deliveryIncrement: existingIncrement },
@@ -43,171 +69,78 @@ describe("compilePlanIntent", () => {
       ],
       dependencyEdges: [{ fromTicketId: "a" as TicketId, toTicketId: "b" as TicketId }],
     });
+    const change = compilePlanIntent(intent(), base);
 
     expect(change.additions[0]?.deliveryIncrement?.sequence).toBe(4);
     expect(change.dependencyAdditions).toEqual(expect.arrayContaining([
-      { from: { ticketId: sourceTicketId }, to: { clientRef: "research" } },
-      { from: { ticketId: "b" }, to: { clientRef: "research" } },
-      { from: { ticketId: "c" }, to: { clientRef: "research" } },
+      { from: { ticketId: sourceTicketId }, to: { clientRef: "todo-01" } },
+      { from: { ticketId: "b" }, to: { clientRef: "todo-01" } },
+      { from: { ticketId: "c" }, to: { clientRef: "todo-01" } },
     ]));
   });
 
-  it("rejects cross-increment hand-written dependencies", () => {
-    const value = intent();
-    value.increments[1]!.workItems[0]!.dependsOn = ["research"];
-    expect(() => compilePlanIntent(value, {
-      planId: "plan-a",
-      sourceTicketId,
-      tickets: [],
-      dependencyEdges: [],
-    })).toThrow(PlanIntentError);
-  });
-
-  it("rejects cyclic semantic work before it reaches Ticket Engine", () => {
-    const value = intent();
-    value.increments[1]!.workItems[0]!.dependsOn = ["accept"];
-    expect(() => compilePlanIntent(value, {
-      planId: "plan-a", sourceTicketId, tickets: [], dependencyEdges: [],
-    })).toThrow("dependency cycle");
-  });
-
-  it("derives historical failure resolution from replacement assurance intent", () => {
-    const value = intent();
-    value.increments[1]!.workItems[1]!.assurance = { missionCriterionIds: ["criterion-a"] };
+  it("derives historical failure resolution from the generated assurance", () => {
     const failedTicketId = "failed-qa" as TicketId;
-    const change = compilePlanIntent(value, {
-      planId: "plan-a",
-      sourceTicketId,
+    const change = compilePlanIntent(intent(), snapshot({
       tickets: [{
         ticketId: failedTicketId,
         status: "returned",
         assurance: { missionCriterionIds: ["criterion-a"] },
       }],
-      dependencyEdges: [],
       requiredTerminalTicketIds: [failedTicketId],
-    });
+    }));
 
     expect(change.failureResolutions).toEqual([{
       failedTicketId,
-      resolvedBy: { clientRef: "qa" },
+      resolvedBy: { clientRef: "assurance" },
     }]);
   });
 
-  it("does not redeclare a historical failure already resolved in the required closure", () => {
-    const value = intent();
+  it("does not gate replacement work on an unsuccessful latest exit", () => {
+    const existingIncrement = { incrementId: "failed", sequence: 3, title: "Failed QA", objective: "Verify" };
     const failedTicketId = "failed-qa" as TicketId;
-    const priorResolutionId = "prior-resolution" as TicketId;
-    const change = compilePlanIntent(value, {
-      planId: "plan-a",
-      sourceTicketId,
-      tickets: [
-        { ticketId: failedTicketId, status: "returned" },
-        { ticketId: priorResolutionId, status: "completed" },
-      ],
-      dependencyEdges: [{ fromTicketId: failedTicketId, toTicketId: priorResolutionId }],
-      requiredTerminalTicketIds: [priorResolutionId],
-      failureResolutionEdges: [{ failedTicketId, resolutionTicketId: priorResolutionId }],
-    });
-
-    expect(change.failureResolutions).toEqual([]);
-  });
-
-  it("does not gate replacement work on a terminal unsuccessful exit", () => {
-    const existingIncrement = { incrementId: "failed-increment", sequence: 3, title: "Failed QA", objective: "Verify" };
-    const nextIncrement = intent().increments[0]!;
-    nextIncrement.workItems[0]!.permissions = { settleMission: true };
-    const failedTicketId = "failed-qa" as TicketId;
-    const change = compilePlanIntent({ rationale: "Replace failed work", increments: [nextIncrement] }, {
-      planId: "plan-a",
-      sourceTicketId,
+    const change = compilePlanIntent(intent(), snapshot({
       tickets: [{ ticketId: failedTicketId, status: "returned", deliveryIncrement: existingIncrement }],
-      dependencyEdges: [],
-    });
+    }));
 
-    expect(change.dependencyAdditions).toContainEqual({
-      from: { ticketId: sourceTicketId },
-      to: { clientRef: "research" },
-    });
     expect(change.dependencyAdditions).not.toContainEqual({
       from: { ticketId: failedTicketId },
-      to: { clientRef: "research" },
-    });
-  });
-
-  it("does not gate replacement work on an exit blocked by an unsuccessful ancestor", () => {
-    const existingIncrement = { incrementId: "failed-increment", sequence: 3, title: "Failed QA", objective: "Verify" };
-    const nextIncrement = intent().increments[0]!;
-    nextIncrement.workItems[0]!.permissions = { settleMission: true };
-    const failedTicketId = "failed-qa" as TicketId;
-    const blockedExitId = "blocked-acceptance" as TicketId;
-    const change = compilePlanIntent({ rationale: "Replace failed work", increments: [nextIncrement] }, {
-      planId: "plan-a",
-      sourceTicketId,
-      tickets: [
-        { ticketId: failedTicketId, status: "returned", deliveryIncrement: existingIncrement },
-        { ticketId: blockedExitId, status: "pending", deliveryIncrement: existingIncrement },
-      ],
-      dependencyEdges: [{ fromTicketId: failedTicketId, toTicketId: blockedExitId }],
-    });
-
-    expect(change.dependencyAdditions).not.toContainEqual({
-      from: { ticketId: blockedExitId },
-      to: { clientRef: "research" },
+      to: { clientRef: "todo-01" },
     });
   });
 });
 
 function intent(): PlanIntent {
   return {
-    rationale: "Acquire an authoritative baseline before implementation",
-    increments: [
-      {
-        intentRef: "reference",
-        title: "Reference baseline",
-        objective: "Acquire auditable facts",
-        workItems: [{
-          intentRef: "research",
-          title: "Research",
-          objective: "Acquire baseline",
-          successCriteria: ["Evidence is auditable"],
-          assignment: { requiredCapabilities: ["plan:plan"] },
-          outputContract: { schemaRef: "result-v1" },
-        }],
-      },
-      {
-        intentRef: "delivery",
-        title: "Verified delivery",
-        objective: "Implement and verify",
-        workItems: [
-          {
-            intentRef: "build",
-            title: "Build",
-            objective: "Implement against baseline",
-            successCriteria: ["Implementation matches baseline"],
-            assignment: { requiredCapabilities: ["code:write"] },
-            outputContract: { schemaRef: "result-v1" },
-          },
-          {
-            intentRef: "qa",
-            title: "Verify",
-            objective: "Verify delivery",
-            successCriteria: ["Verification is reproducible"],
-            assignment: { requiredCapabilities: ["test:verify"] },
-            outputContract: { schemaRef: "mission-assurance-v1" },
-            dependsOn: ["build"],
-          },
-          {
-            intentRef: "accept",
-            title: "Accept",
-            objective: "Settle mission",
-            successCriteria: ["Mission criteria are satisfied"],
-            assignment: { requiredCapabilities: ["mission:accept"] },
-            outputContract: { schemaRef: "result-v1" },
-            dependsOn: ["qa"],
-            permissions: { settleMission: true },
-          },
-        ],
-      },
+    rationale: "Design, implement, verify, and accept the delivery",
+    todos: [{
+      kind: "architecture",
+      title: "Define the technical approach",
+      objective: "Record the smallest safe implementation boundary",
+      successCriteria: ["The implementation boundary is actionable"],
+    }, {
+      kind: "implementation",
+      title: "Build the delivery",
+      objective: "Implement the user-visible product",
+      successCriteria: ["The product runs and can be independently verified"],
+    }],
+  };
+}
+
+function snapshot(overrides: Partial<PlanCompilerSnapshot> = {}): PlanCompilerSnapshot {
+  return {
+    planId: "plan-a",
+    sourceTicketId,
+    missionCriterionIds: ["criterion-a", "criterion-b"],
+    requiredTerminalCapabilities: ["delivery:accept"],
+    teamMembers: [
+      { principalId: "architect", capabilities: ["architecture:design"], enabledTools: ["listFiles", "readFile", "writeFile", "editFile"] },
+      { principalId: "dev", capabilities: ["delivery:implement"], enabledTools: ["listFiles", "readFile", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] },
+      { principalId: "qa", capabilities: ["delivery:verify"], enabledTools: ["listFiles", "readFile", "shell", "startService", "pollProcess", "browser"] },
+      { principalId: "boss", capabilities: ["delivery:accept"], enabledTools: ["listFiles", "readFile"] },
     ],
+    tickets: [],
+    dependencyEdges: [],
+    ...overrides,
   };
 }

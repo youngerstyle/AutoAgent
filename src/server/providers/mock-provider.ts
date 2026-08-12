@@ -305,7 +305,6 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
     };
   }
   if (ticket.outputSchema === "plan-intent-v1" && !ticket.settleMission) {
-    const criterionIndexes = missionCriterionIndexes(instructions);
     return {
       status: "completed",
       summary: "已形成可编译的交付意图",
@@ -315,26 +314,11 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
       domainOutcome: {
         intent: {
           rationale: "形成实现、独立验证和最终验收的可验证交付",
-          increments: [{
-            intentRef: "delivery",
-            title: "可验证交付",
-            objective: "实现目标并完成独立验收",
-            workItems: [
-              {
-                ...intentNode("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
-                missionContribution: { missionCriterionIndexes: criterionIndexes },
-              },
-              {
-                ...intentNode("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
-                dependsOn: ["implementation"],
-                assurance: { missionCriterionIndexes: criterionIndexes },
-              },
-              {
-                ...intentNode("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"),
-                dependsOn: ["qa"],
-                permissions: { settleMission: true },
-              },
-            ],
+          todos: [{
+            kind: "implementation",
+            title: "开发执行",
+            objective: "实现目标并产生真实交付物",
+            successCriteria: ["真实交付物可运行并满足正式目标"],
           }],
         },
       },
@@ -396,56 +380,28 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
     };
   }
   if (ticket.outputSchema === "mission-assurance-v1" && !ticket.settleMission) {
-    const criterionIds = missionCriterionIds(instructions);
-    const baselineVersion = missionBaselineVersion(instructions);
-    const evidence = toolEvidence.map((evidenceId) => ({ evidenceId }));
+    const checkCount = missionAssuranceCheckCount(instructions);
     return {
       status: "completed",
       summary: "已逐项验证 Mission 成功标准",
-      evidence: [],
-      criterionResults: completedCriteria(instructions),
       residualRisks: [],
       domainOutcome: {
-        assuranceReport: {
-          baselineVersion,
-          missionCriterionResults: criterionIds.map((criterionId) => ({
-            criterionId,
-            status: "satisfied",
-            evidence,
-            anchorResults: [{
-              anchorIndex: 0,
-              status: "satisfied",
-              evidence,
-              verificationBasis: { summary: "按 Mission baseline 验收锚点判断", evidence },
-              observations: ["mock 工具证据与验收锚点一致"],
-              deviations: [],
-            }],
-          })),
-        },
+        summary: "已逐项验证 Mission 成功标准",
+        checks: Array.from({ length: checkCount }, () => ({
+          verificationBasis: "按 Mission baseline 验收锚点判断",
+          observations: ["mock 工具证据与验收锚点一致"],
+        })),
       },
     };
   }
   if (ticket.settleMission) {
-    const criterionIds = missionCriterionIds(instructions);
-    const baselineVersion = missionBaselineVersion(instructions);
-    const assuranceTicketIds = completedAssuranceTicketIds(instructions);
     return {
       status: "completed",
       summary: "已依据 Mission 基线完成最终验收",
-      evidence: [],
-      criterionResults: completedCriteria(instructions),
       residualRisks: [],
       domainOutcome: {
-        missionResolution: {
-          baselineVersion,
-          summary: "mock acceptance",
-          criterionResults: criterionIds.map((criterionId) => ({
-            criterionId,
-            status: "satisfied",
-            assuranceTicketIds,
-          })),
-          residualRisks: [],
-        },
+        summary: "mock acceptance",
+        residualRisks: [],
       },
     };
   }
@@ -532,30 +488,26 @@ function missionCriterionIds(instructions: string): string[] {
     .filter((criterionId): criterionId is string => typeof criterionId === "string" && criterionId.length > 0) ?? [];
 }
 
+function missionAssuranceCheckCount(instructions: string): number {
+  const context = workContext(instructions);
+  return context.assuranceScope?.criteria?.reduce((total, criterion) => (
+    total + Math.max(1, criterion.verification?.anchors?.length ?? 0)
+  ), 0) ?? missionCriterionIds(instructions).length;
+}
+
 function missionCriterionIndexes(instructions: string): number[] {
   const declared = [...instructions.matchAll(/"criterionIndex":(\d+)/g)].map((match) => Number(match[1]));
   return declared.length ? [...new Set(declared)] : workContext(instructions).currentPlan?.missionBaseline?.criteria?.map((_criterion, index) => index) ?? [];
-}
-
-function missionBaselineVersion(instructions: string): number {
-  const context = workContext(instructions);
-  return context.assuranceScope?.baselineVersion
-    ?? context.currentPlan?.missionBaseline?.version
-    ?? 1;
-}
-
-function completedAssuranceTicketIds(instructions: string): string[] {
-  return workContext(instructions).handoffLineage
-    ?.filter((handoff) => handoff.outputContract?.schemaRef === "mission-assurance-v1")
-    .map((handoff) => handoff.ticketId)
-    .filter((ticketId): ticketId is string => typeof ticketId === "string" && ticketId.length > 0) ?? [];
 }
 
 interface MockWorkContext {
   assuranceScope?: {
     baselineVersion?: number;
     criterionIds?: string[];
-    criteria?: Array<{ criterionId?: string }>;
+    criteria?: Array<{
+      criterionId?: string;
+      verification?: { anchors?: unknown[] };
+    }>;
     missingCriterionIds?: string[];
   };
   currentPlan?: {
@@ -703,17 +655,6 @@ function node(clientRef: string, title: string, objective: string, requiredCapab
     outputContract: { schemaRef },
     deliveryIncrement: { incrementId: MOCK_INCREMENT.incrementId },
   };
-}
-
-function intentNode(intentRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
-  const { deliveryIncrement: _deliveryIncrement, clientRef: _clientRef, ...work } = node(
-    intentRef,
-    title,
-    objective,
-    requiredCapabilities,
-    schemaRef,
-  );
-  return { intentRef, ...work };
 }
 
 function mockRequiredTools(schemaRef: string): string[] {

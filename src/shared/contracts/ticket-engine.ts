@@ -81,36 +81,20 @@ export interface PlanChangeSet {
 }
 
 /**
- * Semantic planning input produced by an Agent. It deliberately contains no
- * Ticket ids, graph edges, increment sequence numbers, or terminal refs.
- * Those platform invariants are owned by the deterministic Plan compiler.
+ * Flat semantic work proposed by a planning Agent. The Agent describes only
+ * what should be done. Assignment, tools, contracts, Mission coverage,
+ * verification, acceptance, ids and graph edges are platform-owned.
  */
 export interface PlanIntent {
   rationale: string;
-  increments: PlanIncrementIntent[];
+  todos: PlanTodoIntent[];
 }
 
-export interface PlanIncrementIntent {
-  intentRef: string;
-  title: string;
-  objective: string;
-  workItems: PlanWorkItemIntent[];
-}
-
-export interface PlanWorkItemIntent {
-  intentRef: string;
+export interface PlanTodoIntent {
+  kind: "architecture" | "implementation";
   title: string;
   objective: string;
   successCriteria: string[];
-  assignment: {
-    requiredCapabilities: string[];
-    requiredTools?: WorkspaceToolName[];
-  };
-  outputContract: TicketOutputContract;
-  dependsOn?: string[];
-  missionContribution?: { missionCriterionIds: string[] };
-  assurance?: { missionCriterionIds: string[] };
-  permissions?: { amendPlan?: boolean; settleMission?: boolean };
 }
 
 export interface PlannedTicketGraph {

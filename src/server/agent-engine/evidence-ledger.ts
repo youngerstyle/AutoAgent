@@ -46,6 +46,19 @@ export class EvidenceLedger {
     }));
   }
 
+  async listForGoal(input: {
+    agentId: string;
+    goalId: string;
+    attemptId?: string;
+  }): Promise<EvidenceFact[]> {
+    const facts = await this.readAll();
+    return [...facts.values()]
+      .filter((fact) => fact.agentId === input.agentId && fact.goalId === input.goalId)
+      .filter((fact) => !input.attemptId || fact.attemptId === input.attemptId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.evidenceId.localeCompare(right.evidenceId))
+      .map((fact) => structuredClone(fact));
+  }
+
   private async readAll(): Promise<Map<string, EvidenceFact>> {
     await this.writeTail;
     let info: Awaited<ReturnType<typeof stat>>;

@@ -385,7 +385,7 @@ describe("MissionProcessManager", () => {
     expect(missionInstruction).toMatchObject({ content: expect.not.stringContaining('"currentPlan"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"missionBaseline"') });
     expect(missionInstruction).toMatchObject({ content: expect.stringContaining('"successCriteria"') });
-    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('outputContract') });
+    expect(missionInstruction).toMatchObject({ content: expect.stringContaining('TodoList') });
     expect(missionInstruction).toMatchObject({
       content: expect.stringContaining('"currentWork"'),
     });

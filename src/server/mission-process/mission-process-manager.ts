@@ -25,7 +25,7 @@ import type {
   PlannedTicketAssignment,
   TicketRequiredInput,
 } from "../../shared/contracts/ticket-engine.js";
-import { compilePlanIntent, PlanIntentError, type PlanCompilerSnapshot } from "../tickets/plan-intent-compiler.js";
+import { compilePlanIntent, PlanIntentError, type PlanCompilerSnapshot } from "./plan-intent-compiler.js";
 import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
 import {
@@ -41,6 +41,9 @@ import {
   validateMissionPlanAssurance,
   validateMissionSettlement,
   materializeMissionSettlement,
+  materializeSimpleAssuranceCorrection,
+  materializeSimpleAssuranceOutcome,
+  materializeSimpleMissionSettlement,
   validateMissionTicketOutcome,
   normalizeMissionPlanCriterionIndexes,
   type MissionTicketOutcome,
@@ -1031,12 +1034,38 @@ export class MissionProcessManager {
           ),
         }
       : storedProposal;
+    if (proposal.status === "completed" && schemaRef === "mission-assurance-v1" && missionBaseline) {
+      const correctionTargets = await this.listCorrectionTargets(link.planId, link.ticketId);
+      const domainOutcome = proposal.domainOutcome?.disposition === "correction_required"
+        ? materializeSimpleAssuranceCorrection(
+            missionBaseline,
+            proposal.domainOutcome,
+            proposal.evidence,
+            correctionTargets,
+          )
+        : materializeSimpleAssuranceOutcome(
+            missionBaseline,
+            work.definition.assurance?.missionCriterionIds ?? [],
+            proposal.domainOutcome,
+            proposal.evidence,
+          );
+      proposal = { ...proposal, domainOutcome };
+    }
     let settlementMaterializationError: string | undefined;
     if (proposal.status === "completed" && work.definition.permissions?.settleMission
       && proposal.domainOutcome?.disposition !== "correction_required"
       && proposal.domainOutcome?.disposition !== "plan_change_required"
       && missionBaseline) {
       const assuranceSources = await this.listMissionAssuranceSources(link.planId, link.ticketId);
+      if (!proposal.domainOutcome?.missionResolution) {
+        const simple = materializeSimpleMissionSettlement(
+          missionBaseline,
+          proposal.domainOutcome,
+          assuranceSources,
+        );
+        if (simple.valid) proposal = { ...proposal, domainOutcome: simple.outcome };
+        else settlementMaterializationError = simple.reason;
+      }
       const materialized = materializeMissionSettlement(
         missionBaseline,
         proposal.domainOutcome?.missionResolution,
@@ -1446,6 +1475,13 @@ export async function validateTeamAssignments(
       compiledChange = compilePlanIntent(outcome.intent as unknown as PlanIntent, {
         planId: currentPlan.planId,
         sourceTicketId: "plan-intent-validation" as TicketId,
+        missionCriterionIds: currentPlan.missionBaseline?.criteria.map((criterion) => criterion.criterionId) ?? [],
+        requiredTerminalCapabilities: currentPlan.requiredTerminalCapabilities ?? [],
+        teamMembers: currentPlan.teamMembers.map((member) => ({
+          principalId: member.principalId,
+          capabilities: [...member.capabilities],
+          enabledTools: [...member.enabledTools],
+        })),
         tickets: currentPlan.tickets.map((ticket) => ({
           ticketId: ticket.ticketId as TicketId,
           status: ticket.status as PlanCompilerSnapshot["tickets"][number]["status"],

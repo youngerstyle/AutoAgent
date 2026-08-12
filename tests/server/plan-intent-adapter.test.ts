@@ -13,15 +13,16 @@ import {
 describe("plan-intent-v1 adapter", () => {
   it("does not expose platform graph internals to the planner", () => {
     const instruction = missionOutcomeInstruction("plan-intent-v1", ["code:write", "test:verify"], [], link.ticketId, plan);
-    expect(instruction).toContain("只描述业务交付意图");
-    expect(instruction).toContain("不得生成 Ticket UUID");
+    expect(instruction).toContain("像负责人写 TodoList 一样");
+    expect(instruction).toContain("不要生成 capability、tool、schemaRef");
+    expect(instruction).toContain('todos:[{kind:"architecture"|"implementation",title,objective,successCriteria}]');
     expect(instruction).not.toContain("dependencyAdditions");
     expect(instruction).not.toContain("requiredTerminalRefs");
   });
 
-  it("maps criterion indexes then compiles intent using the authoritative snapshot", () => {
+  it("compiles flat todos using the authoritative snapshot", () => {
     const normalized = normalizeMissionPlanCriterionIndexes(outcome, plan.missionBaseline) as typeof outcome;
-    expect(normalized.intent.increments[0]?.workItems[0]?.missionContribution).toEqual({ missionCriterionIds: ["criterion-a"] });
+    expect(normalized).toEqual(outcome);
     expect(validateMissionTicketOutcome("plan-intent-v1", "completed", normalized, undefined, plan)).toEqual({ valid: true });
 
     const command = proposalToCompiledPlanCommand(proposal(normalized), link, 4, NOW, plan);
@@ -30,23 +31,23 @@ describe("plan-intent-v1 adapter", () => {
       expectedPlanVersion: 4,
       change: {
         dependencyAdditions: expect.arrayContaining([
-          { from: { ticketId: link.ticketId }, to: { clientRef: "build" } },
-          { from: { clientRef: "build" }, to: { clientRef: "qa" } },
-          { from: { clientRef: "qa" }, to: { clientRef: "accept" } },
+          { from: { ticketId: link.ticketId }, to: { clientRef: "todo-01" } },
+          { from: { clientRef: "todo-01" }, to: { clientRef: "assurance" } },
+          { from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } },
         ]),
-        requiredTerminalRefs: [{ clientRef: "accept" }],
+        requiredTerminalRefs: [{ clientRef: "acceptance" }],
       },
     });
   });
 
   it("returns the exact malformed semantic work field", () => {
     const malformed = structuredClone(outcome) as unknown as Record<string, unknown>;
-    const intent = malformed.intent as { increments: Array<{ workItems: Array<Record<string, unknown>> }> };
-    intent.increments[0]!.workItems[0]!.outputContract = "reference-baseline-v2";
+    const intent = malformed.intent as { todos: Array<Record<string, unknown>> };
+    intent.todos[0]!.kind = "qa";
 
     expect(validateMissionTicketOutcome("plan-intent-v1", "completed", malformed, undefined, plan)).toEqual({
       valid: false,
-      reason: "intent.increments[0].workItems[0].outputContract must be an object with schemaRef",
+      reason: "intent.todos[0].kind must be architecture or implementation",
     });
   });
 
@@ -84,7 +85,12 @@ const plan: SharedPlanContext = {
   tickets: [],
   dependencyEdges: [],
   requiredTerminalTicketIds: [],
-  teamMembers: [],
+  requiredTerminalCapabilities: ["delivery:accept"],
+  teamMembers: [
+    { principalId: "principal:dev", name: "Dev", capabilities: ["delivery:implement"], enabledTools: ["listFiles", "readFile", "writeFile", "shell"] },
+    { principalId: "principal:qa", name: "QA", capabilities: ["delivery:verify"], enabledTools: ["listFiles", "readFile", "shell", "browser"] },
+    { principalId: "principal:boss", name: "Boss", capabilities: ["delivery:accept"], enabledTools: ["listFiles", "readFile"] },
+  ],
   missionBaseline: {
     baselineId: "baseline-a",
     version: 1,
@@ -102,27 +108,8 @@ const plan: SharedPlanContext = {
 const outcome = {
   intent: {
     rationale: "deliver and verify",
-    increments: [{
-      intentRef: "delivery",
-      title: "Delivery",
-      objective: "Build and verify",
-      workItems: [
-        {
-          intentRef: "build", title: "Build", objective: "Build it", successCriteria: ["built"],
-          assignment: { requiredCapabilities: ["code:write"] }, outputContract: { schemaRef: "result-v1" },
-          missionContribution: { missionCriterionIndexes: [0] },
-        },
-        {
-          intentRef: "qa", title: "QA", objective: "Verify it", successCriteria: ["verified"],
-          assignment: { requiredCapabilities: ["test:verify"] }, outputContract: { schemaRef: "mission-assurance-v1" },
-          dependsOn: ["build"], assurance: { missionCriterionIndexes: [0] },
-        },
-        {
-          intentRef: "accept", title: "Accept", objective: "Accept it", successCriteria: ["accepted"],
-          assignment: { requiredCapabilities: ["mission:accept"] }, outputContract: { schemaRef: "result-v1" },
-          dependsOn: ["qa"], permissions: { settleMission: true },
-        },
-      ],
+    todos: [{
+      kind: "implementation", title: "Build", objective: "Build it", successCriteria: ["built"],
     }],
   },
 };

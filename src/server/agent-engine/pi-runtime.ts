@@ -37,6 +37,7 @@ import type { AgentStore } from "./agent-store.js";
 import { AgentGoalTransitionError } from "./goal-state.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceInput, AgentExecutionSliceResult } from "./runtime.js";
 import { createHumanInputProposal, parseResolutionProposal } from "./resolution-proposal.js";
+import { EvidenceLedger } from "./evidence-ledger.js";
 import type { AgentTraceStore } from "./trace-store.js";
 import {
   AgentToolRuntime,
@@ -64,6 +65,8 @@ type AgentPrompt = string | { text: string; images: ImageContent[] };
 interface ResolutionBinding {
   goal?: AgentGoal;
   turnId?: string;
+  agentId?: string;
+  workspaceRoot: string;
   onProposal?: (proposal: GoalResolutionProposal) => void;
   onInvalid?: (reason: string) => void;
   mock?: boolean;
@@ -328,6 +331,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
 
     state.resolution.goal = goal;
     state.resolution.turnId = turnId;
+    state.resolution.agentId = input.agent.id;
     state.resolution.onProposal = (value) => { proposal = value; };
     state.resolution.mock = input.provider === "mock";
     state.safety.failedToolSignatures.clear();
@@ -505,6 +509,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       promptWatchdog?.dispose();
       state.resolution.goal = undefined;
       state.resolution.turnId = undefined;
+      state.resolution.agentId = undefined;
       state.resolution.onProposal = undefined;
       state.resolution.onInvalid = undefined;
       state.resolution.mock = undefined;
@@ -634,7 +639,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       goal: sessionGoal,
     });
     await restoreSessionHistory(sessionManager, assembled.history, model, this.workspaceRoot);
-    const resolution: ResolutionBinding = {};
+    const resolution: ResolutionBinding = { workspaceRoot: this.workspaceRoot };
     const toolExecution: ToolExecutionBinding = {
       agentId: input.agent.id,
       threadId: input.threadId,
@@ -1296,20 +1301,13 @@ function goalTool(
   goalCriterionCount?: number,
 ): ToolDefinition {
   const finalSettlement = outputContract?.evidenceMode === "none";
-  const evidenceItems = Type.Array(Type.Object({ evidenceId: Type.String() }), finalSettlement ? { maxItems: 0 } : {});
-  const genericCriterionResults = goalResolutionCriterionResultsSchema(finalSettlement, goalCriterionCount);
-  const criterionContract = typeof goalCriterionCount === "number"
-    ? `当前 Goal 有 ${goalCriterionCount} 条 successCriteria；顶层 criterionResults 必须恰好 ${goalCriterionCount} 项，criterionIndex 只能覆盖 0 到 ${Math.max(0, goalCriterionCount - 1)}，每个索引只出现一次。`
-    : "顶层 criterionResults 必须逐项对应当前 Goal 的 successCriteria，不能混入 domainOutcome 中的领域验收标准。";
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: `提交当前 Goal 的正常完成或失败结论。最外层必须提供 status，值只能是 completed 或 failed；${criterionContract}${finalSettlement ? "当前为最终验收：顶层 evidence 和每项 criterionResults.evidence 必须为空；业务目标的验收标准只能填写在 domainOutcome.missionResolution.criterionResults 中，并且不能复制到顶层。" : "每项都要包含 criterionIndex、status 和 evidence，没有证据时使用空数组。evidenceId 只能引用本 Goal 中前序工具真实返回的 ID，不能凭空生成。"}domainOutcome 按 Ticket 的领域输出契约填写。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。被拒绝后不要复用旧参数，按当前工具定义重新提交完整对象。Host 只校验契约并提交，不替你判断结论。`,
+    description: `提交当前 Goal 的正常完成或失败结论。只填写 status、summary、residualRisks 和 Ticket 的 domainOutcome；平台会从当前 Goal 的真实工具记录自动装配 evidence，并逐项生成当前 Ticket 的 criterionResults。不要手抄 evidenceId、criterionIndex 或顶层 criterionResults。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。`,
     parameters: Type.Object({
       status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
       summary: Type.Optional(Type.String()),
-      evidence: Type.Optional(evidenceItems),
-      criterionResults: genericCriterionResults,
       residualRisks: Type.Optional(Type.Array(Type.String())),
       // Keep the domain result opaque at the provider boundary. The domain
       // adapter validates outputContract.schemaRef after this generic proposal
@@ -1330,16 +1328,26 @@ function goalTool(
         };
       }
       const normalizedParams = withDefaultResidualRisks(params);
+      const evidence = finalSettlement || !binding.agentId
+        ? []
+        : (await new EvidenceLedger(binding.workspaceRoot).listForGoal({
+            agentId: binding.agentId,
+            goalId: binding.goal.spec.id,
+            attemptId: binding.goal.spec.attemptId,
+          }))
+            .filter((fact) => fact.capture.status === "recorded" && fact.observation.status === "observed")
+            .map((fact) => ({ evidenceId: fact.evidenceId }));
       const submitted = binding.mock
         ? {
             ...normalizedParams,
+            evidence,
             criterionResults: binding.goal.spec.successCriteria.map((_criterion, criterionIndex) => ({
               criterionIndex,
               status: "satisfied" as const,
-              evidence: [],
+              evidence,
             })),
           }
-        : normalizedParams;
+        : { ...normalizedParams, evidence };
       const parsed = parseResolutionProposal(submitted, binding.goal, binding.turnId, now().toISOString());
       if (!parsed.ok) {
         if (process.env.AUTOAGENT_DEBUG_PI === "1") console.error("Pi goal_resolution rejected", parsed.reason, params);
@@ -1491,22 +1499,32 @@ function planChangeTool(
   });
 }
 
-function submitWorkflowAction(
+async function submitWorkflowAction(
   binding: ResolutionBinding,
   now: () => Date,
   toolName: string,
   reason: string,
   domainOutcome: Record<string, unknown>,
-) {
+): Promise<ReturnType<typeof submitResolution>> {
   const criterionResults = binding.goal?.spec.successCriteria.map((_criterion, criterionIndex) => ({
     criterionIndex,
     status: "not_verified" as const,
     evidence: [],
     note: reason,
   })) ?? [];
+  const evidence = !binding.goal || !binding.agentId
+    ? []
+    : (await new EvidenceLedger(binding.workspaceRoot).listForGoal({
+        agentId: binding.agentId,
+        goalId: binding.goal.spec.id,
+        attemptId: binding.goal.spec.attemptId,
+      }))
+        .filter((fact) => fact.capture.status === "recorded" && fact.observation.status === "observed")
+        .map((fact) => ({ evidenceId: fact.evidenceId }));
   return submitResolution(binding, now, {
     status: "completed",
     summary: reason,
+    evidence,
     criterionResults,
     residualRisks: [],
     domainOutcome,
