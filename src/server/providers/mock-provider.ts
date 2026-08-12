@@ -324,61 +324,6 @@ function mockGoalResolution(instructions: string, toolEvidence: string[] = []): 
       },
     };
   }
-  if (ticket.outputSchema === "plan-change-set-v3" && !ticket.settleMission) {
-    const sourceTicketId = currentTicketId(instructions);
-    const criterionIndexes = missionCriterionIndexes(instructions);
-    const context = workContext(instructions);
-    const existingIncrements = uniqueMockIncrements(context);
-    const increment = nextMockIncrement(existingIncrements);
-    if (existingIncrements.length) MOCK_INCREMENT = increment;
-    const previousIncrementExitTicketIds = previousMockIncrementExitTicketIds(context);
-    return {
-      status: "completed",
-      summary: "已形成执行工单 DAG",
-      evidence: [],
-      criterionResults: completedCriteria(instructions),
-      residualRisks: [],
-      domainOutcome: {
-        summary: "已形成执行工单 DAG",
-        result: {
-          plan: "实现、质量检查、验收",
-          deliveryStrategy: {
-            mode: existingIncrements.length ? "multi_increment" : "single_increment",
-            rationale: "mock 目标使用一个可验证增量",
-            increments: [increment],
-          },
-        },
-        change: {
-          additions: [
-            {
-              ...node("implementation", "开发执行", "实现目标并产生真实交付物", ["delivery:implement"], "delivery-v1"),
-              missionContribution: { missionCriterionIndexes: criterionIndexes },
-            },
-            {
-              ...node("qa", "质量检查", "验证交付物和成功标准", ["delivery:verify"], "mission-assurance-v1"),
-              assurance: { missionCriterionIndexes: criterionIndexes },
-            },
-            { ...node("acceptance", "最终验收", "依据目标和 QA 证据验收", ["delivery:accept"], "acceptance-v1"), permissions: { settleMission: true } },
-          ],
-          dependencyAdditions: [
-            ...previousIncrementExitTicketIds.map((ticketId) => ({
-              from: { ticketId },
-              to: { clientRef: "implementation" },
-            })),
-            { from: { ticketId: sourceTicketId }, to: { clientRef: "implementation" } },
-            { from: { clientRef: "implementation" }, to: { clientRef: "qa" } },
-            { from: { clientRef: "qa" }, to: { clientRef: "acceptance" } },
-          ],
-          failureResolutions: previousMockUnsuccessfulTicketIds(context).map((failedTicketId) => ({
-            failedTicketId,
-            resolvedBy: { clientRef: "qa" },
-          })),
-          cancelTicketIds: [],
-          requiredTerminalRefs: [{ clientRef: "acceptance" }],
-        },
-      },
-    };
-  }
   if (ticket.outputSchema === "mission-assurance-v1" && !ticket.settleMission) {
     const checkCount = missionAssuranceCheckCount(instructions);
     return {
@@ -474,12 +419,6 @@ function completedCriteria(instructions: string) {
   return Array.from({ length: count }, (_, criterionIndex) => ({ criterionIndex, status: "satisfied", evidence: [] }));
 }
 
-function currentTicketId(instructions: string): string {
-  const match = instructions.match(/^- ticket:\s*([0-9a-f-]{36})\s*$/im);
-  if (!match) throw new Error("Mock planning turn is missing its current Ticket context");
-  return match[1];
-}
-
 function missionCriterionIds(instructions: string): string[] {
   const context = workContext(instructions);
   return context.assuranceScope?.criterionIds
@@ -493,11 +432,6 @@ function missionAssuranceCheckCount(instructions: string): number {
   return context.assuranceScope?.criteria?.reduce((total, criterion) => (
     total + Math.max(1, criterion.verification?.anchors?.length ?? 0)
   ), 0) ?? missionCriterionIds(instructions).length;
-}
-
-function missionCriterionIndexes(instructions: string): number[] {
-  const declared = [...instructions.matchAll(/"criterionIndex":(\d+)/g)].map((match) => Number(match[1]));
-  return declared.length ? [...new Set(declared)] : workContext(instructions).currentPlan?.missionBaseline?.criteria?.map((_criterion, index) => index) ?? [];
 }
 
 interface MockWorkContext {
@@ -572,107 +506,3 @@ function workContext(instructions: string): MockWorkContext {
   }
   return {};
 }
-
-function uniqueMockIncrements(context: MockWorkContext): Array<{
-  incrementId: string;
-  sequence: number;
-  title: string;
-  objective: string;
-}> {
-  const byId = new Map<string, {
-    incrementId: string;
-    sequence: number;
-    title: string;
-    objective: string;
-  }>();
-  for (const ticket of context.currentPlan?.tickets ?? []) {
-    const increment = ticket.deliveryIncrement;
-    if (increment && !byId.has(increment.incrementId)) byId.set(increment.incrementId, increment);
-  }
-  return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
-}
-
-function nextMockIncrement(existing: Array<{
-  incrementId: string;
-  sequence: number;
-  title: string;
-  objective: string;
-}>): {
-  incrementId: string;
-  sequence: number;
-  title: string;
-  objective: string;
-} {
-  if (existing.length === 0) return MOCK_INCREMENT;
-  const sequence = Math.max(...existing.map((increment) => increment.sequence)) + 1;
-  return {
-    incrementId: `increment-${sequence}`,
-    sequence,
-    title: `mock-verifiable-delivery-${sequence}`,
-    objective: "produce a new verifiable delivery on top of the existing result",
-  };
-}
-
-function previousMockIncrementExitTicketIds(context: MockWorkContext): string[] {
-  const tickets = context.currentPlan?.tickets ?? [];
-  const sequences = tickets
-    .map((ticket) => ticket.deliveryIncrement?.sequence)
-    .filter((sequence): sequence is number => Number.isSafeInteger(sequence));
-  const previousSequence = Math.max(...sequences, 0);
-  if (previousSequence <= 0) return [];
-
-  const sameIncrementChildren = new Set(
-    (context.currentPlan?.dependencyEdges ?? [])
-      .filter((edge) => {
-        const from = tickets.find((ticket) => ticket.ticketId === edge.fromTicketId);
-        const to = tickets.find((ticket) => ticket.ticketId === edge.toTicketId);
-        return from?.deliveryIncrement?.sequence === previousSequence
-          && to?.deliveryIncrement?.sequence === previousSequence;
-      })
-      .map((edge) => edge.fromTicketId),
-  );
-  return tickets
-    .filter((ticket) => ticket.deliveryIncrement?.sequence === previousSequence)
-    .filter((ticket) => ticket.status !== "completed" && ticket.status !== "cancelled")
-    .filter((ticket) => !["returned", "failed", "cancelled"].includes(ticket.status))
-    .filter((ticket) => !sameIncrementChildren.has(ticket.ticketId))
-    .map((ticket) => ticket.ticketId);
-}
-
-function previousMockUnsuccessfulTicketIds(context: MockWorkContext): string[] {
-  return (context.currentPlan?.tickets ?? [])
-    .filter((ticket) => ["returned", "failed", "cancelled"].includes(ticket.status))
-    .map((ticket) => ticket.ticketId);
-}
-
-function node(clientRef: string, title: string, objective: string, requiredCapabilities: string[], schemaRef: string) {
-  return {
-    clientRef,
-    title,
-    objective,
-    successCriteria: [`${title}达到验收标准`],
-    assignment: { requiredCapabilities, requiredTools: mockRequiredTools(schemaRef) },
-    outputContract: { schemaRef },
-    deliveryIncrement: { incrementId: MOCK_INCREMENT.incrementId },
-  };
-}
-
-function mockRequiredTools(schemaRef: string): string[] {
-  if (schemaRef === "delivery-v1") {
-    return ["listFiles", "readFile", "writeFile", "editFile", "shell"];
-  }
-  if (schemaRef === "mission-assurance-v1") {
-    return ["listFiles", "readFile", "shell", "browser"];
-  }
-  if (schemaRef === "acceptance-v1") {
-    return ["listFiles", "readFile"];
-  }
-  return [];
-}
-
-let MOCK_INCREMENT = {
-  incrementId: "increment-1",
-  sequence: 1,
-  title: "可验证交付",
-  objective: "形成可运行并经独立验收的结果",
-};

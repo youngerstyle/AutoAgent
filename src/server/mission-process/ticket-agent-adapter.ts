@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentHumanInputRequest, GoalResolutionDecision, GoalResolutionProposal, GoalResolutionStatus } from "../../shared/contracts/agent-engine.js";
 import type { ActiveMissionLink, MissionBaseline } from "../../shared/contracts/mission-control.js";
-import type { PlanChangeSet, PlanCommandEnvelope, PlanCommandResult, PlanIntent, TicketAttemptChangeSet, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
+import type { PlanCommandEnvelope, PlanCommandResult, PlanIntent, TicketAttemptChangeSet, TicketCommandEnvelope, TicketCommandPayload, TicketCommandResult, TicketEvidenceRef, TicketHandoff, TicketId, TicketOutputContract, TicketRequiredInput, TicketRequiredInputKind } from "../../shared/contracts/ticket-engine.js";
 import type { WorkspaceToolName } from "../../shared/types.js";
 import { compilePlanIntent, PlanIntentError, type PlanCompilerSnapshot } from "./plan-intent-compiler.js";
 
@@ -174,7 +174,6 @@ export interface MissionResolution {
   }>;
   residualRisks: string[];
 }
-export interface PlanChangeSetOutcome extends MissionTicketOutcome { result: unknown; change: PlanChangeSet }
 export interface CorrectionTargetContext {
   ticketId: TicketId;
   title: string;
@@ -249,43 +248,6 @@ export interface SharedPlanContext {
   }>;
 }
 
-export function normalizeMissionPlanCriterionIndexes(
-  value: unknown,
-  baseline?: MissionBaseline,
-): MissionTicketOutcome {
-  if (!isRecord(value) || !baseline) {
-    return isRecord(value) ? value : {};
-  }
-
-  const mapCriterionIndexes = (scope: unknown): Record<string, unknown> | undefined => {
-    if (!isRecord(scope) || !Array.isArray(scope.missionCriterionIndexes)) return undefined;
-    const missionCriterionIds = scope.missionCriterionIndexes.map((candidate) => {
-      if (Number.isInteger(candidate) && typeof candidate === "number" && baseline.criteria[candidate]) {
-        return baseline.criteria[candidate].criterionId;
-      }
-      return `__invalid_mission_criterion_index_${String(candidate)}__`;
-    });
-    const { missionCriterionIndexes: _indexes, ...rest } = scope;
-    return { ...rest, missionCriterionIds };
-  };
-
-  const mapItems = (items: unknown[]): unknown[] => items.map((candidate) => {
-        if (!isRecord(candidate)) return candidate;
-        const missionContribution = mapCriterionIndexes(candidate.missionContribution);
-        const assurance = mapCriterionIndexes(candidate.assurance);
-        return {
-          ...candidate,
-          ...(missionContribution ? { missionContribution } : {}),
-          ...(assurance ? { assurance } : {}),
-        };
-      });
-  if (isRecord(value.change) && Array.isArray(value.change.additions)) return {
-    ...value,
-    change: { ...value.change, additions: mapItems(value.change.additions) },
-  };
-  return value;
-}
-
 const MAX_HANDOFF_OUTPUT_CHARS = 6_000;
 const MAX_HANDOFF_TEXT_CHARS = 1_500;
 const MAX_HANDOFF_ARRAY_ITEMS = 40;
@@ -328,15 +290,10 @@ export function validateMissionTicketOutcome(
     return { valid: true };
   }
   if (disposition === "plan_change_required") {
-    if (schemaRef === "plan-intent-v1" || schemaRef === "plan-change-set-v3") return { valid: false, reason: "计划工单不能再次请求计划修订；缺少输入时应 blocked，能够规划时应提交 intent" };
+    if (schemaRef === "plan-intent-v1") {
+      return { valid: false, reason: "plan-intent-v1 planning Goals cannot recursively request another Plan change" };
+    }
     return isNonEmptyString(value.reason) ? { valid: true } : { valid: false, reason: "plan_change_required 需要 reason" };
-  }
-  if (schemaRef === "plan-change-set-v3") {
-    if (!isRecord(value.result) || !isRecord(value.change)) return { valid: false, reason: "plan-change-set-v3 需要 result 和 change 对象" };
-    const error = validateChangeSet(value.change);
-    if (error) return { valid: false, reason: error };
-    const strategyError = validateDeliveryStrategy(value.result, value.change, currentPlan);
-    if (strategyError) return { valid: false, reason: strategyError };
   }
   if (schemaRef === "plan-intent-v1") {
     if (!isRecord(value.intent)) return { valid: false, reason: "plan-intent-v1 requires an intent object" };
@@ -698,7 +655,6 @@ export function validateMissionPlanAssurance(
   baseline: MissionBaseline,
   change: unknown,
   currentPlan: SharedPlanContext,
-  planningResult?: unknown,
 ): { valid: true } | { valid: false; reason: string } {
   if (!isRecord(change) || !Array.isArray(change.additions) || !Array.isArray(change.dependencyAdditions)
     || (change.failureResolutions !== undefined && !Array.isArray(change.failureResolutions))
@@ -718,14 +674,6 @@ export function validateMissionPlanAssurance(
   };
   const declaredIncrements = new Map<string, number>();
   const existingIncrementIds = new Set<string>();
-  if (isRecord(planningResult) && isRecord(planningResult.deliveryStrategy)
-    && Array.isArray(planningResult.deliveryStrategy.increments)) {
-    for (const increment of planningResult.deliveryStrategy.increments) {
-      if (isRecord(increment) && isNonEmptyString(increment.incrementId) && Number.isSafeInteger(increment.sequence)) {
-        declaredIncrements.set(increment.incrementId, Number(increment.sequence));
-      }
-    }
-  }
   const nodes = new Map<string, Node>();
   for (const ticket of currentPlan.tickets) {
     if (ticket.deliveryIncrement) {
@@ -757,7 +705,7 @@ export function validateMissionPlanAssurance(
     if (raw.outputContract.schemaRef === "mission-assurance-v1" && assurance.length === 0) {
       return {
         valid: false,
-        reason: `change.additions[${raw.clientRef}].outputContract.schemaRef 是 mission-assurance-v1；必须提交 assurance.missionCriterionIndexes，不能放在 missionContribution。Host 会把索引转换为内部 missionCriterionIds`,
+        reason: `Compiled Ticket ${raw.clientRef} uses mission-assurance-v1 but has no authoritative assurance criterion binding`,
       };
     }
     if (assurance.length > 0 && raw.outputContract.schemaRef !== "mission-assurance-v1") {
@@ -1292,27 +1240,6 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
     });
     return `${base} 输出契约 mission-assurance-v1：按 orderedCheckList 顺序逐项真实验证：${JSON.stringify(orderedChecks)}。全部满足时 domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}，每项 check 对应列表中的同一位置；平台自动绑定 criterion、anchor、satisfied 状态和本 Goal 的真实工具证据。发现缺陷时调用 report_goal_correction，只提交 targetTicketId、reason 和 findings:[{summary,details}]；不要填写 criterionId、anchorIndex、status 或 evidenceId。`;
   }
-  if (schemaRef === "plan-change-set-v3") {
-    const capabilities = availableCapabilities.length ? availableCapabilities.join("、") : "当前团队真实拥有的能力";
-    const existingIncrements = uniqueDeliveryIncrements(sharedPlanContext);
-    const incrementIdentity = existingIncrements.length
-      ? `当前 Plan 已有的交付增量定义为：${JSON.stringify(existingIncrements)}。incrementId 是 Plan 内稳定身份。复用已有增量时，只在新增 Ticket 的 deliveryIncrement 中填写已有 incrementId，不得在 result.deliveryStrategy.increments 中重复声明；Mission Control 会从当前 Plan 的权威定义补全。只有本次真正创建的新增量才放入 result.deliveryStrategy.increments，并使用当前 Plan 中尚未出现的新 incrementId。`
-      : "当前 Plan 尚无交付增量；请为本次计划创建语义明确且在 Plan 内唯一的 incrementId。";
-    const criterionIndexTable = sharedPlanContext?.missionBaseline?.criteria.map((criterion, criterionIndex) => ({
-      criterionIndex,
-      criterion: criterion.text,
-    })) ?? [];
-    const contract = `change 的结构为：{"additions":[{"clientRef":"work","title":"执行工作","objective":"完成明确目标","successCriteria":["形成可核验交付"],"assignment":{"requiredCapabilities":["从团队快照选择的能力"]},"outputContract":{"schemaRef":"由该工单领域决定的输出契约"},"deliveryIncrement":{"incrementId":"<已有或本次新增的增量 ID>"},"missionContribution":{"missionCriterionIndexes":[0]}},{"clientRef":"review","title":"独立验证","objective":"依据 Mission baseline 检查上游交付","successCriteria":["形成可复现的逐项验证结论"],"assignment":{"requiredCapabilities":["从团队快照选择的验证能力"]},"outputContract":{"schemaRef":"mission-assurance-v1"},"deliveryIncrement":{"incrementId":"<与本次执行工作相同的增量 ID>"},"assurance":{"missionCriterionIndexes":[0]}},{"clientRef":"terminal","title":"最终验收","objective":"依据 Mission baseline 与上游 assurance 作出最终验收结论","successCriteria":["逐项引用已验证的 Mission 成功标准"],"assignment":{"requiredCapabilities":["从团队快照选择的验收能力"]},"outputContract":{"schemaRef":"由验收工作决定的输出契约"},"deliveryIncrement":{"incrementId":"<被验收的最终增量 ID>"},"permissions":{"settleMission":true}}],"dependencyAdditions":[{"from":{"ticketId":"已有 Ticket UUID"},"to":{"clientRef":"work"}},{"from":{"clientRef":"work"},"to":{"clientRef":"review"}},{"from":{"clientRef":"review"},"to":{"clientRef":"terminal"}}],"failureResolutions":[],"cancelTicketIds":[],"requiredTerminalRefs":[{"clientRef":"terminal"}]}。Mission 成功标准索引表为：${JSON.stringify(criterionIndexTable)}。missionContribution 和 assurance 只提交 missionCriterionIndexes；Host 会将序号映射为内部 criterionId，不要复制或生成内部 ID。凡 outputContract.schemaRef 为 mission-assurance-v1 的新增 Ticket，无论 clientRef 或标题叫什么，都必须直接声明 assurance.missionCriterionIndexes，不得把它放进 missionContribution。这只是字段结构示例，不规定角色名称、工单数量、能力名称、增量名称或业务内容。你必须根据 Mission、成功标准、风险和当前团队能力设计真实 DAG。${incrementIdentity} 每个新增 Ticket（包括最终验收 Ticket）都必须通过 deliveryIncrement.incrementId 引用当前 Plan 已有或本次新声明的增量，不能在 Ticket 内重复定义标题、顺序或目标。交付增量不是固定阶段：当目标包含明显的不确定性、较大范围或需要先形成可运行基线再逐步逼近最终质量时，应自主规划多个可验证增量，并用 sequence 表达顺序；范围足够小且可一次可靠交付时可以只规划一个增量。每个增量都必须形成实际可运行或可评审结果以及相应验证，后续增量通过 DAG 依赖前一增量，不得把未完成内容藏进“后续再做”。每个 Mission criterion 必须先由至少一个上游执行工单通过 missionContribution 明确负责，再由其下游 mission-assurance-v1 Ticket 验证；Mission baseline 会作为共享工作上下文提供给执行 Agent，但当前 Agent Goal 的顶层 successCriteria 只属于当前 Ticket，不能把后续增量或整个 Mission 的验收责任混进当前工单。可逆且低风险的工作无需机械增加层级。assignment 必须是对象，可使用 principalId 或 requiredCapabilities；outputContract 必须是包含 schemaRef 的对象。permissions 是 additions[] 节点自身的字段，与 assignment 和 outputContract 同级，不能放进 assignment；只有获得 Mission 结算权限的最终验收节点才设置 permissions.settleMission=true。依赖和终点引用必须是 {"clientRef":"本次新增节点"} 或 {"ticketId":"当前 Plan 已有 Ticket UUID"} 对象，不能直接写字符串。历史工单不可改写：已完成、已返回、失败或取消的既有 Ticket 只能作为 dependency 的 from 上游引用，不能成为新增依赖的 to。新增验证节点确实用于解决一张已返回、失败或取消的历史工单时，必须在 failureResolutions 中显式登记 {"failedTicketId":"历史 Ticket UUID","resolvedBy":{"clientRef":"本次新增的验证节点"}}；只有 resolvedBy Ticket 真正完成后，该历史失败依赖才视为满足。没有历史失败需要解决时必须传空数组。尚未开始且状态为 pending 的既有 Ticket 可以作为 to，让新增纠正或验证分支在完成后重新汇入该工单；不要为此重复创建已有的待执行验收节点。`;
-    const toolAssignmentPolicy = "每个新增 Ticket 的 assignment 必须提供 requiredTools；不需要工具时传空数组。requiredTools 必须覆盖完成该 Ticket 实际需要的操作，并全部存在于同一候选成员的 enabledTools 中。不得把外部资料获取、服务运行或浏览器交互分配给没有相应工具的成员，也不得合并多名成员的能力或工具。";
-    const currentPlan = toolAssignmentPolicy + (sharedPlanContext && !assignmentContext
-      ? `当前 Plan 与团队的平台事实快照如下（这是 Ticket Engine 和 Team Binding 的权威状态）：${JSON.stringify(sharedPlanContext)}。无需读取工作区文件来猜测 Plan 或 Ticket 状态；项目文件只用于理解实际交付物。同一个 assignment 必须能由一名成员完整满足：优先直接使用快照中的 principalId；若使用 requiredCapabilities，则其中每一项都必须同时存在于同一名成员的 capabilities 中，不得把多名成员的能力合并为一个 Ticket 的要求。`
-      : "");
-    const terminalPolicy = sharedPlanContext?.requiredTerminalCapabilities?.length
-      ? `团队交付策略要求每个 requiredTerminalRefs 指向的终点都必须可分配给具备以下能力的成员：${sharedPlanContext.requiredTerminalCapabilities.join("、")}。独立质量检查不能代替最终交付验收。`
-      : "";
-    const referencePolicy = "若 Mission criterion 依赖外部产品、规范、样本或既有体验进行复刻、对照、等价或一致性判断，DAG 必须在实现和 assurance 之前安排获得并记录该对照基准的真实工作与交付；不能让执行者和 QA 仅凭名称、记忆或同类经验自行猜测。该工作由你依据团队能力分配，不规定固定角色。对照基准不可获得时，应保留可见风险并让后续验证得到 not_verified，而不是降低 Mission 标准。";
-    return `${base} 输出契约 plan-change-set-v3：domainOutcome 包含 result 和 change。result.deliveryStrategy 必须是 {mode:"single_increment"|"multi_increment",rationale,increments:[{incrementId,sequence,title,objective}]}；mode 描述变更后的整个 Plan，increments 只声明本次新增的增量，因此计划修订复用已有增量时允许为空。每个新增 Ticket（包括最终 settleMission 节点）都必须通过 deliveryIncrement 归属当前 Plan 已有或本次新声明的增量。计划修订工单不能再次请求计划修订：缺少不可替代的 human 输入时调用 request_human_input，能够规划时必须提交 change。${currentPlan}${referencePolicy}${contract} additions 的 clientRef 只在本次变更内有效，平台会生成真实 Ticket UUID；引用当前 Plan 已有 Ticket 时必须使用上下文提供的 ticketId。若当前工单是由 correction_required 产生的修订，parentTicketId 指向提出纠正的工单，其 objective 中包含被纠正的目标 Ticket UUID；必须从 currentPlan 中读取该目标 Ticket 的 missionContribution 或 assurance 范围，并让新增执行与验证链重新覆盖本次缺陷实际影响的 Mission criteria。returned/failed/cancelled Ticket 只保留为历史来源，不能放进新 required delivery closure；第一条返工链从当前计划修订工单接出，不要直接依赖失败验证 Ticket。若 failureResolutions 用一张新 assurance Ticket 解决历史失败 assurance，本次 change 还必须新增至少一张位于该 assurance 上游的执行 Ticket；该执行 Ticket 的 missionContribution 必须覆盖新 assurance 检查的受影响 criterion。不能只新增同类 assurance 重复上一轮检查；实际工作可以是产品修复、验证自动化或其他能产生新证据的工作，由你依据失败事实决定。若一次修订影响多个 delivery increment，最早受影响增量完成新的独立验证后，下一个受影响增量才能开始，不能在共享工作区并行修改与验证。只证明“已经修过”或“文件没有继续变化”不能替代对受影响成功标准的重新验证。新增执行链必须位于当前规划工单${sourceTicketId ? ` ${sourceTicketId}` : ""}之后：每个新增节点都必须能沿 dependencyAdditions 追溯到该工单，不能让新增工单提前进入 ready。requiredCapabilities 只能使用：${capabilities}。${terminalPolicy}最终 requiredTerminalRefs 必须指向拥有 permissions.settleMission=true 的验收 Ticket；里程碑检查可以是普通 Ticket，不能冒充 Mission 完成。变更后 DAG 必须无环并包含可验证终点。`;
-  }
   if (assignmentContext?.ticket.permissions?.settleMission) {
     const evidenceMatrix = settlementEvidence
       ? `Mission Control 已从 Ticket Engine 的已完成祖先工单生成权威验收证据矩阵：${JSON.stringify(settlementEvidence)}。该矩阵只归并正式 mission-assurance-v1 交付，不替你作出验收判断。`
@@ -1368,28 +1295,6 @@ export function proposalToCompiledPlanCommand(
       sourceTicketId: link.ticketId,
       sourceAuthority: link.authority,
       change,
-    },
-  };
-}
-
-export function proposalToPlanChangeCommand(
-  proposal: GoalResolutionProposal<GoalResolutionStatus, MissionTicketOutcome>,
-  link: ActiveMissionLink,
-  planVersion: number,
-  issuedAt: string,
-  currentPlan?: SharedPlanContext,
-): PlanCommandEnvelope | undefined {
-  const outcome = proposal.domainOutcome;
-  if (proposal.status !== "completed" || !outcome || !isRecord(outcome.result) || !isRecord(outcome.change)) return undefined;
-  return {
-    commandId: stableId("plan_change", JSON.stringify([link.planId, link.ticketId, proposal.proposalId, planVersion])), planId: link.planId,
-    actorPrincipalId: link.agentPrincipalId, issuedAt,
-    payload: {
-      type: "apply_change",
-      expectedPlanVersion: planVersion,
-      sourceTicketId: link.ticketId,
-      sourceAuthority: link.authority,
-      change: normalizePlanChangeSet(outcome.result, outcome.change, currentPlan),
     },
   };
 }
@@ -1455,116 +1360,6 @@ export function planResultToGoalDecision(result: PlanCommandResult): GoalResolut
   return { accepted: false, disposition: "correctable", reason: result.reason };
 }
 
-function validateDeliveryStrategy(
-  result: Record<string, unknown>,
-  change: Record<string, unknown>,
-  currentPlan?: SharedPlanContext,
-): string | undefined {
-  if (!isRecord(result.deliveryStrategy)) return "result.deliveryStrategy 必须是对象";
-  const strategy = result.deliveryStrategy;
-  if (strategy.mode !== "single_increment" && strategy.mode !== "multi_increment") {
-    return "result.deliveryStrategy.mode 必须是 single_increment 或 multi_increment";
-  }
-  if (!isNonEmptyString(strategy.rationale) || !Array.isArray(strategy.increments)) {
-    return "result.deliveryStrategy 必须包含 rationale 和 increments 数组";
-  }
-  const existing = new Map(uniqueDeliveryIncrements(currentPlan).map((increment) => [increment.incrementId, increment]));
-  const declared = new Map<string, { sequence: number; title: string; objective: string }>();
-  const sequences = new Set<number>([...existing.values()].map((increment) => increment.sequence));
-  for (const [index, raw] of strategy.increments.entries()) {
-    if (!isRecord(raw) || !isNonEmptyString(raw.incrementId) || !Number.isSafeInteger(raw.sequence)
-      || Number(raw.sequence) <= 0 || !isNonEmptyString(raw.title) || !isNonEmptyString(raw.objective)) {
-      return `result.deliveryStrategy.increments[${index}] 必须包含 incrementId、正整数 sequence、title 和 objective`;
-    }
-    if (existing.has(raw.incrementId)) {
-      return `result.deliveryStrategy.increments[${index}] 重复声明了当前 Plan 已有增量 ${raw.incrementId}；已有增量只需在 Ticket 中按 incrementId 引用`;
-    }
-    if (declared.has(raw.incrementId) || sequences.has(Number(raw.sequence))) {
-      return "result.deliveryStrategy 的 incrementId 和 sequence 必须唯一";
-    }
-    declared.set(raw.incrementId, {
-      sequence: Number(raw.sequence),
-      title: raw.title,
-      objective: raw.objective,
-    });
-    sequences.add(Number(raw.sequence));
-  }
-  const resultingIncrementCount = existing.size + declared.size;
-  if (currentPlan) {
-    if (resultingIncrementCount === 0) return "计划必须声明至少一个交付增量";
-    if (strategy.mode === "single_increment" && resultingIncrementCount !== 1) {
-      return "single_increment 策略要求变更后的 Plan 只有一个增量";
-    }
-    if (strategy.mode === "multi_increment" && resultingIncrementCount < 2) {
-      return "multi_increment 策略要求变更后的 Plan 至少有两个增量";
-    }
-  }
-  const used = new Set<string>();
-  for (const [index, raw] of (change.additions as unknown[]).entries()) {
-    if (!isRecord(raw)) continue;
-    if (!isRecord(raw.deliveryIncrement) || !isNonEmptyString(raw.deliveryIncrement.incrementId)) {
-      return `change.additions[${index}] 必须归属 result.deliveryStrategy 声明的 deliveryIncrement`;
-    }
-    const expected = declared.get(raw.deliveryIncrement.incrementId) ?? existing.get(raw.deliveryIncrement.incrementId);
-    if (!expected && currentPlan) return `change.additions[${index}] 引用了当前 Plan 不存在且本次未声明的 deliveryIncrement ${raw.deliveryIncrement.incrementId}`;
-    used.add(raw.deliveryIncrement.incrementId);
-  }
-  const unused = [...declared.keys()].filter((incrementId) => !used.has(incrementId));
-  return unused.length ? `result.deliveryStrategy 声明了未被任何 Ticket 使用的增量：${unused.join(", ")}` : undefined;
-}
-
-function validateChangeSet(value: Record<string, unknown>): string | undefined {
-  if (!Array.isArray(value.additions) || !Array.isArray(value.dependencyAdditions)
-    || (value.failureResolutions !== undefined && !Array.isArray(value.failureResolutions))
-    || !Array.isArray(value.cancelTicketIds) || !Array.isArray(value.requiredTerminalRefs)) {
-    return "change 必须包含 additions、dependencyAdditions、cancelTicketIds、requiredTerminalRefs 数组；failureResolutions 如提供也必须是数组";
-  }
-  for (const [index, addition] of value.additions.entries()) {
-    const path = `change.additions[${index}]`;
-    if (!isRecord(addition)) return `${path} 必须是对象`;
-    if (!isNonEmptyString(addition.clientRef)) return `${path}.clientRef 必须是非空字符串`;
-    if (!isNonEmptyString(addition.title)) return `${path}.title 必须是非空字符串`;
-    if (!isNonEmptyString(addition.objective)) return `${path}.objective 必须是非空字符串`;
-    if (!isStringArray(addition.successCriteria)) return `${path}.successCriteria 必须是非空字符串数组`;
-    if (!isRecord(addition.assignment)) return `${path}.assignment 必须是对象`;
-    if (!isRecord(addition.outputContract)) return `${path}.outputContract 必须是对象，不能写成字符串`;
-    if (!isNonEmptyString(addition.outputContract.schemaRef)) return `${path}.outputContract.schemaRef 必须是非空字符串`;
-    if (addition.deliveryIncrement !== undefined) {
-      if (!isRecord(addition.deliveryIncrement)
-        || !isNonEmptyString(addition.deliveryIncrement.incrementId)) {
-        return `${path}.deliveryIncrement 必须包含 incrementId`;
-      }
-    }
-    if (addition.missionContribution !== undefined) {
-      if (!isRecord(addition.missionContribution) || !isStringArray(addition.missionContribution.missionCriterionIds)) {
-        return `${path}.missionContribution.missionCriterionIds 必须是非空字符串数组`;
-      }
-    }
-    if (addition.assurance !== undefined) {
-      if (!isRecord(addition.assurance) || !isStringArray(addition.assurance.missionCriterionIds)) {
-        return `${path}.assurance.missionCriterionIds 必须是非空字符串数组`;
-      }
-    }
-  }
-  for (const [index, dependency] of value.dependencyAdditions.entries()) {
-    if (!isRecord(dependency)) return `change.dependencyAdditions[${index}] 必须是对象`;
-    if (!isPlanTicketRef(dependency.from)) return `change.dependencyAdditions[${index}].from 必须是 clientRef 或 ticketId 引用对象`;
-    if (!isPlanTicketRef(dependency.to)) return `change.dependencyAdditions[${index}].to 必须是 clientRef 或 ticketId 引用对象`;
-  }
-  for (const [index, resolution] of (value.failureResolutions ?? []).entries()) {
-    if (!isRecord(resolution)) return `change.failureResolutions[${index}] 必须是对象`;
-    if (!isNonEmptyString(resolution.failedTicketId)) return `change.failureResolutions[${index}].failedTicketId 必须是 Ticket UUID`;
-    if (!isPlanTicketRef(resolution.resolvedBy)) return `change.failureResolutions[${index}].resolvedBy 必须是本次新增 Ticket 的 clientRef 引用对象`;
-  }
-  for (const [index, ticketId] of value.cancelTicketIds.entries()) {
-    if (!isNonEmptyString(ticketId)) return `change.cancelTicketIds[${index}] 必须是 Ticket UUID 字符串`;
-  }
-  for (const [index, ref] of value.requiredTerminalRefs.entries()) {
-    if (!isPlanTicketRef(ref)) return `change.requiredTerminalRefs[${index}] 必须是 clientRef 或 ticketId 引用对象`;
-  }
-  return undefined;
-}
-
 function validatePlanIntentShape(value: Record<string, unknown>): void {
   if (!isNonEmptyString(value.rationale)) throw new PlanIntentError("intent.rationale must be non-empty text");
   if (!Array.isArray(value.todos) || value.todos.length === 0) {
@@ -1585,40 +1380,6 @@ function validatePlanIntentShape(value: Record<string, unknown>): void {
     }
   }
   if (implementationCount === 0) throw new PlanIntentError("intent.todos must contain at least one implementation todo");
-}
-
-function normalizePlanChangeSet(
-  result: Record<string, unknown>,
-  change: Record<string, unknown>,
-  currentPlan?: SharedPlanContext,
-): PlanChangeSet {
-  const strategy = isRecord(result.deliveryStrategy) ? result.deliveryStrategy : {};
-  const increments = Array.isArray(strategy.increments) ? strategy.increments : [];
-  const definitions = new Map<string, {
-    incrementId: string;
-    sequence: number;
-    title: string;
-    objective: string;
-  }>(uniqueDeliveryIncrements(currentPlan).map((increment) => [increment.incrementId, structuredClone(increment)]));
-  for (const increment of increments) {
-    if (!isRecord(increment) || !isNonEmptyString(increment.incrementId)) continue;
-    definitions.set(increment.incrementId, {
-      incrementId: increment.incrementId,
-      sequence: Number(increment.sequence),
-      title: String(increment.title),
-      objective: String(increment.objective),
-    });
-  }
-  const normalized = structuredClone(change) as Record<string, unknown>;
-  normalized.failureResolutions = Array.isArray(change.failureResolutions) ? change.failureResolutions : [];
-  normalized.additions = Array.isArray(change.additions)
-    ? change.additions.map((addition) => {
-        if (!isRecord(addition) || !isRecord(addition.deliveryIncrement)) return addition;
-        const definition = definitions.get(String(addition.deliveryIncrement.incrementId));
-        return definition ? { ...addition, deliveryIncrement: definition } : addition;
-      })
-    : [];
-  return normalized as unknown as PlanChangeSet;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }

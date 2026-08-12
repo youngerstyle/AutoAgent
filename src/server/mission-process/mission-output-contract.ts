@@ -4,18 +4,6 @@ import type { MissionBaseline } from "../../shared/contracts/mission-control.js"
 import type { TicketDefinition } from "../../shared/contracts/ticket-engine.js";
 import type { CorrectionTargetContext } from "./ticket-agent-adapter.js";
 
-const workspaceToolName = Type.Union([
-  Type.Literal("listFiles"),
-  Type.Literal("readFile"),
-  Type.Literal("readImage"),
-  Type.Literal("writeFile"),
-  Type.Literal("editFile"),
-  Type.Literal("shell"),
-  Type.Literal("startService"),
-  Type.Literal("pollProcess"),
-  Type.Literal("browser"),
-]);
-
 export function compileMissionGoalOutputContract(
   definition: TicketDefinition,
   baseline?: MissionBaseline,
@@ -30,7 +18,6 @@ export function compileMissionGoalOutputContract(
     : undefined;
   const planChange = definition.permissions?.amendPlan
     || definition.outputContract.schemaRef === "plan-intent-v1"
-    || definition.outputContract.schemaRef === "plan-change-set-v3"
     ? undefined
     : missionPlanChangeOutcomeSchema();
   return {
@@ -130,83 +117,6 @@ export function missionCompletionOutcomeSchema(
         todos: Type.Array(todo, { minItems: 1 }),
       }, { additionalProperties: false }),
     }, { additionalProperties: false });
-  }
-
-  if (definition.outputContract.schemaRef === "plan-change-set-v3") {
-    const missionCriterionIndex = Type.Integer({
-      minimum: 0,
-      ...(baseline?.criteria.length ? { maximum: baseline.criteria.length - 1 } : {}),
-    });
-    const ticketRef = Type.Union([
-      Type.Object({ ticketId: Type.String({ minLength: 1 }) }),
-      Type.Object({ clientRef: Type.String({ minLength: 1 }) }),
-    ]);
-    const additionFields = {
-      clientRef: Type.String({ minLength: 1 }),
-      title: Type.String({ minLength: 1 }),
-      objective: Type.String({ minLength: 1 }),
-      successCriteria: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-      assignment: Type.Object({
-        principalId: Type.Optional(Type.String({ minLength: 1 })),
-        requiredCapabilities: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
-        requiredTools: Type.Array(workspaceToolName, { uniqueItems: true }),
-      }),
-      outputContract: Type.Object({ schemaRef: Type.String({ minLength: 1 }) }),
-      missionContribution: Type.Optional(Type.Object({
-        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
-      }, { additionalProperties: false })),
-      assurance: Type.Optional(Type.Object({
-        missionCriterionIndexes: Type.Array(missionCriterionIndex, { minItems: 1, uniqueItems: true }),
-      }, { additionalProperties: false })),
-    };
-    const deliveryIncrementRef = Type.Object(
-      { incrementId: Type.String({ minLength: 1 }) },
-      { additionalProperties: false },
-    );
-    const addition = Type.Union([
-      Type.Object({
-        ...additionFields,
-        deliveryIncrement: deliveryIncrementRef,
-        permissions: Type.Optional(Type.Object({
-          amendPlan: Type.Optional(Type.Boolean()),
-          settleMission: Type.Optional(Type.Literal(false)),
-        })),
-      }),
-      Type.Object({
-        ...additionFields,
-        deliveryIncrement: deliveryIncrementRef,
-        permissions: Type.Object({
-          settleMission: Type.Literal(true),
-          amendPlan: Type.Optional(Type.Boolean()),
-        }),
-      }),
-    ]);
-    return Type.Object({
-      disposition,
-      result: Type.Object({
-        summary: Type.Optional(Type.String()),
-        deliveryStrategy: Type.Object({
-          mode: stringEnum(["single_increment", "multi_increment"]),
-          rationale: Type.String({ minLength: 1 }),
-          increments: Type.Array(Type.Object({
-            incrementId: Type.String({ minLength: 1 }),
-            sequence: Type.Integer({ minimum: 1 }),
-            title: Type.String({ minLength: 1 }),
-            objective: Type.String({ minLength: 1 }),
-          })),
-        }),
-      }),
-      change: Type.Object({
-        additions: Type.Array(addition, { minItems: 1 }),
-        dependencyAdditions: Type.Array(Type.Object({ from: ticketRef, to: ticketRef })),
-        failureResolutions: Type.Array(Type.Object({
-          failedTicketId: Type.String({ minLength: 1 }),
-          resolvedBy: ticketRef,
-        })),
-        cancelTicketIds: Type.Array(Type.String()),
-        requiredTerminalRefs: Type.Array(ticketRef, { minItems: 1 }),
-      }),
-    });
   }
 
   return Type.Unknown();

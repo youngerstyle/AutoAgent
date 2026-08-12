@@ -30,7 +30,6 @@ import type { MissionAggregate, MissionCursorRecord } from "./mission-store.js";
 import { MissionStore, MissionStoreConflictError } from "./mission-store.js";
 import {
   proposalToCompiledPlanCommand,
-  proposalToPlanChangeCommand,
   planResultToGoalDecision,
   proposalToTicketCommand,
   ticketResultToGoalDecision,
@@ -45,7 +44,6 @@ import {
   materializeSimpleAssuranceOutcome,
   materializeSimpleMissionSettlement,
   validateMissionTicketOutcome,
-  normalizeMissionPlanCriterionIndexes,
   type MissionTicketOutcome,
   type MissionAssuranceSource,
   type MissionSettlementEvidence,
@@ -1025,15 +1023,7 @@ export class MissionProcessManager {
     const planContext = isPlanningSchema(schemaRef)
       ? await this.sharedPlanContext(link.planId, missionBaseline)
       : undefined;
-    let proposal = isPlanningSchema(schemaRef)
-      ? {
-          ...storedProposal,
-          domainOutcome: normalizeMissionPlanCriterionIndexes(
-            storedProposal.domainOutcome,
-            missionBaseline ?? planContext?.missionBaseline,
-          ),
-        }
-      : storedProposal;
+    let proposal = storedProposal;
     if (proposal.status === "completed" && schemaRef === "mission-assurance-v1" && missionBaseline) {
       const correctionTargets = await this.listCorrectionTargets(link.planId, link.ticketId);
       const domainOutcome = proposal.domainOutcome?.disposition === "correction_required"
@@ -1179,9 +1169,7 @@ export class MissionProcessManager {
     }
     const planCommand = schemaRef === "plan-intent-v1" && planContext
       ? proposalToCompiledPlanCommand(proposal as never, active, plan.version, this.now().toISOString(), planContext)
-      : schemaRef === "plan-change-set-v3"
-        ? proposalToPlanChangeCommand(proposal as never, active, plan.version, this.now().toISOString(), planContext)
-        : undefined;
+      : undefined;
     if (planCommand) {
       const planResult = await this.tickets.getPlanCommandResult(link.planId, planCommand.commandId)
         ?? await this.tickets.applyPlan(planCommand);
@@ -1465,14 +1453,13 @@ export async function validateTeamAssignments(
   tickets?: Pick<TicketPort, "getWorkItem">,
   currentPlan?: SharedPlanContext,
 ): Promise<string | undefined> {
-  if (schemaRef !== "plan-intent-v1" && schemaRef !== "plan-change-set-v3") return undefined;
+  if (schemaRef !== "plan-intent-v1") return undefined;
   let compiledChange: PlanChangeSet | undefined;
-  if (schemaRef === "plan-intent-v1") {
-    if (!outcome?.intent || typeof outcome.intent !== "object" || Array.isArray(outcome.intent) || !currentPlan) {
-      return "plan-intent-v1 缺少可编译的 intent 或当前 Plan 快照";
-    }
-    try {
-      compiledChange = compilePlanIntent(outcome.intent as unknown as PlanIntent, {
+  if (!outcome?.intent || typeof outcome.intent !== "object" || Array.isArray(outcome.intent) || !currentPlan) {
+    return "plan-intent-v1 缺少可编译的 intent 或当前 Plan 快照";
+  }
+  try {
+    compiledChange = compilePlanIntent(outcome.intent as unknown as PlanIntent, {
         planId: currentPlan.planId,
         sourceTicketId: "plan-intent-validation" as TicketId,
         missionCriterionIds: currentPlan.missionBaseline?.criteria.map((criterion) => criterion.criterionId) ?? [],
@@ -1497,12 +1484,11 @@ export async function validateTeamAssignments(
           failedTicketId: edge.failedTicketId as TicketId,
           resolutionTicketId: edge.resolutionTicketId as TicketId,
         })),
-      });
-    } catch (error) {
-      return error instanceof PlanIntentError ? error.message : String(error);
-    }
+    });
+  } catch (error) {
+    return error instanceof PlanIntentError ? error.message : String(error);
   }
-  const rawChange = compiledChange ?? outcome?.change;
+  const rawChange = compiledChange;
   if (!rawChange || typeof rawChange !== "object" || Array.isArray(rawChange)) return undefined;
   const change = rawChange as unknown as {
     additions: Array<{ clientRef: string; assignment: PlannedTicketAssignment; permissions?: { settleMission?: boolean } }>;
@@ -1543,7 +1529,7 @@ export async function validateTeamAssignments(
     }
   }
   if (currentPlan?.missionBaseline) {
-    const assurance = validateMissionPlanAssurance(currentPlan.missionBaseline, rawChange, currentPlan, outcome?.result);
+    const assurance = validateMissionPlanAssurance(currentPlan.missionBaseline, rawChange, currentPlan);
     if (!assurance.valid) return assurance.reason;
   }
   return undefined;
@@ -1586,5 +1572,5 @@ function stableId(prefix: string, ...parts: string[]): string {
 }
 
 function isPlanningSchema(schemaRef: string | undefined): boolean {
-  return schemaRef === "plan-intent-v1" || schemaRef === "plan-change-set-v3";
+  return schemaRef === "plan-intent-v1";
 }

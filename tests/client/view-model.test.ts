@@ -133,7 +133,7 @@ describe("client view model", () => {
         type: "pm_plan" as const,
         status: "blocked" as const,
         brief: "把目标拆成可执行、可验证的 Ticket DAG，并追加到当前 Plan",
-        expectedArtifact: "plan-change-set-v3",
+        expectedArtifact: "plan-intent-v1",
         targetAgentId: "wa_pm",
         targetRole: "pm" as const,
         priority: 0,

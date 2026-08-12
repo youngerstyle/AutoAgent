@@ -57,7 +57,7 @@ describe("runtime architecture boundaries", () => {
       /from\s+["'][^"']*\/(?:agents|providers|context|tools)(?:\/|["'])/,
       /\b(?:SessionStore|AgentRole)\b/,
       /from\s+["'][^"']*shared\/contracts\/(?:agent-engine|mission-control)/,
-      /\b(?:boss-intake-v1|plan-change-set-v3|delivery-v1|qa-report-v1|acceptance-v1)\b/
+      /\b(?:boss-intake-v1|plan-intent-v1|delivery-v1|qa-report-v1|acceptance-v1)\b/
     ])).toEqual([]);
   });
 

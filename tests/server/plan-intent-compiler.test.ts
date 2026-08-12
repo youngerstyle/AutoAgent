@@ -21,6 +21,12 @@ describe("compilePlanIntent", () => {
       ["delivery:verify"],
       ["delivery:accept"],
     ]);
+    expect(change.additions.map((node) => node.assignment.requiredTools)).toEqual([
+      ["listFiles", "readFile", "writeFile", "editFile"],
+      ["listFiles", "readFile", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"],
+      ["listFiles", "readFile", "shell", "startService", "pollProcess", "browser"],
+      ["listFiles", "readFile"],
+    ]);
     expect(change.additions.find((node) => node.clientRef === "todo-02")?.missionContribution)
       .toEqual({ missionCriterionIds: ["criterion-a", "criterion-b"] });
     expect(change.additions.find((node) => node.clientRef === "assurance")?.assurance)

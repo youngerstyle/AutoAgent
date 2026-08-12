@@ -4,7 +4,6 @@ import type { ActiveMissionLink } from "../../src/shared/contracts/mission-contr
 import type { PlanId, TicketId } from "../../src/shared/contracts/ticket-engine.js";
 import {
   missionOutcomeInstruction,
-  normalizeMissionPlanCriterionIndexes,
   proposalToCompiledPlanCommand,
   validateMissionTicketOutcome,
   type SharedPlanContext,
@@ -13,23 +12,32 @@ import {
 describe("plan-intent-v1 adapter", () => {
   it("does not expose platform graph internals to the planner", () => {
     const instruction = missionOutcomeInstruction("plan-intent-v1", ["code:write", "test:verify"], [], link.ticketId, plan);
-    expect(instruction).toContain("像负责人写 TodoList 一样");
-    expect(instruction).toContain("不要生成 capability、tool、schemaRef");
+    expect(instruction).toContain("TodoList");
+    expect(instruction).toContain("capability");
     expect(instruction).toContain('todos:[{kind:"architecture"|"implementation",title,objective,successCriteria}]');
     expect(instruction).not.toContain("dependencyAdditions");
     expect(instruction).not.toContain("requiredTerminalRefs");
   });
 
   it("compiles flat todos using the authoritative snapshot", () => {
-    const normalized = normalizeMissionPlanCriterionIndexes(outcome, plan.missionBaseline) as typeof outcome;
-    expect(normalized).toEqual(outcome);
-    expect(validateMissionTicketOutcome("plan-intent-v1", "completed", normalized, undefined, plan)).toEqual({ valid: true });
+    expect(validateMissionTicketOutcome("plan-intent-v1", "completed", outcome, undefined, plan)).toEqual({ valid: true });
 
-    const command = proposalToCompiledPlanCommand(proposal(normalized), link, 4, NOW, plan);
+    const command = proposalToCompiledPlanCommand(proposal(outcome), link, 4, NOW, plan);
     expect(command?.payload).toMatchObject({
       type: "apply_change",
       expectedPlanVersion: 4,
       change: {
+        additions: expect.arrayContaining([
+          expect.objectContaining({
+            clientRef: "todo-01",
+            missionContribution: { missionCriterionIds: ["criterion-a"] },
+          }),
+          expect.objectContaining({
+            clientRef: "assurance",
+            assurance: { missionCriterionIds: ["criterion-a"] },
+          }),
+          expect.objectContaining({ clientRef: "acceptance", permissions: { settleMission: true } }),
+        ]),
         dependencyAdditions: expect.arrayContaining([
           { from: { ticketId: link.ticketId }, to: { clientRef: "todo-01" } },
           { from: { clientRef: "todo-01" }, to: { clientRef: "assurance" } },
@@ -38,6 +46,12 @@ describe("plan-intent-v1 adapter", () => {
         requiredTerminalRefs: [{ clientRef: "acceptance" }],
       },
     });
+  });
+
+  it("changes command identity when the authoritative Plan version changes", () => {
+    const first = proposalToCompiledPlanCommand(proposal(outcome), link, 4, NOW, plan);
+    const second = proposalToCompiledPlanCommand(proposal(outcome), link, 5, NOW, plan);
+    expect(first?.commandId).not.toBe(second?.commandId);
   });
 
   it("returns the exact malformed semantic work field", () => {
@@ -55,9 +69,9 @@ describe("plan-intent-v1 adapter", () => {
     expect(validateMissionTicketOutcome("plan-intent-v1", "completed", {
       ...outcome,
       disposition: "correction_required",
-    }, undefined, plan)).toEqual({
+    }, undefined, plan)).toMatchObject({
       valid: false,
-      reason: "plan-intent-v1 的 goal_resolution 只能省略 disposition 或使用 complete；纠错和计划变更必须调用独立工作流工具",
+      reason: expect.stringContaining("plan-intent-v1"),
     });
   });
 });

@@ -55,80 +55,27 @@ describe("MockProvider current Ticket contract", () => {
   });
 
   it("keeps a current planning Ticket in planning even when history contains acceptance metadata", async () => {
-    const ticketId = "68f8882f-9598-4b8f-8d61-39df2b00f8ef";
     const result = await runMock([
       "[current-ticket]\noutput-schema=acceptance-v1\nsettle-mission=true\n[/current-ticket]",
-      `[current-ticket]\noutput-schema=plan-change-set-v3\nsettle-mission=false\n[/current-ticket]\n- ticket: ${ticketId}`,
+      "[current-ticket]\noutput-schema=plan-intent-v1\nsettle-mission=false\n[/current-ticket]",
     ].join("\n"));
 
     const outcome = toolArguments(result) as {
-      domainOutcome: { change: { dependencyAdditions: Array<{ from: { ticketId?: string } }> } };
+      domainOutcome: { intent: { todos: Array<{ kind: string }> } };
     };
-    expect(outcome.domainOutcome.change.dependencyAdditions[0]).toMatchObject({ from: { ticketId } });
+    expect(outcome.domainOutcome.intent.todos).toEqual([
+      expect.objectContaining({ kind: "implementation" }),
+    ]);
   });
 
-  it("declares a new delivery increment after a plan revision instead of repeating the existing one", async () => {
-    const currentPlan = {
-      currentPlan: {
-        tickets: [{
-          deliveryIncrement: {
-            incrementId: "increment-1",
-            sequence: 1,
-            title: "第一版交付",
-            objective: "形成可验证结果",
-          },
-        }],
-        missionBaseline: {
-          version: 1,
-          criteria: [{ criterionId: "criterion-1" }],
-        },
-      },
-    };
-    const result = await runMock([
-      "[current-ticket]\noutput-schema=plan-change-set-v3\nsettle-mission=false\n[/current-ticket]",
-      "- ticket: 68f8882f-9598-4b8f-8d61-39df2b00f8ef",
-      `当前工作上下文：${JSON.stringify(currentPlan)}`,
-    ].join("\n"));
-
+  it("returns only semantic work intent and no platform graph fields", async () => {
+    const result = await runMock("[current-ticket]\noutput-schema=plan-intent-v1\nsettle-mission=false\n[/current-ticket]");
     const outcome = toolArguments(result) as {
-      domainOutcome: {
-        result: { deliveryStrategy: { increments: Array<{ incrementId: string; sequence: number }> } };
-        change: { additions: Array<{ deliveryIncrement: { incrementId: string } }> };
-      };
+      domainOutcome: Record<string, unknown>;
     };
-    expect(outcome.domainOutcome.result.deliveryStrategy.increments).toEqual([{
-      incrementId: "increment-2",
-      sequence: 2,
-      title: "mock-verifiable-delivery-2",
-      objective: "produce a new verifiable delivery on top of the existing result",
-    }]);
-    expect(new Set(outcome.domainOutcome.change.additions.map((item) => item.deliveryIncrement.incrementId))).toEqual(new Set(["increment-2"]));
-  });
-
-  it("assigns the tools required to create and verify a real delivery", async () => {
-    const result = await runMock("[current-ticket]\noutput-schema=plan-change-set-v3\nsettle-mission=false\n[/current-ticket]\n- ticket: 68f8882f-9598-4b8f-8d61-39df2b00f8ef");
-    const outcome = toolArguments(result) as {
-      domainOutcome: {
-        change: {
-          additions: Array<{ clientRef: string; assignment: { requiredTools: string[] } }>;
-        };
-      };
-    };
-
-    expect(outcome.domainOutcome.change.additions).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        clientRef: "implementation",
-        assignment: expect.objectContaining({ requiredTools: ["listFiles", "readFile", "writeFile", "editFile", "shell"] }),
-      }),
-      expect.objectContaining({
-        clientRef: "qa",
-        assignment: expect.objectContaining({ requiredTools: ["listFiles", "readFile", "shell", "browser"] }),
-      }),
-      expect.objectContaining({
-        clientRef: "acceptance",
-        assignment: expect.objectContaining({ requiredTools: ["listFiles", "readFile"] }),
-      }),
-    ]));
+    expect(outcome.domainOutcome).toHaveProperty("intent");
+    expect(outcome.domainOutcome).not.toHaveProperty("change");
+    expect(outcome.domainOutcome).not.toHaveProperty("result");
   });
 });
 

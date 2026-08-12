@@ -956,13 +956,13 @@ describe("Pi runtime terminal propagation", () => {
     )).toBe(false);
   });
 
-  it("does not expose recursive plan maintenance to a plan amendment Goal", () => {
+  it("does not expose recursive plan maintenance to a planning Goal", () => {
     const contract = compileMissionGoalOutputContract({
       title: "计划修订",
       objective: "追加工作",
       successCriteria: ["形成可执行 DAG"],
       assignment: {},
-      outputContract: { schemaRef: "plan-change-set-v3" },
+      outputContract: { schemaRef: "plan-intent-v1" },
       permissions: { amendPlan: true },
     }, baseline, [{
       ticketId: "ticket-upstream" as TicketId,
@@ -1046,92 +1046,6 @@ describe("Pi runtime terminal propagation", () => {
     expect(Value.Check(schema, {
       ...valid,
       checks: [...valid.checks, valid.checks[0]],
-    })).toBe(false);
-  });
-
-  it("keeps an explicitly versioned plan-change-set-v3 contract stable", () => {
-    const schema = outputSchema({
-      outputContract: { schemaRef: "plan-change-set-v3" },
-      permissions: { amendPlan: true },
-    }, baseline);
-    const valid = {
-      result: {
-        deliveryStrategy: {
-          mode: "single_increment",
-          rationale: "目标可以在一个可验证增量内交付",
-          increments: [{
-            incrementId: "tank-playable",
-            sequence: 1,
-            title: "可玩版本",
-            objective: "交付可启动、可操作、可验收的游戏",
-          }],
-        },
-      },
-      change: {
-        additions: [{
-          clientRef: "implementation",
-          title: "实现游戏",
-          objective: "完成游戏实现",
-          successCriteria: ["产物可以启动"],
-          assignment: { requiredCapabilities: ["delivery:implement"], requiredTools: ["writeFile"] },
-          outputContract: { schemaRef: "tank-delivery-v1" },
-          deliveryIncrement: { incrementId: "tank-playable" },
-          missionContribution: { missionCriterionIndexes: [0] },
-        }, {
-          clientRef: "acceptance",
-          title: "最终验收",
-          objective: "依据 Mission 基线验收",
-          successCriteria: ["逐项形成验收结论"],
-          assignment: { requiredCapabilities: ["delivery:accept"], requiredTools: [] },
-          outputContract: { schemaRef: "mission-settlement-v1" },
-          deliveryIncrement: { incrementId: "tank-playable" },
-          permissions: { settleMission: true },
-        }],
-        dependencyAdditions: [{
-          from: { clientRef: "implementation" },
-          to: { clientRef: "acceptance" },
-        }],
-        failureResolutions: [],
-        cancelTicketIds: [],
-        requiredTerminalRefs: [{ clientRef: "acceptance" }],
-      },
-    };
-
-    expect(Value.Check(schema, valid)).toBe(true);
-    expect(Value.Check(schema, {
-      ...valid,
-      change: {
-        ...valid.change,
-        additions: [{
-          ...valid.change.additions[0],
-          deliveryIncrement: undefined,
-        }, valid.change.additions[1]],
-      },
-    })).toBe(false);
-    expect(Value.Check(schema, {
-      ...valid,
-      change: {
-        ...valid.change,
-        additions: [{
-          ...valid.change.additions[0],
-          missionContribution: { missionCriterionIds: ["criterion-1"] },
-        }, valid.change.additions[1]],
-      },
-    })).toBe(false);
-    expect(Value.Check(schema, {
-      ...valid,
-      change: {
-        ...valid.change,
-        additions: [{
-          ...valid.change.additions[0],
-          deliveryIncrement: {
-            incrementId: "tank-playable",
-            sequence: 1,
-            title: "不应在 Ticket 中重复定义",
-            objective: "不应在 Ticket 中重复定义",
-          },
-        }],
-      },
     })).toBe(false);
   });
 
