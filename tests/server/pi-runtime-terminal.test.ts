@@ -419,7 +419,7 @@ function proposalGoal(outputContract?: AgentGoal["spec"]["outputContract"]): Age
 }
 
 describe("Pi runtime terminal propagation", () => {
-  it("requires Ticket criteria alongside the domain completion contract", () => {
+  it("rejects generic failed assurance so unmet verification uses a typed workflow action", () => {
     const outputContract = compileMissionGoalOutputContract({
       title: "assurance",
       objective: "verify delivery",
@@ -451,12 +451,11 @@ describe("Pi runtime terminal propagation", () => {
       },
     }, proposalGoal(outputContract), "turn-contract", "2026-07-28T00:01:00.000Z");
 
-    expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.value.criterionResults).toEqual([{
-      criterionIndex: 0,
-      status: "not_verified",
-      evidence: [],
-    }]);
+    expect(outputContract.allowFailedResolution).toBe(false);
+    expect(parsed).toEqual({
+      ok: false,
+      reason: "当前验收输出契约不允许普通 failed；上游缺陷调用 report_goal_correction，计划缺口调用 request_goal_plan_change，不可替代的外部输入调用 request_human_input",
+    });
   });
 
   it("materializes Ticket criteria when the model omits platform fields", () => {

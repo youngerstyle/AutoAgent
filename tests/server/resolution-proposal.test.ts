@@ -52,6 +52,36 @@ describe("parseResolutionProposal", () => {
       reason: "status 必须是 completed 或 failed；需要 human 输入时调用 request_human_input",
     });
   });
+
+  it("does not allow a generic failed resolution when the output contract requires typed workflow actions", () => {
+    const goal = {
+      version: 1,
+      spec: {
+        id: "goal",
+        threadId: "thread",
+        objective: "最终验收",
+        successCriteria: ["根据权威证据结算"],
+        contextRefs: [],
+        outputContract: {
+          schemaRef: "mission-settlement-v1",
+          evidenceMode: "none",
+          allowFailedResolution: false,
+        },
+        createdAt: "now",
+      },
+    } as any;
+
+    expect(parseResolutionProposal({
+      status: "failed",
+      summary: "缺少外部 CI 授权",
+      evidence: [],
+      criterionResults: [],
+      residualRisks: [],
+    }, goal, "turn", "now")).toEqual({
+      ok: false,
+      reason: "当前验收输出契约不允许普通 failed；上游缺陷调用 report_goal_correction，计划缺口调用 request_goal_plan_change，不可替代的外部输入调用 request_human_input",
+    });
+  });
   it("reports the exact missing success-criterion indexes", () => {
     const goal = {
       version: 1,

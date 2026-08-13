@@ -11,6 +11,12 @@ export function parseResolutionProposal(
   if (!new Set(["completed", "failed"]).has(String(value.status))) {
     return { ok: false, reason: "status 必须是 completed 或 failed；需要 human 输入时调用 request_human_input" };
   }
+  if (value.status === "failed" && goal.spec.outputContract?.allowFailedResolution === false) {
+    return {
+      ok: false,
+      reason: "当前验收输出契约不允许普通 failed；上游缺陷调用 report_goal_correction，计划缺口调用 request_goal_plan_change，不可替代的外部输入调用 request_human_input",
+    };
+  }
   const summary = resolutionSummary(value);
   if (!summary) return { ok: false, reason: "summary 必须是非空字符串" };
   if (value.evidence !== undefined && !Array.isArray(value.evidence)) {

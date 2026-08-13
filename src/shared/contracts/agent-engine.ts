@@ -10,6 +10,11 @@ export interface OutputContract {
    * Domain adapters still own the meaning of the domain result.
    */
   evidenceMode?: "required" | "optional" | "none";
+  /**
+   * False when an unsuccessful outcome must use a typed workflow action
+   * (correction, plan change, or human input) instead of a generic failure.
+   */
+  allowFailedResolution?: boolean;
   completionOutcomeSchema?: Record<string, unknown>;
   correctionOutcomeSchema?: Record<string, unknown>;
   planChangeOutcomeSchema?: Record<string, unknown>;

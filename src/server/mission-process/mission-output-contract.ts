@@ -23,6 +23,8 @@ export function compileMissionGoalOutputContract(
   return {
     schemaRef: definition.outputContract.schemaRef,
     evidenceMode: definition.permissions?.settleMission ? "none" : "optional",
+    allowFailedResolution: definition.outputContract.schemaRef !== "mission-assurance-v1"
+      && definition.permissions?.settleMission !== true,
     completionOutcomeSchema: toJsonSchema(completion),
     ...(correction ? { correctionOutcomeSchema: toJsonSchema(correction) } : {}),
     ...(planChange ? { planChangeOutcomeSchema: toJsonSchema(planChange) } : {}),

@@ -58,6 +58,57 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不得把环境缺口报告成上游纠错");
   });
 
+  it("keeps independent assurance blocked when an irreplaceable external authorization is refused", () => {
+    const instruction = missionOutcomeInstruction(
+      "mission-assurance-v1",
+      [],
+      [],
+      undefined,
+      undefined,
+      [],
+      {
+        ticket: {
+          ticketId: "40614afd-9312-4f9b-97fe-d14e18fe4201" as TicketId,
+          title: "独立验收",
+          objective: "取得原生 Linux CI 证据",
+          successCriteria: ["Linux runner 返回真实退出码"],
+          outputContract: { schemaRef: "mission-assurance-v1" },
+          assurance: { missionCriterionIds: ["criterion-linux"] },
+        },
+      },
+    );
+
+    expect(instruction).toContain("调用 request_human_input 并保持当前 Ticket/Plan blocked");
+    expect(instruction).toContain("human 明确本轮不提供该输入时");
+    expect(instruction).toContain("不得改写成上游缺陷或计划缺口");
+    expect(instruction).toContain("不得生成重复纠错、实现或验收工作");
+  });
+
+  it("keeps final Mission acceptance blocked instead of requesting repeated amendments", () => {
+    const instruction = missionOutcomeInstruction(
+      "mission-settlement-v1",
+      [],
+      [],
+      undefined,
+      undefined,
+      [],
+      {
+        ticket: {
+          ticketId: "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId,
+          title: "最终验收",
+          objective: "根据权威 assurance 决定结算",
+          successCriteria: ["结论可追溯"],
+          outputContract: { schemaRef: "mission-settlement-v1" },
+          permissions: { settleMission: true },
+        },
+      },
+    );
+
+    expect(instruction).toContain("使用 request_human_input 使当前 Ticket/Plan 保持 blocked");
+    expect(instruction).toContain("human 明确本轮不提供该输入时");
+    expect(instruction).toContain("不得创建重复 amendment、implementation 或 assurance");
+  });
+
   it("renders mission, current Ticket, and upstream handoffs without sharing Agent history", () => {
     const instruction = missionOutcomeInstruction(
       "qa-report-v1",
@@ -778,7 +829,9 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("本 Goal 的真实工具证据");
     expect(instruction).toContain("verificationBasis");
     expect(instruction).toContain("不要填写 criterionId、anchorIndex、status 或 evidenceId");
-    expect(instruction).toContain("发现缺陷时调用 report_goal_correction");
+    expect(instruction).toContain("可由团队内部返工修复的缺陷时调用 report_goal_correction");
+    expect(instruction).toContain("缺少不可替代的外部事实、凭证、授权或人工操作");
+    expect(instruction).toContain("request_human_input 并保持当前 Ticket/Plan blocked");
   });
 
   it("isolates the current assurance scope from unrelated Plan criteria", () => {

@@ -1238,13 +1238,13 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
         evidenceRequirements: anchor.evidenceRequirements,
       })) ?? [];
     });
-    return `${base} 输出契约 mission-assurance-v1：按 orderedCheckList 顺序逐项真实验证：${JSON.stringify(orderedChecks)}。全部满足时 domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}，每项 check 对应列表中的同一位置；平台自动绑定 criterion、anchor、satisfied 状态和本 Goal 的真实工具证据。发现缺陷时调用 report_goal_correction，只提交 targetTicketId、reason 和 findings:[{summary,details}]；不要填写 criterionId、anchorIndex、status 或 evidenceId。`;
+    return `${base} 输出契约 mission-assurance-v1：按 orderedCheckList 顺序逐项真实验证：${JSON.stringify(orderedChecks)}。全部满足时 domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}，每项 check 对应列表中的同一位置；平台自动绑定 criterion、anchor、satisfied 状态和本 Goal 的真实工具证据。发现已完成上游交付存在可由团队内部返工修复的缺陷时调用 report_goal_correction，只提交 targetTicketId、reason 和 findings:[{summary,details}]；当前 Plan 缺少团队能够执行的必要工作时调用 request_goal_plan_change。若验收缺少不可替代的外部事实、凭证、授权或人工操作，调用 request_human_input 并保持当前 Ticket/Plan blocked；human 明确本轮不提供该输入时，仍应按同一外部阻塞事实重新提交 request_human_input，不得改写成上游缺陷或计划缺口，也不得生成重复纠错、实现或验收工作。不要填写 criterionId、anchorIndex、status 或 evidenceId。`;
   }
   if (assignmentContext?.ticket.permissions?.settleMission) {
     const evidenceMatrix = settlementEvidence
       ? `Mission Control 已从 Ticket Engine 的已完成祖先工单生成权威验收证据矩阵：${JSON.stringify(settlementEvidence)}。该矩阵只归并正式 mission-assurance-v1 交付，不替你作出验收判断。`
       : "当前没有可用的 Mission 验收证据矩阵。";
-    return `${base} 当前 Ticket 获得 Mission 结算权限。${evidenceMatrix}请审阅 baseline 与权威 assurance；全部通过时 domainOutcome 只提交 {summary,residualRisks}。不要填写 baselineVersion、criterionId、TicketId、status、evidence 或 missionResolution；Mission Control 会从权威状态机械装配最终结算。若任何标准未通过，使用 report_goal_correction 或 request_goal_plan_change。`;
+    return `${base} 当前 Ticket 获得 Mission 结算权限。${evidenceMatrix}请审阅 baseline 与权威 assurance；全部通过时 domainOutcome 只提交 {summary,residualRisks}。不要填写 baselineVersion、criterionId、TicketId、status、evidence 或 missionResolution；Mission Control 会从权威状态机械装配最终结算。若标准因可由团队内部返工修复的上游缺陷而未通过，使用 report_goal_correction；若当前 Plan 缺少团队能够执行的必要工作，使用 request_goal_plan_change；若缺少不可替代的外部事实、凭证、授权或人工操作，使用 request_human_input 使当前 Ticket/Plan 保持 blocked。human 明确本轮不提供该输入时，不得创建重复 amendment、implementation 或 assurance，而应保留同一外部阻塞事实。`;
   }
   return `${base} completed 时提交实际交付结果；failed 时说明有证据的失败原因。空工作区或尚不存在项目文件不属于 human 输入边界：当 Goal 要求创建新交付物且当前 Agent 已获得相应写入或执行授权时，必须自行创建所需目录、源码、配置、构建入口和测试，并持续验证到形成交付结论。只有缺少不可替代的外部事实、凭证、授权、人工操作、不可逆操作确认或工具策略调整时才调用 request_human_input；kind 只能是 manual_test、authorization、credential、external_fact、irreversible_confirmation 或 tool_policy，description 说明 human 需要提供什么，details 可携带步骤和预期结果。当前启用的工具或运行环境无法完成不可替代的验证（例如必须在真实浏览器中人工操作）时，调用 request_human_input(kind="manual_test")；这表示当前工单等待 human 输入，不是上游交付缺陷，因此不得使用 correction_required。`;
 }

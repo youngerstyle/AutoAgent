@@ -522,14 +522,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     this.sessions.clear();
     this.turnTails.clear();
     await Promise.allSettled([
-      ...pendingSessions.map(async (pending) => {
-        const { session } = await pending;
-        try {
-          await session.abort();
-        } finally {
-          session.dispose();
-        }
-      }),
+      ...pendingSessions.map((pending) => disposePendingPiSessionPromptly(pending, DEFAULT_SESSION_ABORT_GRACE_MS)),
       this.tools.dispose(),
     ]);
   }
@@ -1301,12 +1294,17 @@ function goalTool(
   goalCriterionCount?: number,
 ): ToolDefinition {
   const finalSettlement = outputContract?.evidenceMode === "none";
+  const allowsFailure = outputContract?.allowFailedResolution !== false;
   return defineTool({
     name: "goal_resolution",
     label: "提交工作结论",
-    description: `提交当前 Goal 的正常完成或失败结论。只填写 status、summary、residualRisks 和 Ticket 的 domainOutcome；平台会从当前 Goal 的真实工具记录自动装配 evidence，并逐项生成当前 Ticket 的 criterionResults。不要手抄 evidenceId、criterionIndex 或顶层 criterionResults。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。`,
+    description: allowsFailure
+      ? `提交当前 Goal 的正常完成或失败结论。只填写 status、summary、residualRisks 和 Ticket 的 domainOutcome；平台会从当前 Goal 的真实工具记录自动装配 evidence，并逐项生成当前 Ticket 的 criterionResults。不要手抄 evidenceId、criterionIndex 或顶层 criterionResults。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。`
+      : "只提交当前验收 Goal 的正常完成结论。验收未通过不得使用普通 failed：上游缺陷调用 report_goal_correction，计划缺口调用 request_goal_plan_change，不可替代的外部输入调用 request_human_input。",
     parameters: Type.Object({
-      status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
+      status: allowsFailure
+        ? Type.Union([Type.Literal("completed"), Type.Literal("failed")])
+        : Type.Literal("completed"),
       summary: Type.Optional(Type.String()),
       residualRisks: Type.Optional(Type.Array(Type.String())),
       // Keep the domain result opaque at the provider boundary. The domain
@@ -1940,6 +1938,20 @@ export function isUsefulToolProgress(
 }
 
 type AbortablePiSession = Pick<AgentSession, "abort" | "dispose">;
+
+async function disposePendingPiSessionPromptly(
+  pending: Promise<SessionState>,
+  graceMs: number,
+): Promise<void> {
+  // Session creation can itself be held by a provider turn. Do not make host
+  // teardown wait for that promise; once it eventually resolves, the attached
+  // continuation still owns and disposes the session.
+  const cleanup = pending.then(
+    ({ session }) => abortPiSessionPromptly(session, graceMs),
+    () => "settled" as const,
+  );
+  await waitForCleanupPromptly(cleanup, graceMs);
+}
 
 export async function abortPiSessionPromptly(
   session: AbortablePiSession,

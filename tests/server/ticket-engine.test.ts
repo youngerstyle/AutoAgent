@@ -562,6 +562,7 @@ describe("TicketEngine single Plan flow", () => {
 
   it("keeps completed development closed when QA waits for a human manual test", async () => {
     const fixture = await createExecutionFixture();
+    const before = await fixture.engine.getPlan(fixture.planId);
     const qaClaim = await fixture.engine.claimReady({
       requestId: "claim-qa-manual",
       planId: fixture.planId,
@@ -587,6 +588,13 @@ describe("TicketEngine single Plan flow", () => {
       status: "blocked",
       attempts: [{ requiredInput: { kind: "manual_test" } }],
     });
+    const after = await fixture.engine.getPlan(fixture.planId);
+    expect(after.graph.ticketIds).toEqual(before.graph.ticketIds);
+    expect(after.graph.dependencyEdges).toEqual(before.graph.dependencyEdges);
+    const events = await fixture.engine.readEvents({ planId: fixture.planId, limit: 100 });
+    expect(events.events.some((event) => (
+      event.aggregateType === "plan" && event.payload.type === "PlanAmendmentRequested"
+    ))).toBe(false);
   });
 
   it("returns one durable claim when the same request races concurrently", async () => {
