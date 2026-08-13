@@ -70,6 +70,7 @@ export class RuntimeHost {
   private readonly deferredTaskIds = new Set<string>();
   private schedulerRegistered = false;
   private timer?: NodeJS.Timeout;
+  private schedulerWakeTimer?: NodeJS.Timeout;
   private tickPromise?: Promise<void>;
   private backgroundTickPromise?: Promise<void>;
   private backgroundTickRequested = false;
@@ -233,13 +234,17 @@ export class RuntimeHost {
     this.timer.unref();
     // Wake once after the caller's current turn has returned. This makes a
     // newly created task responsive without racing the caller's first UI read.
-    setTimeout(() => {
+    this.schedulerWakeTimer = setTimeout(() => {
+      this.schedulerWakeTimer = undefined;
       if (this.started && this.timer) this.requestSchedulerTick();
     }, 0);
+    this.schedulerWakeTimer.unref();
   }
 
   async stop(): Promise<void> {
     this.started = false;
+    if (this.schedulerWakeTimer) clearTimeout(this.schedulerWakeTimer);
+    this.schedulerWakeTimer = undefined;
     if (this.schedulerRegistered && this.options.scheduler) {
       this.schedulerRegistered = false;
       await this.options.scheduler.unregister(this.options.schedulerKey ?? this.workspace.id);
@@ -258,8 +263,17 @@ export class RuntimeHost {
     const schedulerWork = [this.tickPromise, this.backgroundTickPromise].filter(
       (pending): pending is Promise<void> => pending !== undefined,
     );
-    await Promise.allSettled([...schedulerWork, ...this.agentRuns.values()]);
-    await this.operationTail.catch(() => undefined);
+    // A provider/runtime may be waiting on an external operation that cannot
+    // be cancelled by the host (fixtures intentionally exercise this with a
+    // never-resolving model turn). Teardown must not wait forever for that
+    // promise: resources owned by the host have already been disposed above,
+    // and the bounded drain preserves a diagnostic opportunity without making
+    // process shutdown depend on an uncancellable provider.
+    await settleWithin(
+      Promise.allSettled([...schedulerWork, ...this.agentRuns.values()]),
+      1_000,
+    );
+    await settleWithin(this.operationTail.catch(() => undefined), 1_000);
   }
 
   private requestSchedulerTick(): void {
@@ -2000,6 +2014,21 @@ function projectEventPayload(payload: unknown, payloadRef: string): Record<strin
 
 function truncateDisplayString(value: string): string {
   return value.length > 8_000 ? `${value.slice(0, 8_000)}\n\n[显示已截断，原始内容仍保存在 Agent Thread]` : value;
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function stableId(prefix: string, ...parts: string[]): string {

@@ -1,0 +1,30 @@
+name: Linux Node verification
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/server/storage/**'
+      - 'src/server/runtime/**'
+      - 'tests/server/**'
+      - 'scripts/verify-linux-node.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/linux-node.yml'
+
+jobs:
+  verify-linux-node:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run required Linux Node verification
+        run: npm run verify:linux-node

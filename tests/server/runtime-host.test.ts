@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { AgentProfileStore } from "../../src/server/agents/profile-store.js";
 import { ensureWorkspaceAgent, listWorkspaceAgents, updateWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { createTeamBinding } from "../../src/server/product/team-binding.js";
@@ -23,6 +23,16 @@ import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/pa
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
+
+const fixtureCleanups = new Set<() => Promise<void>>();
+
+afterEach(async () => {
+  const cleanups = [...fixtureCleanups];
+  fixtureCleanups.clear();
+  const results = await Promise.allSettled(cleanups.map((cleanup) => cleanup()));
+  const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failure) throw failure.reason;
+});
 
 describe("RuntimeHost", () => {
   it("shows active remediation work as running even while the Plan outcome is blocked", () => {
@@ -2408,6 +2418,16 @@ async function createFixture(options: {
           await profiles.list(),
           "minimal-team",
         ),
+  });
+  let cleaned = false;
+  fixtureCleanups.add(async () => {
+    if (cleaned) return;
+    cleaned = true;
+    await host.stop();
+    await Promise.all([
+      rm(home, { recursive: true, force: true }),
+      rm(root, { recursive: true, force: true }),
+    ]);
   });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
 }

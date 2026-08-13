@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -16,11 +16,31 @@ export class EventBus extends EventEmitter {
 }
 
 type CursorState = { next?: number };
-type WorkspaceLock = { token: string; pid: number; hostname: string };
+type WorkspaceLock = {
+  version?: number;
+  token: string;
+  pid: number;
+  hostname: string;
+  createdAt?: string;
+  heartbeatAt?: string;
+  leaseUntil?: string;
+  state?: "ready";
+};
+type LockOptions = {
+  acquireTimeoutMs?: number;
+  publicationGraceMs?: number;
+  retryDelayMs?: number;
+  afterCreateBeforePublish?: () => void | Promise<void>;
+  /** Test-only barrier after a stale owner has been claimed into quarantine. */
+  afterQuarantineClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>;
+  /** Test-only barrier for the release path after its owner has been claimed. */
+  afterReleaseQuarantineClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>;
+};
 
-/** Test-only failure boundary; production callers can omit it. */
+/** Test-only failure boundaries; production callers can omit them. */
 export type EventLedgerOptions = {
   afterEventDurableBeforeCursor?: () => void | Promise<void>;
+  lock?: LockOptions;
 };
 
 export class EventLedger {
@@ -37,7 +57,7 @@ export class EventLedger {
     const previous = this.appendTails.get(filePath) ?? Promise.resolve();
     const workspacePrevious = this.workspaceAppendTails.get(root) ?? Promise.resolve();
     const operation = Promise.all([previous, workspacePrevious]).then(async () => {
-      const release = await acquireWorkspaceLock(root);
+      const release = await acquireWorkspaceLock(root, this.options.lock);
       try {
         await mkdir(path.dirname(filePath), { recursive: true });
         const existing = await readEventFile(filePath);
@@ -149,27 +169,129 @@ async function appendDurable(filePath: string, event: AutoAgentEvent): Promise<v
   finally { await handle.close(); }
 }
 
-async function acquireWorkspaceLock(root: string): Promise<() => Promise<void>> {
+const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
+const DEFAULT_PUBLICATION_GRACE_MS = 250;
+const DEFAULT_RETRY_DELAY_MS = 10;
+const MAX_RETRY_DELAY_MS = 100;
+const LEASE_MS = 30_000;
+
+async function acquireWorkspaceLock(root: string, options: LockOptions = {}): Promise<() => Promise<void>> {
   const lockFile = path.join(workspaceAutoAgentDir(root), "event-append.lock");
   await mkdir(path.dirname(lockFile), { recursive: true });
+  const startedAt = Date.now();
+  const deadline = startedAt + Math.max(1, options.acquireTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS);
+  const grace = Math.max(0, options.publicationGraceMs ?? DEFAULT_PUBLICATION_GRACE_MS);
+  const retryDelay = Math.min(MAX_RETRY_DELAY_MS, Math.max(1, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS));
+  let attempts = 0;
+  let lastReason = "unknown";
   for (;;) {
+    attempts += 1;
     const token = randomUUID();
     try {
       const handle = await open(lockFile, "wx", 0o600);
-      const owner: WorkspaceLock = { token, pid: process.pid, hostname: os.hostname() };
-      await handle.writeFile(JSON.stringify(owner), "utf8"); await handle.sync(); await handle.close();
+      const now = new Date().toISOString();
+      const owner: WorkspaceLock = {
+        version: 1, token, pid: process.pid, hostname: os.hostname(), createdAt: now,
+        heartbeatAt: now, leaseUntil: new Date(Date.now() + LEASE_MS).toISOString(), state: "ready",
+      };
+      try {
+        // This hook models a crash after exclusive creation but before the owner
+        // record becomes publishable. The empty/incomplete lock is intentionally
+        // left behind for the next contender's bounded recovery state machine.
+        await options.afterCreateBeforePublish?.();
+        await handle.writeFile(JSON.stringify(owner), "utf8");
+        await handle.sync();
+      } finally { await handle.close(); }
+      const published = parseOwner(await readFile(lockFile, "utf8"));
+      if (!published || published.token !== token) throw lockError(lockFile, "publication-raced", startedAt, attempts);
       return async () => {
-        try { const current = JSON.parse(await readFile(lockFile, "utf8")) as WorkspaceLock; if (current.token === token) await rm(lockFile); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        const raw = await readLockText(lockFile);
+        const current = raw ? parseOwner(raw) : undefined;
+        if (current?.token === token) await quarantineRemove(lockFile, raw!, token, options.afterReleaseQuarantineClaim);
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let owner: WorkspaceLock | undefined;
-      try { owner = JSON.parse(await readFile(lockFile, "utf8")) as WorkspaceLock; } catch { /* another writer is publishing metadata */ }
-      if (owner?.hostname === os.hostname() && !isProcessAlive(owner.pid)) { await rm(lockFile, { force: true }); continue; }
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      const raw = await readLockText(lockFile);
+      const owner = raw ? parseOwner(raw) : undefined;
+      const age = Date.now() - startedAt;
+      if (!raw || !owner) {
+        lastReason = age < grace ? "publishing" : "malformed-owner";
+      } else if (owner.hostname === os.hostname()) {
+        if (!isProcessAlive(owner.pid)) {
+          if (await guardedRemove(lockFile, raw, owner, options)) continue;
+          lastReason = "cleanup-raced";
+        } else lastReason = "ready-owner";
+      } else lastReason = "foreign-owner";
+      if (Date.now() >= deadline) throw lockError(lockFile, lastReason, startedAt, attempts, owner);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(retryDelay, deadline - Date.now())));
     }
   }
+}
+function parseOwner(raw: string): WorkspaceLock | undefined {
+  try {
+    const value = JSON.parse(raw) as WorkspaceLock;
+    if (!value || typeof value.token !== "string" || !value.token || typeof value.hostname !== "string" || !value.hostname
+      || !Number.isSafeInteger(value.pid) || value.pid <= 0) return undefined;
+    // Version 1 is the only published format. The three-field legacy format is
+    // accepted for compatibility, but any partially upgraded record is unsafe.
+    if (value.version === undefined) return value;
+    if (value.version !== 1 || value.state !== "ready" || typeof value.createdAt !== "string"
+      || typeof value.heartbeatAt !== "string" || typeof value.leaseUntil !== "string") return undefined;
+    const created = Date.parse(value.createdAt);
+    const heartbeat = Date.parse(value.heartbeatAt);
+    const lease = Date.parse(value.leaseUntil);
+    if (![created, heartbeat, lease].every(Number.isFinite) || lease < heartbeat) return undefined;
+    return value;
+  } catch { return undefined; }
+}
+async function readLockText(lockFile: string): Promise<string | undefined> {
+  try { return await readFile(lockFile, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+async function guardedRemove(lockFile: string, expectedRaw: string, owner: WorkspaceLock, options: LockOptions): Promise<boolean> {
+  if (!isProcessAlive(owner.pid)) {
+    return quarantineRemove(lockFile, expectedRaw, owner.token, options.afterQuarantineClaim);
+  }
+  return false;
+}
+
+/**
+ * Atomically takes the exact lock pathname out of the acquisition race before
+ * unlinking it. A contender can only remove the pathname it successfully
+ * renamed; if another owner replaces it first, the replacement is untouched.
+ */
+async function quarantineRemove(lockFile: string, expectedRaw: string, token: string, afterClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>): Promise<boolean> {
+  const quarantine = `${lockFile}.quarantine-${process.pid}-${randomUUID()}`;
+  try {
+    await rename(lockFile, quarantine);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return true;
+    if (code === "EACCES" || code === "EPERM" || code === "EXDEV") return false;
+    throw error;
+  }
+  try {
+    const quarantined = await readFile(quarantine, "utf8");
+    if (quarantined !== expectedRaw) return false;
+    const parsed = parseOwner(quarantined);
+    if (parsed && parsed.token !== token) return false;
+    await afterClaim?.(quarantine, lockFile);
+    // Never restore by rename: the canonical path may have been claimed by a
+    // replacement owner after the quarantine claim. The old owner has no
+    // business value that requires reclaiming the canonical pathname; its
+    // quarantine is safe to remove independently.
+    await unlink(quarantine);
+    return true;
+  } catch (error) {
+    // A claimed quarantine is the only path this operation owns. Preserve it
+    // when verification or cleanup fails; never touch canonical lockFile.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+function lockError(lockFile: string, reason: string, startedAt: number, attempts: number, owner?: WorkspaceLock): Error {
+  const error = new Error(`workspace_lock_timeout: ${reason}; lockPath=${lockFile}; ownerPid=${owner?.pid ?? "unknown"}; ownerHost=${owner?.hostname ?? "unknown"}; elapsedMs=${Date.now() - startedAt}; attempts=${attempts}`);
+  error.name = "WorkspaceLockTimeoutError";
+  return error;
 }
 function isProcessAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } }
 
