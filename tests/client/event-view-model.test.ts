@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents } from "../../src/client/event-view-model";
+import { buildEventTimelineGroups, buildEventTimelineItem, buildLatestActivity, buildVisibleTimelineEvents } from "../../src/client/event-view-model";
 import type { AutoAgentEvent } from "../../src/shared/types";
 
 describe("event view model", () => {
@@ -284,6 +284,19 @@ describe("event view model", () => {
       actor: "任务",
       title: "任务失败",
       detail: "需求接收无法完成后续处理，任务失败：当前工具无写文件权限且无浏览器，需要人工修改并验证。已确认缺失砖块精确坐标。；工单尝试 3 次"
+    });
+  });
+
+  it("summarizes the latest durable activity with a relative time", () => {
+    const latest = buildLatestActivity([
+      event("provider.started", "开发正在调用模型服务：openai", {}, "ev_old"),
+      { ...event("tool.completed", "开发完成浏览器操作", {}, "ev_new"), timestamp: "2026-07-01T00:00:42.000Z" }
+    ], Date.parse("2026-07-01T00:00:50.000Z"));
+
+    expect(latest).toEqual({
+      label: "8秒前",
+      detail: "工具 · 开发完成浏览器操作",
+      timestamp: "2026-07-01T00:00:42.000Z"
     });
   });
 });

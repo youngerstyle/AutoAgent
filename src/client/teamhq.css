@@ -352,6 +352,44 @@ button {
   font-size: 13px;
 }
 
+.mission-progress .mission-latest-activity {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 7px;
+  min-width: 150px;
+}
+
+.mission-latest-activity span {
+  grid-column: 1;
+}
+
+.mission-latest-activity strong {
+  grid-column: 1;
+  white-space: nowrap;
+}
+
+.mission-latest-activity small {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--hq-muted);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-latest-activity.live::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: -3px;
+  border-radius: 50%;
+  background: #2b9a70;
+  box-shadow: 0 0 0 3px rgba(43, 154, 112, 0.12);
+}
+
 .mission-contact-button {
   min-width: 138px;
   height: 42px;

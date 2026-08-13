@@ -68,7 +68,7 @@ import {
 import { agentProfileCardSummary } from "./agent-profile-card";
 import { applyModelSelection, modelSelectionOptions, modelSelectionValue } from "./model-selection";
 import { buildAgentCatalogProfiles, buildAgentNodes, buildAgentProfiles, buildBlockedPanelCopy, buildHumanFlowPrompt, buildManualTestAction, buildTaskSubmitView, taskControlMode, type AgentNodeView, type AgentProfileView } from "./view-model";
-import { buildEventTimelineGroups, buildEventTimelineItem, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
+import { buildEventTimelineGroups, buildEventTimelineItem, buildLatestActivity, buildVisibleTimelineEvents, type EventTimelineGroup } from "./event-view-model";
 import { buildAgentMessageView } from "./agent-message";
 import {
   appendCurrentAgentPrompt,
@@ -192,6 +192,7 @@ export function App() {
   const ticketItems = useMemo(() => buildTicketInspectorItems(snapshot?.tickets), [snapshot?.tickets]);
   const visibleEvents = useMemo(() => buildVisibleTimelineEvents(events), [events]);
   const eventGroups = useMemo(() => buildEventTimelineGroups(visibleEvents, snapshot?.agents ?? []), [snapshot?.agents, visibleEvents]);
+  const latestActivity = buildLatestActivity(visibleEvents);
   const rightPanelScrollKey = useMemo(() => {
     if (rightPanelView === "events") return eventGroups.map((group) => group.id).join("|");
     return ticketItems.map((ticket) => `${ticket.id}:${ticket.status}`).join("|");
@@ -699,6 +700,11 @@ export function App() {
                   <div><span>计划</span><strong>{snapshot?.mission ? `v${snapshot.mission.planVersion}` : "—"}</strong></div>
                   <div><span>工单</span><strong>{completedTicketCount}/{ticketItems.length}</strong></div>
                   <div><span>成员</span><strong>{nodes.length}</strong></div>
+                  <div className={snapshot?.status === "running" ? "mission-latest-activity live" : "mission-latest-activity"} title={latestActivity ? `${latestActivity.detail}\n${new Date(latestActivity.timestamp).toLocaleString("zh-CN")}` : "暂无运行活动"}>
+                    <span>活动</span>
+                    <strong>{latestActivity?.label ?? "暂无"}</strong>
+                    <small>{latestActivity?.detail ?? "等待团队开始"}</small>
+                  </div>
                 </div>
                 <div className="mission-actions">
                   <button

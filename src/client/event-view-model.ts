@@ -19,6 +19,37 @@ export interface EventTimelineGroup {
   events: AutoAgentEvent[];
 }
 
+export interface LatestActivityView {
+  label: string;
+  detail: string;
+  timestamp: string;
+}
+
+export function buildLatestActivity(
+  events: AutoAgentEvent[],
+  nowMs = Date.now()
+): LatestActivityView | undefined {
+  const latest = [...events]
+    .filter((event) => Number.isFinite(Date.parse(event.timestamp)))
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+    .at(-1);
+  if (!latest) return undefined;
+  const item = buildEventTimelineItem(latest);
+  const ageSeconds = Math.max(0, Math.floor((nowMs - Date.parse(latest.timestamp)) / 1_000));
+  const label = ageSeconds < 5
+    ? "刚刚"
+    : ageSeconds < 60
+      ? `${ageSeconds}秒前`
+      : ageSeconds < 3_600
+        ? `${Math.floor(ageSeconds / 60)}分钟前`
+        : new Date(latest.timestamp).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return {
+    label,
+    detail: [item.actor.trim(), item.title].filter(Boolean).join(" · "),
+    timestamp: latest.timestamp
+  };
+}
+
 export function buildVisibleTimelineEvents(events: AutoAgentEvent[]): AutoAgentEvent[] {
   const assignmentBlockers = new Set(
     events
