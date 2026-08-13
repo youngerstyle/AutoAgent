@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, open, readdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +33,8 @@ type LockOptions = {
   afterCreateBeforePublish?: () => void | Promise<void>;
   /** Test-only barrier after a stale owner has been claimed into quarantine. */
   afterQuarantineClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>;
+  /** Test-only barrier immediately before stale cleanup claims the pathname. */
+  beforeQuarantineClaim?: (lockPath: string) => void | Promise<void>;
   /** Test-only barrier for the release path after its owner has been claimed. */
   afterReleaseQuarantineClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>;
 };
@@ -249,7 +251,7 @@ async function readLockText(lockFile: string): Promise<string | undefined> {
 }
 async function guardedRemove(lockFile: string, expectedRaw: string, owner: WorkspaceLock, options: LockOptions): Promise<boolean> {
   if (!isProcessAlive(owner.pid)) {
-    return quarantineRemove(lockFile, expectedRaw, owner.token, options.afterQuarantineClaim);
+    return quarantineRemove(lockFile, expectedRaw, owner.token, options.afterQuarantineClaim, options.beforeQuarantineClaim);
   }
   return false;
 }
@@ -259,9 +261,16 @@ async function guardedRemove(lockFile: string, expectedRaw: string, owner: Works
  * unlinking it. A contender can only remove the pathname it successfully
  * renamed; if another owner replaces it first, the replacement is untouched.
  */
-async function quarantineRemove(lockFile: string, expectedRaw: string, token: string, afterClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>): Promise<boolean> {
+async function quarantineRemove(
+  lockFile: string,
+  expectedRaw: string,
+  token: string,
+  afterClaim?: (quarantinePath: string, lockPath: string) => void | Promise<void>,
+  beforeClaim?: (lockPath: string) => void | Promise<void>,
+): Promise<boolean> {
   const quarantine = `${lockFile}.quarantine-${process.pid}-${randomUUID()}`;
   try {
+    await beforeClaim?.(lockFile);
     await rename(lockFile, quarantine);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -271,9 +280,15 @@ async function quarantineRemove(lockFile: string, expectedRaw: string, token: st
   }
   try {
     const quarantined = await readFile(quarantine, "utf8");
-    if (quarantined !== expectedRaw) return false;
+    if (quarantined !== expectedRaw) {
+      await restoreQuarantinedLock(quarantine, lockFile);
+      return false;
+    }
     const parsed = parseOwner(quarantined);
-    if (parsed && parsed.token !== token) return false;
+    if (parsed && parsed.token !== token) {
+      await restoreQuarantinedLock(quarantine, lockFile);
+      return false;
+    }
     await afterClaim?.(quarantine, lockFile);
     // Never restore by rename: the canonical path may have been claimed by a
     // replacement owner after the quarantine claim. The old owner has no
@@ -285,6 +300,18 @@ async function quarantineRemove(lockFile: string, expectedRaw: string, token: st
     // A claimed quarantine is the only path this operation owns. Preserve it
     // when verification or cleanup fails; never touch canonical lockFile.
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+}
+
+async function restoreQuarantinedLock(quarantine: string, lockFile: string): Promise<void> {
+  try {
+    // link() atomically creates the destination only when it is absent. This
+    // restores the mistakenly claimed inode without replacing a newer owner.
+    await link(quarantine, lockFile);
+    await unlink(quarantine);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
     throw error;
   }
 }

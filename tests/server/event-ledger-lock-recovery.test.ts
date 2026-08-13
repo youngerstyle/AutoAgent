@@ -120,6 +120,32 @@ describe("EventLedger workspace lock recovery", () => {
     expect((await readdir(path.dirname(canonical))).some((name) => name.startsWith(path.basename(canonical) + ".quarantine-"))).toBe(false);
   }, 10_000);
 
+  it("restores a replacement owner that wins before stale cleanup claims the pathname", async () => {
+    const root = await preparedRoot();
+    const canonical = lockPath(root);
+    const oldOwner = {
+      version: 1, token: "pre-claim-old-owner", pid: 2147483647, hostname: os.hostname(),
+      createdAt: new Date(Date.now() - 2000).toISOString(), heartbeatAt: new Date(Date.now() - 2000).toISOString(),
+      leaseUntil: new Date(Date.now() - 1).toISOString(), state: "ready",
+    };
+    const replacement = JSON.stringify({
+      version: 1, token: "pre-claim-replacement", pid: process.pid, hostname: os.hostname(),
+      createdAt: new Date().toISOString(), heartbeatAt: new Date().toISOString(),
+      leaseUntil: new Date(Date.now() + 30000).toISOString(), state: "ready",
+    });
+    await writeFile(canonical, JSON.stringify(oldOwner), "utf8");
+    const cleanup = new EventLedger(undefined, {
+      lock: {
+        ...bounded.lock,
+        beforeQuarantineClaim: async () => { await writeFile(canonical, replacement, "utf8"); },
+      },
+    }).append(root, event(10));
+
+    await expect(cleanup).rejects.toThrow(/ready-owner/);
+    expect(await readFile(canonical, "utf8")).toBe(replacement);
+    expect((await readdir(path.dirname(canonical))).some((name) => name.startsWith(path.basename(canonical) + ".quarantine-"))).toBe(false);
+  });
+
   it("preserves a replacement owner when release is released after quarantine claim", async () => {
     const root = await preparedRoot();
     const canonical = lockPath(root);

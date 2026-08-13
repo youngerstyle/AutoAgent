@@ -4,9 +4,9 @@ import { mkdir, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-  AuthStorage,
   DefaultResourceLoader,
   ModelRegistry,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   createAgentSession,
@@ -15,7 +15,7 @@ import {
   type Skill,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, type AssistantMessage, type Context, type ImageContent, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage, type Context, type ImageContent, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   AGENT_HUMAN_INPUT_KINDS,
@@ -400,10 +400,20 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
           promptWatchdog = undefined;
         }
         if (promptOutcome.kind === "provider_error") {
+          await eventWrites;
+          if (state.safety.blockedReason) {
+            return this.block(
+              turnId,
+              input,
+              toolCalls,
+              goal,
+              state.safety.blockReasonKind ?? "no_progress",
+              state.safety.blockedReason,
+            );
+          }
           state.session.agent.abort();
           this.sessions.delete(piWorkSessionKey(input.threadId, input.goalId));
           void promptRun.finally(() => state.session.dispose()).catch(() => undefined);
-          await eventWrites;
           return this.providerFailure(turnId, input, toolCalls, goal, promptOutcome.message);
         }
         await eventWrites;
@@ -570,11 +580,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     // an execution trace only; rebuilding from AgentThread prevents a stale or
     // rejected Pi tool call from bypassing our context projection after restart.
     const sessionManager = SessionManager.create(this.workspaceRoot, sessionDir);
-    const auth = AuthStorage.inMemory();
-    const registry = ModelRegistry.inMemory(auth);
+    const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+    const registry = new ModelRegistry(modelRuntime);
     const model = await configureModel(
       registry,
-      auth,
+      modelRuntime,
       this.providers,
       input.provider,
       input.model,
@@ -658,8 +668,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const { session } = await createAgentSession({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
-      authStorage: auth,
-      modelRegistry: registry,
+      modelRuntime,
       model,
       resourceLoader: loader,
       settingsManager: settings,
@@ -1690,7 +1699,7 @@ export function compactPiToolEventDetails(result: unknown): Record<string, unkno
 
 async function configureModel(
   registry: ModelRegistry,
-  auth: AuthStorage,
+  modelRuntime: ModelRuntime,
   providers: ProviderRegistry,
   provider: ProviderName,
   modelId: string,
@@ -1711,7 +1720,7 @@ async function configureModel(
   }
   const config = await providers.runtimeConfig(provider, modelId);
   if (!config.apiKey) throw new ProviderError(`${provider} 未配置 API Key`, false, `MISSING_${provider.toUpperCase()}_API_KEY`);
-  auth.setRuntimeApiKey(provider, config.apiKey);
+  await modelRuntime.setRuntimeApiKey(provider, config.apiKey);
   const builtIn = registry.find(provider, modelId);
   if (builtIn && !config.baseUrl) return builtIn;
   const api = provider === "anthropic" ? "anthropic-messages" : "openai-completions";
