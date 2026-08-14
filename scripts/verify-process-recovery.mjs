@@ -10,6 +10,9 @@ const env = {
   ...process.env,
   AUTOAGENT_HOME: home,
   AUTOAGENT_PROVIDER: "mock",
+  // This acceptance owns a synthetic end-to-end delivery. Production mock
+  // runs remain fail-closed unless a test harness opts in explicitly.
+  AUTOAGENT_ALLOW_MOCK_DELIVERY: "1",
   AUTOAGENT_PROVIDER_RETRIES: "0",
   AUTOAGENT_MOCK_HOLD_GOAL_ONCE_MS: "120000",
   PORT: String(port),
