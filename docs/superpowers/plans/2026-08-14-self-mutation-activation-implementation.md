@@ -18,9 +18,10 @@
 - [x] 明确归因的重复 Prompt/Skill Episode 自动形成最小 Candidate，未知归因不变异资产；
 - [x] Prompt 从真实终态 Episode 形成 Candidate，经独立评测与人类批准，由后续 Pi turn 继承，并被真实 cohort telemetry 回滚；
 - [x] Evol 管理页区分 requested、pointer changed、activated、health 与 rolled back，并展示 actual runtime proof；
-- [ ] 接入生产 SCM/CI/CD adapter 并完成真实托管环境部署演练；
+- [x] 接入跨平台 HTTPS SCM/CI/CD Provider Gateway adapter：TLS、Bearer secret、幂等键、有限重试、响应上限、严格 attestation schema 与 fail-closed API；
+- [ ] 配置真实托管 Provider Gateway，并在外部仓库、CI 与部署环境完成 canary/production/rollback 演练；
 - [x] 补齐 Agent Profile/Workflow/Runtime Config/Source Patch 的主动升级选择：至少 3 个直接归因，并验证较低层 Release 的失败 telemetry；选择只允许进入 authoring，不创建 Candidate 或激活；
-- [x] 完成全量回归、生产构建与文档一致性审计（95 files / 714 tests）。
+- [x] 完成全量回归、生产构建与文档一致性审计（96 files / 719 tests）。
 
 实现口径：Evol 主链是“版本化变更 -> 生命周期边界切换 -> 后续运行继承 -> 效果衡量/恢复”。本地 Git、测试命令或未来托管 runner 只是 Source Patch Provider 的实现，不是 Evol 本身；WSL、PowerShell 和 sandbox 均不进入核心状态机。
 
@@ -51,6 +52,7 @@
 3. 本地 adapter 在独立 worktree/branch 应用 patch并运行 checks，不修改当前服务 checkout。
 4. checks/review/merge/build/deploy attestation 独立持久化，proposer 无权伪造。
 5. Runtime boot report source commit/deployment id；匹配后生成 inheritance proof。
+6. SaaS 服务通过 HTTPS Provider Gateway 调用外部 SCM/CI/CD；未配置、部分配置、非 TLS、畸形 attestation 或远端 gate 失败均不得改变 active pointer。
 
 退出标准：Source Patch 从 Candidate 到新部署继承可完整追踪；任一 gate 失败不改变 active deployment。
 

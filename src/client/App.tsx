@@ -2548,17 +2548,22 @@ function EvolutionHub(props: {
                 }) : <p className="evolution-empty">尚无激活请求；Candidate 或 Promotion 不会被当成已生效。</p>}
               </div>
             </section>
-            {sourceDeliveries.length ? <section className="evolution-panel">
-              <header><div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div></header>
+            <section className="evolution-panel">
+              <header>
+                <div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div>
+                <span className={`evolution-status ${props.overview?.worker.deliveryProviderConfigured ? "active" : "failed"}`}>
+                  {props.overview?.worker.deliveryProviderConfigured ? "provider ready" : "provider not configured"}
+                </span>
+              </header>
               <div className="evolution-list compact">
-                {sourceDeliveries.slice().reverse().map((delivery) => <article key={delivery.deliveryId}>
+                {sourceDeliveries.length ? sourceDeliveries.slice().reverse().map((delivery) => <article key={delivery.deliveryId}>
                   <div><strong>{delivery.status}</strong><small>{delivery.sourceCommit?.slice(0, 12) ?? "尚未合并"}</small></div>
                   <span className={`evolution-status ${delivery.status}`}>{delivery.status}</span>
                   <p>{delivery.deploymentRef ? `deployment ${delivery.deploymentRef.id}@${delivery.deploymentRef.version}` : `candidate ${delivery.candidateId}`}</p>
                   <code>{delivery.attestations.length} attestations</code>
-                </article>)}
+                </article>) : <p className="evolution-empty">尚无外部 SCM/CI/CD 交付记录；Provider 未配置时不会用本地脚本冒充部署。</p>}
               </div>
-            </section> : null}
+            </section>
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Candidate ledger</span><h3>候选与验证</h3></div></header>
               <div className="evolution-list">

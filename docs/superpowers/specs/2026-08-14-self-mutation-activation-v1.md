@@ -228,6 +228,8 @@ Evol Control Plane、Artifact Registry、Activation Ledger 和 Runtime reconcili
 
 本地开发 adapter 可以调用本机 Git/进程；SaaS production adapter 可以调用 GitHub/GitLab、CI/CD、Kubernetes 或托管 runner。核心状态机不因 adapter 改变。
 
+生产 SaaS adapter 使用受信 HTTPS Provider Gateway 时必须满足：凭据仅来自服务部署配置；请求带稳定幂等键；重定向不得携带凭据；响应有大小和超时上限；SCM、check、review、build、deployment、actual revision 与 rollback 均返回严格校验的 attestation。Gateway 未配置或只配置一半时服务启动/交付入口 fail closed。Gateway 的协议验收测试只证明 adapter contract，不等于真实托管环境演练；完成 Source Patch 条件仍需外部仓库、CI、部署实例和 Runtime actual report。
+
 ## 11. 完成定义
 
 Self-Mutation V1 只有在以下端到端场景全部成立后完成：

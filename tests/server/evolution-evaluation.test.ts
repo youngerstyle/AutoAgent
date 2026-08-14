@@ -1,4 +1,5 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -296,6 +297,60 @@ describe("evolution evaluation and promotion gate", () => {
       .toMatchObject({ status: "rolled_back", health: "degraded", proofCount: expect.any(Number) });
   });
 
+  it("drains an existing Pi session before an activated Agent Profile is inherited", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-profile-session-boundary-"));
+    const baseProfile = runtimeProfile();
+    const workspaceAgent = runtimeAgent();
+    const store = new AgentStore(root, workspaceAgent.id);
+    const engine = new AgentEngine(store);
+    const thread = await engine.ensureThread({ agentId: workspaceAgent.id, scopeId: "profile-boundary", idempotencyKey: "profile-boundary" });
+    const traces = new AgentTraceStore(root, workspaceAgent.id);
+    const providers = new ProviderRegistry({ homeDir: path.join(root, ".provider-home"), retryCount: 0 });
+    const policy = { profile: "development" as const, workspaceRoot: root, canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false, allowHostAccess: false, enabledTools: [] };
+    const runtime = new PiAgentRuntime(
+      root, engine, store, new AgentContextAssembler(store), providers,
+      new AgentToolRuntime(policy, []), traces, { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000 },
+    );
+    try {
+      await engine.sendMessage({ messageId: "profile-message-1", turnId: "profile-turn-1", threadId: thread.threadId, senderPrincipalId: "human", content: "Start with the current profile.", createdAt: fixedNow().toISOString() });
+      await runtime.runSlice({ threadId: thread.threadId, turnId: "profile-turn-1", triggerMessageId: "profile-message-1", profile: baseProfile, agent: workspaceAgent, policy, provider: "mock", model: "mock" });
+      const firstSessionId = sessionIdForTurn(await traces.list(thread.threadId), "profile-turn-1");
+
+      const artifactContent = JSON.stringify({ schemaVersion: 1, id: baseProfile.id, soul: "Use the newly approved evidence discipline in new sessions." });
+      const contentHash = createHash("sha256").update(artifactContent).digest("hex");
+      const artifactRef = `artifacts/${contentHash}/artifact.txt`;
+      await mkdir(path.dirname(path.join(root, ".autoagent", "evolution", artifactRef)), { recursive: true });
+      await writeFile(path.join(root, ".autoagent", "evolution", artifactRef), artifactContent, "utf8");
+      const baseRef = { id: "genesis:agent_profile", version: "0", contentHash: createHash("sha256").update("").digest("hex") };
+      const candidate = {
+        candidateId: "candidate-profile-boundary", revision: 1, kind: "agent_profile" as const, target: baseProfile.id,
+        title: "Session profile boundary", rationale: "Repeated evidence shows a profile-level behavior change is required.", artifactRef, contentHash,
+        hypothesis: "New sessions will inherit the approved profile while an existing session is never mutated in place.",
+        sourceRefs: [{ kind: "evidence" as const, ref: "profile-evidence", workspaceId: "workspace-a" }], scope: { workspaceId: "workspace-a", roles: ["dev"] },
+        expectedMetrics: [{ metric: "task_success_rate", direction: "increase" as const }], riskLevel: "high" as const, status: "ready_for_eval" as const,
+        proposedBy: { type: "agent" as const, id: "coordinator" }, createdAt: fixedNow().toISOString(), updatedAt: fixedNow().toISOString(),
+        validation: { passed: true, checkedAt: fixedNow().toISOString(), checks: [{ name: "agent_profile_contract", passed: true, message: "passed" }] },
+        mutationSet: { assetKind: "agent_profile" as const, target: baseProfile.id, baseRef, candidateRef: { id: "candidate-profile-boundary", version: "1", contentHash }, representation: "full" as const, activationBoundary: "next_session" as const, compatibility: { runtime: "autoagent" }, rollbackRef: baseRef },
+      } satisfies EvolutionCandidate;
+      const promotion = {
+        promotionId: "promotion-profile-boundary", candidateId: candidate.candidateId, evaluationId: "evaluation-profile-boundary",
+        toRelease: { id: "release-profile-boundary", version: "1", contentHash }, stage: "production" as const, scope: candidate.scope,
+        approvedBy: { type: "human" as const, id: "governor" }, policyRef: { id: "policy", version: "1", contentHash: "policy-hash" }, status: "active" as const, createdAt: fixedNow().toISOString(),
+      } satisfies PromotionRecord;
+      await new EvolutionReleaseRegistry(root, fixedNow).publish(promotion, candidate);
+
+      await engine.sendMessage({ messageId: "profile-message-2", turnId: "profile-turn-2", threadId: thread.threadId, senderPrincipalId: "human", content: "Continue after profile activation.", createdAt: fixedNow().toISOString() });
+      await runtime.runSlice({ threadId: thread.threadId, turnId: "profile-turn-2", triggerMessageId: "profile-message-2", profile: baseProfile, agent: workspaceAgent, policy, provider: "mock", model: "mock" });
+      const secondSessionId = sessionIdForTurn(await traces.list(thread.threadId), "profile-turn-2");
+      expect(secondSessionId).not.toBe(firstSessionId);
+      expect(await new EvolutionActivationStore(root, fixedNow).listProofs()).toEqual([
+        expect.objectContaining({ assetKind: "agent_profile", runtimeKind: "session", runtimeRef: secondSessionId, releaseRef: promotion.toRelease }),
+      ]);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it("runs a versioned suite through a sandboxed executor instead of accepting client scores", async () => {
     const fixture = await setup();
     const suites = new EvolutionEvalSuiteStore("workspace-a", fixture.root, fixedNow);
@@ -422,6 +477,12 @@ function cases(): EvaluationCaseResult[] {
 function fixedNow(): Date { return new Date("2026-08-14T00:10:00.000Z"); }
 function runtimeProfile(): AgentProfile { return { id: "profile-dev", name: "Dev", role: "dev", capabilities: [], defaultProvider: "mock", defaultModel: "mock", defaultPolicy: {} }; }
 function runtimeAgent(): WorkspaceAgent { return { id: "agent-dev", workspaceId: "workspace-a", profileId: "profile-dev", roleInWorkspace: "dev", agentDir: "agents/dev", status: "idle" }; }
+function sessionIdForTurn(traces: Awaited<ReturnType<AgentTraceStore["list"]>>, turnId: string): string {
+  const value = traces.find((trace) => trace.turnId === turnId && trace.kind === "context"
+    && typeof trace.data === "object" && trace.data !== null && typeof (trace.data as { sessionId?: unknown }).sessionId === "string")?.data as { sessionId?: string } | undefined;
+  if (!value?.sessionId) throw new Error(`Pi session trace missing for ${turnId}`);
+  return value.sessionId;
+}
 
 async function runPiAgentAndReadEvolutionReleases(
   root: string,

@@ -168,6 +168,36 @@ describe("evolution production runtime projection", () => {
       expect.objectContaining({ activationKind: "rollback_restore", rollbackOfPromotionId: secondPromotion.promotionId, status: "activated", releaseRef: firstPromotion.toRelease, desiredGeneration: 3 }),
     ]);
   });
+
+  it("restores the previous Memory revision for a later turn and records a new proof", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-memory-rollback-"));
+    const registry = new EvolutionReleaseRegistry(root);
+    const activations = new EvolutionActivationStore(root);
+    const lifecycle = new MemoryLifecycleStore("workspace-a", root);
+    const first = await memoryCandidate(root, 1, "Require an actual Runtime inheritance trace before reporting activation.");
+    const firstPromotion = memoryPromotion(first, 1);
+    await registry.publish(firstPromotion, first);
+    await lifecycle.register(firstPromotion, first);
+    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "memory-turn-v1", runtimeSnapshotHash: "memory-snapshot-v1" });
+
+    const second = await memoryCandidate(root, 2, "Treat a candidate proposal as if it were already active.", firstPromotion.toRelease);
+    const secondPromotion = memoryPromotion(second, 2, firstPromotion.toRelease);
+    await registry.publish(secondPromotion, second);
+    await lifecycle.register(secondPromotion, second);
+    await activations.observe({ assetKind: "memory", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "memory-turn-v2", runtimeSnapshotHash: "memory-snapshot-v2" });
+
+    const rolledBack = { ...secondPromotion, status: "rolled_back" as const, rolledBackAt: "2026-08-14T00:03:00.000Z" };
+    await registry.rollback(rolledBack, second);
+    await lifecycle.transition("archive-bad-memory", secondPromotion.toRelease.id, "archived", "Telemetry rejected this revision", { type: "system", id: "canary-monitor" });
+    await lifecycle.transition("restore-good-memory", firstPromotion.toRelease.id, "active", "Restore previous known-good revision", { type: "system", id: "canary-monitor" });
+
+    expect(await productionEvolutionMemories(root, "workspace-a", profile(), agent())).toEqual([
+      expect.objectContaining({ content: "Require an actual Runtime inheritance trace before reporting activation.", releaseId: firstPromotion.toRelease.id, generation: 3 }),
+    ]);
+    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "memory-turn-restored", runtimeSnapshotHash: "memory-snapshot-restored" });
+    expect((await activations.list()).find((item) => item.activationKind === "rollback_restore")).toMatchObject({ status: "activated", releaseRef: firstPromotion.toRelease, desiredGeneration: 3 });
+    expect((await activations.listProofs()).at(-1)).toMatchObject({ assetKind: "memory", runtimeKind: "turn", runtimeRef: "memory-turn-restored", releaseRef: firstPromotion.toRelease });
+  });
 });
 
 async function promptCandidate(root: string, revision: number, content: string, base?: PromotionRecord["toRelease"]): Promise<EvolutionCandidate> {
@@ -194,6 +224,33 @@ function promptPromotion(candidate: EvolutionCandidate, revision: number, fromRe
     ...(fromRelease ? { fromRelease } : {}), toRelease: { id: `release-prompt-${revision}`, version: String(revision), contentHash: candidate.contentHash },
     stage: "production", scope: candidate.scope, approvedBy: { type: "human", id: "owner" },
     policyRef: { id: "policy", version: "1", contentHash: hash("policy") }, status: "active", createdAt: `2026-08-14T00:0${revision}:00.000Z`,
+  };
+}
+
+async function memoryCandidate(root: string, revision: number, content: string, base?: PromotionRecord["toRelease"]): Promise<EvolutionCandidate> {
+  const contentHash = hash(content);
+  const candidateId = `candidate-memory-${revision}`;
+  const artifactRef = `artifacts/${contentHash}/artifact.txt`;
+  await mkdir(path.dirname(path.join(root, ".autoagent", "evolution", artifactRef)), { recursive: true });
+  await writeFile(path.join(root, ".autoagent", "evolution", artifactRef), content, "utf8");
+  const baseRef = base ?? { id: "genesis:memory", version: "0", contentHash: hash("") };
+  return {
+    candidateId, revision, kind: "memory", target: "release-activation-evidence", title: `Memory ${revision}`,
+    rationale: "Repeated release reports require a reusable evidence rule.", artifactRef, contentHash,
+    hypothesis: "This memory revision changes unsupported activation reports in subsequent turns.",
+    sourceRefs: [{ kind: "trace", ref: `memory-trace-${revision}`, workspaceId: "workspace-a" }], scope: { workspaceId: "workspace-a", roles: ["dev"] },
+    expectedMetrics: [{ metric: "evidence_completeness", direction: "increase" }], riskLevel: "low", status: "ready_for_eval",
+    proposedBy: { type: "system", id: "memory-consolidator/v1" }, createdAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:00:00.000Z",
+    validation: { passed: true, checkedAt: "2026-08-14T00:00:00.000Z", checks: [{ name: "memory_safety", passed: true, message: "passed" }] },
+    mutationSet: { assetKind: "memory", target: "release-activation-evidence", baseRef, candidateRef: { id: candidateId, version: String(revision), contentHash }, representation: "full", activationBoundary: "next_turn", compatibility: { runtime: "autoagent" }, rollbackRef: baseRef },
+  };
+}
+function memoryPromotion(candidate: EvolutionCandidate, revision: number, fromRelease?: PromotionRecord["toRelease"]): PromotionRecord {
+  return {
+    promotionId: `promotion-memory-${revision}`, candidateId: candidate.candidateId, evaluationId: `memory-evaluation-${revision}`,
+    ...(fromRelease ? { fromRelease } : {}), toRelease: { id: `release-memory-${revision}`, version: String(revision), contentHash: candidate.contentHash },
+    stage: "production", scope: candidate.scope, approvedBy: { type: "human", id: "owner" }, policyRef: { id: "policy", version: "1", contentHash: hash("policy") },
+    status: "active", createdAt: `2026-08-14T00:0${revision}:00.000Z`,
   };
 }
 

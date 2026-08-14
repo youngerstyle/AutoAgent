@@ -72,6 +72,16 @@ Evol 从真实运行事实中发现问题，产生并评测对 Memory、Skill、
 
 源码进化生成绑定 base commit 的 patch/branch，经过 required checks、独立审查、合并和部署后，只有报告新 deployment revision 的进程才会使用它。Plugin/Harness 是独立的扩展执行设施，不是 Evol 的定义，也不是 Evol 的必需依赖。
 
+SaaS 部署可通过受信 HTTPS Provider Gateway 接入 SCM、CI 和部署平台：
+
+```powershell
+$env:AUTOAGENT_EVOLUTION_DELIVERY_BASE_URL="https://evolution-provider.example/"
+$env:AUTOAGENT_EVOLUTION_DELIVERY_TOKEN="..."
+$env:AUTOAGENT_EVOLUTION_DELIVERY_TIMEOUT_MS="30000" # 可选
+```
+
+URL 与 Token 必须同时配置；生产只接受 HTTPS。Token 只驻留服务进程内存，不写入 Candidate、delivery ledger 或 attestation。源码交付由 `POST /api/workspaces/:workspaceId/evolution/candidates/:candidateId/source-delivery` 显式启动，回滚使用 `POST /api/workspaces/:workspaceId/evolution/source-deliveries/:deliveryId/rollback`。未配置 Gateway 时两个入口返回 503，不会用本地脚本或 Fake Provider 代替生产交付。
+
 完整语义见 `docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`。
 
 ## Agent 中心和项目团队

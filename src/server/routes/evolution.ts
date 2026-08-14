@@ -22,8 +22,10 @@ import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
 import { SourcePatchDeliveryStore } from "../evolution/source-delivery-store.js";
 import { SkillConsolidator } from "../evolution/skill-consolidator.js";
 import { EvolutionAssetSelector } from "../evolution/asset-selector.js";
+import type { EvolutionDeliveryProviders } from "../evolution/delivery-providers.js";
+import { SourcePatchDeliveryPipeline } from "../evolution/source-patch-delivery.js";
 
-export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
+export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus, deliveryProviders?: EvolutionDeliveryProviders) {
   const router = Router({ mergeParams: true });
   const storeFor = async (workspaceId: string) => {
     const workspace = await workspaces.get(workspaceId);
@@ -38,7 +40,10 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   };
 
   router.get("/worker", (_req, res) => res.json({
-    worker: { ...(workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, evaluationJobsProcessed: 0 }), pluginSandboxConfigured: Boolean(configuredPluginSandboxProgram()) },
+    worker: {
+      ...(workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, evaluationJobsProcessed: 0 }),
+      pluginSandboxConfigured: Boolean(configuredPluginSandboxProgram()), deliveryProviderConfigured: Boolean(deliveryProviders),
+    },
   }));
 
   router.get("/candidates", asyncHandler(async (req, res) => res.json({ candidates: await (await storeFor(String(req.params.workspaceId))).candidates.list() })));
@@ -174,6 +179,28 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   router.get("/source-deliveries", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
     res.json({ deliveries: await new SourcePatchDeliveryStore(workspace.rootPath).list() });
+  }));
+  router.post("/candidates/:candidateId/source-delivery", asyncHandler(async (req, res) => {
+    if (!deliveryProviders) throw new HttpError(503, "Production evolution delivery provider is not configured", "EVOLUTION_DELIVERY_NOT_CONFIGURED");
+    const workspaceId = String(req.params.workspaceId);
+    const stores = await storeFor(workspaceId);
+    const workspace = await workspaces.get(workspaceId);
+    const candidate = await stores.candidates.get(String(req.params.candidateId));
+    const promotionId = String(req.body?.promotionId ?? "");
+    const promotion = (await stores.evaluations.listPromotions()).find((item) => item.promotionId === promotionId);
+    if (!promotion) throw new HttpError(404, "Evolution production promotion not found", "EVOLUTION_PROMOTION_NOT_FOUND");
+    const delivery = await new SourcePatchDeliveryPipeline(workspace.rootPath, deliveryProviders).deliver(
+      typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), candidate, promotion,
+    );
+    res.json({ delivery });
+  }));
+  router.post("/source-deliveries/:deliveryId/rollback", asyncHandler(async (req, res) => {
+    if (!deliveryProviders) throw new HttpError(503, "Production evolution delivery provider is not configured", "EVOLUTION_DELIVERY_NOT_CONFIGURED");
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const delivery = await new SourcePatchDeliveryPipeline(workspace.rootPath, deliveryProviders).rollback(
+      typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), String(req.params.deliveryId),
+    );
+    res.json({ delivery });
   }));
   router.get("/candidates/:candidateId", asyncHandler(async (req, res) => res.json({ candidate: await (await storeFor(String(req.params.workspaceId))).candidates.get(String(req.params.candidateId)) })));
   router.post("/candidates", asyncHandler(async (req, res) => {
