@@ -2552,7 +2552,7 @@ function EvolutionHub(props: {
               <header>
                 <div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div>
                 <span className={`evolution-status ${props.overview?.worker.deliveryProviderConfigured ? "active" : "failed"}`}>
-                  {props.overview?.worker.deliveryProviderConfigured ? "provider ready" : "provider not configured"}
+                  {props.overview?.worker.deliveryProviderConfigured ? "provider configured" : "provider not configured"}
                 </span>
               </header>
               <div className="evolution-list compact">
