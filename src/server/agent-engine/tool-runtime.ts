@@ -11,6 +11,7 @@ import type { EffectivePolicy } from "../policy/policy.js";
 import { assertCommandAllowed } from "../policy/command-policy.js";
 import { resolveToolPath } from "../policy/path-policy.js";
 import { EvidenceLedger } from "./evidence-ledger.js";
+import { managedProcessDetached, terminateManagedProcessTree } from "./managed-process-tree.js";
 
 const DEFAULT_SHELL_YIELD_MS = 2_000;
 const MAX_LOG_CHARS = 64_000;
@@ -538,7 +539,7 @@ export class AgentToolRuntime {
       env: agentCommandEnvironment(),
       shell: true,
       windowsHide: true,
-      detached: false,
+      detached: managedProcessDetached(),
       stdio: ["ignore", stdoutHandle.fd, stderrHandle.fd],
     });
     let observedExitCode: number | null = null;
@@ -552,11 +553,12 @@ export class AgentToolRuntime {
     });
     await Promise.all([stdoutHandle.close(), stderrHandle.close()]);
     if (!child.pid) throw new Error("Command process did not start");
+    const launcherPid = child.pid;
     const metadataPath = path.join(directory, `${serviceId}.json`);
     let metadata: ProcessMetadata = {
       serviceId,
       command,
-      pid: child.pid,
+      pid: launcherPid,
       port,
       workspaceRoot: path.resolve(this.policy.workspaceRoot),
       stdoutPath,
@@ -573,7 +575,7 @@ export class AgentToolRuntime {
     let runtimePid: number | undefined;
     const processRecord: ManagedProcess = {
       serviceId,
-      pid: child.pid,
+      pid: launcherPid,
       owner: context ? executionScope(context) : undefined,
       stdoutPath,
       stderrPath,
@@ -588,17 +590,20 @@ export class AgentToolRuntime {
         runtimePid = pid;
         metadata = {
           ...metadata,
-          launcherPid: child.pid,
+          launcherPid,
           pid,
           exitCode: null,
         };
         await writeProcessMetadata(metadataPath, metadata);
       },
       terminate: async () => {
-        await Promise.allSettled(
-          [...new Set([runtimePid, child.pid].filter((pid): pid is number => Boolean(pid)))]
-            .map((pid) => terminateProcessTree(pid)),
-        );
+        // The launcher is the POSIX process-group root and the Windows /T
+        // tree root. Only fall back to a discovered listener pid when the
+        // launcher tree already detached or re-parented it.
+        await terminateManagedProcessTree(launcherPid);
+        if (runtimePid && runtimePid !== launcherPid && processIsAlive(runtimePid)) {
+          await terminateManagedProcessTree(runtimePid);
+        }
         if (port) await waitForPortClosed(port, 5_000);
         if (port) releaseManagedServicePort(port, serviceId);
       },
@@ -991,44 +996,6 @@ function processIsAlive(pid?: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function terminateProcessTree(pid: number): Promise<void> {
-  if (!processIsAlive(pid)) return;
-  if (process.platform === "win32") {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      return;
-    }
-    if (!processIsAlive(pid)) return;
-    await Promise.race([
-      new Promise<void>((resolve) => {
-        const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-          windowsHide: true,
-          stdio: "ignore",
-        });
-        killer.once("error", () => resolve());
-        killer.once("exit", () => resolve());
-      }),
-      delay(2_000),
-    ]);
-    return;
-  }
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const deadline = Date.now() + 1_000;
-  while (processIsAlive(pid) && Date.now() < deadline) await delay(25);
-  if (processIsAlive(pid)) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The process exited between the liveness check and the signal.
-    }
   }
 }
 
