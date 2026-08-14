@@ -31,6 +31,7 @@ import {
   settleGoalState,
 } from "./goal-state.js";
 import { domainContractRecoveryHint } from "./tool-validation-feedback.js";
+import { nextAgentInboxInput, projectAgentInbox } from "./agent-inbox.js";
 
 export class AgentEngineConflictError extends Error {}
 
@@ -893,19 +894,9 @@ function hasUnconsumedHumanTurn(
   const thread = aggregate.threads.find((item) => item.threadId === threadId);
   if (!thread) return false;
   const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
-  return thread.items.some((item, index) => {
-    if (item.kind !== "message" || item.turnId === excludingTurnId) return false;
-    const payload = payloads.get(item.payloadRef);
-    if (!isRecord(payload)
-      || payload.goalId !== goalId
-      || payload.senderPrincipalId !== "human"
-      || payload.deliveryKind === "context") return false;
-    return !thread.items.slice(index + 1).some((candidate) => {
-      if (candidate.turnId === item.turnId && candidate.kind !== "message") return true;
-      const candidatePayload = payloads.get(candidate.payloadRef);
-      return isRecord(candidatePayload) && candidatePayload.triggerMessageId === item.itemId;
-    });
-  });
+  const inbox = projectAgentInbox(thread, payloads)
+    .filter((entry) => entry.kind !== "message" || entry.turnId !== excludingTurnId);
+  return nextAgentInboxInput(inbox, { humanOnly: true, earliest: true, goalId }) !== undefined;
 }
 
 

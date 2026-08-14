@@ -38,6 +38,7 @@ import { AgentGoalTransitionError } from "./goal-state.js";
 import type { AgentExecutionRuntime, AgentExecutionSliceInput, AgentExecutionSliceResult } from "./runtime.js";
 import { createHumanInputProposal, parseResolutionProposal } from "./resolution-proposal.js";
 import { EvidenceLedger } from "./evidence-ledger.js";
+import { isAgentInboxMessageConsumed, nextAgentInboxInput, projectAgentInbox } from "./agent-inbox.js";
 import type { AgentTraceStore } from "./trace-store.js";
 import {
   AgentToolRuntime,
@@ -1040,30 +1041,12 @@ async function pendingThreadInput(
   goalId?: string,
 ): Promise<PendingThreadInput | undefined> {
   const payloads = await store.payloads(thread.items.map((item) => item.payloadRef));
-  const indexes = earliest
-    ? thread.items.map((_, index) => index)
-    : thread.items.map((_, index) => thread.items.length - index - 1);
-  for (const index of indexes) {
-    const item = thread.items[index]!;
-    const payload = payloads.get(item.payloadRef);
-    if (goalId && (!isRecord(payload) || payload.goalId !== goalId)) continue;
-    if (item.kind === "message" && isRecord(payload) && typeof payload.content === "string") {
-      if (humanOnly && (payload.senderPrincipalId !== "human" || payload.deliveryKind === "context")) continue;
-      const turnId = item.turnId ?? stableId("turn", thread.threadId, item.itemId);
-      const consumed = thread.items.slice(index + 1).some((candidate) => {
-        if (candidate.turnId === turnId && candidate.kind !== "message") return true;
-        const candidatePayload = payloads.get(candidate.payloadRef);
-        return isRecord(candidatePayload) && candidatePayload.triggerMessageId === item.itemId;
-      });
-      if (!consumed) return { kind: "message", itemId: item.itemId, turnId, content: payload.content };
-    }
-    if (item.kind === "control" && isCorrectableDecision(payload)) {
-      const consumed = thread.items.slice(index + 1).some((candidate) => candidate.kind === "control"
-        && isRunningPayload(payloads.get(candidate.payloadRef)));
-      if (!consumed) return { kind: "correction", itemId: item.itemId, content: JSON.stringify(payload.decision) };
-    }
-  }
-  return undefined;
+  const pending = nextAgentInboxInput(projectAgentInbox(thread, payloads), { humanOnly, earliest, goalId });
+  return pending?.kind === "message"
+    ? { kind: "message", itemId: pending.itemId, turnId: pending.turnId, content: pending.content }
+    : pending?.kind === "correction"
+      ? { kind: "correction", itemId: pending.itemId, content: pending.content }
+      : undefined;
 }
 
 async function isConsumedThreadMessage(
@@ -1073,23 +1056,8 @@ async function isConsumedThreadMessage(
 ): Promise<boolean> {
   const index = thread.items.findIndex((item) => item.itemId === messageId);
   if (index < 0) return false;
-  const item = thread.items[index]!;
-  const turnId = item.turnId ?? stableId("turn", thread.threadId, messageId);
-  const later = thread.items.slice(index + 1);
-  const payloads = await store.payloads(later.map((candidate) => candidate.payloadRef));
-  const latestSameTurn = [...later].reverse().find((candidate) => candidate.turnId === turnId && candidate.kind !== "message");
-  if (latestSameTurn) {
-    const latestPayload = payloads.get(latestSameTurn.payloadRef);
-    return !(isRecord(latestPayload) && isRetryContinuationPayload(latestPayload));
-  }
-  return later.some((candidate) => {
-    const payload = payloads.get(candidate.payloadRef);
-    return isRecord(payload) && payload.triggerMessageId === messageId;
-  });
-}
-
-function isRetryContinuationPayload(value: unknown): boolean {
-  return isRecord(value) && (value.status === "provider_retry_wait" || value.status === "external_service_waiting");
+  const payloads = await store.payloads(thread.items.map((candidate) => candidate.payloadRef));
+  return isAgentInboxMessageConsumed(projectAgentInbox(thread, payloads), messageId);
 }
 
 function isCorrectableDecision(value: unknown): value is Record<string, unknown> & { decision: unknown } {
@@ -1107,10 +1075,6 @@ export function latestCorrectableDecision(
     return payload.decision;
   }
   return undefined;
-}
-
-function isRunningPayload(value: unknown): boolean {
-  return isRecord(value) && value.status === "running";
 }
 
 function workspaceTools(runtime: AgentToolRuntime, binding: ToolExecutionBinding): ToolDefinition[] {
