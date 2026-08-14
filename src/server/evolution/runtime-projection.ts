@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
+import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -11,7 +12,7 @@ interface ReleaseManifest {
   stage: "canary" | "production";
   candidateId: string;
   candidateHash: string;
-  candidateKind: "skill" | "memory";
+  candidateKind: "skill" | "memory" | "plugin" | "harness";
   target: string;
   artifactRef: string;
   artifactManifestRef?: string;
@@ -39,6 +40,16 @@ export interface RuntimeEvolutionMemory {
   layer?: "workspace" | "organization";
 }
 
+export interface RuntimeEvolutionExtension {
+  name: string;
+  kind: "plugin" | "harness";
+  directory: string;
+  entrypoint: string;
+  releaseId: string;
+  contentHash: string;
+  manifest: PluginArtifactManifest;
+}
+
 export interface OrganizationMemorySource {
   workspaceId: string;
   workspaceRoot: string;
@@ -48,6 +59,8 @@ export interface OrganizationMemorySource {
 export interface RuntimeEvolutionProjection {
   skills: RuntimeEvolutionSkill[];
   memories: RuntimeEvolutionMemory[];
+  plugins: RuntimeEvolutionExtension[];
+  harnesses: RuntimeEvolutionExtension[];
   canaryReleases: Array<{ target: string; releaseId: string; contentHash: string }>;
   canaryAssignments: Array<{ target: string; promotionId: string; releaseId: string; selected: boolean }>;
   organizationConflicts: string[];
@@ -57,6 +70,25 @@ export interface RuntimeEvolutionContext {
   taskType?: string;
   tools?: string[];
   organizationMemorySources?: OrganizationMemorySource[];
+}
+
+export async function runtimeEvolutionStateFingerprint(workspaceRoot: string, organizationSources: OrganizationMemorySource[] = []): Promise<string> {
+  const roots = [{ workspaceId: "local", workspaceRoot }, ...organizationSources.map((item) => ({ workspaceId: item.workspaceId, workspaceRoot: item.workspaceRoot }))];
+  const values: string[] = [];
+  for (const root of roots.sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))) {
+    for (const relative of [path.join("active", "canary"), path.join("active", "production")]) {
+      const directory = path.join(root.workspaceRoot, ".autoagent", "evolution", relative);
+      let files: string[] = [];
+      try { files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort(); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      for (const file of files) values.push(`${root.workspaceId}:${relative}:${file}:${await readFile(path.join(directory, file), "utf8")}`);
+    }
+    const lifecycle = path.join(root.workspaceRoot, ".autoagent", "evolution", "memory-lifecycle.jsonl");
+    try { values.push(`${root.workspaceId}:memory-lifecycle:${await readFile(lifecycle, "utf8")}`); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  values.push(canonical(organizationSources));
+  return hash(values.join("\n"));
 }
 
 export async function productionEvolutionSkills(
@@ -119,6 +151,60 @@ export async function productionEvolutionMemories(
   return evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context);
 }
 
+export async function productionEvolutionExtensions(
+  workspaceRoot: string,
+  workspaceId: string,
+  profile: AgentProfile,
+  agent: WorkspaceAgent,
+  context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
+): Promise<RuntimeEvolutionExtension[]> {
+  return evolutionExtensionsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context);
+}
+
+async function evolutionExtensionsForStage(
+  workspaceRoot: string,
+  workspaceId: string,
+  profile: AgentProfile,
+  agent: WorkspaceAgent,
+  stage: "canary" | "production",
+  assignmentKey?: string,
+  context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
+): Promise<RuntimeEvolutionExtension[]> {
+  const activeDir = path.join(workspaceRoot, ".autoagent", "evolution", "active", stage);
+  let files: string[];
+  try { files = (await readdir(activeDir)).filter((file) => file.endsWith(".json")); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  const projected: RuntimeEvolutionExtension[] = [];
+  for (const file of files.sort()) {
+    const pointer = parsePointer(await readFile(path.join(activeDir, file), "utf8"), stage);
+    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context) || !selected(pointer, assignmentKey)) continue;
+    const release = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
+    if (release.release.id !== pointer.release.id || release.release.contentHash !== pointer.release.contentHash || release.promotionId !== pointer.promotionId
+      || release.stage !== stage || !release.runtimeActive || !release.validationPassed || !["plugin", "harness"].includes(release.candidateKind) || !sameScope(release.scope, pointer.scope)) continue;
+    if (!configuredPluginSandboxProgram()) throw new Error(`Active ${release.candidateKind} release ${release.release.id} requires an operator-configured OS sandbox launcher`);
+    const label = stage === "production" ? "Production" : "Canary";
+    if (!release.artifactManifestRef || !release.artifactManifestHash) throw new Error(`${label} extension ${release.release.id} has no scanner manifest`);
+    const manifest = parsePluginManifest(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", release.artifactManifestRef)), "utf8"));
+    if (manifest.name !== release.target || manifest.kind !== release.candidateKind || manifest.contentHash !== release.candidateHash
+      || !sameScope(manifest.scope, release.scope) || manifest.riskLevel !== "critical" || manifest.compatibility.runtime !== "autoagent"
+      || manifest.compatibility.hostApi !== "autoagent.plugin/v1" || manifest.scanner.decision !== "pass"
+      || manifest.scanner.candidateHash !== release.candidateHash || hash(canonical(manifest)) !== release.artifactManifestHash) {
+      throw new Error(`${label} extension ${release.release.id} failed manifest provenance verification`);
+    }
+    const directory = safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "artifacts", release.candidateHash, "bundle"));
+    for (const item of manifest.files) {
+      const content = await readFile(safeResolve(directory, item.path), "utf8");
+      if (hash(content) !== item.sha256 || Buffer.byteLength(content, "utf8") !== item.bytes) throw new Error(`${label} extension ${release.release.id} failed file verification`);
+    }
+    projected.push({
+      name: manifest.name, kind: manifest.kind, directory,
+      entrypoint: safeResolve(directory, manifest.entrypoint), releaseId: release.release.id,
+      contentHash: release.candidateHash, manifest,
+    });
+  }
+  return projected.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 async function evolutionMemoriesForStage(
   workspaceRoot: string,
   workspaceId: string,
@@ -166,11 +252,13 @@ export async function runtimeEvolutionProjection(
   agent: WorkspaceAgent,
   context: RuntimeEvolutionContext,
 ): Promise<RuntimeEvolutionProjection> {
-  const [productionSkills, localProductionMemories, canarySkills, canaryMemories, organizationMemorySets] = await Promise.all([
+  const [productionSkills, localProductionMemories, productionExtensions, canarySkills, canaryMemories, canaryExtensions, organizationMemorySets] = await Promise.all([
     evolutionSkillsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
     evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
+    evolutionExtensionsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
     evolutionSkillsForStage(workspaceRoot, workspaceId, profile, agent, "canary", context.assignmentKey, context),
     evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "canary", context.assignmentKey, context),
+    evolutionExtensionsForStage(workspaceRoot, workspaceId, profile, agent, "canary", context.assignmentKey, context),
     Promise.all((context.organizationMemorySources ?? []).map((source) => evolutionMemoriesForStage(
       source.workspaceRoot, workspaceId, profile, agent, "production", undefined, context, source.workspaceId, source,
     ))),
@@ -180,12 +268,16 @@ export async function runtimeEvolutionProjection(
   const canaryAssignments = await matchingCanaryAssignments(workspaceRoot, workspaceId, profile, agent, context);
   const skills = overlayBy(productionSkills, canarySkills, (item) => item.name);
   const memories = overlayBy(productionMemories, canaryMemories, (item) => item.target).slice(0, 20);
+  const extensions = overlayBy(productionExtensions, canaryExtensions, (item) => `${item.kind}:${item.name}`);
   return {
     skills,
     memories,
+    plugins: extensions.filter((item) => item.kind === "plugin"),
+    harnesses: extensions.filter((item) => item.kind === "harness"),
     canaryReleases: [
       ...canarySkills.map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
       ...canaryMemories.map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...canaryExtensions.map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
     ].sort((left, right) => left.target.localeCompare(right.target)),
     canaryAssignments,
     organizationConflicts,
@@ -229,6 +321,15 @@ function parseSkillManifest(raw: string): SkillArtifactManifest {
   if (value?.schemaVersion !== 1 || value.kind !== "skill" || !value.name || !value.version || value.entrypoint !== "SKILL.md"
     || !value.scope?.workspaceId || !Array.isArray(value.requiredTools) || !value.riskLevel || !Array.isArray(value.sourceRefs)
     || !Array.isArray(value.files) || !value.compatibility || !value.scanner) throw new Error("Production Skill scanner manifest is invalid");
+  return value;
+}
+function parsePluginManifest(raw: string): PluginArtifactManifest {
+  const value = JSON.parse(raw) as PluginArtifactManifest;
+  if (value?.schemaVersion !== 1 || !["plugin", "harness"].includes(value.kind) || !value.name || !value.version
+    || value.apiVersion !== "autoagent.plugin/v1" || !value.entrypoint || !value.scope?.workspaceId || value.riskLevel !== "critical"
+    || !value.permissions || !Array.isArray(value.permissions.workspaceRead) || !value.contributions
+    || !Array.isArray(value.contributions.tools) || !Array.isArray(value.contributions.guardrails) || !Array.isArray(value.files)
+    || !value.compatibility || !value.scanner) throw new Error("Production Plugin scanner manifest is invalid");
   return value;
 }
 function matchesScope(

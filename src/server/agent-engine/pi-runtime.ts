@@ -50,7 +50,8 @@ import { AttachmentStore } from "../storage/attachment-store.js";
 import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
 import { EvolutionStore } from "../evolution/evolution-store.js";
 import { EvolutionEvaluationStore } from "../evolution/evaluation-store.js";
-import { runtimeEvolutionProjection, type OrganizationMemorySource, type RuntimeEvolutionMemory } from "../evolution/runtime-projection.js";
+import { runtimeEvolutionProjection, runtimeEvolutionStateFingerprint, type OrganizationMemorySource, type RuntimeEvolutionExtension, type RuntimeEvolutionMemory } from "../evolution/runtime-projection.js";
+import { IsolatedPluginHost, pluginToolName } from "../evolution/plugin-host.js";
 import {
   TEAM_STAFFING_SCHEMA_REF,
   parseTeamStaffingOutcome,
@@ -62,7 +63,8 @@ interface SessionState {
   resolution: ResolutionBinding;
   toolExecution: ToolExecutionBinding;
   safety: RunSafetyBinding;
-  organizationMemorySourceFingerprint: string;
+  runtimeEvolutionFingerprint: string;
+  evolutionToolNames: string[];
 }
 
 type AgentPrompt = string | { text: string; images: ImageContent[] };
@@ -382,7 +384,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       this.tools.definitions().map((tool) => tool.name),
       Boolean(input.supportsImages),
       goal?.spec.outputContract,
-      { hostCorrection: pending?.kind === "correction", evolution: input.profile.capabilities.includes("company:evolve") },
+      { hostCorrection: pending?.kind === "correction", evolution: input.profile.capabilities.includes("company:evolve"), extensionTools: state.evolutionToolNames },
     );
     state.session.setActiveToolsByName(activeTools);
 
@@ -595,15 +597,15 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   private async requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
     const key = piWorkSessionKey(input.threadId, input.goalId);
     const organizationMemorySources = await this.options.organizationMemorySources?.() ?? [];
-    const organizationMemorySourceFingerprint = stableId("organization-memory-sources", JSON.stringify(organizationMemorySources));
+    const runtimeEvolutionFingerprint = await runtimeEvolutionStateFingerprint(this.workspaceRoot, organizationMemorySources);
     const existing = this.sessions.get(key);
     if (existing) {
       const state = await existing;
-      if (state.organizationMemorySourceFingerprint === organizationMemorySourceFingerprint) return state;
+      if (state.runtimeEvolutionFingerprint === runtimeEvolutionFingerprint) return state;
       this.sessions.delete(key);
       await abortPiSessionPromptly(state.session, DEFAULT_SESSION_ABORT_GRACE_MS);
     }
-    const pending = this.createSession(input, organizationMemorySources, organizationMemorySourceFingerprint);
+    const pending = this.createSession(input, organizationMemorySources, runtimeEvolutionFingerprint);
     this.sessions.set(key, pending);
     return pending;
   }
@@ -611,7 +613,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   private async createSession(
     input: AgentExecutionSliceInput,
     organizationMemorySources: OrganizationMemorySource[],
-    organizationMemorySourceFingerprint: string,
+    runtimeEvolutionFingerprint: string,
   ): Promise<SessionState> {
     const sessionDir = piWorkSessionDirectory(
       this.workspaceRoot,
@@ -708,7 +710,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       failedToolSignatures: new Set(),
       seenUsefulToolSignatures: new Set(),
     };
-    const customTools = [
+    const baseTools = [
       ...workspaceTools(this.tools, toolExecution),
       piReadTool(this.tools, skills, toolExecution),
       ...(input.profile.capabilities.includes("company:evolve")
@@ -728,6 +730,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       planChangeTool(resolution, this.now, sessionGoal?.spec.outputContract),
       humanInputTool(resolution, this.now),
     ];
+    const pluginTools = evolutionPluginTools(evolutionProjection.plugins, this.tools, toolExecution);
+    const customTools = withEvolutionHarnesses([...baseTools, ...pluginTools], evolutionProjection.harnesses, this.tools, toolExecution);
     const { session } = await createAgentSession({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
@@ -761,12 +765,14 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics,
         evolutionReleases: evolvedSkills.map((skill) => ({ name: skill.name, releaseId: skill.releaseId, contentHash: skill.contentHash })),
         evolutionMemories: evolvedMemories.map((memory) => ({ target: memory.target, releaseId: memory.releaseId, contentHash: memory.contentHash })),
+        evolutionPlugins: evolutionProjection.plugins.map((plugin) => ({ name: plugin.name, releaseId: plugin.releaseId, contentHash: plugin.contentHash, tools: plugin.manifest.contributions.tools.map((tool) => pluginToolName(plugin.name, tool.name)) })),
+        evolutionHarnesses: evolutionProjection.harnesses.map((harness) => ({ name: harness.name, releaseId: harness.releaseId, contentHash: harness.contentHash, guardrails: harness.manifest.contributions.guardrails.map((guard) => guard.name) })),
         evolutionCanaries: evolutionProjection.canaryReleases,
         evolutionCanaryAssignments: evolutionProjection.canaryAssignments,
         evolutionOrganizationConflicts: evolutionProjection.organizationConflicts,
       },
     });
-    return { session, goalVersions, resolution, toolExecution, safety, organizationMemorySourceFingerprint };
+    return { session, goalVersions, resolution, toolExecution, safety, runtimeEvolutionFingerprint, evolutionToolNames: pluginTools.map((tool) => tool.name) };
   }
 
   private async rebuildLiveModelContext(
@@ -928,13 +934,14 @@ function proposeEvolutionCandidateTool(workspaceRoot: string, workspaceId: strin
   return defineTool({
     name: "propose_evolution_candidate",
     label: "提出公司进化候选",
-    description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill 候选。此工具只保存候选，不验证效果、不启用 Skill、不修改生产运行时。",
+    description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill、Plugin 或 Harness 候选。此工具只保存候选，不验证效果、不挂载扩展、不修改生产运行时。",
     parameters: Type.Object({
-      target: Type.String({ description: "Skill 名称，例如 incident-retrospective" }),
+      kind: Type.Optional(Type.Union([Type.Literal("skill"), Type.Literal("plugin"), Type.Literal("harness")])),
+      target: Type.String({ description: "候选名称，例如 incident-retrospective" }),
       title: Type.String(),
       rationale: Type.String({ description: "从引用事实中观察到的重复失败、低效或能力缺口" }),
       hypothesis: Type.String({ description: "候选将如何改善可观察指标，必须可被评测否证" }),
-      artifactContent: Type.String({ description: "完整候选 SKILL.md，必须含 name 与 description frontmatter" }),
+      artifactContent: Type.String({ description: "Skill 使用完整 SKILL.md；Plugin/Harness 使用符合 autoagent.plugin/v1 的完整 JSON Bundle" }),
       sourceRefs: Type.Array(Type.Object({
         kind: Type.Union([Type.Literal("trace"), Type.Literal("evidence"), Type.Literal("goal_proposal"), Type.Literal("goal_decision"), Type.Literal("ticket"), Type.Literal("mission"), Type.Literal("human_feedback")]),
         ref: Type.String(),
@@ -948,19 +955,20 @@ function proposeEvolutionCandidateTool(workspaceRoot: string, workspaceId: strin
       riskLevel: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
       roles: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
       taskTypes: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
+      tools: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
     }),
     async execute(_callId, params) {
       const store = new EvolutionStore(workspaceId, workspaceRoot);
       const candidate = await store.create({
         commandId: createHash("sha256").update(JSON.stringify({ agentId, ...params })).digest("hex"),
-        kind: "skill",
+        kind: params.kind ?? "skill",
         target: params.target,
         title: params.title,
         rationale: params.rationale,
         hypothesis: params.hypothesis,
         artifactContent: params.artifactContent,
         sourceRefs: params.sourceRefs.map((ref) => ({ ...ref, workspaceId, agentId })),
-        scope: { workspaceId, ...(params.roles ? { roles: params.roles } : {}), ...(params.taskTypes ? { taskTypes: params.taskTypes } : {}) },
+        scope: { workspaceId, ...(params.roles ? { roles: params.roles } : {}), ...(params.taskTypes ? { taskTypes: params.taskTypes } : {}), ...(params.tools ? { tools: params.tools } : {}) },
         expectedMetrics: params.expectedMetrics,
         riskLevel: params.riskLevel,
         proposedBy: { type: "agent", id: agentId },
@@ -995,6 +1003,81 @@ function queryEvolutionStatusTool(workspaceRoot: string, workspaceId: string): T
       return { content: [{ type: "text", text: JSON.stringify({ candidates: result }) }], details: { candidates: result } };
     },
   });
+}
+
+function evolutionPluginTools(
+  plugins: RuntimeEvolutionExtension[],
+  tools: AgentToolRuntime,
+  binding: ToolExecutionBinding,
+): ToolDefinition[] {
+  const names = new Set<string>();
+  const definitions: ToolDefinition[] = [];
+  for (const plugin of plugins) {
+    for (const contribution of plugin.manifest.contributions.tools) {
+      const name = pluginToolName(plugin.name, contribution.name);
+      if (names.has(name)) throw new Error(`Evolution plugin tool collision: ${name}`);
+      names.add(name);
+      definitions.push(defineTool({
+        name,
+        label: `${plugin.name}: ${contribution.name}`,
+        description: contribution.description,
+        parameters: Type.Unsafe<Record<string, unknown>>(contribution.inputSchema),
+        executionMode: "sequential",
+        async execute(callId, params) {
+          const host = new IsolatedPluginHost(plugin, tools, binding);
+          const result = await host.invokeTool(contribution.name, params, callId);
+          return {
+            content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }],
+            details: { plugin: plugin.name, releaseId: plugin.releaseId, result },
+          };
+        },
+      }));
+    }
+  }
+  return definitions;
+}
+
+export function withEvolutionHarnesses(
+  definitions: ToolDefinition[],
+  harnesses: RuntimeEvolutionExtension[],
+  tools: AgentToolRuntime,
+  binding: ToolExecutionBinding,
+): ToolDefinition[] {
+  const names = new Set<string>();
+  for (const definition of definitions) {
+    if (names.has(definition.name)) throw new Error(`Runtime tool collision while mounting evolution extensions: ${definition.name}`);
+    names.add(definition.name);
+  }
+  if (!harnesses.length) return definitions;
+  return definitions.map((definition) => {
+    const guards = harnesses.flatMap((harness) => harness.manifest.contributions.guardrails
+      .filter((guard) => guard.tools.includes("*") || guard.tools.includes(definition.name))
+      .map((guard) => ({ harness, guard })));
+    if (!guards.length) return definition;
+    return {
+      ...definition,
+      async execute(callId, params, signal, onUpdate, context) {
+        for (const { harness, guard } of guards.filter((item) => item.guard.phase === "pre_tool")) {
+          const decision = await new IsolatedPluginHost(harness, tools, binding).guard(guard, definition.name, params, undefined, `${callId}:pre:${guard.name}`);
+          if (decision.behavior === "reject") return harnessRejection(harness, guard.name, definition.name, decision.message);
+        }
+        const output = await definition.execute(callId, params, signal, onUpdate, context);
+        for (const { harness, guard } of guards.filter((item) => item.guard.phase === "post_tool")) {
+          const decision = await new IsolatedPluginHost(harness, tools, binding).guard(guard, definition.name, params, output, `${callId}:post:${guard.name}`);
+          if (decision.behavior === "reject") return harnessRejection(harness, guard.name, definition.name, decision.message);
+        }
+        return output;
+      },
+    };
+  });
+}
+
+function harnessRejection(harness: RuntimeEvolutionExtension, guardrail: string, tool: string, message?: string) {
+  const reason = message ?? `Evolution harness ${harness.name} rejected ${tool}`;
+  return {
+    content: [{ type: "text" as const, text: reason }],
+    details: { ok: false, rejected: true, harness: harness.name, releaseId: harness.releaseId, guardrail, tool, reason },
+  };
 }
 
 export async function awaitPiPromptOutcome(
@@ -1342,7 +1425,7 @@ export function activePiToolNames(
   workspaceToolNames: string[],
   supportsImages: boolean,
   outputContractOrHasGoal?: AgentGoal["spec"]["outputContract"] | boolean,
-  options: { hostCorrection?: boolean; evolution?: boolean } = {},
+  options: { hostCorrection?: boolean; evolution?: boolean; extensionTools?: string[] } = {},
 ): string[] {
   const hasGoal = Boolean(outputContractOrHasGoal);
   const outputContract = typeof outputContractOrHasGoal === "object"
@@ -1352,6 +1435,7 @@ export function activePiToolNames(
   return [...new Set([
     "read",
     ...workspaceToolNames.filter((name) => name !== "readImage" || supportsImages),
+    ...(options.extensionTools ?? []),
     ...(options.evolution ? ["propose_evolution_candidate", "query_evolution_status"] : []),
     ...(hasGoal ? [
       staffing ? "staff_project" : "goal_resolution",

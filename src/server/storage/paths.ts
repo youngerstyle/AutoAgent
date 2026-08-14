@@ -41,6 +41,10 @@ export function workspaceEvolutionSkillEntrypointFile(workspaceRoot: string, con
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "artifacts", contentHash, "SKILL.md");
 }
 
+export function workspaceEvolutionPluginBundleDirectory(workspaceRoot: string, contentHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "artifacts", contentHash, "bundle");
+}
+
 export function workspaceEvolutionEpisodesFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "episodes.jsonl");
 }

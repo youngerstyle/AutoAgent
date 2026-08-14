@@ -10,6 +10,7 @@ export interface AppConfig {
   runtimeRestoreConcurrency?: number;
   runtimeExecutionConcurrency?: number;
   evolutionEvaluatorProgramPath?: string;
+  evolutionPluginSandboxProgramPath?: string;
   evolutionWorkerIntervalMs?: number;
 }
 
@@ -41,6 +42,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       || !new Set([".js", ".mjs", ".cjs"]).has(path.extname(evolutionEvaluatorProgramPath).toLowerCase()))) {
     throw new Error(`Invalid AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM: ${env.AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM}`);
   }
+  const evolutionPluginSandboxProgramPath = env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
+  if (evolutionPluginSandboxProgramPath
+    && (!path.isAbsolute(evolutionPluginSandboxProgramPath)
+      || !existsSync(evolutionPluginSandboxProgramPath)
+      || !statSync(evolutionPluginSandboxProgramPath).isFile())) {
+    throw new Error(`Invalid AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM: ${env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM}`);
+  }
 
   return {
     port,
@@ -52,6 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     runtimeRestoreConcurrency,
     runtimeExecutionConcurrency,
     evolutionEvaluatorProgramPath,
+    ...(evolutionPluginSandboxProgramPath ? { evolutionPluginSandboxProgramPath: path.resolve(evolutionPluginSandboxProgramPath) } : {}),
     evolutionWorkerIntervalMs,
   };
 }

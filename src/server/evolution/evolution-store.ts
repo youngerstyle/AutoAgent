@@ -12,6 +12,8 @@ import {
   type EvolutionValidationCheck,
   type SkillArtifactManifest,
   type SkillScanReport,
+  type PluginArtifactManifest,
+  type PluginScanReport,
   type ValidateEvolutionCandidateInput,
   type VersionedEvolutionRef,
 } from "../../shared/contracts/evolution.js";
@@ -19,6 +21,7 @@ import { HttpError } from "../errors.js";
 import { writeJson } from "../storage/json.js";
 import { workspaceEvolutionArtifactFile, workspaceEvolutionArtifactManifestFile, workspaceEvolutionLedgerFile, workspaceEvolutionSkillEntrypointFile } from "../storage/paths.js";
 import { scanSkillArtifact } from "./skill-scanner.js";
+import { materializePluginBundle, parseAndScanPluginBundle, type ParsedPluginBundle } from "./plugin-scanner.js";
 import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
@@ -113,12 +116,22 @@ export class EvolutionStore {
     if (candidate.contentHash !== input.expectedContentHash) throw conflict("Evolution candidate content changed");
     const content = await this.readArtifact(candidate.artifactRef);
     const scanner = candidate.kind === "skill" ? scanSkillArtifact(content, candidate.contentHash, this.now) : undefined;
+    let pluginBundle: ParsedPluginBundle | undefined;
+    let pluginParseError: string | undefined;
+    if (candidate.kind === "plugin" || candidate.kind === "harness") {
+      try { pluginBundle = parseAndScanPluginBundle(content, candidate, this.now); }
+      catch (error) { pluginParseError = error instanceof Error ? error.message : String(error); }
+    }
     const sourceVerification = await Promise.all(candidate.sourceRefs.map((ref) => this.verifySourceRef(ref)));
-    const checks = validateCandidate(candidate, content, scanner, sourceVerification);
+    const checks = validateCandidate(candidate, content, scanner, sourceVerification, pluginBundle, pluginParseError);
     const timestamp = this.now().toISOString();
-    const artifactManifestRef = scanner ? relativeArtifactManifestRef(candidate.contentHash, candidate.candidateId) : undefined;
+    const artifactManifestRef = scanner || pluginBundle ? relativeArtifactManifestRef(candidate.contentHash, candidate.candidateId) : undefined;
     let artifactManifestHash: string | undefined;
-    if (scanner && artifactManifestRef) {
+    if (artifactManifestRef && pluginBundle) {
+      const manifest: PluginArtifactManifest = pluginBundle.manifest;
+      artifactManifestHash = hash(canonical(manifest));
+      await writeJson(workspaceEvolutionArtifactManifestFile(this.workspaceRoot, candidate.contentHash, candidate.candidateId), manifest);
+    } else if (artifactManifestRef && scanner) {
       const manifest: SkillArtifactManifest = {
         schemaVersion: 1, kind: "skill", name: candidate.target, version: String(candidate.revision),
         entrypoint: "SKILL.md", contentHash: candidate.contentHash, scope: structuredClone(candidate.scope),
@@ -133,8 +146,10 @@ export class EvolutionStore {
     const validation = {
       passed: checks.every((check) => check.passed), checkedAt: timestamp, checks,
       ...(scanner ? { scanner, artifactManifestRef, artifactManifestHash } : {}),
+      ...(pluginBundle ? { pluginScanner: pluginBundle.scan, artifactManifestRef, artifactManifestHash } : {}),
     };
     if (candidate.kind === "skill" && validation.passed) await writeImmutableSkillEntrypoint(this.workspaceRoot, candidate.contentHash, content);
+    if ((candidate.kind === "plugin" || candidate.kind === "harness") && validation.passed && pluginBundle) await materializePluginBundle(this.workspaceRoot, pluginBundle);
       await this.append({
         eventId: createId("eve"), commandId: input.commandId, type: "candidate.validated", occurredAt: timestamp,
         candidateId: candidate.candidateId, expectedContentHash: candidate.contentHash, validation,
@@ -282,9 +297,9 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
     input[field] = input[field].trim() as never;
   }
   if (!EVOLUTION_ARTIFACT_KINDS.includes(input.kind)) throw invalid("Unknown evolution artifact kind");
-  if (input.kind !== "skill" && input.kind !== "memory") throw invalid("Only memory and skill candidates are supported in V1");
+  if (!["skill", "memory", "plugin", "harness"].includes(input.kind)) throw invalid("Only memory, skill, plugin, and harness candidates are supported");
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(input.target)) throw invalid("Evolution target is invalid");
-  if (input.artifactContent.length > 200_000) throw invalid("Evolution artifact is too large");
+  if (input.artifactContent.length > (input.kind === "plugin" || input.kind === "harness" ? 750_000 : 200_000)) throw invalid("Evolution artifact is too large");
   if (!Array.isArray(input.sourceRefs) || input.sourceRefs.length === 0) throw invalid("At least one sourceRef is required");
   input.sourceRefs = input.sourceRefs.map((ref) => {
     if (!ref || !EVOLUTION_SOURCE_KINDS.includes(ref.kind) || typeof ref.ref !== "string" || !ref.ref.trim()) throw invalid("Evolution sourceRef is invalid");
@@ -308,6 +323,7 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
     if (!metric || typeof metric.metric !== "string" || !metric.metric.trim() || !["increase", "decrease", "maintain"].includes(metric.direction)) throw invalid("Evolution metric expectation is invalid");
   }
   if (!["low", "medium", "high", "critical"].includes(input.riskLevel)) throw invalid("Evolution risk level is invalid");
+  if ((input.kind === "plugin" || input.kind === "harness") && input.riskLevel !== "critical") throw invalid("Plugin and harness candidates must be critical risk");
   if (!input.proposedBy || !["agent", "human", "system"].includes(input.proposedBy.type) || typeof input.proposedBy.id !== "string" || !input.proposedBy.id) throw invalid("Evolution proposer is invalid");
   return input;
 }
@@ -319,7 +335,14 @@ function parseValidateEvolutionCandidateInput(raw: ValidateEvolutionCandidateInp
   return { ...raw, commandId: raw.commandId.trim() };
 }
 
-function validateCandidate(candidate: EvolutionCandidate, content: string, scanner: SkillScanReport | undefined, sourceVerification: boolean[]): EvolutionValidationCheck[] {
+function validateCandidate(
+  candidate: EvolutionCandidate,
+  content: string,
+  scanner: SkillScanReport | undefined,
+  sourceVerification: boolean[],
+  pluginBundle?: ParsedPluginBundle,
+  pluginParseError?: string,
+): EvolutionValidationCheck[] {
   const common: EvolutionValidationCheck[] = [
     { name: "source_evidence", passed: candidate.sourceRefs.length > 0 && sourceVerification.length === candidate.sourceRefs.length && sourceVerification.every(Boolean), message: "Candidate source references resolve in authoritative workspace stores" },
     { name: "metric_hypothesis", passed: candidate.expectedMetrics.length > 0 && candidate.hypothesis.length >= 20, message: "Candidate has a falsifiable metric hypothesis" },
@@ -328,6 +351,12 @@ function validateCandidate(candidate: EvolutionCandidate, content: string, scann
   if (candidate.kind === "memory") return [...common,
     { name: "memory_body", passed: content.length >= 80 && content.length <= 50_000, message: "Memory contains a bounded operational lesson" },
     { name: "memory_safety", passed: !/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{16,}\b|\bignore\s+(?:all\s+)?previous\s+instructions\b|\bdisable\s+(?:the\s+)?(?:sandbox|approval|guardrails?)\b|\brm\s+-rf\s+\//i.test(content), message: "Memory contains no credential, governance bypass, or destructive directive" },
+  ];
+  if (candidate.kind === "plugin" || candidate.kind === "harness") return [...common,
+    { name: "plugin_bundle", passed: Boolean(pluginBundle), message: pluginBundle ? "Plugin bundle contract is valid" : `Plugin bundle is invalid: ${pluginParseError ?? "schema validation failed"}` },
+    { name: "plugin_static_scan", passed: pluginBundle?.scan.decision === "pass", message: pluginBundle?.scan.decision === "pass" ? "Plugin static scan passed" : `Plugin static scan requires ${pluginBundle?.scan.decision ?? "block"}` },
+    { name: "plugin_risk_classification", passed: candidate.riskLevel === "critical", message: "Executable extensions are classified critical risk" },
+    { name: "plugin_capability_scope", passed: !pluginBundle?.manifest.permissions.workspaceRead.length || candidate.scope.tools?.includes("readFile") === true, message: "Brokered workspace reads require readFile in Candidate scope" },
   ];
   if (candidate.kind !== "skill") return common;
   const frontmatterName = /^---\s*[\s\S]*?\bname:\s*([^\r\n]+)[\s\S]*?---/m.exec(content)?.[1]?.trim();

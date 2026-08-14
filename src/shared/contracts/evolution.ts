@@ -165,6 +165,76 @@ export interface SkillArtifactManifest {
   scanner: SkillScanReport;
 }
 
+export type PluginCapability = "workspace.read";
+export type PluginContributionKind = "plugin" | "harness";
+
+export interface PluginToolContribution {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface PluginGuardrailContribution {
+  name: string;
+  phase: "pre_tool" | "post_tool";
+  tools: string[];
+}
+
+export interface PluginBundleManifest {
+  id: string;
+  version: string;
+  kind: PluginContributionKind;
+  apiVersion: "autoagent.plugin/v1";
+  entrypoint: string;
+  description: string;
+  permissions: { workspaceRead: string[] };
+  contributions: { tools: PluginToolContribution[]; guardrails: PluginGuardrailContribution[] };
+  lifecycle: { activation: "onDemand"; invokeTimeoutMs: number };
+}
+
+export interface PluginBundle {
+  schemaVersion: 1;
+  manifest: PluginBundleManifest;
+  files: Array<{ path: string; content: string }>;
+}
+
+export interface PluginScanFinding {
+  ruleId: string;
+  severity: SkillScanSeverity;
+  message: string;
+  path?: string;
+  line?: number;
+}
+
+export interface PluginScanReport {
+  scannerRef: VersionedEvolutionRef;
+  candidateHash: string;
+  decision: "pass" | "review" | "block";
+  declaredCapabilities: PluginCapability[];
+  detectedCapabilities: string[];
+  findings: PluginScanFinding[];
+  scannedAt: string;
+}
+
+export interface PluginArtifactManifest {
+  schemaVersion: 1;
+  kind: PluginContributionKind;
+  name: string;
+  version: string;
+  apiVersion: "autoagent.plugin/v1";
+  entrypoint: string;
+  contentHash: string;
+  scope: EvolutionScope;
+  riskLevel: "critical";
+  sourceRefs: EvolutionSourceRef[];
+  permissions: PluginBundleManifest["permissions"];
+  contributions: PluginBundleManifest["contributions"];
+  lifecycle: PluginBundleManifest["lifecycle"];
+  files: Array<{ path: string; sha256: string; bytes: number }>;
+  compatibility: { runtime: "autoagent"; manifestVersion: 1; hostApi: "autoagent.plugin/v1" };
+  scanner: PluginScanReport;
+}
+
 export interface EvolutionCandidate {
   candidateId: string;
   revision: number;
@@ -189,6 +259,7 @@ export interface EvolutionCandidate {
     checkedAt: string;
     checks: EvolutionValidationCheck[];
     scanner?: SkillScanReport;
+    pluginScanner?: PluginScanReport;
     artifactManifestRef?: string;
     artifactManifestHash?: string;
   };
@@ -304,6 +375,7 @@ export interface EvaluationJob {
 export interface EvolutionWorkerStatus {
   running: boolean;
   evaluatorConfigured: boolean;
+  pluginSandboxConfigured?: boolean;
   lastStartedAt?: string;
   lastCompletedAt?: string;
   lastError?: string;

@@ -19,6 +19,7 @@ import { scoreMetricExpectations, withMandatoryEvolutionMetrics } from "./metric
 import { EvolutionReleaseRegistry } from "./release-registry.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
+import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
 const queues = new Map<string, Promise<void>>();
 interface EvaluationEntry { commandId: string; run: EvaluationRun }
@@ -93,6 +94,9 @@ export class EvolutionEvaluationStore {
       if (candidate.contentHash !== input.expectedContentHash) throw conflict("Promotion candidate hash mismatch");
       if (candidate.kind === "skill" && (candidate.validation?.scanner?.decision !== "pass" || candidate.validation.scanner.candidateHash !== candidate.contentHash)) {
         throw new HttpError(409, "Skill promotion requires a passing static scan for the same immutable content", "EVOLUTION_SKILL_SCAN_REQUIRED");
+      }
+      if ((candidate.kind === "plugin" || candidate.kind === "harness") && (candidate.validation?.pluginScanner?.decision !== "pass" || candidate.validation.pluginScanner.candidateHash !== candidate.contentHash)) {
+        throw new HttpError(409, "Plugin promotion requires a passing static scan for the same immutable content", "EVOLUTION_PLUGIN_SCAN_REQUIRED");
       }
       const evaluation = (await this.listEvaluations(candidate.candidateId)).find((run) => run.evaluationId === input.evaluationId);
       if (!evaluation || evaluation.candidateHash !== candidate.contentHash || evaluation.decision !== "pass") {
@@ -256,6 +260,8 @@ function samePrincipal(candidate: EvolutionCandidate, principal: RecordEvaluatio
 function sameVersionedRef(left: { id: string; version: string; contentHash: string }, right: { id: string; version: string; contentHash: string }): boolean { return left.id === right.id && left.version === right.version && left.contentHash === right.contentHash; }
 function enforceApproval(candidate: EvolutionCandidate, stage: PromoteEvolutionCandidateInput["stage"], principal: PromoteEvolutionCandidateInput["approvedBy"]): void {
   if (stage === "shadow") return;
+  if ((candidate.kind === "plugin" || candidate.kind === "harness") && principal.type !== "human") throw new HttpError(403, `${stage} promotion requires human approval for executable extensions`, "EVOLUTION_APPROVAL_REQUIRED");
+  if ((candidate.kind === "plugin" || candidate.kind === "harness") && !configuredPluginSandboxProgram()) throw new HttpError(409, `${stage} promotion requires an operator-configured OS sandbox launcher`, "EVOLUTION_PLUGIN_SANDBOX_REQUIRED");
   const systemEligible = candidate.kind === "memory" && candidate.riskLevel === "low";
   if (principal.type !== "human" && !systemEligible) throw new HttpError(403, `${stage} promotion requires human approval for this artifact risk`, "EVOLUTION_APPROVAL_REQUIRED");
 }

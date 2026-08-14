@@ -25,4 +25,16 @@ describe("Evolution worker configuration", () => {
     expect(() => loadConfig({ AUTOAGENT_EVOLUTION_WORKER_INTERVAL_MS: "999" }))
       .toThrow("Invalid AUTOAGENT_EVOLUTION_WORKER_INTERVAL_MS");
   });
+
+  it("requires an existing absolute operator-owned Plugin sandbox launcher", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plugin-sandbox-config-"));
+    const launcher = path.join(root, "sandbox-launcher.mjs");
+    await writeFile(launcher, "", "utf8");
+    expect(loadConfig({ AUTOAGENT_HOME: root, AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM: launcher }))
+      .toMatchObject({ evolutionPluginSandboxProgramPath: launcher });
+    expect(() => loadConfig({ AUTOAGENT_HOME: root, AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM: "relative-launcher" }))
+      .toThrow("Invalid AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM");
+    expect(() => loadConfig({ AUTOAGENT_HOME: root, AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM: path.join(root, "missing") }))
+      .toThrow("Invalid AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM");
+  });
 });

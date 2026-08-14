@@ -73,6 +73,24 @@ describe("workspace evolution candidate control plane", () => {
     await request(app).post(`${base}/candidates`).send({ ...candidateInput("same-command"), hypothesis: "A different hypothesis must not reuse the command id." }).expect(409);
   });
 
+  it("accepts a human Plugin bundle through the governance API and exposes scanner provenance", async () => {
+    const { app, base } = await fixture();
+    const input = {
+      ...candidateInput("plugin-via-api"), kind: "plugin", target: "api_review", riskLevel: "critical",
+      scope: { workspaceId: "ignored-by-route", tools: ["readFile"] },
+      artifactContent: JSON.stringify({ schemaVersion: 1, manifest: {
+        id: "api_review", version: "1.0.0", kind: "plugin", apiVersion: "autoagent.plugin/v1", entrypoint: "index.mjs",
+        description: "Read an allowlisted API fixture and return deterministic evidence.", permissions: { workspaceRead: ["docs/**"] },
+        contributions: { tools: [{ name: "inspect", description: "Inspect evidence.", inputSchema: { type: "object", additionalProperties: false, properties: {} } }], guardrails: [] },
+        lifecycle: { activation: "onDemand", invokeTimeoutMs: 2_000 },
+      }, files: [{ path: "index.mjs", content: "export default { async health(){return {ok:true}}, async invokeTool(){return {ok:true}} };\n" }] }),
+    };
+    const created = await request(app).post(`${base}/candidates`).send(input).expect(201);
+    const validated = await request(app).post(`${base}/candidates/${created.body.candidate.candidateId}/validate`)
+      .send({ commandId: "plugin-api-validate", expectedContentHash: created.body.candidate.contentHash }).expect(200);
+    expect(validated.body.candidate).toMatchObject({ kind: "plugin", status: "validated", validation: { passed: true, pluginScanner: { decision: "pass" } } });
+  });
+
   it("fails closed when the append-only ledger is corrupt", async () => {
     const { app, base } = await fixture();
     await request(app).post(`${base}/candidates`).send(candidateInput("before-corruption")).expect(201);

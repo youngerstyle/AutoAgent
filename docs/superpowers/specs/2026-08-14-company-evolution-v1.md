@@ -2,7 +2,7 @@
 
 日期：2026-08-14
 状态：Accepted for staged implementation
-范围：先建立可审计的经验与 Skill 进化闭环；可执行 Plugin/Harness 自修改留到后续阶段。
+范围：建立可审计的 Memory、Skill 与隔离可执行 Plugin/Harness 进化闭环。
 
 ## 1. 结论
 
@@ -17,7 +17,7 @@ AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket
 1. `memory`：从多个 Episode 提炼的、带适用范围和来源引用的经验；
 2. `skill`：版本化 Skill 包，包含 `SKILL.md` 以及可选 references/scripts/templates。
 
-`prompt`、`workflow`、`plugin` 和 `harness` 进入同一候选协议，但 V1 不允许晋升为生产产物。
+`prompt` 和 `workflow` 进入同一候选协议，但当前不允许晋升为生产产物。`plugin` 与 `harness` 已由后续的 `2026-08-14-plugin-harness-evolution-v1.md` 扩展为 critical-risk 可执行产物，必须经过独立评测、隔离 Extension Host 和 human canary/production 批准。
 
 ## 2. 设计来源
 
@@ -179,7 +179,7 @@ skill-package/
 2. 动态：在隔离 workspace 中执行脚本和 Eval Case；
 3. 行为：检查实际工具调用、文件访问、网络、成本和越权尝试。
 
-Plugin/Harness 需要 DeepSeek Harness 式的 capability seam、reversible effect 和 unload protocol。在 AutoAgent 完成插件内核前，V1 Candidate 可以保存 Plugin 设计，但不能加载执行。
+Plugin/Harness 使用独立规范定义的 capability seam、版本化 RPC、运维配置的 OS Sandbox Launcher、Node Permission Model 纵深防御和 runtime fingerprint unload protocol。扩展不进入主进程；V1 broker 只开放受 manifest、Candidate scope 和 Agent policy 三重约束的只读 Workspace 能力，因此 rollback 能完整撤销能力挂载。
 
 ## 8. 状态机
 
@@ -249,7 +249,8 @@ Eval Suite 可以声明受治理的 automation selector（artifact kind、target
 | instruction-only Skill | medium | 仅允许进入 shadow；生产晋升需策略批准 |
 | executable Skill | high | 需要安全扫描、隔离评测、QA 批准 |
 | prompt/workflow | high | 需要完整回归和 canary |
-| plugin/harness/policy | critical | V1 禁止自动晋升 |
+| plugin/harness | critical | 禁止自动晋升；canary/production 必须 human 批准并在隔离 Host 运行 |
+| policy | critical | 禁止自动晋升 |
 
 ### 9.4 职责隔离
 
@@ -461,6 +462,8 @@ Agent 不获得 validate、evaluate、promote、rollback 工具。它可以请�
 - tool/session/event 扩展点；
 - 供应链签名、依赖锁和 SBOM；
 - critical 变更的人工批准。
+
+实现状态：已由 `2026-08-14-plugin-harness-evolution-v1.md` 和对应实施计划完成可执行子集，包括工具贡献、pre/post tool guardrail、不可变 Bundle、静态 Scanner、OS Sandbox Launcher gate、Node Permission Model 纵深防御、只读 capability broker、canary 分桶、production mount 与 rollback unload。网络、进程、Worker、原生扩展和直接写入仍明确禁止。
 
 ## 14. 当前代码处置
 

@@ -66,6 +66,19 @@ $env:ANTHROPIC_API_KEY="..."
 - `GET /api/providers/config`：返回脱敏后的模型服务配置。
 - `PATCH /api/providers/:provider`：保存 `openai` 或 `anthropic` 配置。
 
+## Evol 可执行扩展
+
+Evol 可以提案并评测 `plugin` 工具与 `harness` 工具守卫，但它们一律按 critical 风险治理：Agent 不能批准，系统不会自动晋升到 canary/production。生产挂载还必须配置独立 OS 沙箱；未配置时晋升和 Runtime 投影都会 fail closed。
+
+Windows + WSL2 的参考 Launcher：
+
+```powershell
+$env:AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM=(Resolve-Path ".\scripts\evolution-plugin-sandbox-wsl.ps1").Path
+$env:AUTOAGENT_EVOLUTION_PLUGIN_WSL_DISTRO="Ubuntu" # 可选
+```
+
+目标 WSL distribution 需要 `bubblewrap`（`bwrap`）和 `python3`。完整 Bundle、能力代理、审批、canary 与 rollback 契约见 `docs/superpowers/specs/2026-08-14-plugin-harness-evolution-v1.md`。
+
 ## Agent 中心和项目团队
 
 使用“智能体档案库”查看可复用 Agent 档案，包括 Soul、Identity、能力说明、工具、模型和记忆边界。使用“项目团队实例”查看当前项目里的 Agent 实例。每个项目会初始化老板、产品/项目、架构师、开发和测试；后续也可以加入招聘得到的新 Agent。

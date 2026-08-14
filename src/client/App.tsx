@@ -2491,6 +2491,7 @@ function EvolutionHub(props: {
   const releases = props.overview?.releases ?? [];
   const jobs = props.overview?.evaluationJobs ?? [];
   const memories = props.overview?.memories ?? [];
+  const extensionCandidates = candidates.filter((item) => item.kind === "plugin" || item.kind === "harness");
   const activeProduction = releases.filter((item) => item.stage === "production" && item.status === "active").length;
   const pendingJobs = jobs.filter((item) => item.status === "pending" || item.status === "running" || item.status === "retry_wait").length;
 
@@ -2500,7 +2501,7 @@ function EvolutionHub(props: {
         <div>
           <span className="section-kicker">Evidence-driven governance</span>
           <h2>公司进化</h2>
-          <p>查看从 Episode、候选变更、隔离评测到分级发布的完整证据链。这里不会绕过评测或直接改写生产能力。</p>
+          <p>查看从 Episode、候选变更、隔离评测到分级发布的完整证据链。可执行 Plugin/Harness 只在隔离 Extension Host 中运行，不会绕过评测或直接改写主进程。</p>
         </div>
         <div className="evolution-actions">
           <button type="button" onClick={props.onReconcile} disabled={!props.workspace || props.loading}>重建经验</button>
@@ -2514,7 +2515,7 @@ function EvolutionHub(props: {
       {!props.workspace ? <div className="evolution-empty">请先选择一个项目。</div> : (
         <>
           <section className="evolution-metrics" aria-label="进化治理概览">
-            <div><span>候选</span><strong>{candidates.length}</strong><small>只读候选与不可变 revision</small></div>
+            <div><span>候选</span><strong>{candidates.length}</strong><small>{extensionCandidates.length} 个可执行扩展 · Sandbox {props.overview?.worker.pluginSandboxConfigured ? "ready" : "required"}</small></div>
             <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
             <div><span>生产发布</span><strong>{activeProduction}</strong><small>已通过 canary telemetry</small></div>
             <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
@@ -2526,7 +2527,7 @@ function EvolutionHub(props: {
               <div className="evolution-list">
                 {candidates.length ? candidates.slice().reverse().map((candidate) => (
                   <article key={candidate.candidateId}>
-                    <div><strong>{candidate.title}</strong><small>{candidate.kind} · {candidate.target} · r{candidate.revision}</small></div>
+                    <div><strong>{candidate.title}</strong><small>{candidate.kind} · {candidate.target} · r{candidate.revision}{candidate.validation?.pluginScanner ? ` · scanner ${candidate.validation.pluginScanner.decision}` : ""}</small></div>
                     <span className={`evolution-status ${candidate.status}`}>{candidate.status}</span>
                     <p>{candidate.hypothesis}</p>
                     <code>{candidate.contentHash.slice(0, 16)}</code>
