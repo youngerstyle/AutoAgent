@@ -18,6 +18,7 @@ import type {
   TicketSnapshot,
 } from "../../shared/contracts/ticket-engine.js";
 import { ticketEngineFile, ticketEngineLockFile } from "../storage/paths.js";
+import { ticketAggregateInvariants } from "../invariants/domain-invariants.js";
 
 export type TicketStoredCommandResult = TicketCommandResult | PlanCommandResult | ClaimCommandResult;
 export interface TicketStoredCommandInput { commandId: string; fingerprint: string }
@@ -294,6 +295,7 @@ export class TicketStore {
       }
     }
     if (aggregate.plan?.graph.ticketIds.some((ticketId) => !ids.has(String(ticketId)))) throw new TicketStoreCorruptionError("Plan graph references unknown Ticket");
+    ticketAggregateInvariants.assert(aggregate as TicketAggregate, (message) => new TicketStoreCorruptionError(message));
   }
 
   private validateTransition(previous: TicketAggregate, next: TicketAggregate): void {

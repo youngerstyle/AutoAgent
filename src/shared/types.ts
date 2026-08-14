@@ -277,6 +277,21 @@ export interface WorkspaceSnapshot {
     planStatus: "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
     planVersion: number;
   };
+  consistency?: {
+    state: "consistent" | "reconciling";
+    asOf: {
+      planVersion: number;
+      missionVersion: number;
+      ticketVersions: Record<string, number>;
+      goalVersions: Record<string, number>;
+    };
+    issues: Array<{
+      code: string;
+      message: string;
+      ticketId?: string;
+      agentId?: string;
+    }>;
+  };
   activeTask?: Task;
   activeTaskRun?: TaskRun;
   agents: Array<WorkspaceAgent & {

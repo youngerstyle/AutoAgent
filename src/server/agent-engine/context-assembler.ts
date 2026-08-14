@@ -97,7 +97,7 @@ export class AgentContextAssembler {
     const suffix = checkpoint
       ? items.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
       : items.filter((item) => item.kind !== "compaction");
-    const entries: SequencedHistoryItem[] = sanitizeRejectedToolInteractions([
+    const entries: SequencedHistoryItem[] = repairInterruptedToolInteractions(sanitizeRejectedToolInteractions([
       ...(checkpoint?.replacementHistory ?? []).map((historyItem) => ({
         historyItem,
         sequence: checkpoint!.replacedThroughSequence,
@@ -106,7 +106,7 @@ export class AgentContextAssembler {
         historyItem,
         sequence: item.sequence,
       }))),
-    ]);
+    ]));
     const history = entries.map((item) => item.historyItem);
     const maxChars = Math.max(1, Math.floor(maxInputTokens * 0.25) * 4);
     if (JSON.stringify(history).length <= maxChars) return undefined;
@@ -159,14 +159,14 @@ export class AgentContextAssembler {
     const suffix = checkpoint
       ? scopedItems.filter((item) => item.sequence > checkpoint.replacedThroughSequence && item.kind !== "compaction")
       : scopedItems.filter((item) => item.kind !== "compaction");
-    const projected = sanitizeRejectedToolHistory([
+    const projected = repairInterruptedToolHistory(sanitizeRejectedToolHistory([
       ...(omittedPriorGoalItems > 0 ? [{
         type: "user_message" as const,
         content: `[Goal 上下文隔离：${omittedPriorGoalItems} 条其他 Goal 的原始消息、工具调用与观察结果仅保留审计，未注入当前 Goal；跨工单事实以 Mission Control 的正式 handoff 为准。]`,
       }] : []),
       ...(checkpoint?.replacementHistory ?? []),
       ...suffix.flatMap((item) => projectThreadItem(item.kind, payloads.get(item.payloadRef))),
-    ]);
+    ]));
     const compaction = checkpoint
       ? {
           compacted: true,
@@ -274,6 +274,43 @@ export function sanitizeRejectedToolHistory(history: AgentModelHistoryItem[]): A
       return { ...item, content: compactToolSchemaValidationError(item.content) };
     }
     return item;
+  });
+}
+
+export const TOOL_OUTCOME_UNKNOWN = "TOOL_OUTCOME_UNKNOWN";
+
+/**
+ * A persisted tool_call is written only after execution starts. If recovery
+ * finds no matching durable result, the side effect is unknown: preserve the
+ * call and close it with an explicit risk marker instead of blindly retrying.
+ */
+export function repairInterruptedToolHistory(history: AgentModelHistoryItem[]): AgentModelHistoryItem[] {
+  const completed = new Set(history.flatMap((item) => item.type === "tool_result" ? [item.callId] : []));
+  if (history.every((item) => item.type !== "tool_call" || completed.has(item.callId))) return history;
+  return history.flatMap((item) => item.type === "tool_call" && !completed.has(item.callId)
+    ? [item, {
+        type: "tool_result" as const,
+        callId: item.callId,
+        isError: true,
+        content: `${TOOL_OUTCOME_UNKNOWN}: execution started but no durable result was recorded. Verify filesystem, Git, process, port, or external side effects before retrying; ask the user when the effect cannot be verified safely.`,
+      }]
+    : [item]);
+}
+
+function repairInterruptedToolInteractions(entries: SequencedHistoryItem[]): SequencedHistoryItem[] {
+  const repaired = repairInterruptedToolHistory(entries.map((entry) => entry.historyItem));
+  const byCall = new Map(entries.flatMap((entry) => entry.historyItem.type === "tool_call" ? [[entry.historyItem.callId, entry.sequence] as const] : []));
+  let sourceIndex = 0;
+  return repaired.map((historyItem) => {
+    const source = entries[sourceIndex];
+    if (source?.historyItem === historyItem) {
+      sourceIndex += 1;
+      return source;
+    }
+    return {
+      historyItem,
+      sequence: historyItem.type === "tool_result" ? (byCall.get(historyItem.callId) ?? source?.sequence ?? 0) : (source?.sequence ?? 0),
+    };
   });
 }
 

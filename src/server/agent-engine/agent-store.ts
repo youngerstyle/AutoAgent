@@ -13,6 +13,7 @@ import type {
   GoalResolutionProposal,
   SettleProposalResult,
 } from "../../shared/contracts/agent-engine.js";
+import { agentAggregateInvariants } from "../invariants/domain-invariants.js";
 import {
   agentEngineLegacyAggregateFile,
   agentEngineExecutionLeaseFile,
@@ -921,6 +922,7 @@ function validateAggregate(value: unknown, agentId: string): asserts value is Ag
     if (previous && !same(previous, entry.event)) throw new AgentStoreCorruptionError("Agent outbox eventId conflicts");
     eventsById.set(entry.event.eventId, entry.event);
   }
+  agentAggregateInvariants.assert(aggregate, (message) => new AgentStoreCorruptionError(message));
 }
 
 function mergeExactDuplicates<T>(

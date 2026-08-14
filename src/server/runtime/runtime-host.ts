@@ -37,6 +37,7 @@ import { configuredToolsInclude, toolsForPolicy } from "../../shared/tool-catalo
 import { TicketEngine } from "../tickets/ticket-engine.js";
 import { TicketStore } from "../tickets/ticket-store.js";
 import { WorkspaceSnapshotStore } from "../tickets/workspace-snapshot-store.js";
+import { projectRuntimeConsistency } from "./runtime-consistency.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import { RuntimeHostStore, type RuntimeRetryState, type RuntimeTaskError, type RuntimeTaskRecord } from "./runtime-host-store.js";
 import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
@@ -962,6 +963,12 @@ export class RuntimeHost {
     }
     const lifecycle = projectWorkspaceLifecycle(plan.status, mission.record.status, tickets);
     const { status, phase } = lifecycle;
+    const consistency = projectRuntimeConsistency({
+      plan,
+      mission,
+      tickets: workItems.map((work) => work?.ticket),
+      goals: projections.map(({ agent, projection }) => ({ agentId: agent.id, goal: projection?.goal })),
+    });
     return {
       workspace: this.workspace,
       mission: {
@@ -970,6 +977,7 @@ export class RuntimeHost {
         planStatus: plan.status,
         planVersion: plan.version,
       },
+      consistency,
       activeTask: {
         id: record.taskId,
         workspaceId: this.workspace.id,

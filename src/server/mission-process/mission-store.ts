@@ -5,6 +5,7 @@ import path from "node:path";
 import type { MissionLink, MissionRecord, TeamBinding, TeamBindingMigration } from "../../shared/contracts/mission-control.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { missionProcessFile } from "../storage/paths.js";
+import { missionAggregateInvariants } from "../invariants/domain-invariants.js";
 
 export interface MissionCursorRecord {
   partition: string;
@@ -243,6 +244,7 @@ function validate(value: MissionAggregate, missionId: string): void {
   for (const link of aggregate.links) {
     if (link.missionId !== missionId || link.planId !== missionRecord.planId) throw new Error("Mission link identity is invalid");
   }
+  missionAggregateInvariants.assert(aggregate, (message) => new MissionStoreCorruptionError(message));
 }
 
 function assertRawMissionIdentity(value: unknown, missionId: string): asserts value is MissionAggregate {

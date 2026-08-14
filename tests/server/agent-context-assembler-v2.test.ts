@@ -2,13 +2,22 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { AgentContextAssembler } from "../../src/server/agent-engine/context-assembler.js";
+import { AgentContextAssembler, repairInterruptedToolHistory, TOOL_OUTCOME_UNKNOWN } from "../../src/server/agent-engine/context-assembler.js";
 import { AgentEngine } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import type { AgentPolicy, AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS, effectiveInputTokenBudget } from "../../src/shared/model-context.js";
 
 describe("AgentContextAssembler", () => {
+  it("classifies a started tool without a durable result as outcome unknown", () => {
+    const repaired = repairInterruptedToolHistory([
+      { type: "tool_call", callId: "call-interrupted", name: "shell", arguments: { command: "npm test" } },
+    ]);
+
+    expect(repaired).toHaveLength(2);
+    expect(repaired[1]).toMatchObject({ type: "tool_result", callId: "call-interrupted", isError: true });
+    expect((repaired[1] as { content: string }).content).toContain(TOOL_OUTCOME_UNKNOWN);
+  });
   it("separates stable instructions from one chronological structured history", async () => {
     const fixture = await contextFixture();
     await fixture.engine.sendMessage({
