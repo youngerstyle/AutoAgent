@@ -12,6 +12,7 @@ import { assertCommandAllowed } from "../policy/command-policy.js";
 import { resolveToolPath } from "../policy/path-policy.js";
 import { EvidenceLedger } from "./evidence-ledger.js";
 import { managedProcessDetached, terminateManagedProcessTree } from "./managed-process-tree.js";
+import { ToolExecutionPipeline } from "./tool-execution-pipeline.js";
 
 const DEFAULT_SHELL_YIELD_MS = 2_000;
 const MAX_LOG_CHARS = 64_000;
@@ -81,6 +82,7 @@ export class AgentToolRuntime {
 
   private readonly enabled: Set<WorkspaceToolName>;
   private readonly evidence: EvidenceLedger;
+  private readonly pipeline: ToolExecutionPipeline<AgentToolIntent, AgentToolExecutionContext, AgentToolResult>;
   private fileMutationTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -91,12 +93,29 @@ export class AgentToolRuntime {
     this.enabled = new Set(enabledTools);
     this.evidence = new EvidenceLedger(policy.workspaceRoot);
     this.orphanBrowserCleanup = ensureWorkspaceBrowserCleanup(policy.workspaceRoot);
+    this.pipeline = new ToolExecutionPipeline<AgentToolIntent, AgentToolExecutionContext, AgentToolResult>(
+      [({ intent }) => this.enabled.has(intent.tool)
+        ? undefined
+        : { tool: intent.tool, ok: false, error: "工具未配置" }],
+      [({ intent }, next) => intent.tool === "writeFile" || intent.tool === "editFile"
+        ? this.serializeFileMutation(next)
+        : next()],
+      [(request, result) => this.captureEvidence(request.intent, result, request.context)],
+    );
   }
 
   async execute(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
-    const result = intent.tool === "writeFile" || intent.tool === "editFile"
-      ? await this.serializeFileMutation(() => this.executeRaw(intent, context))
-      : await this.executeRaw(intent, context);
+    return this.pipeline.run(
+      { intent, ...(context ? { context } : {}) },
+      (request) => this.executeRaw(request.intent, request.context),
+    );
+  }
+
+  private async captureEvidence(
+    intent: AgentToolIntent,
+    result: AgentToolResult,
+    context?: AgentToolExecutionContext,
+  ): Promise<AgentToolResult> {
     if (!context) return result;
     const captureError = evidenceCaptureError(result);
     const fact = await this.evidence.append({
@@ -133,7 +152,6 @@ export class AgentToolRuntime {
   }
 
   private async executeRaw(intent: AgentToolIntent, context?: AgentToolExecutionContext): Promise<AgentToolResult> {
-    if (!this.enabled.has(intent.tool)) return { tool: intent.tool, ok: false, error: "工具未配置" };
     try {
       if (intent.tool === "listFiles") {
         const target = resolveToolPath(this.policy, intent.path ?? ".", "read");
