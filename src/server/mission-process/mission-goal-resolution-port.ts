@@ -31,11 +31,15 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
       return { settle: true, decision: { accepted: false, disposition: "correctable", reason: outcomeError } };
     }
     if (this.workspaceRoot) {
+      const outcome = isRecord(proposal.domainOutcome) ? proposal.domainOutcome : undefined;
+      const validatesFinalArtifacts = outcome?.disposition !== "correction_required"
+        && outcome?.disposition !== "plan_change_required";
       const evidenceError = await validateEvidenceFacts(
         this.workspaceRoot,
         this.agentId,
         goal,
         proposal,
+        { validatesFinalArtifacts },
       );
       if (evidenceError) {
         return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
@@ -73,6 +77,7 @@ export async function validateEvidenceFacts(
   agentId: string,
   goal: AgentGoal,
   proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults" | "domainOutcome">,
+  options: { validatesFinalArtifacts?: boolean } = {},
 ): Promise<string | undefined> {
   const direct = [
     ...proposal.evidence,
@@ -114,9 +119,11 @@ export async function validateEvidenceFacts(
     verifiedFacts.push({ ref, fact });
   }
 
-  for (const { fact } of latestArtifactEvidence(verifiedFacts)) {
-    const freshnessError = await validateArtifactFreshness(workspaceRoot, fact);
-    if (freshnessError) return freshnessError;
+  if (options.validatesFinalArtifacts !== false) {
+    for (const { fact } of latestArtifactEvidence(verifiedFacts)) {
+      const freshnessError = await validateArtifactFreshness(workspaceRoot, fact);
+      if (freshnessError) return freshnessError;
+    }
   }
   return undefined;
 }
@@ -127,7 +134,7 @@ function latestArtifactEvidence(
   const nonArtifacts = facts.filter(({ fact }) => !fact.artifact);
   const latestByPath = new Map<string, { ref: EvidenceRef; fact: EvidenceFact }>();
   for (const item of facts) {
-    if (!item.fact.artifact) continue;
+    if (!item.fact.artifact || !isArtifactSnapshot(item.fact)) continue;
     const key = path.normalize(item.fact.artifact.path).toLowerCase();
     const current = latestByPath.get(key);
     if (!current || compareEvidenceOrder(item.fact, current.fact) > 0) {
@@ -135,6 +142,10 @@ function latestArtifactEvidence(
     }
   }
   return [...nonArtifacts, ...latestByPath.values()];
+}
+
+function isArtifactSnapshot(fact: EvidenceFact): boolean {
+  return fact.toolName === "readFile" || fact.toolName === "readImage";
 }
 
 function compareEvidenceOrder(left: EvidenceFact, right: EvidenceFact): number {

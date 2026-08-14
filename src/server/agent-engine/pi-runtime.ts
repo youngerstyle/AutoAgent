@@ -1308,7 +1308,7 @@ function goalTool(
     name: "goal_resolution",
     label: "提交工作结论",
     description: allowsFailure
-      ? `提交当前 Goal 的正常完成或失败结论。只填写 status、summary、residualRisks 和 Ticket 的 domainOutcome；平台会从当前 Goal 的真实工具记录自动装配 evidence，并逐项生成当前 Ticket 的 criterionResults。不要手抄 evidenceId、criterionIndex 或顶层 criterionResults。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。`
+      ? `提交当前 Goal 的正常完成或失败结论。填写 status、summary、residualRisks、Ticket 的 domainOutcome，以及精炼的 evidenceIds（只选择直接支持最终结论的当前 Goal 工具证据，不要包含调试过程或临时产物）；平台会逐项生成当前 Ticket 的 criterionResults。不要手写 criterionIndex 或顶层 criterionResults。若需要纠正上游请调用 report_goal_correction，若计划本身不足请调用 request_goal_plan_change。`
       : "只提交当前验收 Goal 的正常完成结论。验收未通过不得使用普通 failed：上游缺陷调用 report_goal_correction，计划缺口调用 request_goal_plan_change，不可替代的外部输入调用 request_human_input。",
     parameters: Type.Object({
       status: allowsFailure
@@ -1316,6 +1316,9 @@ function goalTool(
         : Type.Literal("completed"),
       summary: Type.Optional(Type.String()),
       residualRisks: Type.Optional(Type.Array(Type.String())),
+      evidenceIds: finalSettlement
+        ? Type.Optional(Type.Array(Type.String(), { maxItems: 0 }))
+        : Type.Optional(Type.Array(Type.String(), { maxItems: 32 })),
       // Keep the domain result opaque at the provider boundary. The domain
       // adapter validates outputContract.schemaRef after this generic proposal
       // is persisted; a deep business schema here makes provider tool-call
@@ -1335,7 +1338,7 @@ function goalTool(
         };
       }
       const normalizedParams = withDefaultResidualRisks(params);
-      const evidence = finalSettlement || !binding.agentId
+      const availableEvidence = finalSettlement || !binding.agentId
         ? []
         : (await new EvidenceLedger(binding.workspaceRoot).listForGoal({
             agentId: binding.agentId,
@@ -1344,9 +1347,16 @@ function goalTool(
           }))
             .filter((fact) => fact.capture.status === "recorded" && fact.observation.status === "observed")
             .map((fact) => ({ evidenceId: fact.evidenceId }));
+      const requestedEvidenceIds = Array.isArray(normalizedParams.evidenceIds)
+        ? normalizedParams.evidenceIds
+        : undefined;
+      const evidence = requestedEvidenceIds
+        ? selectResolutionEvidence(availableEvidence, requestedEvidenceIds)
+        : availableEvidence;
+      const { evidenceIds: _evidenceIds, ...proposalParams } = normalizedParams;
       const submitted = binding.mock
         ? {
-            ...normalizedParams,
+            ...proposalParams,
             evidence,
             criterionResults: binding.goal.spec.successCriteria.map((_criterion, criterionIndex) => ({
               criterionIndex,
@@ -1354,7 +1364,7 @@ function goalTool(
               evidence,
             })),
           }
-        : { ...normalizedParams, evidence };
+        : { ...proposalParams, evidence };
       const parsed = parseResolutionProposal(submitted, binding.goal, binding.turnId, now().toISOString());
       if (!parsed.ok) {
         if (process.env.AUTOAGENT_DEBUG_PI === "1") console.error("Pi goal_resolution rejected", parsed.reason, params);
@@ -1370,6 +1380,16 @@ function goalTool(
       };
     },
   });
+}
+
+export function selectResolutionEvidence(
+  available: ReadonlyArray<{ evidenceId: string }>,
+  requestedIds: ReadonlyArray<unknown>,
+): Array<{ evidenceId: string }> {
+  const availableIds = new Set(available.map((item) => item.evidenceId));
+  return [...new Set(requestedIds)]
+    .filter((evidenceId): evidenceId is string => typeof evidenceId === "string" && availableIds.has(evidenceId))
+    .map((evidenceId) => ({ evidenceId }));
 }
 
 export function goalResolutionCriterionResultsSchema(

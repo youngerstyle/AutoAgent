@@ -16,16 +16,21 @@ import type { AgentGoal, GoalResolutionPort } from "../../src/shared/contracts/a
 import type { MissionTicketOutcome } from "../../src/server/mission-process/ticket-agent-adapter.js";
 
 describe("MissionProcessManager", () => {
-  it("preserves both delivery and assurance scope when exposing correction targets", () => {
+  it("exposes delivery scope but never assurance or settlement Tickets as correction targets", () => {
     expect(correctionTargetMissionCriterionIds({
       missionContribution: { missionCriterionIds: ["criterion-delivery", "criterion-shared"] },
-      assurance: { missionCriterionIds: ["criterion-presentation", "criterion-shared", "criterion-legal"] },
     })).toEqual([
       "criterion-delivery",
       "criterion-shared",
-      "criterion-presentation",
-      "criterion-legal",
     ]);
+    expect(correctionTargetMissionCriterionIds({
+      missionContribution: { missionCriterionIds: ["criterion-delivery"] },
+      assurance: { missionCriterionIds: ["criterion-delivery"] },
+    })).toEqual([]);
+    expect(correctionTargetMissionCriterionIds({
+      missionContribution: { missionCriterionIds: ["criterion-delivery"] },
+      permissions: { settleMission: true },
+    })).toEqual([]);
   });
 
   it("reuses the one durable Plan when the same Mission start is replayed", async () => {

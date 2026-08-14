@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
-import { appendFile, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { AgentGoal, GoalResolutionProposal } from "../../src/shared/contracts/agent-engine.js";
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
@@ -231,6 +231,19 @@ describe("Mission completion evidence boundary", () => {
     )).resolves.toContain("用 readFile 或 readImage 重新读取该文件");
   });
 
+  it("allows corrective workflow evidence to describe a missing artifact", async () => {
+    const fixture = await evidenceFixture();
+    await rm(path.join(fixture.root, "src", "game.ts"));
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(fixture.evidenceId),
+      { validatesFinalArtifacts: false },
+    )).resolves.toBeUndefined();
+  });
+
   it("uses the latest submitted evidence for the same artifact path", async () => {
     const fixture = await evidenceFixture();
     const target = path.join(fixture.root, "src", "game.ts");
@@ -260,6 +273,51 @@ describe("Mission completion evidence boundary", () => {
       },
     });
     const evidence = [{ evidenceId: fixture.evidenceId }, { evidenceId: current.evidenceId }];
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      {
+        evidence,
+        criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence }],
+        domainOutcome: undefined,
+      },
+    )).resolves.toBeUndefined();
+  });
+
+  it("does not treat a deleted write-only temporary file as a final artifact snapshot", async () => {
+    const fixture = await evidenceFixture();
+    const relativePath = path.join("tests", "rewrite.tmp");
+    const target = path.join(fixture.root, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    const content = "temporary rewrite helper";
+    await writeFile(target, content, "utf8");
+    const info = await stat(target);
+    const ledger = new EvidenceLedger(fixture.root);
+    const writeFact = await ledger.append({
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-dev-write-temp",
+      toolCallId: "tool-call-write-temp",
+      toolName: "writeFile",
+      kind: "file_write",
+      capture: { status: "recorded" },
+      observation: { status: "observed", result: { path: relativePath } },
+      workspaceRoot: fixture.root,
+      createdAt: new Date(Date.now() + 1_000).toISOString(),
+      input: { path: relativePath },
+      artifact: {
+        path: relativePath,
+        size: info.size,
+        modifiedAt: info.mtime.toISOString(),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    });
+    await rm(target);
+    const evidence = [{ evidenceId: fixture.evidenceId }, { evidenceId: writeFact.evidenceId }];
 
     await expect(validateEvidenceFacts(
       fixture.root,

@@ -15,6 +15,7 @@ import {
   isUsefulToolProgress,
   modelFacingToolResultText,
   replaceLivePiModelContext,
+  selectResolutionEvidence,
   toolFailureFingerprint,
   toolObservationFingerprint,
   turnToolBudgetMessage,
@@ -497,6 +498,20 @@ describe("Pi runtime terminal propagation", () => {
         criterionResults: [{ criterionIndex: 0, status: "satisfied", evidence: [] }],
       },
     });
+  });
+
+  it("keeps only explicitly selected final evidence", () => {
+    expect(selectResolutionEvidence(
+      [
+        { evidenceId: "debug-temp" },
+        { evidenceId: "final-browser-test" },
+        { evidenceId: "final-file-read" },
+      ],
+      ["final-browser-test", "final-file-read", "final-browser-test", "unknown"],
+    )).toEqual([
+      { evidenceId: "final-browser-test" },
+      { evidenceId: "final-file-read" },
+    ]);
   });
 
   it("bounds top-level resolution criteria to the current Goal", () => {

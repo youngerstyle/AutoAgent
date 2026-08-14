@@ -64,12 +64,15 @@ export class MissionRecoveryError extends Error {}
 export class MissionTerminalError extends Error {}
 
 export function correctionTargetMissionCriterionIds(
-  definition: Pick<TicketDefinition, "missionContribution" | "assurance">,
+  definition: Pick<TicketDefinition, "missionContribution" | "assurance" | "permissions">,
 ): string[] {
-  return [
-    ...(definition.missionContribution?.missionCriterionIds ?? []),
-    ...(definition.assurance?.missionCriterionIds ?? []),
-  ].filter((criterionId, index, values) => values.indexOf(criterionId) === index);
+  // A correction changes the upstream delivery that produced the observed
+  // behavior. Assurance and settlement Tickets only judge that behavior; using
+  // either as a correction target creates nested "verify the verifier" chains
+  // with no new execution work.
+  if (definition.assurance || definition.permissions?.settleMission) return [];
+  const criterionIds = definition.missionContribution?.missionCriterionIds ?? [];
+  return criterionIds.filter((criterionId, index) => criterionIds.indexOf(criterionId) === index);
 }
 
 export class MissionProcessManager {
