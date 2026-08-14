@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { existsSync, statSync } from "node:fs";
 
 export interface AppConfig {
   port: number;
@@ -8,6 +9,8 @@ export interface AppConfig {
   providerRetryCount: number;
   runtimeRestoreConcurrency?: number;
   runtimeExecutionConcurrency?: number;
+  evolutionEvaluatorProgramPath?: string;
+  evolutionWorkerIntervalMs?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -24,6 +27,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!Number.isInteger(runtimeExecutionConcurrency) || runtimeExecutionConcurrency <= 0) {
     throw new Error(`Invalid AUTOAGENT_RUNTIME_EXECUTION_CONCURRENCY: ${env.AUTOAGENT_RUNTIME_EXECUTION_CONCURRENCY}`);
   }
+  const evolutionWorkerIntervalMs = Number(env.AUTOAGENT_EVOLUTION_WORKER_INTERVAL_MS ?? "30000");
+  if (!Number.isSafeInteger(evolutionWorkerIntervalMs) || evolutionWorkerIntervalMs < 1_000) {
+    throw new Error(`Invalid AUTOAGENT_EVOLUTION_WORKER_INTERVAL_MS: ${env.AUTOAGENT_EVOLUTION_WORKER_INTERVAL_MS}`);
+  }
+
+  const evolutionEvaluatorProgramPath = env.AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM
+    ? path.resolve(env.AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM)
+    : undefined;
+  if (evolutionEvaluatorProgramPath
+    && (!existsSync(evolutionEvaluatorProgramPath)
+      || !statSync(evolutionEvaluatorProgramPath).isFile()
+      || !new Set([".js", ".mjs", ".cjs"]).has(path.extname(evolutionEvaluatorProgramPath).toLowerCase()))) {
+    throw new Error(`Invalid AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM: ${env.AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM}`);
+  }
 
   return {
     port,
@@ -34,5 +51,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providerRetryCount: Number(env.AUTOAGENT_PROVIDER_RETRIES ?? "2"),
     runtimeRestoreConcurrency,
     runtimeExecutionConcurrency,
+    evolutionEvaluatorProgramPath,
+    evolutionWorkerIntervalMs,
   };
 }

@@ -90,9 +90,10 @@ function mergeDefaults(stored: AgentProfile[]): AgentProfile[] {
   const merged = defaultAgentProfiles().map((profile) => {
     const stored = byId.get(profile.id);
     const result = normalizeSkillToolContract(mergeDefaultProfile(profile, stored));
-    return stored && (stored.contentVersion ?? 0) < 9
+    const migrated = stored && (stored.contentVersion ?? 0) < 9
       ? withProtocolCapabilities(result, profile)
       : result;
+    return withDefaultEvolutionCapability(migrated, profile);
   });
   const custom = stored
     .filter((profile) => !merged.some((item) => item.id === profile.id))
@@ -243,6 +244,11 @@ function withProtocolCapabilities(profile: AgentProfile, defaults: AgentProfile)
     ...profile,
     capabilities: [...new Set([...defaults.capabilities.filter(isProtocolCapability), ...profile.capabilities])],
   };
+}
+
+function withDefaultEvolutionCapability(profile: AgentProfile, defaults: AgentProfile): AgentProfile {
+  if (!defaults.capabilities.includes("company:evolve") || profile.capabilities.includes("company:evolve")) return profile;
+  return { ...profile, capabilities: [...profile.capabilities, "company:evolve"] };
 }
 
 

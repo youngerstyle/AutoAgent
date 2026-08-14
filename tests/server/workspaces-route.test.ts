@@ -95,6 +95,24 @@ describe("workspaces route", () => {
     expect(listed.body.workspaces).toHaveLength(0);
     await expect(access(rootPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("requires target-side trust and matching organization identity for cross-workspace Memory", async () => {
+    const { app } = await createFixture();
+    const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-org-source-"));
+    const targetRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-org-target-"));
+    const source = (await request(app).post("/api/workspaces").send({ name: "Source", rootPath: sourceRoot, policyProfile: "development" }).expect(201)).body.workspace;
+    const target = (await request(app).post("/api/workspaces").send({ name: "Target", rootPath: targetRoot, policyProfile: "development" }).expect(201)).body.workspace;
+
+    await request(app).patch(`/api/workspaces/${target.id}/organization-memory-trust`)
+      .send({ organizationId: "org-a", trustedMemoryWorkspaceIds: [source.id] }).expect(409);
+    await request(app).patch(`/api/workspaces/${source.id}/organization-memory-trust`)
+      .send({ organizationId: "org-a", trustedMemoryWorkspaceIds: [] }).expect(200);
+    const trusted = await request(app).patch(`/api/workspaces/${target.id}/organization-memory-trust`)
+      .send({ organizationId: "org-a", trustedMemoryWorkspaceIds: [source.id] }).expect(200);
+    expect(trusted.body.workspace.organization).toEqual({ id: "org-a", trustedMemoryWorkspaceIds: [source.id] });
+    const revoked = await request(app).patch(`/api/workspaces/${target.id}/organization-memory-trust`).send({ enabled: false }).expect(200);
+    expect(revoked.body.workspace).not.toHaveProperty("organization");
+  });
 });
 
 async function createFixture() {

@@ -31,6 +31,20 @@ export function createWorkspaceRouter(
     res.status(201).json({ workspace });
   }));
 
+  router.patch("/:workspaceId/organization-memory-trust", asyncHandler(async (req, res) => {
+    const disabled = req.body?.enabled === false;
+    const workspace = await store.configureOrganizationMemory(
+      String(req.params.workspaceId),
+      disabled ? undefined : {
+        id: String(req.body?.organizationId ?? ""),
+        trustedMemoryWorkspaceIds: Array.isArray(req.body?.trustedMemoryWorkspaceIds)
+          ? req.body.trustedMemoryWorkspaceIds.map(String)
+          : [],
+      },
+    );
+    res.json({ workspace });
+  }));
+
   router.delete("/:workspaceId", asyncHandler(async (req, res) => {
     const remove = removeWorkspace ?? ((workspaceId, options) => store.remove(workspaceId, options));
     const workspace = await remove(String(req.params.workspaceId), {

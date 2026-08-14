@@ -15,12 +15,16 @@ import { StaffingRequestStore } from "../staffing/staffing-request-store.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
 import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
 import { ensureProjectOwner } from "../agents/roster.js";
+import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
+import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
+import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
   private readonly pendingHosts = new Map<string, Promise<RuntimeHost>>();
   private readonly scheduler: RuntimeHostScheduler;
   private readonly executionGate: RuntimeExecutionGate;
+  private readonly evolutionCoordinator: EvolutionCoordinator;
 
   constructor(
     private readonly workspaces: WorkspaceStore,
@@ -29,12 +33,18 @@ export class RuntimeHostRegistry {
     private readonly policyStore: PlanPolicyStore,
     private readonly policyRef: PlanPolicyRef,
     private readonly restoreConcurrency = 2,
-    options: { executionConcurrency?: number } = {},
+    options: { executionConcurrency?: number; evolutionEvaluatorProgramPath?: string; evolutionWorkerIntervalMs?: number } = {},
   ) {
     const executionConcurrency = options.executionConcurrency ?? 2;
     this.scheduler = new RuntimeHostScheduler(executionConcurrency);
     this.executionGate = new RuntimeExecutionGate(executionConcurrency);
+    this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
+      evaluatorProgramPath: options.evolutionEvaluatorProgramPath,
+      intervalMs: options.evolutionWorkerIntervalMs,
+    });
   }
+
+  evolutionStatus(): EvolutionWorkerStatus { return this.evolutionCoordinator.status(); }
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId, false);
@@ -105,6 +115,7 @@ export class RuntimeHostRegistry {
     this.hosts.clear();
     this.pendingHosts.clear();
     await Promise.allSettled([...new Set(hosts)].map((host) => host.stop()));
+    await this.evolutionCoordinator.stop();
     await this.scheduler.stop();
   }
 
@@ -129,6 +140,7 @@ export class RuntimeHostRegistry {
       error: string;
     }>;
   }> {
+    this.evolutionCoordinator.start();
     const workspaces = await this.workspaces.list();
     const failures: Array<{ workspace: Workspace; reason: unknown }> = [];
     const restoredWorkspaceIds: string[] = [];
@@ -212,6 +224,7 @@ export class RuntimeHostRegistry {
         scheduler: this.scheduler,
         schedulerKey: workspace.id,
         executionGate: this.executionGate,
+        organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, workspace.id),
       });
       if (startScheduler) {
         await host.start();
@@ -224,4 +237,18 @@ export class RuntimeHostRegistry {
       this.pendingHosts.delete(workspaceId);
     }
   }
+
+}
+
+export async function resolveOrganizationMemorySources(
+  workspaces: WorkspaceStore,
+  targetWorkspaceId: string,
+): Promise<OrganizationMemorySource[]> {
+  const target = await workspaces.get(targetWorkspaceId);
+  if (!target.organization) return [];
+  const trusted = new Set(target.organization.trustedMemoryWorkspaceIds);
+  return (await workspaces.list())
+    .filter((workspace) => trusted.has(workspace.id) && workspace.organization?.id === target.organization!.id)
+    .map((workspace) => ({ workspaceId: workspace.id, workspaceRoot: workspace.rootPath, organizationId: target.organization!.id }))
+    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
 }

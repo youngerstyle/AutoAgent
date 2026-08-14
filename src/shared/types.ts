@@ -21,6 +21,11 @@ export interface Workspace {
   rootPath: string;
   policyProfile: PolicyProfile;
   createdAt: string;
+  organization?: {
+    id: string;
+    /** Source workspaces this workspace explicitly allows to inject organization Memory. */
+    trustedMemoryWorkspaceIds: string[];
+  };
 }
 
 export interface AgentPolicy {

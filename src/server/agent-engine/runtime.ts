@@ -17,6 +17,7 @@ export interface AgentExecutionSliceInput {
   supportsReasoning?: boolean;
   supportsImages?: boolean;
   thinkingLevel?: ModelThinkingLevel;
+  taskType?: string;
 }
 
 export interface AgentExecutionSliceResult {

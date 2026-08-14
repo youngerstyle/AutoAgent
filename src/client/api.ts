@@ -1,5 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
+import type { EvaluationJob, EvolutionCandidate, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -187,4 +188,46 @@ export function updateModelConfig(configId: string, input: Partial<ModelConfig>)
 
 export function setDefaultModelConfig(configId: string): Promise<{ config: ModelConfig }> {
   return api(`/api/providers/model-configs/${configId}/default`, { method: "POST" });
+}
+
+export interface EvolutionOverview {
+  candidates: EvolutionCandidate[];
+  releases: PromotionRecord[];
+  evaluationJobs: EvaluationJob[];
+  memories: MemoryLifecycleState[];
+  worker: EvolutionWorkerStatus;
+}
+
+export async function getEvolutionOverview(workspaceId: string): Promise<EvolutionOverview> {
+  const root = `/api/workspaces/${workspaceId}/evolution`;
+  const [candidates, releases, jobs, memories, worker] = await Promise.all([
+    api<{ candidates: EvolutionCandidate[] }>(`${root}/candidates`),
+    api<{ releases: PromotionRecord[] }>(`${root}/releases`),
+    api<{ jobs: EvaluationJob[] }>(`${root}/evaluation-jobs`),
+    api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
+    api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
+  ]);
+  return { candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories, worker: worker.worker };
+}
+
+export function pinEvolutionMemory(workspaceId: string, releaseId: string, pinned: boolean): Promise<{ memory: MemoryLifecycleState }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/memories/${releaseId}/pin`, {
+    method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), pinned }),
+  });
+}
+
+export function restoreEvolutionMemory(workspaceId: string, releaseId: string): Promise<{ memory: MemoryLifecycleState }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/memories/${releaseId}/restore`, {
+    method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), reason: "Human restored from Evolution governance UI" }),
+  });
+}
+
+export function maintainEvolutionMemories(workspaceId: string): Promise<{ memories: MemoryLifecycleState[] }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/memories/maintenance`, { method: "POST", body: "{}" });
+}
+
+export function reconcileEvolution(workspaceId: string): Promise<unknown> {
+  return api(`/api/workspaces/${workspaceId}/evolution/episodes/reconcile`, {
+    method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID() }),
+  });
 }

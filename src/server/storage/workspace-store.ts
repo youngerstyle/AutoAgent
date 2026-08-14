@@ -65,6 +65,36 @@ export class WorkspaceStore {
     });
   }
 
+  async configureOrganizationMemory(
+    workspaceId: string,
+    organization: Workspace["organization"],
+  ): Promise<Workspace> {
+    return withRegistryMutation(globalWorkspacesFile(this.homeDir), async () => {
+      const all = await this.list();
+      const current = all.find((item) => item.id === workspaceId);
+      if (!current) throw new HttpError(404, `Workspace not found: ${workspaceId}`, "WORKSPACE_NOT_FOUND");
+      let normalized: Workspace["organization"];
+      if (organization) {
+        const id = organization.id?.trim();
+        const trusted = [...new Set(organization.trustedMemoryWorkspaceIds ?? [])].sort();
+        if (!id || !/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id) || trusted.some((value) => !value || value === workspaceId)) {
+          throw new HttpError(400, "Organization Memory trust configuration is invalid", "INVALID_ORGANIZATION_MEMORY_TRUST");
+        }
+        for (const sourceId of trusted) {
+          const source = all.find((item) => item.id === sourceId);
+          if (!source || source.organization?.id !== id) {
+            throw new HttpError(409, `Trusted Memory source is not in organization ${id}: ${sourceId}`, "ORGANIZATION_MEMORY_TRUST_CONFLICT");
+          }
+        }
+        normalized = { id, trustedMemoryWorkspaceIds: trusted };
+      }
+      const updated: Workspace = { ...current, ...(normalized ? { organization: normalized } : { organization: undefined }) };
+      await writeJson(globalWorkspacesFile(this.homeDir), all.map((item) => item.id === workspaceId ? updated : item));
+      await writeJson(workspaceFile(current.rootPath), updated);
+      return updated;
+    });
+  }
+
   async ensureWorkspaceFiles(workspace: Workspace): Promise<void> {
     await mkdir(workspaceAutoAgentDir(workspace.rootPath), { recursive: true });
     await writeJson(workspaceFile(workspace.rootPath), workspace);
@@ -108,7 +138,8 @@ function isWorkspaceManifest(value: Workspace | undefined): value is Workspace {
     && typeof value.name === "string"
     && typeof value.rootPath === "string"
     && (value.policyProfile === "development" || value.policyProfile === "production")
-    && typeof value.createdAt === "string");
+    && typeof value.createdAt === "string"
+    && (value.organization === undefined || (typeof value.organization.id === "string" && Array.isArray(value.organization.trustedMemoryWorkspaceIds))));
 }
 
 async function ensureGitignore(rootPath: string): Promise<void> {

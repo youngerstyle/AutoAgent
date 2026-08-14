@@ -25,6 +25,82 @@ export function workspaceAutoAgentDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, ".autoagent");
 }
 
+export function workspaceEvolutionLedgerFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "ledger.jsonl");
+}
+
+export function workspaceEvolutionArtifactFile(workspaceRoot: string, contentHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "artifacts", contentHash, "artifact.txt");
+}
+
+export function workspaceEvolutionArtifactManifestFile(workspaceRoot: string, contentHash: string, candidateId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "artifacts", contentHash, "manifests", `${candidateId}.json`);
+}
+
+export function workspaceEvolutionSkillEntrypointFile(workspaceRoot: string, contentHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "artifacts", contentHash, "SKILL.md");
+}
+
+export function workspaceEvolutionEpisodesFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "episodes.jsonl");
+}
+
+export function workspaceEvolutionAttributionsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "attributions.jsonl");
+}
+
+export function workspaceEvolutionExtractionJobsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "extraction-jobs.jsonl");
+}
+
+export function workspaceEvolutionExtractionLeaseFile(workspaceRoot: string, jobId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "leases", "extraction", `${jobId}.json`);
+}
+
+export function workspaceEvolutionEvalSuiteFile(workspaceRoot: string, contentHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "eval-suites", contentHash, "suite.json");
+}
+
+export function workspaceEvolutionEvalSuiteIndexFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "eval-suites", "index.jsonl");
+}
+
+export function workspaceEvolutionEvaluationsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "evaluations.jsonl");
+}
+
+export function workspaceEvolutionEvaluationJobsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "evaluation-jobs.jsonl");
+}
+
+export function workspaceEvolutionEvaluationLeaseFile(workspaceRoot: string, jobId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "leases", "evaluation", `${jobId}.json`);
+}
+
+export function workspaceEvolutionEvaluationCommandFile(workspaceRoot: string, commandHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "evaluation-commands", `${commandHash}.json`);
+}
+
+export function workspaceEvolutionPromotionsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "promotions.jsonl");
+}
+
+export function workspaceEvolutionTelemetryFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "telemetry.jsonl");
+}
+
+export function workspaceEvolutionMemoryLifecycleFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "memory-lifecycle.jsonl");
+}
+
+export function workspaceEvolutionActiveReleaseFile(workspaceRoot: string, stage: "canary" | "production", pointerKey: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "active", stage, `${pointerKey}.json`);
+}
+
+export function workspaceEvolutionReleaseFile(workspaceRoot: string, releaseId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "releases", releaseId, "manifest.json");
+}
+
 export function workspaceFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "workspace.json");
 }

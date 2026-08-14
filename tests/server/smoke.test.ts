@@ -14,6 +14,7 @@ describe("health", () => {
       ready: false,
       name: "AutoAgent",
       runtimeHosts: { status: "not_started" },
+      evolution: { running: false, evaluatorConfigured: false, workspacesScanned: 0, evaluationJobsProcessed: 0 },
     });
   });
 

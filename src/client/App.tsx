@@ -21,6 +21,7 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Sparkles,
   UserRound,
   UserPlus,
   Users,
@@ -41,11 +42,16 @@ import {
   getLoopDebugLog,
   getHealth,
   getSnapshot,
+  getEvolutionOverview,
   listAgentProfiles,
   listAvailableSkills,
   listAgents,
   listModelConfigs,
   listWorkspaces,
+  maintainEvolutionMemories,
+  pinEvolutionMemory,
+  reconcileEvolution,
+  restoreEvolutionMemory,
   pauseTask,
   removeWorkspaceAgent,
   reconcileHealth,
@@ -63,6 +69,7 @@ import {
   type AvailableSkill,
   type AgentProfileCreateInput,
   type RuntimeHealth,
+  type EvolutionOverview,
   type WorkspaceAgentConfig,
 } from "./api";
 import { agentProfileCardSummary } from "./agent-profile-card";
@@ -82,7 +89,7 @@ import { buildTicketInspectorItems, type TicketInspectorItem } from "./ticket-in
 import { mergeEventBuffer } from "./live-events";
 
 const LIVE_EVENT_BUFFER_LIMIT = 80;
-type AppView = "office" | "projects" | "people" | "providers" | "operations";
+type AppView = "office" | "projects" | "people" | "providers" | "evolution" | "operations";
 
 type RealProviderName = Exclude<ProviderName, "mock">;
 
@@ -164,6 +171,8 @@ export function App() {
   const [agentProfiles, setAgentProfiles] = useState<AgentProfile[]>([]);
   const [availableSkills, setAvailableSkills] = useState<AvailableSkill[]>([]);
   const [modelConfigs, setModelConfigs] = useState<ModelConfig[]>([]);
+  const [evolution, setEvolution] = useState<EvolutionOverview>();
+  const [evolutionLoading, setEvolutionLoading] = useState(false);
   const [modelConfigDraft, setModelConfigDraft] = useState<ModelConfigDraft>({
     name: "",
     provider: "openai",
@@ -214,6 +223,7 @@ export function App() {
     setEvents([]);
     setLoopDebugLog({ entries: [] });
     setAgents([]);
+    setEvolution(undefined);
     setSelectedAgentId("");
     void refreshSnapshot(selectedId);
     void refreshAgents(selectedId);
@@ -232,6 +242,10 @@ export function App() {
     };
     return () => source.close();
   }, [selectedId]);
+
+  useEffect(() => {
+    if (view === "evolution" && selectedId) void refreshEvolution(selectedId);
+  }, [selectedId, view]);
 
   useEffect(() => {
     const status = snapshot?.status;
@@ -355,6 +369,33 @@ export function App() {
       setError("");
     } catch (err) {
       setError((err as Error).message);
+    }
+  }
+
+  async function refreshEvolution(workspaceId = selectedId) {
+    if (!workspaceId) return;
+    setEvolutionLoading(true);
+    try {
+      const result = await getEvolutionOverview(workspaceId);
+      if (selectedWorkspaceIdRef.current !== workspaceId) return;
+      setEvolution(result);
+      setError("");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      if (selectedWorkspaceIdRef.current === workspaceId) setEvolutionLoading(false);
+    }
+  }
+
+  async function runEvolutionAction(action: () => Promise<unknown>) {
+    if (!selectedId) return;
+    setEvolutionLoading(true);
+    try {
+      await action();
+      await refreshEvolution(selectedId);
+    } catch (err) {
+      setError((err as Error).message);
+      setEvolutionLoading(false);
     }
   }
 
@@ -655,6 +696,9 @@ export function App() {
           <button className={view === "providers" ? "selected" : ""} onClick={() => setView("providers")} title="模型服务">
             <Cpu size={20} /><span>模型</span>
           </button>
+          <button className={view === "evolution" ? "selected" : ""} onClick={() => setView("evolution")} title="公司进化">
+            <Sparkles size={20} /><span>进化</span>
+          </button>
           <button className={view === "operations" ? "selected" : ""} onClick={() => setView("operations")} title="系统运营">
             <Activity size={20} /><span>运营</span>
           </button>
@@ -914,6 +958,19 @@ export function App() {
               health={health}
               onOpenOffice={() => setView("office")}
               onRefreshHealth={() => void reconcileRuntimeHealth()}
+            />
+          ) : null}
+
+          {view === "evolution" ? (
+            <EvolutionHub
+              workspace={currentWorkspace}
+              overview={evolution}
+              loading={evolutionLoading}
+              onRefresh={() => void refreshEvolution()}
+              onReconcile={() => void runEvolutionAction(() => reconcileEvolution(selectedId))}
+              onMaintain={() => void runEvolutionAction(() => maintainEvolutionMemories(selectedId))}
+              onPin={(releaseId, pinned) => void runEvolutionAction(() => pinEvolutionMemory(selectedId, releaseId, pinned))}
+              onRestore={(releaseId) => void runEvolutionAction(() => restoreEvolutionMemory(selectedId, releaseId))}
             />
           ) : null}
         </section>
@@ -2418,6 +2475,120 @@ function thinkingLevelOptions(): Array<{ value: ModelConfig["thinkingLevel"]; la
     { value: "xhigh", label: "很高" },
     { value: "max", label: "最高" },
   ];
+}
+
+function EvolutionHub(props: {
+  workspace?: Workspace;
+  overview?: EvolutionOverview;
+  loading: boolean;
+  onRefresh: () => void;
+  onReconcile: () => void;
+  onMaintain: () => void;
+  onPin: (releaseId: string, pinned: boolean) => void;
+  onRestore: (releaseId: string) => void;
+}) {
+  const candidates = props.overview?.candidates ?? [];
+  const releases = props.overview?.releases ?? [];
+  const jobs = props.overview?.evaluationJobs ?? [];
+  const memories = props.overview?.memories ?? [];
+  const activeProduction = releases.filter((item) => item.stage === "production" && item.status === "active").length;
+  const pendingJobs = jobs.filter((item) => item.status === "pending" || item.status === "running" || item.status === "retry_wait").length;
+
+  return (
+    <section className="evolution-hub">
+      <header className="management-header evolution-header">
+        <div>
+          <span className="section-kicker">Evidence-driven governance</span>
+          <h2>公司进化</h2>
+          <p>查看从 Episode、候选变更、隔离评测到分级发布的完整证据链。这里不会绕过评测或直接改写生产能力。</p>
+        </div>
+        <div className="evolution-actions">
+          <button type="button" onClick={props.onReconcile} disabled={!props.workspace || props.loading}>重建经验</button>
+          <button type="button" onClick={props.onMaintain} disabled={!props.workspace || props.loading}>运行生命周期</button>
+          <button type="button" className="primary-action" onClick={props.onRefresh} disabled={!props.workspace || props.loading}>
+            <RefreshCw size={15} />{props.loading ? "刷新中" : "刷新"}
+          </button>
+        </div>
+      </header>
+
+      {!props.workspace ? <div className="evolution-empty">请先选择一个项目。</div> : (
+        <>
+          <section className="evolution-metrics" aria-label="进化治理概览">
+            <div><span>候选</span><strong>{candidates.length}</strong><small>只读候选与不可变 revision</small></div>
+            <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
+            <div><span>生产发布</span><strong>{activeProduction}</strong><small>已通过 canary telemetry</small></div>
+            <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
+          </section>
+
+          <div className="evolution-grid">
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Candidate ledger</span><h3>候选与验证</h3></div></header>
+              <div className="evolution-list">
+                {candidates.length ? candidates.slice().reverse().map((candidate) => (
+                  <article key={candidate.candidateId}>
+                    <div><strong>{candidate.title}</strong><small>{candidate.kind} · {candidate.target} · r{candidate.revision}</small></div>
+                    <span className={`evolution-status ${candidate.status}`}>{candidate.status}</span>
+                    <p>{candidate.hypothesis}</p>
+                    <code>{candidate.contentHash.slice(0, 16)}</code>
+                  </article>
+                )) : <p className="evolution-empty">尚无证据达到候选生成阈值。</p>}
+              </div>
+            </section>
+
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Promotion ledger</span><h3>分级发布</h3></div></header>
+              <div className="evolution-list compact">
+                {releases.length ? releases.slice().reverse().map((release) => (
+                  <article key={release.promotionId}>
+                    <div><strong>{release.stage}</strong><small>{release.toRelease.version} · {release.status}</small></div>
+                    <span className={`evolution-status ${release.status}`}>{release.status}</span>
+                    <p>candidate {release.candidateId.slice(0, 18)} · policy {release.policyRef.version}</p>
+                    <code>{release.toRelease.contentHash.slice(0, 16)}</code>
+                  </article>
+                )) : <p className="evolution-empty">尚无 shadow、canary 或 production 发布。</p>}
+              </div>
+            </section>
+
+            <section className="evolution-panel">
+              <header>
+                <div><span className="section-kicker">Evaluation workers</span><h3>隔离评测作业</h3></div>
+                <span className={`evolution-status ${props.overview?.worker.evaluatorConfigured ? "active" : "failed"}`}>
+                  {props.overview?.worker.evaluatorConfigured ? (props.overview.worker.running ? "running" : "ready") : "not configured"}
+                </span>
+              </header>
+              <div className="evolution-list compact">
+                {jobs.length ? jobs.slice().reverse().map((job) => (
+                  <article key={job.jobId}>
+                    <div><strong>{job.status}</strong><small>attempt {job.attempts}/{job.maxAttempts}</small></div>
+                    <span className={`evolution-status ${job.status}`}>{job.result?.decision ?? job.status}</span>
+                    <p>{job.request.suiteRef.id}@{job.request.suiteRef.version}</p>
+                    {job.lastError ? <small className="evolution-error">{job.lastError.message}</small> : null}
+                  </article>
+                )) : <p className="evolution-empty">没有排队中的隔离评测。</p>}
+              </div>
+            </section>
+
+            <section className="evolution-panel memory-panel">
+              <header><div><span className="section-kicker">Layered memory</span><h3>长期记忆生命周期</h3></div></header>
+              <div className="evolution-list">
+                {memories.length ? memories.slice().reverse().map((memory) => (
+                  <article key={memory.releaseId}>
+                    <div><strong>{memory.target}</strong><small>{memory.status} · 使用 {memory.useCount} 次 · 成功 Episode {memory.successfulEpisodeCount}</small></div>
+                    <span className={`evolution-status ${memory.status}`}>{memory.pinned ? "pinned" : memory.status}</span>
+                    <p>{memory.lastUsedAt ? `最近使用 ${new Date(memory.lastUsedAt).toLocaleString("zh-CN")}` : "尚无终态 Episode 证明使用"}</p>
+                    <div className="memory-actions">
+                      <button type="button" onClick={() => props.onPin(memory.releaseId, !memory.pinned)} disabled={props.loading}>{memory.pinned ? "取消固定" : "固定"}</button>
+                      {memory.status !== "active" ? <button type="button" onClick={() => props.onRestore(memory.releaseId)} disabled={props.loading}>恢复 active</button> : null}
+                    </div>
+                  </article>
+                )) : <p className="evolution-empty">尚无 production Memory release。</p>}
+              </div>
+            </section>
+          </div>
+        </>
+      )}
+    </section>
+  );
 }
 
 function OperationsHub(props: {

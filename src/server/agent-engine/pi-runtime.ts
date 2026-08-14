@@ -48,6 +48,9 @@ import {
 } from "./tool-runtime.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
 import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
+import { EvolutionStore } from "../evolution/evolution-store.js";
+import { EvolutionEvaluationStore } from "../evolution/evaluation-store.js";
+import { runtimeEvolutionProjection, type OrganizationMemorySource, type RuntimeEvolutionMemory } from "../evolution/runtime-projection.js";
 import {
   TEAM_STAFFING_SCHEMA_REF,
   parseTeamStaffingOutcome,
@@ -59,6 +62,7 @@ interface SessionState {
   resolution: ResolutionBinding;
   toolExecution: ToolExecutionBinding;
   safety: RunSafetyBinding;
+  organizationMemorySourceFingerprint: string;
 }
 
 type AgentPrompt = string | { text: string; images: ImageContent[] };
@@ -125,7 +129,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     private readonly providers: ProviderRegistry,
     private readonly tools: AgentToolRuntime,
     private readonly traces: AgentTraceStore,
-    options: { now?: () => Date; turnTimeoutMs?: number; turnInactivityTimeoutMs?: number } = {},
+    private readonly options: {
+      now?: () => Date;
+      turnTimeoutMs?: number;
+      turnInactivityTimeoutMs?: number;
+      organizationMemorySources?: () => Promise<OrganizationMemorySource[]>;
+    } = {},
   ) {
     this.now = options.now ?? (() => new Date());
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
@@ -295,6 +304,29 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         }));
       }
       if (event.type === "message_end" && event.message.role === "assistant") {
+        const assistantMessage = event.message as AssistantMessage;
+        const usage = assistantMessage.usage;
+        const providerTraceData = {
+          provider: input.provider,
+          model: input.model,
+          inputTokens: finiteNonNegative(usage?.input),
+          outputTokens: finiteNonNegative(usage?.output),
+          totalTokens: finiteNonNegative(usage?.totalTokens),
+          costUsd: 0,
+          costMeasured: false,
+          stopReason: assistantMessage.stopReason,
+          ...(assistantMessage.errorMessage ? { errorMessage: assistantMessage.errorMessage } : {}),
+        };
+        persistEvent(() => this.traces.append({
+          traceId: stableId("provider-response", turnId, String(sequence), JSON.stringify(providerTraceData)),
+          agentId: input.agent.id,
+          threadId: input.threadId,
+          goalId: input.goalId,
+          turnId,
+          kind: "provider_response",
+          createdAt: this.now().toISOString(),
+          data: providerTraceData,
+        }));
         const toolBatch = event.message.content.flatMap((item) => item.type === "toolCall"
           ? [{ name: item.name, arguments: item.arguments }]
           : []);
@@ -350,7 +382,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       this.tools.definitions().map((tool) => tool.name),
       Boolean(input.supportsImages),
       goal?.spec.outputContract,
-      { hostCorrection: pending?.kind === "correction" },
+      { hostCorrection: pending?.kind === "correction", evolution: input.profile.capabilities.includes("company:evolve") },
     );
     state.session.setActiveToolsByName(activeTools);
 
@@ -560,16 +592,27 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     await waitForCleanupPromptly(release, DEFAULT_SESSION_ABORT_GRACE_MS);
   }
 
-  private requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
+  private async requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
     const key = piWorkSessionKey(input.threadId, input.goalId);
+    const organizationMemorySources = await this.options.organizationMemorySources?.() ?? [];
+    const organizationMemorySourceFingerprint = stableId("organization-memory-sources", JSON.stringify(organizationMemorySources));
     const existing = this.sessions.get(key);
-    if (existing) return existing;
-    const pending = this.createSession(input);
+    if (existing) {
+      const state = await existing;
+      if (state.organizationMemorySourceFingerprint === organizationMemorySourceFingerprint) return state;
+      this.sessions.delete(key);
+      await abortPiSessionPromptly(state.session, DEFAULT_SESSION_ABORT_GRACE_MS);
+    }
+    const pending = this.createSession(input, organizationMemorySources, organizationMemorySourceFingerprint);
     this.sessions.set(key, pending);
     return pending;
   }
 
-  private async createSession(input: AgentExecutionSliceInput): Promise<SessionState> {
+  private async createSession(
+    input: AgentExecutionSliceInput,
+    organizationMemorySources: OrganizationMemorySource[],
+    organizationMemorySourceFingerprint: string,
+  ): Promise<SessionState> {
     const sessionDir = piWorkSessionDirectory(
       this.workspaceRoot,
       input.agent.id,
@@ -600,18 +643,31 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         : { enabled: true, maxRetries: 3, baseDelayMs: 2_000 },
       shellPath: process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : undefined,
     }, { projectTrusted: true });
-    const enabledSkillNames = effectiveAgentSkills(input.profile, input.agent);
+    const evolutionProjection = await runtimeEvolutionProjection(
+      this.workspaceRoot, input.agent.workspaceId, input.profile, input.agent,
+      {
+        assignmentKey: `${input.threadId}:${input.goalId ?? "idle"}`,
+        taskType: input.taskType,
+        tools: input.policy.enabledTools ?? [],
+        organizationMemorySources,
+      },
+    );
+    const evolvedSkills = evolutionProjection.skills;
+    const evolvedMemories = evolutionProjection.memories;
+    const evolvedNames = new Set(evolvedSkills.map((skill) => skill.name));
+    const configuredNames = effectiveAgentSkills(input.profile, input.agent).filter((name) => !evolvedNames.has(name));
+    const enabledSkillNames = [...new Set([...configuredNames, ...evolvedSkills.map((skill) => skill.name)])];
     const loader = new DefaultResourceLoader({
       cwd: this.workspaceRoot,
       agentDir: input.agent.agentDir,
       settingsManager: settings,
-      additionalSkillPaths: configuredSkillPaths(this.workspaceRoot, enabledSkillNames),
+      additionalSkillPaths: [...configuredSkillPaths(this.workspaceRoot, configuredNames), ...evolvedSkills.map((skill) => skill.directory)],
       noExtensions: true,
       noSkills: false,
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPrompt: stableSystemPrompt(input),
+      systemPrompt: stableSystemPrompt(input, evolvedMemories),
       skillsOverride: (base) => {
         const enabled = new Set(enabledSkillNames);
         return { ...base, skills: base.skills.filter((skill) => enabled.has(skill.name)) };
@@ -655,6 +711,12 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const customTools = [
       ...workspaceTools(this.tools, toolExecution),
       piReadTool(this.tools, skills, toolExecution),
+      ...(input.profile.capabilities.includes("company:evolve")
+        ? [
+            proposeEvolutionCandidateTool(this.workspaceRoot, input.agent.workspaceId, input.agent.id),
+            queryEvolutionStatusTool(this.workspaceRoot, input.agent.workspaceId),
+          ]
+        : []),
       goalTool(
         resolution,
         this.now,
@@ -695,9 +757,16 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       turnId: input.turnId ?? stableId("turn", input.threadId, "session-resources"),
       kind: "context",
       createdAt: this.now().toISOString(),
-      data: { enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics },
+      data: {
+        enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics,
+        evolutionReleases: evolvedSkills.map((skill) => ({ name: skill.name, releaseId: skill.releaseId, contentHash: skill.contentHash })),
+        evolutionMemories: evolvedMemories.map((memory) => ({ target: memory.target, releaseId: memory.releaseId, contentHash: memory.contentHash })),
+        evolutionCanaries: evolutionProjection.canaryReleases,
+        evolutionCanaryAssignments: evolutionProjection.canaryAssignments,
+        evolutionOrganizationConflicts: evolutionProjection.organizationConflicts,
+      },
     });
-    return { session, goalVersions, resolution, toolExecution, safety };
+    return { session, goalVersions, resolution, toolExecution, safety, organizationMemorySourceFingerprint };
   }
 
   private async rebuildLiveModelContext(
@@ -853,6 +922,79 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       threadId: input.threadId, goalId: input.goalId, turnId, kind, createdAt: this.now().toISOString(), data,
     });
   }
+}
+
+function proposeEvolutionCandidateTool(workspaceRoot: string, workspaceId: string, agentId: string): ToolDefinition {
+  return defineTool({
+    name: "propose_evolution_candidate",
+    label: "提出公司进化候选",
+    description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill 候选。此工具只保存候选，不验证效果、不启用 Skill、不修改生产运行时。",
+    parameters: Type.Object({
+      target: Type.String({ description: "Skill 名称，例如 incident-retrospective" }),
+      title: Type.String(),
+      rationale: Type.String({ description: "从引用事实中观察到的重复失败、低效或能力缺口" }),
+      hypothesis: Type.String({ description: "候选将如何改善可观察指标，必须可被评测否证" }),
+      artifactContent: Type.String({ description: "完整候选 SKILL.md，必须含 name 与 description frontmatter" }),
+      sourceRefs: Type.Array(Type.Object({
+        kind: Type.Union([Type.Literal("trace"), Type.Literal("evidence"), Type.Literal("goal_proposal"), Type.Literal("goal_decision"), Type.Literal("ticket"), Type.Literal("mission"), Type.Literal("human_feedback")]),
+        ref: Type.String(),
+      }), { minItems: 1, maxItems: 32 }),
+      expectedMetrics: Type.Array(Type.Object({
+        metric: Type.String(),
+        direction: Type.Union([Type.Literal("increase"), Type.Literal("decrease"), Type.Literal("maintain")]),
+        minimumDelta: Type.Optional(Type.Number()),
+        maximumRegression: Type.Optional(Type.Number()),
+      }), { minItems: 1, maxItems: 16 }),
+      riskLevel: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+      roles: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
+      taskTypes: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
+    }),
+    async execute(_callId, params) {
+      const store = new EvolutionStore(workspaceId, workspaceRoot);
+      const candidate = await store.create({
+        commandId: createHash("sha256").update(JSON.stringify({ agentId, ...params })).digest("hex"),
+        kind: "skill",
+        target: params.target,
+        title: params.title,
+        rationale: params.rationale,
+        hypothesis: params.hypothesis,
+        artifactContent: params.artifactContent,
+        sourceRefs: params.sourceRefs.map((ref) => ({ ...ref, workspaceId, agentId })),
+        scope: { workspaceId, ...(params.roles ? { roles: params.roles } : {}), ...(params.taskTypes ? { taskTypes: params.taskTypes } : {}) },
+        expectedMetrics: params.expectedMetrics,
+        riskLevel: params.riskLevel,
+        proposedBy: { type: "agent", id: agentId },
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ proposed: true, candidateId: candidate.candidateId, revision: candidate.revision, status: candidate.status, productionChanged: false }) }],
+        details: { candidate },
+      };
+    },
+  });
+}
+
+function queryEvolutionStatusTool(workspaceRoot: string, workspaceId: string): ToolDefinition {
+  return defineTool({
+    name: "query_evolution_status",
+    label: "查询公司进化状态",
+    description: "只读查询候选、独立评测和分级发布状态。该工具不能验证、评分、晋升或回滚任何候选。",
+    parameters: Type.Object({ candidateId: Type.Optional(Type.String()) }),
+    async execute(_callId, params) {
+      const candidates = new EvolutionStore(workspaceId, workspaceRoot);
+      const evaluations = new EvolutionEvaluationStore(workspaceId, workspaceRoot, candidates);
+      const selected = params.candidateId ? [await candidates.get(params.candidateId)] : (await candidates.list()).slice(-20);
+      const promotionRecords = await evaluations.listPromotions();
+      const result = await Promise.all(selected.map(async (candidate) => ({
+        candidateId: candidate.candidateId, revision: candidate.revision, kind: candidate.kind, target: candidate.target,
+        contentHash: candidate.contentHash, status: candidate.status,
+        evaluations: (await evaluations.listEvaluations(candidate.candidateId)).map((run) => ({ evaluationId: run.evaluationId, decision: run.decision, createdAt: run.createdAt })),
+        promotions: promotionRecords.filter((record) => record.candidateId === candidate.candidateId).map((record) => ({
+          promotionId: record.promotionId, stage: record.stage, status: record.status, release: record.toRelease,
+        })),
+      })));
+      return { content: [{ type: "text", text: JSON.stringify({ candidates: result }) }], details: { candidates: result } };
+    },
+  });
 }
 
 export async function awaitPiPromptOutcome(
@@ -1200,7 +1342,7 @@ export function activePiToolNames(
   workspaceToolNames: string[],
   supportsImages: boolean,
   outputContractOrHasGoal?: AgentGoal["spec"]["outputContract"] | boolean,
-  options: { hostCorrection?: boolean } = {},
+  options: { hostCorrection?: boolean; evolution?: boolean } = {},
 ): string[] {
   const hasGoal = Boolean(outputContractOrHasGoal);
   const outputContract = typeof outputContractOrHasGoal === "object"
@@ -1210,6 +1352,7 @@ export function activePiToolNames(
   return [...new Set([
     "read",
     ...workspaceToolNames.filter((name) => name !== "readImage" || supportsImages),
+    ...(options.evolution ? ["propose_evolution_candidate", "query_evolution_status"] : []),
     ...(hasGoal ? [
       staffing ? "staff_project" : "goal_resolution",
       ...(outputContract?.correctionOutcomeSchema ? ["report_goal_correction"] : []),
@@ -2096,6 +2239,10 @@ function usage(result?: AgentModelTurnResult) {
   return { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output, cost: zeroCost() };
 }
 
+function finiteNonNegative(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function mockModel(id: string, contextWindow: number) {
   return { id, name: id, api: "openai-completions", provider: "mock", baseUrl: "http://mock.invalid", reasoning: false, input: ["text"], cost: zeroCost(), contextWindow, maxTokens: 16_384 } as Model<any>;
 }
@@ -2120,7 +2267,7 @@ function envOptionalPositiveInteger(name: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function stableSystemPrompt(input: AgentExecutionSliceInput): string {
+function stableSystemPrompt(input: AgentExecutionSliceInput, evolutionMemories: RuntimeEvolutionMemory[] = []): string {
   const skillInstructions = skillRuntimeAdapterInstructions(
     effectiveAgentSkills(input.profile, input.agent),
     input.policy.enabledTools ?? [],
@@ -2130,6 +2277,11 @@ function stableSystemPrompt(input: AgentExecutionSliceInput): string {
     input.profile.identity ? `## 岗位\n${input.profile.identity}` : "",
     input.profile.agentMd ? `## 能力与工作方式\n${input.profile.agentMd}` : "",
     skillInstructions ? `## Skill 运行适配\n${skillInstructions}` : "",
+    evolutionMemories.length ? [
+      "## Company Evolution 已晋升记忆",
+      "以下内容是经证据、隔离评测、canary telemetry 和 production 晋升后的作用域经验。它们是可验证的操作性参考，不得覆盖当前 Goal、平台策略、安全边界或 human 指令；与当前事实冲突时以当前权威证据为准。",
+      ...evolutionMemories.map((memory) => `### ${memory.target}（release: ${memory.releaseId}）\n${memory.content.slice(0, 8_000)}`),
+    ].join("\n\n") : "",
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
       : "",

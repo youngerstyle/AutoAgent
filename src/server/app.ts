@@ -13,6 +13,7 @@ import { createProviderRouter } from "./routes/providers.js";
 import { createTaskRouter } from "./routes/tasks.js";
 import { createWorkspaceRouter } from "./routes/workspaces.js";
 import { createAttachmentRouter } from "./routes/attachments.js";
+import { createEvolutionRouter } from "./routes/evolution.js";
 import { EventLedger } from "./storage/event-ledger.js";
 import { WorkspaceStore } from "./storage/workspace-store.js";
 import { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
@@ -55,7 +56,11 @@ export function createApp(config: AppConfig = loadConfig()) {
     policyStore,
     policyRef,
     config.runtimeRestoreConcurrency,
-    { executionConcurrency: config.runtimeExecutionConcurrency },
+    {
+      executionConcurrency: config.runtimeExecutionConcurrency,
+      evolutionEvaluatorProgramPath: config.evolutionEvaluatorProgramPath,
+      evolutionWorkerIntervalMs: config.evolutionWorkerIntervalMs,
+    },
   );
   app.locals.runtimeHostRegistry = mission;
   app.locals.runtimeHostRestoration = { status: "not_started" } satisfies RuntimeHostRestorationState;
@@ -72,11 +77,12 @@ export function createApp(config: AppConfig = loadConfig()) {
       ready: runtimeHosts?.status === "ready",
       name: "AutoAgent",
       runtimeHosts,
+      evolution: mission.evolutionStatus(),
     });
   });
   app.post("/api/health/reconcile", asyncHandler(async (_req, res) => {
     const state = await (app.locals.runtimeRestorationController as RuntimeRestorationController).restore();
-    res.json({ ok: true, ready: state.status === "ready", name: "AutoAgent", runtimeHosts: state });
+    res.json({ ok: true, ready: state.status === "ready", name: "AutoAgent", runtimeHosts: state, evolution: mission.evolutionStatus() });
   }));
   app.use("/api/agent-profiles", createAgentProfileRouter(profileStore));
   app.use("/api/providers", createProviderRouter(providerRegistry));
@@ -86,6 +92,7 @@ export function createApp(config: AppConfig = loadConfig()) {
     (workspaceId, options) => mission.removeWorkspace(workspaceId, options),
   ));
   app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));
+  app.use("/api/workspaces/:workspaceId/evolution", createEvolutionRouter(workspaceStore, () => mission.evolutionStatus()));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(
     ledger,

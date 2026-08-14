@@ -26,6 +26,7 @@ import { listWorkspaceAgents, selectProjectOwnerProfile } from "../agents/roster
 import { resolvePolicy } from "../policy/policy.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { StaffingRequestStore, type StaffingRequestRecord } from "./staffing-request-store.js";
+import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
 
 interface StaffingRuntime {
   engine: AgentEngine<TeamStaffingOutcome>;
@@ -64,6 +65,7 @@ export class StaffingCoordinator {
       baseDelayMs: number;
       maxDelayMs: number;
     } = { maxProviderFailures: 3, baseDelayMs: 5_000, maxDelayMs: 60_000 },
+    private readonly organizationMemorySources?: () => Promise<OrganizationMemorySource[]>,
   ) {
     this.store = new StaffingRequestStore(workspace.rootPath);
   }
@@ -208,6 +210,7 @@ export class StaffingCoordinator {
       supportsReasoning: modelRuntime.supportsReasoning,
       supportsImages: modelRuntime.supportsImages,
       thinkingLevel: modelRuntime.thinkingLevel,
+      taskType: "staffing",
     });
     request = await this.requireRequest(taskId);
     if (request.proposal) return { request, outcome: request.proposal };
@@ -362,7 +365,7 @@ export class StaffingCoordinator {
         this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: this.now },
+        { now: this.now, organizationMemorySources: this.organizationMemorySources },
       ),
     };
     this.runtimes.set(request.taskId, runtime);

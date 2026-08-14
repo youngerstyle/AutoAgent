@@ -43,6 +43,7 @@ import { RuntimeHostStore, type RuntimeRetryState, type RuntimeTaskError, type R
 import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
 import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
 import type { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
+import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
@@ -97,6 +98,7 @@ export class RuntimeHost {
       scheduler?: RuntimeHostScheduler;
       schedulerKey?: string;
       executionGate?: RuntimeExecutionGate;
+      organizationMemorySources?: () => Promise<OrganizationMemorySource[]>;
     } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
@@ -112,6 +114,7 @@ export class RuntimeHost {
         baseDelayMs: options.staffingProviderRetryBaseMs ?? 5_000,
         maxDelayMs: options.staffingProviderRetryMaxMs ?? 60_000,
       },
+      options.organizationMemorySources,
     );
   }
 
@@ -1641,7 +1644,7 @@ export class RuntimeHost {
         this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: () => this.now() },
+        { now: () => this.now(), organizationMemorySources: this.options.organizationMemorySources },
       ));
     }
     const manager = new MissionProcessManager(
@@ -1702,6 +1705,7 @@ export class RuntimeHost {
   }
 
   private async sliceInput(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string) {
+    const workItem = await context.tickets.getWorkItem(link.ticketId);
     return this.sliceInputForAgent(
       context,
       link.agentId,
@@ -1710,6 +1714,7 @@ export class RuntimeHost {
       turnId,
       triggerMessageId,
       link.attemptId,
+      workItem?.definition.outputContract.schemaRef,
     );
   }
 
@@ -1721,6 +1726,7 @@ export class RuntimeHost {
     turnId?: string,
     triggerMessageId?: string,
     attemptId?: string,
+    taskType?: string,
   ) {
     const agent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
@@ -1733,6 +1739,7 @@ export class RuntimeHost {
       triggerMessageId,
       goalId,
       attemptId,
+      taskType,
       profile,
       agent,
       policy: resolvePolicy(this.workspace, agent, profile),
