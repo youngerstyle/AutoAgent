@@ -103,14 +103,14 @@ describe("RuntimeHost", () => {
   it("continues only the recovered blocked owner while its Plan remains blocked", () => {
     expect(canContinueRecoveredBlockedWork({
       planStatus: "blocked",
-      ticketStatus: "blocked",
+      ticketStatus: "running",
       linkStatus: "running",
       authorityKind: "blocked_owner",
       goalStatus: "active",
     })).toBe(true);
     expect(canContinueRecoveredBlockedWork({
       planStatus: "blocked",
-      ticketStatus: "blocked",
+      ticketStatus: "running",
       linkStatus: "running",
       authorityKind: "claim",
       goalStatus: "active",
@@ -124,7 +124,7 @@ describe("RuntimeHost", () => {
     })).toBe(false);
     expect(canContinueRecoveredBlockedWork({
       planStatus: "blocked",
-      ticketStatus: "blocked",
+      ticketStatus: "running",
       linkStatus: "running",
       authorityKind: "blocked_owner",
       goalStatus: "blocked",
@@ -220,12 +220,14 @@ describe("RuntimeHost", () => {
     const context = fixture.host.context("task-human-input-tool")!;
     const blockedLink = (await context.manager.current()).links.find((link) => link.status === "blocked")!;
     const blockedGoalId = blockedLink.agentGoalId!;
-    await fixture.host.sendAgentMessage(
+    const resumedSnapshot = await fixture.host.sendAgentMessage(
       "task-human-input-tool",
       blockedLink.agentId,
       "人工验证发现视觉不符合目标，请依据反馈继续判断",
       "human-manual-test-result",
     );
+    expect(resumedSnapshot.tickets?.find((ticket) => ticket.id === blockedLink.ticketId)?.status).toBe("running");
+    expect(resumedSnapshot.status).toBe("running");
     await waitFor(async () => modelTurns === 2, 5_000);
 
     const resumedLink = (await context.manager.current()).links.find((link) => link.agentGoalId === blockedGoalId);
@@ -1947,6 +1949,15 @@ describe("RuntimeHost", () => {
     await waitFor(async () => modelTurns === 2, 5_000);
 
     expect(modelTurns).toBe(2);
+    const mission = await fixture.host.context("task-blocked-paused-message")!.manager.current();
+    const events = await fixture.host.context("task-blocked-paused-message")!.tickets.readEvents({
+      planId: mission.record.planId,
+      limit: 100,
+    });
+    expect(events.events).toContainEqual(expect.objectContaining({
+      aggregateType: "ticket",
+      payload: { type: "TicketResumedAfterInput", inputMessageId: "blocked-message-while-paused" },
+    }));
   });
 
   it("queues a human message behind the active turn for the same Agent", async () => {

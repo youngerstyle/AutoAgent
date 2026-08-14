@@ -317,6 +317,11 @@ export interface BlockTicketCommand {
   requiredInput: TicketRequiredInput;
 }
 
+export interface ResumeTicketAfterInputCommand {
+  type: "resume_after_input";
+  inputMessageId: string;
+}
+
 export interface RequestCorrectionCommand {
   type: "request_correction";
   targetTicketId: TicketId;
@@ -340,6 +345,7 @@ export interface FailTicketCommand {
 export type TicketCommandPayload =
   | CompleteTicketCommand
   | BlockTicketCommand
+  | ResumeTicketAfterInputCommand
   | RequestCorrectionCommand
   | RequestPlanChangeCommand
   | FailTicketCommand;
@@ -362,7 +368,7 @@ export type TicketCommandResult =
       accepted: true;
       commandId: string;
       proposalId: string;
-      ticketStatus: "pending" | "blocked" | "completed" | "returned" | "failed";
+      ticketStatus: "pending" | "running" | "blocked" | "completed" | "returned" | "failed";
       ticketVersion: number;
       planStatus: PlanStatus;
       planVersion: number;
@@ -504,6 +510,7 @@ export type TicketAggregateEventPayload =
   | { type: "TicketClaimed"; claimId: string; attemptId: string; attemptNumber: number }
   | { type: "ClaimExpired"; claimId: string }
   | { type: "TicketBlocked"; requiredInput: TicketRequiredInput }
+  | { type: "TicketResumedAfterInput"; inputMessageId: string }
   | { type: "TicketAttemptReturned"; correctionTicketId: TicketId }
   | {
       type: "TicketTerminal";

@@ -506,8 +506,15 @@ export class RuntimeHost {
     });
     if (!appended) return { appended: false, turnId, goalId, deferred };
     if (goalId && !deferred) {
+      let mayResumeGoal = true;
+      if (link?.status === "blocked") {
+        const mission = await context.manager.resumeBlockedAgentAfterInput(agentId, messageId);
+        mayResumeGoal = mission.links.some((item) => (
+          item.dispatchId === link.dispatchId && item.status === "running"
+        ));
+      }
       const goal = await engine.getGoal(goalId);
-      if (goal && (goal.status === "paused" || goal.status === "blocked" || goal.status === "usage_limited")) {
+      if (mayResumeGoal && goal && (goal.status === "paused" || goal.status === "blocked" || goal.status === "usage_limited")) {
         await engine.controlGoal({
           requestId: stableId("human_resume", taskId, agentId, goal.spec.id, messageId),
           goalId: goal.spec.id,
@@ -515,7 +522,6 @@ export class RuntimeHost {
           action: "resume",
           reason: "human sent a new chronological message",
         });
-        if (link.status === "blocked") await context.manager.resumeBlockedAgent(agentId);
       }
     }
     return { appended: true, turnId, goalId, deferred };
@@ -672,6 +678,8 @@ export class RuntimeHost {
       const runtime = context.loops.get(link.agentId);
       const pending = await runtime?.pendingHumanTurn(link.agentThreadId);
       if (!pending) continue;
+      const resumed = await context.manager.resumeBlockedAgentAfterInput(link.agentId, pending.triggerMessageId);
+      if (!resumed.links.some((item) => item.dispatchId === link.dispatchId && item.status === "running")) continue;
       const engine = context.engines.get(link.agentId);
       const goal = await engine?.getGoal(link.agentGoalId);
       if (goal && (goal.status === "blocked" || goal.status === "paused" || goal.status === "usage_limited")) {
@@ -683,7 +691,6 @@ export class RuntimeHost {
           reason: "a chronological human message was queued while the Plan was paused",
         });
       }
-      await context.manager.resumeBlockedAgent(link.agentId);
     }
   }
 
@@ -1899,10 +1906,10 @@ export function planAllowsActiveAgentExecution(planStatus: string): boolean {
 
 /**
  * A blocked Plan is normally a closed execution gate. A human reply is the
- * durable recovery signal for the blocked owner: the same Goal and Mission
- * link become active again, while the Ticket remains blocked until the Agent
- * submits its next conclusion. This keeps the recovery turn in Agent Engine
- * without inventing a business route or reopening a completed Ticket.
+ * durable recovery signal for the blocked owner: the Ticket and Mission link
+ * are resumed before the same Goal becomes active. A Plan may remain blocked
+ * when some other Ticket still needs input, so this authority-matched recovery
+ * turn is allowed through that aggregate gate.
  */
 export function canContinueRecoveredBlockedWork(input: {
   planStatus: string;
@@ -1912,7 +1919,7 @@ export function canContinueRecoveredBlockedWork(input: {
   goalStatus: string;
 }): boolean {
   return input.planStatus === "blocked"
-    && input.ticketStatus === "blocked"
+    && input.ticketStatus === "running"
     && input.linkStatus === "running"
     && input.authorityKind === "blocked_owner"
     && input.goalStatus === "active";

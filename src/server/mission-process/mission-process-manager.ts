@@ -188,11 +188,41 @@ export class MissionProcessManager {
     return this.tick();
   }
 
-  async resumeBlockedAgent(agentId: string): Promise<MissionAggregate> {
+  async resumeBlockedAgentAfterInput(agentId: string, inputMessageId: string): Promise<MissionAggregate> {
     const aggregate = await this.requireAggregate();
     const link = aggregate.links.find((item) => item.agentId === agentId && item.status === "blocked");
     if (!link || !isActiveLink(link)) return aggregate;
-    return this.updateLink(aggregate, link.dispatchId, { ...link, status: "running" });
+    const commandId = stableId("resume_ticket_after_input", link.dispatchId, inputMessageId);
+    let result = await this.tickets.getTicketCommandResult(link.planId, commandId);
+    if (!result) {
+      const ticket = await this.tickets.getTicket(link.ticketId);
+      if (!ticket || ticket.status !== "blocked" || ticket.activeAuthority?.kind !== "blocked_owner") {
+        return this.recover();
+      }
+      result = await this.tickets.applyTicket({
+        commandId,
+        proposalId: stableId("resume_ticket_after_input_proposal", link.dispatchId, inputMessageId),
+        planId: link.planId,
+        ticketId: link.ticketId,
+        expectedTicketVersion: ticket.version,
+        actorPrincipalId: link.agentPrincipalId,
+        executionRef: link.agentGoalId,
+        authority: ticket.activeAuthority,
+        issuedAt: this.now().toISOString(),
+        payload: { type: "resume_after_input", inputMessageId },
+      });
+    }
+    if (!result.accepted || result.ticketStatus !== "running") {
+      return this.recover();
+    }
+    return this.updateLink(aggregate, link.dispatchId, {
+      ...link,
+      status: "running",
+      authority: result.nextAuthority ?? link.authority,
+      ticketVersion: result.ticketVersion,
+      claimLeaseUntil: undefined,
+      lastCommandId: commandId,
+    });
   }
 
   /**

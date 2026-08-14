@@ -917,6 +917,7 @@ describe("MissionProcessManager", () => {
       .toMatchObject({ status: "blocked" });
     const blockedGoal = (await boss.getGoal(goal.spec.id))!;
     expect(blockedGoal).toMatchObject({ status: "blocked" });
+    await fixture.manager.resumeBlockedAgentAfterInput("boss", "human-follow-up-message");
     await boss.controlGoal({
       requestId: "resume-after-human-follow-up",
       goalId: blockedGoal.spec.id,
@@ -924,8 +925,8 @@ describe("MissionProcessManager", () => {
       action: "resume",
       reason: "human 已提供不可替代的事实",
     });
-    await fixture.manager.resumeBlockedAgent("boss");
     const resumedGoal = (await boss.getGoal(goal.spec.id))!;
+    expect(await fixture.tickets.getTicket(link.ticketId)).toMatchObject({ status: "running" });
 
     await boss.proposeGoalResolution({
       proposalId: "proposal-after-human-follow-up",

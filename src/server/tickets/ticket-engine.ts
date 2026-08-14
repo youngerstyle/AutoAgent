@@ -407,6 +407,14 @@ export class TicketEngine {
     if (!ticket || ticket.version !== command.expectedTicketVersion) return this.persistTicketRejection(aggregate, command, fingerprint, "version_conflict", "Ticket version conflict");
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
     if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
+    if (command.payload.type === "resume_after_input") {
+      if (ticket.status !== "blocked" || command.authority.kind !== "blocked_owner") {
+        return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Only the current blocked owner can resume a blocked Ticket after input");
+      }
+      if (!command.payload.inputMessageId.trim()) {
+        return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Input message ID is required to resume a blocked Ticket");
+      }
+    }
     if (command.payload.type === "complete") {
       const handoffError = validateCompletionHandoff(command.payload.handoff);
       if (handoffError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", handoffError);
@@ -421,7 +429,7 @@ export class TicketEngine {
       }
     }
     const activeAttempt = ticket.attempts.find((attempt) => attempt.attemptId === ticket.activeAttemptId);
-    const changeSet = command.payload.type !== "block" && activeAttempt?.workspaceBaseline
+    const changeSet = command.payload.type !== "block" && command.payload.type !== "resume_after_input" && activeAttempt?.workspaceBaseline
       ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline)
       : undefined;
     const correctionTargetId = command.payload.type === "request_correction" ? command.payload.targetTicketId : undefined;
@@ -431,6 +439,7 @@ export class TicketEngine {
       let status: TicketStatus;
       if (command.payload.type === "complete") status = "completed";
       else if (command.payload.type === "block") status = "blocked";
+      else if (command.payload.type === "resume_after_input") status = "running";
       else if (command.payload.type === "fail") status = "failed";
       else if (command.payload.type === "request_correction") status = "pending";
       else status = "returned";
@@ -443,6 +452,8 @@ export class TicketEngine {
         ? { status: "completed" as const, endedAt: command.issuedAt, executionRef: command.executionRef, handoff: structuredClone(command.payload.handoff), ...(changeSet ? { changeSet } : {}) }
         : command.payload.type === "block"
           ? { status: "blocked" as const, reason: command.payload.reason, requiredInput: structuredClone(command.payload.requiredInput) }
+          : command.payload.type === "resume_after_input"
+            ? { status: "running" as const, endedAt: undefined, reason: undefined, requiredInput: undefined }
           : command.payload.type === "fail"
             ? { status: "failed" as const, endedAt: command.issuedAt, reason: command.payload.reason, evidence: structuredClone(command.payload.evidence), ...(changeSet ? { changeSet } : {}) }
             : {
@@ -455,10 +466,13 @@ export class TicketEngine {
                   : {}),
                 ...(changeSet ? { changeSet } : {}),
               };
+      const resumesBlockedAttempt = command.payload.type === "resume_after_input";
       let tickets = current.tickets.map((item) => item.ticketId === command.ticketId ? {
         ...item, status, version: item.version + 1,
-        activeAuthority: ownership ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken } : undefined,
-        activeAttemptId: ownership ? item.activeAttemptId : undefined,
+        activeAuthority: ownership
+          ? { kind: "blocked_owner" as const, ownershipId: ownership.ownershipId, fencingToken: ownership.fencingToken }
+          : resumesBlockedAttempt ? item.activeAuthority : undefined,
+        activeAttemptId: ownership || resumesBlockedAttempt ? item.activeAttemptId : undefined,
         attempts: settleAttempt(item, item.activeAttemptId, attemptUpdate),
         ...(command.payload.type === "complete" ? {
           completion: {
@@ -560,14 +574,16 @@ export class TicketEngine {
       const settled = tickets.find((item) => item.ticketId === command.ticketId)!;
       const result: TicketCommandResult = {
         accepted: true, commandId: command.commandId, proposalId: command.proposalId,
-        ticketStatus: status as "pending" | "blocked" | "completed" | "returned" | "failed",
+        ticketStatus: status as "pending" | "running" | "blocked" | "completed" | "returned" | "failed",
         ticketVersion: settled.version, planStatus: plan.status, planVersion: plan.version,
-        ...(ownership ? { nextAuthority: settled.activeAuthority } : {}),
+        ...(ownership || resumesBlockedAttempt ? { nextAuthority: settled.activeAuthority } : {}),
       };
       const pendingEvents: TicketEvent[] = [ticketEvent(
         settled,
         command.payload.type === "block"
           ? { type: "TicketBlocked", requiredInput: structuredClone(command.payload.requiredInput) }
+          : command.payload.type === "resume_after_input"
+            ? { type: "TicketResumedAfterInput", inputMessageId: command.payload.inputMessageId }
           : command.payload.type === "request_correction"
             ? { type: "TicketAttemptReturned", correctionTicketId: appendedTicket!.ticketId }
             : { type: "TicketTerminal", status: status as "completed" | "returned" | "failed" },
@@ -593,7 +609,10 @@ export class TicketEngine {
       }
       if (plan.status !== current.plan.status) pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanStatusChanged", status: plan.status }, command.issuedAt));
       const otherBlockedOwnerships = current.blockedOwnerships.filter((owner) => owner.ticketId !== command.ticketId);
-      return appendCommand(current, { plan, tickets, definitionsByTicketId, claims: current.claims.filter((claim) => claim.ticketId !== command.ticketId), blockedOwnerships: ownership ? [...otherBlockedOwnerships, ownership] : otherBlockedOwnerships, pendingEvents }, command.commandId, fingerprint, result);
+      const blockedOwnerships = ownership
+        ? [...otherBlockedOwnerships, ownership]
+        : resumesBlockedAttempt ? current.blockedOwnerships : otherBlockedOwnerships;
+      return appendCommand(current, { plan, tickets, definitionsByTicketId, claims: current.claims.filter((claim) => claim.ticketId !== command.ticketId), blockedOwnerships, pendingEvents }, command.commandId, fingerprint, result);
       });
       return next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
     } catch (error) {

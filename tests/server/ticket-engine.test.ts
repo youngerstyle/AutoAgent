@@ -634,6 +634,212 @@ describe("TicketEngine single Plan flow", () => {
     });
   });
 
+  it("resumes a blocked Ticket and Plan through an idempotent human-input command", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({
+      requestId: "claim-before-human-input",
+      planId: fixture.planId,
+      ticketId,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    const blocked = await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      ticketId,
+      claim!,
+      "block-before-human-input",
+      {
+        type: "block",
+        reason: "need one external fact",
+        requiredInput: { kind: "external_fact", description: "provide the fact" },
+      },
+    ));
+    if (!blocked.accepted || blocked.nextAuthority?.kind !== "blocked_owner") {
+      throw new Error("Expected blocked ownership");
+    }
+    const command: TicketCommandEnvelope = {
+      commandId: "resume-after-human-input",
+      proposalId: "proposal-resume-after-human-input",
+      planId: fixture.planId,
+      ticketId,
+      expectedTicketVersion: blocked.ticketVersion,
+      actorPrincipalId: "planner",
+      executionRef: "goal",
+      authority: blocked.nextAuthority,
+      issuedAt: now,
+      payload: { type: "resume_after_input", inputMessageId: "human-message-1" },
+    };
+
+    const resumed = await fixture.engine.applyTicket(command);
+    const replayed = await fixture.engine.applyTicket(command);
+
+    expect(resumed).toEqual(replayed);
+    expect(resumed).toMatchObject({
+      accepted: true,
+      ticketStatus: "running",
+      planStatus: "active",
+      nextAuthority: blocked.nextAuthority,
+    });
+    expect(await fixture.engine.getTicket(ticketId)).toMatchObject({
+      status: "running",
+      activeAuthority: blocked.nextAuthority,
+      attempts: [{ status: "running" }],
+    });
+    const events = await fixture.engine.readEvents({ planId: fixture.planId, limit: 100 });
+    expect(events.events).toContainEqual(expect.objectContaining({
+      aggregateType: "ticket",
+      payload: { type: "TicketResumedAfterInput", inputMessageId: "human-message-1" },
+    }));
+  });
+
+  it("rejects a stale blocked-owner fence when resuming after human input", async () => {
+    const fixture = await createFixture();
+    const ticketId = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({
+      requestId: "claim-before-stale-resume",
+      planId: fixture.planId,
+      ticketId,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    const blocked = await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      ticketId,
+      claim!,
+      "block-before-stale-resume",
+      {
+        type: "block",
+        reason: "need authorization",
+        requiredInput: { kind: "authorization", description: "approve continuation" },
+      },
+    ));
+    if (!blocked.accepted || blocked.nextAuthority?.kind !== "blocked_owner") {
+      throw new Error("Expected blocked ownership");
+    }
+
+    const rejected = await fixture.engine.applyTicket({
+      commandId: "stale-resume-after-input",
+      proposalId: "proposal-stale-resume-after-input",
+      planId: fixture.planId,
+      ticketId,
+      expectedTicketVersion: blocked.ticketVersion,
+      actorPrincipalId: "planner",
+      executionRef: "goal",
+      authority: { ...blocked.nextAuthority, fencingToken: blocked.nextAuthority.fencingToken - 1 },
+      issuedAt: now,
+      payload: { type: "resume_after_input", inputMessageId: "human-message-stale" },
+    });
+
+    expect(rejected).toMatchObject({ accepted: false, code: "stale_authority" });
+    expect(await fixture.engine.getTicket(ticketId)).toMatchObject({ status: "blocked" });
+  });
+
+  it("keeps the Plan blocked when human input resumes only one of multiple blocked Tickets", async () => {
+    const fixture = await createFixture();
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({
+      requestId: "claim-planning-before-multiple-blockers",
+      planId: fixture.planId,
+      ticketId: planning,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    await fixture.engine.applyPlan({
+      commandId: "append-multiple-blockers",
+      planId: fixture.planId,
+      actorPrincipalId: "planner",
+      issuedAt: now,
+      payload: {
+        type: "apply_change",
+        expectedPlanVersion: 2,
+        sourceTicketId: planning,
+        sourceAuthority: {
+          kind: "claim",
+          claimId: planningClaim!.claimId,
+          fencingToken: planningClaim!.fencingToken,
+        },
+        change: {
+          additions: [draft("first-blocker", "First blocked work"), draft("second-blocker", "Second blocked work")],
+          dependencyAdditions: [
+            { from: { ticketId: planning }, to: { clientRef: "first-blocker" } },
+            { from: { ticketId: planning }, to: { clientRef: "second-blocker" } },
+          ],
+          cancelTicketIds: [],
+          requiredTerminalRefs: [{ clientRef: "first-blocker" }, { clientRef: "second-blocker" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      planning,
+      planningClaim!,
+      "complete-planning-before-multiple-blockers",
+      completePayload(),
+    ));
+    const plan = await fixture.engine.getPlan(fixture.planId);
+    const first = plan.graph.ticketIds[1]!;
+    const second = plan.graph.ticketIds[2]!;
+    const firstTicket = await fixture.engine.getTicket(first);
+    const secondTicket = await fixture.engine.getTicket(second);
+    const firstClaim = await fixture.engine.claimReady({
+      requestId: "claim-first-blocker",
+      planId: fixture.planId,
+      ticketId: first,
+      expectedTicketVersion: firstTicket!.version,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    const secondClaim = await fixture.engine.claimReady({
+      requestId: "claim-second-blocker",
+      planId: fixture.planId,
+      ticketId: second,
+      expectedTicketVersion: secondTicket!.version,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    const firstBlocked = await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      first,
+      firstClaim!,
+      "block-first-of-multiple",
+      { type: "block", reason: "first input", requiredInput: { kind: "external_fact", description: "first fact" } },
+    ));
+    const secondBlocked = await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      second,
+      secondClaim!,
+      "block-second-of-multiple",
+      { type: "block", reason: "second input", requiredInput: { kind: "external_fact", description: "second fact" } },
+    ));
+    if (!firstBlocked.accepted || firstBlocked.nextAuthority?.kind !== "blocked_owner") {
+      throw new Error("Expected first blocked ownership");
+    }
+    if (!secondBlocked.accepted || secondBlocked.nextAuthority?.kind !== "blocked_owner") {
+      throw new Error("Expected second blocked ownership");
+    }
+
+    const resumed = await fixture.engine.applyTicket({
+      commandId: "resume-first-of-multiple",
+      proposalId: "proposal-resume-first-of-multiple",
+      planId: fixture.planId,
+      ticketId: first,
+      expectedTicketVersion: firstBlocked.ticketVersion,
+      actorPrincipalId: "planner",
+      executionRef: "goal-first",
+      authority: firstBlocked.nextAuthority,
+      issuedAt: now,
+      payload: { type: "resume_after_input", inputMessageId: "human-first-of-multiple" },
+    });
+
+    expect(resumed).toMatchObject({ accepted: true, ticketStatus: "running", planStatus: "blocked" });
+    expect(await fixture.engine.getTicket(first)).toMatchObject({ status: "running" });
+    expect(await fixture.engine.getTicket(second)).toMatchObject({ status: "blocked" });
+  });
+
   it("releases blocked ownership and schedules replacement work from a planner amendment", async () => {
     const fixture = await createFixture();
     const planning = fixture.plan.graph.ticketIds[0]!;
