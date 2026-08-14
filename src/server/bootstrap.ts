@@ -27,6 +27,7 @@ export async function bootstrapServer(
   const policyStore = new PlanPolicyStore(config.autoAgentHome);
   await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
   const app = createApp(config);
+  await (app.locals.runtimeHostRegistry as RuntimeHostRegistry).initializeEvolutionRuntimeConfigs();
   if (options.restoreRuntimeHosts !== false) {
     await (app.locals.runtimeRestorationController as RuntimeRestorationController).restore();
   }

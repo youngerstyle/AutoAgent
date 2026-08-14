@@ -18,6 +18,8 @@ import { ensureProjectOwner } from "../agents/roster.js";
 import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
+import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type RuntimeEvolutionConfig } from "../evolution/runtime-config-projection.js";
+import { EvolutionActivationStore } from "../evolution/activation-store.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -25,6 +27,9 @@ export class RuntimeHostRegistry {
   private readonly scheduler: RuntimeHostScheduler;
   private readonly executionGate: RuntimeExecutionGate;
   private readonly evolutionCoordinator: EvolutionCoordinator;
+  private readonly bootId = createId("boot");
+  private readonly evolutionRuntimeConfigs = new Map<string, RuntimeEvolutionConfig>();
+  private evolutionRuntimeConfigsInitialized = false;
 
   constructor(
     private readonly workspaces: WorkspaceStore,
@@ -45,6 +50,32 @@ export class RuntimeHostRegistry {
   }
 
   evolutionStatus(): EvolutionWorkerStatus { return this.evolutionCoordinator.status(); }
+
+  /**
+   * Freeze Runtime Config desired state at process boot. Promotions after this
+   * call remain waiting until a new registry/process is constructed.
+   */
+  async initializeEvolutionRuntimeConfigs(): Promise<void> {
+    if (this.evolutionRuntimeConfigsInitialized) return;
+    const resolved = new Map<string, RuntimeEvolutionConfig>();
+    const observations: Promise<unknown>[] = [];
+    for (const workspace of await this.workspaces.list()) {
+      const config = await productionEvolutionRuntimeConfig(workspace.rootPath, workspace.id);
+      if (!config) continue;
+      resolved.set(workspace.id, config);
+      observations.push(new EvolutionActivationStore(workspace.rootPath).observe({
+        assetKind: "runtime_config", target: config.target,
+        releaseRef: { id: config.releaseId, version: config.releaseVersion, contentHash: config.contentHash },
+        desiredGeneration: config.generation, actualGeneration: config.generation,
+        runtimeKind: "process", runtimeRef: this.bootId,
+        runtimeSnapshotHash: runtimeConfigSnapshotHash(config),
+        traceRef: { kind: "evidence", ref: `boot:${this.bootId}`, workspaceId: workspace.id },
+      }));
+    }
+    await Promise.all(observations);
+    for (const [workspaceId, config] of resolved) this.evolutionRuntimeConfigs.set(workspaceId, config);
+    this.evolutionRuntimeConfigsInitialized = true;
+  }
 
   async snapshotByWorkspace(workspaceId: string): Promise<WorkspaceSnapshot> {
     const host = await this.host(workspaceId, false);
@@ -225,6 +256,7 @@ export class RuntimeHostRegistry {
         schedulerKey: workspace.id,
         executionGate: this.executionGate,
         organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, workspace.id),
+        ...this.evolutionRuntimeConfigs.get(workspace.id)?.settings,
       });
       if (startScheduler) {
         await host.start();

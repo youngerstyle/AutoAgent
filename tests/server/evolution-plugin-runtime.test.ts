@@ -16,6 +16,7 @@ import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
 import { pluginToolName } from "../../src/server/evolution/plugin-host.js";
 import { productionEvolutionExtensions } from "../../src/server/evolution/runtime-projection.js";
+import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 
 describe("Plugin Evolution in a real Pi session", () => {
@@ -61,6 +62,10 @@ describe("Plugin Evolution in a real Pi session", () => {
       expectedContentHash: candidate.contentHash, stage: "production", fromPromotionId: canary.promotionId, telemetryId: telemetry.telemetryId,
       approvedBy: { type: "human", id: "owner" }, policyRef,
     });
+    const activationStore = new EvolutionActivationStore(root, fixedNow);
+    expect((await activationStore.list()).find((item) => item.promotionId === production.promotionId)).toMatchObject({
+      status: "waiting_for_activation", boundary: "next_session", proofCount: 0,
+    });
 
     const profile = runtimeProfile();
     const agent = runtimeAgent();
@@ -91,8 +96,14 @@ describe("Plugin Evolution in a real Pi session", () => {
       const payloads = await store.payloads(firstSnapshot.items.map((item) => item.payloadRef));
       const pluginResults = firstSnapshot.items.map((item) => payloads.get(item.payloadRef)).filter((item) => typeof item === "object" && item !== null && "type" in item && item.type === "tool_result");
       expect(pluginResults).toEqual(expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining("verified release evidence") })]));
+      const activated = (await activationStore.list()).find((item) => item.promotionId === production.promotionId);
+      expect(activated).toMatchObject({ status: "activated", boundary: "next_session", proofCount: 1 });
+      expect(await activationStore.listProofs(activated!.activationId)).toEqual([
+        expect.objectContaining({ runtimeKind: "session", runtimeRef: expect.any(String), releaseRef: production.toRelease }),
+      ]);
 
       await evaluations.rollback("plugin-runtime-rollback", production.promotionId, { type: "human", id: "owner" });
+      expect((await activationStore.list()).find((item) => item.promotionId === production.promotionId)?.status).toBe("rolled_back");
       const secondMessage = "plugin-message-2";
       await engine.sendMessage({ messageId: secondMessage, turnId: "plugin-turn-2", threadId: thread.threadId, senderPrincipalId: "human", content: "Check extension availability again.", createdAt: "2026-08-14T00:11:00.000Z" });
       const before = toolSets.length;

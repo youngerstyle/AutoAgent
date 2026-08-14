@@ -29,7 +29,7 @@ import { MissionGoalResolutionPort } from "../mission-process/mission-goal-resol
 import { MissionProcessManager } from "../mission-process/mission-process-manager.js";
 import { LegacyMissionPlanError, MissionStore } from "../mission-process/mission-store.js";
 import type { MissionTicketOutcome } from "../mission-process/ticket-agent-adapter.js";
-import { createMinimalTeamPlanDefinition } from "../product/plan-template.js";
+import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../product/plan-template.js";
 import { createTeamBinding } from "../product/team-binding.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { resolvePolicy } from "../policy/policy.js";
@@ -44,6 +44,8 @@ import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
 import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
 import type { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
 import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
+import { productionEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
+import { EvolutionActivationStore } from "../evolution/activation-store.js";
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
@@ -1582,6 +1584,8 @@ export class RuntimeHost {
     const owner = team.members.find((member) => member.capabilities.includes("mission:intake"));
     if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
     const context = await this.compose(record, team);
+    const evolvedWorkflow = await productionEvolutionWorkflow(this.workspace.rootPath, this.workspace.id, DEFAULT_PLAN_TEMPLATE_ID, this.policyRef);
+    const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
     await context.manager.startMission({
       missionId: record.missionId,
       objective: record.objective,
@@ -1589,9 +1593,15 @@ export class RuntimeHost {
       ownerPrincipalId: owner.principalId,
       teamBinding: team,
       resolvedStart: {
-        planDefinition: createMinimalTeamPlanDefinition(this.policyRef, record.objective),
+        planDefinition,
         teamBindingId: team.teamBindingId,
       },
+    });
+    if (evolvedWorkflow) await new EvolutionActivationStore(this.workspace.rootPath, () => this.now()).observe({
+      assetKind: "workflow", target: evolvedWorkflow.target,
+      releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
+      desiredGeneration: evolvedWorkflow.generation, actualGeneration: evolvedWorkflow.generation,
+      runtimeKind: "task", runtimeRef: record.runId, runtimeSnapshotHash: workflowSnapshotHash(planDefinition),
     });
     this.contexts.set(record.taskId, context);
   }

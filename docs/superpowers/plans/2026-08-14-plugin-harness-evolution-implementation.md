@@ -1,8 +1,10 @@
-# Plugin/Harness Evolution 实施计划
+# Plugin/Harness Extension Host 实施记录
 
 依据：`docs/superpowers/specs/2026-08-14-plugin-harness-evolution-v1.md`
 
-状态：Completed（2026-08-14）
+状态：Prototype completed（2026-08-14）；已从 Evol Self-Mutation 主线中移出
+
+说明：本计划只证明可执行扩展能被治理和挂载，不证明系统完成自进化。WSL/PowerShell Launcher 是本地开发适配器；跨平台 SaaS 需要后续独立的 Sandbox Provider/Data Plane 设计。
 
 ## Milestone E：Bundle 与安全供应链
 

@@ -17,6 +17,9 @@ import { asyncHandler, HttpError } from "../errors.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { configuredPluginSandboxProgram } from "../evolution/plugin-sandbox-config.js";
+import { EvolutionActivationStore } from "../evolution/activation-store.js";
+import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
+import { SourcePatchDeliveryStore } from "../evolution/source-delivery-store.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -131,6 +134,19 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     );
     res.json({ result });
   }));
+  router.post("/prompt-candidates/consolidate", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
+    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
+    const result = await new PromptConsolidator(workspace.id, experience, candidates).consolidate(
+      req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
+    );
+    res.json({ result });
+  }));
+  router.get("/source-deliveries", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    res.json({ deliveries: await new SourcePatchDeliveryStore(workspace.rootPath).list() });
+  }));
   router.get("/candidates/:candidateId", asyncHandler(async (req, res) => res.json({ candidate: await (await storeFor(String(req.params.workspaceId))).candidates.get(String(req.params.candidateId)) })));
   router.post("/candidates", asyncHandler(async (req, res) => {
     const workspaceId = String(req.params.workspaceId);
@@ -180,6 +196,11 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   }));
   router.get("/releases", asyncHandler(async (req, res) => {
     res.json({ releases: await (await storeFor(String(req.params.workspaceId))).evaluations.listPromotions() });
+  }));
+  router.get("/activations", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const store = new EvolutionActivationStore(workspace.rootPath);
+    res.json({ activations: await store.list(), proofs: await store.listProofs() });
   }));
   router.post("/releases/:promotionId/rollback", asyncHandler(async (req, res) => {
     const record = await (await storeFor(String(req.params.workspaceId))).evaluations.rollback(

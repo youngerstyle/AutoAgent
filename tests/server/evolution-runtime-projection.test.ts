@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
-import { productionEvolutionMemories, productionEvolutionSkills } from "../../src/server/evolution/runtime-projection.js";
+import { productionEvolutionMemories, productionEvolutionSkills, runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
 import { MemoryLifecycleStore } from "../../src/server/evolution/memory-lifecycle-store.js";
 
 describe("evolution production runtime projection", () => {
@@ -47,7 +47,7 @@ describe("evolution production runtime projection", () => {
     expect(await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "other", tools: ["readFile"] })).toEqual([]);
     expect(await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "delivery-v1", tools: [] })).toEqual([]);
     const loaded = await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "delivery-v1", tools: ["readFile"] });
-    expect(loaded).toEqual([{ name: "evolved-review", directory: artifactDir, releaseId, contentHash }]);
+    expect(loaded).toEqual([{ name: "evolved-review", directory: artifactDir, releaseId, releaseVersion: "1", contentHash, generation: 1, stage: "production" }]);
     const memoryContent = "# Scoped operational memory\n\nApply the evidence-backed browser initialization lesson only when the same cause is observed again.";
     const memoryHash = hash(memoryContent);
     const memoryReleaseId = "release-memory-a";
@@ -77,7 +77,7 @@ describe("evolution production runtime projection", () => {
       },
     });
     expect(await productionEvolutionMemories(root, "workspace-a", profile(), agent())).toEqual([
-      { target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId, contentHash: memoryHash },
+      { target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId, releaseVersion: "1", contentHash: memoryHash, generation: 1, stage: "production" },
     ]);
     await new MemoryLifecycleStore("workspace-a", root).transition(
       "stale-memory", memoryReleaseId, "stale", "No recent successful use", { type: "system", id: "memory-lifecycle-maintainer/v1" },
@@ -119,7 +119,35 @@ describe("evolution production runtime projection", () => {
     });
     await expect(productionEvolutionSkills(root, "workspace-a", profile(), agent())).rejects.toThrow("failed content verification");
   });
+
+  it("projects activated Prompt and Agent Profile assets for the next Runtime session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-declarative-"));
+    await writeDeclarativeRelease(root, "prompt", "evidence-discipline", "Always distinguish observed facts from inference.", "prompt_safety", "prompt");
+    await writeDeclarativeRelease(root, "agent_profile", "profile-dev", JSON.stringify({ schemaVersion: 1, id: "profile-dev", soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"] }), "agent_profile_contract", "profile");
+    const projected = await runtimeEvolutionProjection(root, "workspace-a", profile(), agent(), { assignmentKey: "thread-a", tools: [] });
+    expect(projected.prompts).toEqual([expect.objectContaining({ target: "evidence-discipline", content: "Always distinguish observed facts from inference.", generation: 1 })]);
+    expect(projected.agentProfiles).toEqual([expect.objectContaining({ target: "profile-dev", profile: expect.objectContaining({ soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"] }) })]);
+  });
 });
+
+async function writeDeclarativeRelease(root: string, kind: "prompt" | "agent_profile", target: string, content: string, validationCheck: string, suffix: string): Promise<void> {
+  const contentHash = hash(content);
+  const releaseId = `release-${suffix}`;
+  const promotionId = `promotion-${suffix}`;
+  const artifactRef = `artifacts/${contentHash}/artifact.txt`;
+  await mkdir(path.dirname(path.join(root, ".autoagent", "evolution", artifactRef)), { recursive: true });
+  await writeFile(path.join(root, ".autoagent", "evolution", artifactRef), content, "utf8");
+  await writeJson(path.join(root, ".autoagent", "evolution", "releases", releaseId, "manifest.json"), {
+    schemaVersion: 1, release: { id: releaseId, version: "1", contentHash }, stage: "production",
+    candidateId: `candidate-${suffix}`, candidateHash: contentHash, candidateKind: kind, target, artifactRef,
+    scope: { workspaceId: "workspace-a", roles: ["dev"] }, promotionId, runtimeActive: true, validationPassed: true,
+    validationChecks: [{ name: validationCheck, passed: true, message: "passed" }],
+  });
+  await writeJson(path.join(root, ".autoagent", "evolution", "active", "production", `pointer-${suffix}.json`), {
+    schemaVersion: 1, target, stage: "production", scope: { workspaceId: "workspace-a", roles: ["dev"] }, generation: 1,
+    release: { id: releaseId, version: "1", contentHash }, promotionId, active: true, updatedAt: "2026-08-14T00:00:00.000Z",
+  });
+}
 
 async function writeJson(file: string, value: unknown): Promise<void> { await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, `${JSON.stringify(value)}\n`, "utf8"); }
 function hash(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }

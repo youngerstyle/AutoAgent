@@ -125,7 +125,7 @@ describe("evolution evaluation and promotion gate", () => {
       expect.objectContaining({ name: "failure-retrospective", releaseId: production.toRelease.id, contentHash: fixture.candidate.contentHash }),
     ]);
     expect(await runPiAgentAndReadEvolutionReleases(fixture.root, "production-session")).toEqual([
-      { name: "failure-retrospective", releaseId: production.toRelease.id, contentHash: fixture.candidate.contentHash },
+      expect.objectContaining({ name: "failure-retrospective", releaseId: production.toRelease.id, contentHash: fixture.candidate.contentHash, generation: 1, stage: "production" }),
     ]);
 
     const rolledBack = await fixture.evaluations.rollback("rollback-production", production.promotionId, approvedBy);

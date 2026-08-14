@@ -1,32 +1,34 @@
 # AutoAgent Company Evolution（Evol）设计
 
 日期：2026-08-14
-状态：Accepted for staged implementation
-范围：建立可审计的 Memory、Skill 与隔离可执行 Plugin/Harness 进化闭环。
+状态：Corrected；Self-Mutation/Activation 语义由 `2026-08-14-self-mutation-activation-v1.md` 规范
+范围：建立可审计的可继承资产变异、验证、激活、观测与回滚闭环。
 
 ## 1. 结论
 
-Evol 不是“Agent 可以写 `SKILL.md`”，而是一个独立控制面：
+Evol 不是“Agent 可以写 `SKILL.md`”，也不是“执行一段新脚本”，而是一个独立控制面：
 
-> 从不可变运行事实中提取经验，提出有证据和可证伪假设的候选变更，在隔离环境中与基线进行可重复评测，由独立策略决定是否分级发布，并持续监控、衰减和回滚。
+> 从不可变运行事实中提取经验，修改系统未来会继承的版本化资产，在冻结基线上验证，由独立策略激活到明确的生命周期边界，并用后续运行事实决定保留或回滚。
 
 AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket Handoff 和 Mission Settlement。Evol 必须消费这些事实，不能另建一套猜测任务结果的旁路状态。
 
-首个生产可用里程碑支持两类产物：
+首个生产可用里程碑已支持两类产物：
 
 1. `memory`：从多个 Episode 提炼的、带适用范围和来源引用的经验；
 2. `skill`：版本化 Skill 包，包含 `SKILL.md` 以及可选 references/scripts/templates。
 
-`prompt` 和 `workflow` 进入同一候选协议，但当前不允许晋升为生产产物。`plugin` 与 `harness` 已由后续的 `2026-08-14-plugin-harness-evolution-v1.md` 扩展为 critical-risk 可执行产物，必须经过独立评测、隔离 Extension Host 和 human canary/production 批准。
+下一阶段把 `agent_profile`、`prompt`、`workflow`、`runtime_config` 和 `source_patch` 纳入同一候选协议，并分别在 next session、next turn、next task、next restart 和 next deployment 生效。`plugin` 与 `harness` 是可被治理的扩展资产，但它们的执行宿主属于独立基础设施；是否支持插件不能作为 Evol 是否完成的判据。
 
 ## 2. 设计来源
 
 本设计综合以下实践：
 
 - Codex：rollout extraction 与 global consolidation 两阶段 Memory、任务租约、失败退避、使用率选择、秘密脱敏、受限 consolidation agent 和 Git baseline；
-- DeepSeek Harness：插件树、typed events、reversible effects、append-only session log、capability seam、sandbox/approval/telemetry 作为基础 bundle；
+- DeepSeek Harness：插件树、typed events、reversible effects 与动态组合，作为扩展系统参考，不作为 Evol 本体定义；
 - Qwen Code：`/learn`、项目/个人/扩展 Skill 分层、成功使用记录、stale/archive/pin 生命周期；
-- QwenPaw：工作上下文、完整历史、长期知识三层 Memory，以及 Sandbox、Tool Guard、File Guard、Skill Scanner；
+- QwenPaw：持久 Skill Pool、Workspace runtime copy、跨会话文件 Memory 与自动加载；
+- OpenGitOps：desired state 必须声明式、版本化不可变、由运行时自动拉取并持续对账；
+- Git protected branches/status checks：源码变更绑定 commit，经独立检查和审查后才能合并；
 - Reflexion / ExpeL / Voyager：从外部反馈形成 episodic insight、跨任务经验归纳、环境反馈与自验证后进入 Skill Library；
 - Agent Lightning / DSPy：trajectory/span 观测、credit assignment、优化资源与执行框架解耦、基于冻结数据集和指标比较候选。
 
@@ -35,7 +37,7 @@ AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket
 V1 明确不做：
 
 - 不训练或微调基础模型权重；
-- 不允许 Agent 修改凭据、审计、权限、Sandbox、Evol Gate 自身；
+- 不允许 Agent 绕过凭据、审计、权限、审批和 Evol Gate；Evol Gate 自身的源码变化只能走最高风险 `source_patch` 流程，V1 默认禁止自动批准；
 - 不把普通聊天中的“我觉得更好了”视为评测；
 - 不因一次失败立即形成全局 Memory 或生产 Skill；
 - 不在没有基线对照和回归证据时自动启用候选；
@@ -86,7 +88,7 @@ Insight 默认进入候选区。只有证据充分、无冲突且 scope 明确�
 
 对某个版本化产物的不可变候选修改。候选创建后内容由 `contentHash` 固定；修改必须创建新 revision。
 
-候选类型：`memory | skill | prompt | workflow | plugin | harness`。
+候选类型：`memory | skill | agent_profile | prompt | workflow | runtime_config | source_patch | plugin | harness`。
 
 每个候选必须包含：
 
@@ -98,7 +100,8 @@ Insight 默认进入候选区。只有证据充分、无冲突且 scope 明确�
 - 适用 scope；
 - 风险等级；
 - proposer 身份；
-- 回滚策略。
+- 回滚策略；
+- 明确的 `activationBoundary` 与预期被哪些后续运行继承。
 
 ### 4.5 Evaluation Run
 
@@ -157,7 +160,7 @@ Memory 使用以下生命周期：
 - archived 不物理删除，可恢复；
 - 原始 Episode 永远保留为来源事实，Memory 只是可重建索引。
 
-## 7. Skill 包与 Plugin 边界
+## 7. 可继承资产与扩展边界
 
 Skill 不是单个 Markdown 字符串，而是版本化目录：
 
@@ -179,7 +182,9 @@ skill-package/
 2. 动态：在隔离 workspace 中执行脚本和 Eval Case；
 3. 行为：检查实际工具调用、文件访问、网络、成本和越权尝试。
 
-Plugin/Harness 使用独立规范定义的 capability seam、版本化 RPC、运维配置的 OS Sandbox Launcher、Node Permission Model 纵深防御和 runtime fingerprint unload protocol。扩展不进入主进程；V1 broker 只开放受 manifest、Candidate scope 和 Agent policy 三重约束的只读 Workspace 能力，因此 rollback 能完整撤销能力挂载。
+Memory、Skill、Agent Profile、Prompt 与 Workflow 都必须写入版本化 desired-state registry；Runtime 只在各自激活边界拉取 active release。源码候选必须保存 base commit、patch hash、目标分支、required checks 与 deployment attestation，不能直接覆写当前服务进程正在执行的文件来冒充生效。
+
+Plugin/Harness 使用独立规范定义的扩展宿主与能力代理。它可以作为 Evol 的一种候选资产，但“运行扩展”不是“发生进化”；只有其版本被持久激活并被后续 Runtime 继承，才构成一次进化结果。扩展沙箱不属于 Evol Control Plane 的必需依赖。
 
 ## 8. 状态机
 
@@ -248,7 +253,9 @@ Eval Suite 可以声明受治理的 automation selector（artifact kind、target
 | workspace/role Memory | medium | 需要独立 consolidation gate |
 | instruction-only Skill | medium | 仅允许进入 shadow；生产晋升需策略批准 |
 | executable Skill | high | 需要安全扫描、隔离评测、QA 批准 |
-| prompt/workflow | high | 需要完整回归和 canary |
+| prompt/workflow/agent_profile | high | 需要完整回归、显式激活边界和 canary |
+| runtime_config | high/critical | 只允许非凭据配置；next restart 生效，安全根配置禁止自动批准 |
+| source_patch | critical | 只生成 branch/patch；required checks、独立审查、合并与部署缺一不可 |
 | plugin/harness | critical | 禁止自动晋升；canary/production 必须 human 批准并在隔离 Host 运行 |
 | policy | critical | 禁止自动晋升 |
 
@@ -264,7 +271,7 @@ Eval Suite 可以声明受治理的 automation selector（artifact kind、target
 ## 10. 数据契约
 
 ```ts
-type EvolutionArtifactKind = "memory" | "skill" | "prompt" | "workflow" | "plugin" | "harness";
+type EvolutionArtifactKind = "memory" | "skill" | "agent_profile" | "prompt" | "workflow" | "runtime_config" | "source_patch" | "plugin" | "harness";
 
 interface EvolutionSourceRef {
   kind: "trace" | "evidence" | "goal_proposal" | "goal_decision" | "ticket" | "mission" | "human_feedback";
@@ -454,16 +461,20 @@ Agent 不获得 validate、evaluate、promote、rollback 工具。它可以请�
 - stale/archive/pin；
 - 防止同一失败被过度学习。
 
-### Phase 4：Plugin/Harness Evolution
+### Phase 4：Self-Mutation 与 Activation
 
-- capability seam 和 plugin manifest；
-- reversible mount/unmount；
-- 插件隔离 realm；
-- tool/session/event 扩展点；
-- 供应链签名、依赖锁和 SBOM；
-- critical 变更的人工批准。
+- 将 Agent Profile、Prompt、Workflow 与 Source Patch 建模为不可变 Candidate；
+- 每类资产声明 next turn/session/task/restart/deployment 激活边界；
+- Runtime generation/revision 对账并在边界重建，不改变进行中的原子执行；
+- 每次执行 Trace 记录实际继承的 release/deployment refs；
+- Source Patch 只生成绑定 base commit 的 patch/branch，经过 required checks、独立审查、合并与 deployment attestation；
+- 激活后继续收集 selected/control telemetry，失败时恢复 previous active release 或 previous deployment。
 
-实现状态：已由 `2026-08-14-plugin-harness-evolution-v1.md` 和对应实施计划完成可执行子集，包括工具贡献、pre/post tool guardrail、不可变 Bundle、静态 Scanner、OS Sandbox Launcher gate、Node Permission Model 纵深防御、只读 capability broker、canary 分桶、production mount 与 rollback unload。网络、进程、Worker、原生扩展和直接写入仍明确禁止。
+验收：变更必须被后续运行实际继承并能从 Trace 证明；临时执行候选代码、只写 Candidate 文件或只通过 Eval 均不得宣称进化完成。
+
+### 独立扩展基础设施：Plugin/Harness Host
+
+`2026-08-14-plugin-harness-evolution-v1.md` 已实现一套扩展执行原型，但它不是 Phase 4 的替代品，也不构成 Evol 完成证据。该设施后续应从 Evol 主路径解耦，并通过平台无关 Provider 接口接入 SaaS execution plane；本地 WSL/PowerShell Launcher 仅保留为开发适配器。
 
 ## 14. 当前代码处置
 
@@ -476,7 +487,7 @@ Agent 不获得 validate、evaluate、promote、rollback 工具。它可以请�
 3. 将存储从可变 `proposals.json` 改成 append-only Candidate ledger；
 4. 将 `SKILL.md` 字符串改成 artifact package；
 5. 没有 EvaluationRecord 时，Promotion API 必须确定性拒绝；
-6. 直到 Phase 2 完成，不得对外宣称“自进化已完成”。
+6. 直到 Phase 4 完成且后续运行的 inheritance proof 可验证，不得对外宣称“自进化已完成”。
 
 ## 15. 完成定义
 
@@ -491,4 +502,8 @@ Company Evolution 只有同时满足以下条件才能称为完成：
 - 有自动监控、衰减、归档和回滚；
 - proposer 不能给自己的候选批准上线；
 - 服务重启不重复或丢失评测/晋升；
-- 所有 UI 状态都能追溯到权威 Evol ledger。
+- 所有 UI 状态都能追溯到权威 Evol ledger；
+- 每个 active 资产都有明确激活边界，进行中的原子执行不被热切换破坏；
+- 后续 Trace 能证明它实际继承了哪个 Memory、Skill、Agent Profile、Prompt、Workflow 和 deployment revision；
+- Source Patch 只有在 checks、审查、合并、部署和运行时版本对账完成后才算 activated；
+- 临时执行脚本、创建 Candidate 或通过离线评测本身都不算进化完成。

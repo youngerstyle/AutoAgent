@@ -1,5 +1,20 @@
-export const EVOLUTION_ARTIFACT_KINDS = ["memory", "skill", "prompt", "workflow", "plugin", "harness"] as const;
+export const EVOLUTION_ARTIFACT_KINDS = ["memory", "skill", "agent_profile", "prompt", "workflow", "runtime_config", "source_patch", "plugin", "harness"] as const;
 export type EvolutionArtifactKind = typeof EVOLUTION_ARTIFACT_KINDS[number];
+
+export const EVOLUTION_ACTIVATION_BOUNDARIES = ["next_turn", "next_session", "next_task", "next_restart", "next_deployment"] as const;
+export type EvolutionActivationBoundary = typeof EVOLUTION_ACTIVATION_BOUNDARIES[number];
+
+export const DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY: Record<EvolutionArtifactKind, EvolutionActivationBoundary> = {
+  memory: "next_turn",
+  prompt: "next_turn",
+  skill: "next_turn",
+  agent_profile: "next_session",
+  plugin: "next_session",
+  harness: "next_session",
+  workflow: "next_task",
+  runtime_config: "next_restart",
+  source_patch: "next_deployment",
+};
 
 export const EVOLUTION_SOURCE_KINDS = [
   "trace", "evidence", "goal_proposal", "goal_decision", "ticket", "mission", "human_feedback",
@@ -252,6 +267,7 @@ export interface EvolutionCandidate {
   riskLevel: EvolutionRiskLevel;
   status: EvolutionCandidateStatus;
   proposedBy: EvolutionPrincipalRef;
+  mutationSet?: EvolutionMutationSet;
   createdAt: string;
   updatedAt: string;
   validation?: {
@@ -264,6 +280,85 @@ export interface EvolutionCandidate {
     artifactManifestHash?: string;
   };
   evaluationSuiteRefs?: VersionedEvolutionRef[];
+}
+
+export interface EvolutionMutationSet {
+  assetKind: EvolutionArtifactKind;
+  target: string;
+  baseRef: VersionedEvolutionRef;
+  candidateRef: VersionedEvolutionRef;
+  representation: "full" | "json_patch" | "unified_diff";
+  activationBoundary: EvolutionActivationBoundary;
+  compatibility: Record<string, string>;
+  rollbackRef: VersionedEvolutionRef;
+}
+
+export interface EvolutionSourcePatchArtifact {
+  schemaVersion: 1;
+  repositoryId: string;
+  baseCommit: string;
+  targetBranch: string;
+  files: string[];
+  patch: string;
+  requiredChecks: string[];
+}
+
+/**
+ * Workspace runtime tuning that is safe to inherit at process restart.
+ * Credentials, provider/model selection, policy, filesystem paths, and code
+ * loading are intentionally outside this contract.
+ */
+export interface EvolutionRuntimeConfigArtifact {
+  schemaVersion: 1;
+  target: "runtime-host";
+  settings: {
+    intervalMs?: number;
+    providerRetryBaseMs?: number;
+    providerRetryMaxMs?: number;
+    staffingProviderFailureLimit?: number;
+    staffingProviderRetryBaseMs?: number;
+    staffingProviderRetryMaxMs?: number;
+  };
+}
+
+export interface EvolutionProviderAttestation {
+  provider: string;
+  subject: string;
+  revision: string;
+  status: "pending" | "passed" | "failed";
+  observedAt: string;
+  evidenceRef: string;
+}
+
+export interface ScmPreparedChange {
+  provider: string;
+  repositoryId: string;
+  baseCommit: string;
+  changeRef: string;
+  candidateCommit: string;
+  webUrl?: string;
+}
+
+export type SourcePatchDeliveryStatus =
+  | "requested" | "prepared" | "checks_passed" | "reviewed" | "merged" | "built"
+  | "canary_deployed" | "production_deployed" | "verified" | "failed" | "rolled_back";
+
+export interface SourcePatchDeliveryRecord {
+  deliveryId: string;
+  commandId: string;
+  candidateId: string;
+  promotionId: string;
+  status: SourcePatchDeliveryStatus;
+  lastSuccessfulStatus?: Exclude<SourcePatchDeliveryStatus, "failed">;
+  preparedChange?: ScmPreparedChange;
+  sourceCommit?: string;
+  buildArtifactRef?: VersionedEvolutionRef;
+  deploymentRef?: VersionedEvolutionRef;
+  previousDeployment?: VersionedEvolutionRef;
+  attestations: EvolutionProviderAttestation[];
+  createdAt: string;
+  updatedAt: string;
+  error?: string;
 }
 
 export interface CreateEvolutionCandidateInput {
@@ -495,6 +590,46 @@ export interface ActiveReleasePointer {
   active: boolean;
   updatedAt: string;
   rollout?: { percentage: number; salt: string };
+}
+
+export type EvolutionActivationStatus = "waiting_for_activation" | "activated" | "degraded" | "rolled_back" | "superseded";
+
+export interface EvolutionActivationRecord {
+  activationId: string;
+  promotionId: string;
+  candidateId: string;
+  assetKind: EvolutionArtifactKind;
+  target: string;
+  stage: "canary" | "production";
+  boundary: EvolutionActivationBoundary;
+  desiredGeneration: number;
+  releaseRef: VersionedEvolutionRef;
+  previousRelease?: VersionedEvolutionRef;
+  scope: EvolutionScope;
+  status: EvolutionActivationStatus;
+  requestedAt: string;
+  pointerChangedAt: string;
+  firstInheritedAt?: string;
+  lastInheritedAt?: string;
+  rolledBackAt?: string;
+  supersededAt?: string;
+  proofCount: number;
+}
+
+export interface EvolutionInheritanceProof {
+  proofId: string;
+  activationId: string;
+  assetKind: EvolutionArtifactKind;
+  target: string;
+  boundary: EvolutionActivationBoundary;
+  releaseRef: VersionedEvolutionRef;
+  desiredGeneration: number;
+  actualGeneration: number;
+  runtimeKind: "turn" | "session" | "task" | "process" | "deployment";
+  runtimeRef: string;
+  runtimeSnapshotHash: string;
+  traceRef?: EvolutionSourceRef;
+  observedAt: string;
 }
 
 export type MemoryLifecycleStatus = "active" | "stale" | "archived";

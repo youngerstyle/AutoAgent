@@ -20,8 +20,8 @@ import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 
 describe("organization Memory governance", () => {
   it("fails closed when trusted organization sources disagree on the same Memory target", () => {
-    const first = { target: "release-rule", content: "A", releaseId: "release-a", contentHash: "hash-a", sourceWorkspaceId: "source-a", layer: "organization" as const };
-    const second = { target: "release-rule", content: "B", releaseId: "release-b", contentHash: "hash-b", sourceWorkspaceId: "source-b", layer: "organization" as const };
+    const first = { target: "release-rule", content: "A", releaseId: "release-a", releaseVersion: "1", contentHash: "hash-a", generation: 1, stage: "production" as const, sourceWorkspaceId: "source-a", layer: "organization" as const };
+    const second = { target: "release-rule", content: "B", releaseId: "release-b", releaseVersion: "1", contentHash: "hash-b", generation: 1, stage: "production" as const, sourceWorkspaceId: "source-b", layer: "organization" as const };
     expect(resolveOrganizationMemoryConflicts([first, second])).toEqual({ memories: [], conflicts: ["release-rule"] });
   });
 

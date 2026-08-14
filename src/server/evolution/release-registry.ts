@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { ActiveReleasePointer, EvolutionCandidate, PromotionRecord } from "../../shared/contracts/evolution.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { workspaceEvolutionActiveReleaseFile, workspaceEvolutionReleaseFile } from "../storage/paths.js";
+import { EvolutionActivationStore } from "./activation-store.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -42,7 +43,9 @@ export class EvolutionReleaseRegistry {
       validationPassed: candidate.validation?.passed === true, validationChecks: structuredClone(candidate.validation?.checks ?? []),
     };
     await writeJson(workspaceEvolutionReleaseFile(this.workspaceRoot, record.toRelease.id), manifest);
-    if (record.stage === "shadow") return;
+    // Source code is activated by the external SCM/build/deployment control
+    // plane. A local release pointer must never claim that a patch is live.
+    if (record.stage === "shadow" || candidate.kind === "source_patch") return;
     const current = await this.current(record.stage, candidate);
     const alreadyProjected = current?.active && current.promotionId === record.promotionId && current.release?.id === record.toRelease.id;
     if (!alreadyProjected) {
@@ -55,6 +58,10 @@ export class EvolutionReleaseRegistry {
       };
       await writeJson(workspaceEvolutionActiveReleaseFile(this.workspaceRoot, record.stage, pointerKey(candidate)), pointer);
     }
+    const projected = await this.current(record.stage, candidate);
+    if (projected?.active && projected.promotionId === record.promotionId) {
+      await new EvolutionActivationStore(this.workspaceRoot, this.now).recordPointerChanged(record, candidate, projected.generation, projected.previousRelease);
+    }
     if (record.stage === "production") {
       const canary = await this.current("canary", candidate);
       if (canary?.active && canary.promotionId === record.sourcePromotionId) {
@@ -62,6 +69,7 @@ export class EvolutionReleaseRegistry {
           ...canary, generation: canary.generation + 1, previousRelease: canary.release,
           release: undefined, promotionId: undefined, active: false, updatedAt: this.now().toISOString(),
         } satisfies ActiveReleasePointer);
+        if (record.sourcePromotionId) await new EvolutionActivationStore(this.workspaceRoot, this.now).recordSuperseded(record.sourcePromotionId);
       }
     }
   }
@@ -77,6 +85,7 @@ export class EvolutionReleaseRegistry {
       previousRelease: record.toRelease, active: Boolean(restore), updatedAt: this.now().toISOString(),
     };
     await writeJson(workspaceEvolutionActiveReleaseFile(this.workspaceRoot, record.stage, pointerKey(candidate)), pointer);
+    await new EvolutionActivationStore(this.workspaceRoot, this.now).recordRollback(record);
   }
 }
 

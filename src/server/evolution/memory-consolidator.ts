@@ -20,7 +20,8 @@ export class MemoryConsolidator {
   async consolidate(minimumEpisodes = 2): Promise<MemoryConsolidationResult> {
     if (!Number.isSafeInteger(minimumEpisodes) || minimumEpisodes < 2 || minimumEpisodes > 100) throw new Error("Memory consolidation threshold must be between 2 and 100");
     const attributions = await this.experience.listAttributions();
-    const clusters = clusterAttributions(attributions.filter((item) => item.component !== "unknown" && item.confidence >= 0.8));
+    const memoryComponents = new Set(["memory", "tool", "provider", "environment"]);
+    const clusters = clusterAttributions(attributions.filter((item) => memoryComponents.has(item.component) && item.confidence >= 0.8));
     const supported = [...clusters.values()].filter((items) => new Set(items.map((item) => item.episodeId)).size >= minimumEpisodes);
     const conflicted = supported.filter((items) => items.some((item) => item.counterEvidenceRefs.length > 0));
     const eligible = supported.filter((items) => items.every((item) => item.counterEvidenceRefs.length === 0));

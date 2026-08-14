@@ -50,8 +50,9 @@ import { AttachmentStore } from "../storage/attachment-store.js";
 import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
 import { EvolutionStore } from "../evolution/evolution-store.js";
 import { EvolutionEvaluationStore } from "../evolution/evaluation-store.js";
-import { runtimeEvolutionProjection, runtimeEvolutionStateFingerprint, type OrganizationMemorySource, type RuntimeEvolutionExtension, type RuntimeEvolutionMemory } from "../evolution/runtime-projection.js";
+import { runtimeEvolutionProjection, runtimeEvolutionStateFingerprint, type OrganizationMemorySource, type RuntimeEvolutionExtension, type RuntimeEvolutionMemory, type RuntimeEvolutionPrompt } from "../evolution/runtime-projection.js";
 import { IsolatedPluginHost, pluginToolName } from "../evolution/plugin-host.js";
+import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import {
   TEAM_STAFFING_SCHEMA_REF,
   parseTeamStaffingOutcome,
@@ -656,8 +657,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     );
     const evolvedSkills = evolutionProjection.skills;
     const evolvedMemories = evolutionProjection.memories;
+    const evolvedProfile = evolutionProjection.agentProfiles.find((item) => item.target === input.profile.id)?.profile ?? input.profile;
+    const evolvedInput = evolvedProfile === input.profile ? input : { ...input, profile: evolvedProfile };
     const evolvedNames = new Set(evolvedSkills.map((skill) => skill.name));
-    const configuredNames = effectiveAgentSkills(input.profile, input.agent).filter((name) => !evolvedNames.has(name));
+    const configuredNames = effectiveAgentSkills(evolvedProfile, input.agent).filter((name) => !evolvedNames.has(name));
     const enabledSkillNames = [...new Set([...configuredNames, ...evolvedSkills.map((skill) => skill.name)])];
     const loader = new DefaultResourceLoader({
       cwd: this.workspaceRoot,
@@ -669,7 +672,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPrompt: stableSystemPrompt(input, evolvedMemories),
+      systemPrompt: stableSystemPrompt(evolvedInput, evolvedMemories, evolutionProjection.prompts),
       skillsOverride: (base) => {
         const enabled = new Set(enabledSkillNames);
         return { ...base, skills: base.skills.filter((skill) => enabled.has(skill.name)) };
@@ -694,7 +697,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       ? { ...thread, items: thread.items.slice(0, triggerIndex), version: Math.max(0, thread.items[triggerIndex]!.sequence - 1) }
       : thread;
     const assembled = await this.contextAssembler.assemble({
-      profile: input.profile,
+      profile: evolvedProfile,
       agent: input.agent,
       policy: input.policy,
       thread: historyThread,
@@ -713,7 +716,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const baseTools = [
       ...workspaceTools(this.tools, toolExecution),
       piReadTool(this.tools, skills, toolExecution),
-      ...(input.profile.capabilities.includes("company:evolve")
+      ...(evolvedProfile.capabilities.includes("company:evolve")
         ? [
             proposeEvolutionCandidateTool(this.workspaceRoot, input.agent.workspaceId, input.agent.id),
             queryEvolutionStatusTool(this.workspaceRoot, input.agent.workspaceId),
@@ -748,30 +751,74 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     installPiTurnBoundary(session.agent);
     session.setAutoCompactionEnabled(true);
     const goalVersions = promptedGoalVersions(sessionManager.getEntries());
-    await this.traces.append({
-      traceId: piSessionSkillsTraceId(
+    const inheritanceTraceId = piSessionSkillsTraceId(
         input.threadId,
         input.goalId,
         input.turnId,
         skillNames,
-      ),
+      );
+    const inheritanceTurnId = input.turnId ?? stableId("turn", input.threadId, "session-resources");
+    await this.traces.append({
+      traceId: inheritanceTraceId,
       agentId: input.agent.id,
       threadId: input.threadId,
       goalId: input.goalId,
-      turnId: input.turnId ?? stableId("turn", input.threadId, "session-resources"),
+      turnId: inheritanceTurnId,
       kind: "context",
       createdAt: this.now().toISOString(),
       data: {
         enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics,
-        evolutionReleases: evolvedSkills.map((skill) => ({ name: skill.name, releaseId: skill.releaseId, contentHash: skill.contentHash })),
-        evolutionMemories: evolvedMemories.map((memory) => ({ target: memory.target, releaseId: memory.releaseId, contentHash: memory.contentHash })),
-        evolutionPlugins: evolutionProjection.plugins.map((plugin) => ({ name: plugin.name, releaseId: plugin.releaseId, contentHash: plugin.contentHash, tools: plugin.manifest.contributions.tools.map((tool) => pluginToolName(plugin.name, tool.name)) })),
-        evolutionHarnesses: evolutionProjection.harnesses.map((harness) => ({ name: harness.name, releaseId: harness.releaseId, contentHash: harness.contentHash, guardrails: harness.manifest.contributions.guardrails.map((guard) => guard.name) })),
+        evolutionReleases: evolvedSkills.map((skill) => ({ name: skill.name, releaseId: skill.releaseId, releaseVersion: skill.releaseVersion, contentHash: skill.contentHash, generation: skill.generation, stage: skill.stage })),
+        evolutionMemories: evolvedMemories.map((memory) => ({ target: memory.target, releaseId: memory.releaseId, releaseVersion: memory.releaseVersion, contentHash: memory.contentHash, generation: memory.generation, stage: memory.stage })),
+        evolutionPlugins: evolutionProjection.plugins.map((plugin) => ({ name: plugin.name, releaseId: plugin.releaseId, releaseVersion: plugin.releaseVersion, contentHash: plugin.contentHash, generation: plugin.generation, stage: plugin.stage, tools: plugin.manifest.contributions.tools.map((tool) => pluginToolName(plugin.name, tool.name)) })),
+        evolutionHarnesses: evolutionProjection.harnesses.map((harness) => ({ name: harness.name, releaseId: harness.releaseId, releaseVersion: harness.releaseVersion, contentHash: harness.contentHash, generation: harness.generation, stage: harness.stage, guardrails: harness.manifest.contributions.guardrails.map((guard) => guard.name) })),
+        evolutionPrompts: evolutionProjection.prompts.map((prompt) => ({ target: prompt.target, releaseId: prompt.releaseId, releaseVersion: prompt.releaseVersion, contentHash: prompt.contentHash, generation: prompt.generation, stage: prompt.stage })),
+        evolutionAgentProfiles: evolutionProjection.agentProfiles.map((item) => ({ target: item.target, releaseId: item.releaseId, releaseVersion: item.releaseVersion, contentHash: item.contentHash, generation: item.generation, stage: item.stage })),
         evolutionCanaries: evolutionProjection.canaryReleases,
         evolutionCanaryAssignments: evolutionProjection.canaryAssignments,
         evolutionOrganizationConflicts: evolutionProjection.organizationConflicts,
       },
     });
+    const activationStore = new EvolutionActivationStore(this.workspaceRoot, this.now);
+    const traceRef = { kind: "trace" as const, ref: inheritanceTraceId, workspaceId: input.agent.workspaceId, agentId: input.agent.id };
+    await Promise.all([
+      ...evolvedSkills.map((skill) => activationStore.observe({
+        assetKind: "skill", target: skill.name,
+        releaseRef: { id: skill.releaseId, version: skill.releaseVersion, contentHash: skill.contentHash },
+        desiredGeneration: skill.generation, actualGeneration: skill.generation,
+        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+      ...evolvedMemories.filter((memory) => !memory.sourceWorkspaceId).map((memory) => activationStore.observe({
+        assetKind: "memory", target: memory.target,
+        releaseRef: { id: memory.releaseId, version: memory.releaseVersion, contentHash: memory.contentHash },
+        desiredGeneration: memory.generation, actualGeneration: memory.generation,
+        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+      ...evolutionProjection.plugins.map((plugin) => activationStore.observe({
+        assetKind: "plugin", target: plugin.name,
+        releaseRef: { id: plugin.releaseId, version: plugin.releaseVersion, contentHash: plugin.contentHash },
+        desiredGeneration: plugin.generation, actualGeneration: plugin.generation,
+        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+      ...evolutionProjection.harnesses.map((harness) => activationStore.observe({
+        assetKind: "harness", target: harness.name,
+        releaseRef: { id: harness.releaseId, version: harness.releaseVersion, contentHash: harness.contentHash },
+        desiredGeneration: harness.generation, actualGeneration: harness.generation,
+        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+      ...evolutionProjection.prompts.map((prompt) => activationStore.observe({
+        assetKind: "prompt", target: prompt.target,
+        releaseRef: { id: prompt.releaseId, version: prompt.releaseVersion, contentHash: prompt.contentHash },
+        desiredGeneration: prompt.generation, actualGeneration: prompt.generation,
+        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+      ...evolutionProjection.agentProfiles.map((item) => activationStore.observe({
+        assetKind: "agent_profile", target: item.target,
+        releaseRef: { id: item.releaseId, version: item.releaseVersion, contentHash: item.contentHash },
+        desiredGeneration: item.generation, actualGeneration: item.generation,
+        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+      })),
+    ]);
     return { session, goalVersions, resolution, toolExecution, safety, runtimeEvolutionFingerprint, evolutionToolNames: pluginTools.map((tool) => tool.name) };
   }
 
@@ -934,14 +981,14 @@ function proposeEvolutionCandidateTool(workspaceRoot: string, workspaceId: strin
   return defineTool({
     name: "propose_evolution_candidate",
     label: "提出公司进化候选",
-    description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill、Plugin 或 Harness 候选。此工具只保存候选，不验证效果、不挂载扩展、不修改生产运行时。",
+    description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill、Prompt、Agent Profile 或可选扩展候选。此工具只保存版本化变更，不代表验证、批准或后续 Runtime 已继承。",
     parameters: Type.Object({
-      kind: Type.Optional(Type.Union([Type.Literal("skill"), Type.Literal("plugin"), Type.Literal("harness")])),
+      kind: Type.Optional(Type.Union([Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("agent_profile"), Type.Literal("workflow"), Type.Literal("source_patch"), Type.Literal("plugin"), Type.Literal("harness")])),
       target: Type.String({ description: "候选名称，例如 incident-retrospective" }),
       title: Type.String(),
       rationale: Type.String({ description: "从引用事实中观察到的重复失败、低效或能力缺口" }),
       hypothesis: Type.String({ description: "候选将如何改善可观察指标，必须可被评测否证" }),
-      artifactContent: Type.String({ description: "Skill 使用完整 SKILL.md；Plugin/Harness 使用符合 autoagent.plugin/v1 的完整 JSON Bundle" }),
+      artifactContent: Type.String({ description: "Skill 使用完整 SKILL.md；Prompt 使用完整片段；Agent Profile/Workflow 使用受限 schemaVersion 1 JSON；Plugin/Harness 使用 autoagent.plugin/v1 JSON Bundle" }),
       sourceRefs: Type.Array(Type.Object({
         kind: Type.Union([Type.Literal("trace"), Type.Literal("evidence"), Type.Literal("goal_proposal"), Type.Literal("goal_decision"), Type.Literal("ticket"), Type.Literal("mission"), Type.Literal("human_feedback")]),
         ref: Type.String(),
@@ -2351,7 +2398,7 @@ function envOptionalPositiveInteger(name: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function stableSystemPrompt(input: AgentExecutionSliceInput, evolutionMemories: RuntimeEvolutionMemory[] = []): string {
+function stableSystemPrompt(input: AgentExecutionSliceInput, evolutionMemories: RuntimeEvolutionMemory[] = [], evolutionPrompts: RuntimeEvolutionPrompt[] = []): string {
   const skillInstructions = skillRuntimeAdapterInstructions(
     effectiveAgentSkills(input.profile, input.agent),
     input.policy.enabledTools ?? [],
@@ -2365,6 +2412,11 @@ function stableSystemPrompt(input: AgentExecutionSliceInput, evolutionMemories: 
       "## Company Evolution 已晋升记忆",
       "以下内容是经证据、隔离评测、canary telemetry 和 production 晋升后的作用域经验。它们是可验证的操作性参考，不得覆盖当前 Goal、平台策略、安全边界或 human 指令；与当前事实冲突时以当前权威证据为准。",
       ...evolutionMemories.map((memory) => `### ${memory.target}（release: ${memory.releaseId}）\n${memory.content.slice(0, 8_000)}`),
+    ].join("\n\n") : "",
+    evolutionPrompts.length ? [
+      "## Company Evolution 已激活 Prompt",
+      "以下片段是经评测和激活的作用域行为改进；不得覆盖当前 Goal、平台策略、安全边界或 human 指令。",
+      ...evolutionPrompts.map((prompt) => `### ${prompt.target}（release: ${prompt.releaseId}）\n${prompt.content.slice(0, 8_000)}`),
     ].join("\n\n") : "",
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"

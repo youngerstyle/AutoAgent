@@ -1,11 +1,13 @@
-# AutoAgent Plugin/Harness Evolution V1
+# AutoAgent Plugin/Harness Extension Host V1
 
 日期：2026-08-14
-状态：Accepted for implementation
+状态：Implemented prototype；独立扩展基础设施，不是 Evol 自进化定义
 
 ## 1. 目标与非目标
 
-本阶段让 Company Evolution 能够提出、评测、灰度并装载真正的可执行扩展，而不是把 `SKILL.md` 冒充插件。
+本规范定义可执行扩展如何被扫描、评测、灰度和装载。它解决的是 extension execution，不是 Evol 自进化本体；临时执行扩展不构成进化，只有版本化资产被激活并由后续运行继承才构成进化结果。
+
+跨平台 SaaS 的生产实现必须把 Extension Host 抽象为平台无关 Sandbox Provider/Data Plane。本规范中的 WSL/PowerShell Launcher 只是本地开发适配器，不是生产架构要求。
 
 首个可生产版本支持两种贡献：
 

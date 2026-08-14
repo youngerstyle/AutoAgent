@@ -11,6 +11,7 @@ import { ExtractionJobStore } from "./extraction-job-store.js";
 import { ExtractionRunner } from "./extraction-runner.js";
 import { ExperienceStore } from "./experience-store.js";
 import { MemoryConsolidator } from "./memory-consolidator.js";
+import { PromptConsolidator } from "./prompt-consolidator.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
@@ -113,6 +114,7 @@ export class EvolutionCoordinator {
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
     await new MemoryConsolidator(workspace.id, experience, candidates).consolidate(2);
+    await new PromptConsolidator(workspace.id, experience, candidates).consolidate(2);
     await this.prepareAutomatedEvaluations(workspace, candidates);
     await new MemoryLifecycleStore(workspace.id, workspace.rootPath, () => this.now()).maintain();
     await new CanaryTelemetryReconciler(workspace, () => this.now()).reconcile();

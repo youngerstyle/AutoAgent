@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { EvaluationJob, EvolutionCandidate, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord } from "../shared/contracts/evolution";
+import type { EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord, SourcePatchDeliveryRecord } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -195,19 +195,24 @@ export interface EvolutionOverview {
   releases: PromotionRecord[];
   evaluationJobs: EvaluationJob[];
   memories: MemoryLifecycleState[];
+  activations: EvolutionActivationRecord[];
+  inheritanceProofs: EvolutionInheritanceProof[];
+  sourceDeliveries: SourcePatchDeliveryRecord[];
   worker: EvolutionWorkerStatus;
 }
 
 export async function getEvolutionOverview(workspaceId: string): Promise<EvolutionOverview> {
   const root = `/api/workspaces/${workspaceId}/evolution`;
-  const [candidates, releases, jobs, memories, worker] = await Promise.all([
+  const [candidates, releases, jobs, memories, activations, sourceDeliveries, worker] = await Promise.all([
     api<{ candidates: EvolutionCandidate[] }>(`${root}/candidates`),
     api<{ releases: PromotionRecord[] }>(`${root}/releases`),
     api<{ jobs: EvaluationJob[] }>(`${root}/evaluation-jobs`),
     api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
+    api<{ activations: EvolutionActivationRecord[]; proofs: EvolutionInheritanceProof[] }>(`${root}/activations`),
+    api<{ deliveries: SourcePatchDeliveryRecord[] }>(`${root}/source-deliveries`),
     api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
   ]);
-  return { candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories, worker: worker.worker };
+  return { candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories, activations: activations.activations, inheritanceProofs: activations.proofs, sourceDeliveries: sourceDeliveries.deliveries, worker: worker.worker };
 }
 
 export function pinEvolutionMemory(workspaceId: string, releaseId: string, pinned: boolean): Promise<{ memory: MemoryLifecycleState }> {

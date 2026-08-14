@@ -2491,8 +2491,10 @@ function EvolutionHub(props: {
   const releases = props.overview?.releases ?? [];
   const jobs = props.overview?.evaluationJobs ?? [];
   const memories = props.overview?.memories ?? [];
+  const activations = props.overview?.activations ?? [];
+  const sourceDeliveries = props.overview?.sourceDeliveries ?? [];
   const extensionCandidates = candidates.filter((item) => item.kind === "plugin" || item.kind === "harness");
-  const activeProduction = releases.filter((item) => item.stage === "production" && item.status === "active").length;
+  const activeProduction = activations.filter((item) => item.stage === "production" && item.status === "activated").length;
   const pendingJobs = jobs.filter((item) => item.status === "pending" || item.status === "running" || item.status === "retry_wait").length;
 
   return (
@@ -2501,7 +2503,7 @@ function EvolutionHub(props: {
         <div>
           <span className="section-kicker">Evidence-driven governance</span>
           <h2>公司进化</h2>
-          <p>查看从 Episode、候选变更、隔离评测到分级发布的完整证据链。可执行 Plugin/Harness 只在隔离 Extension Host 中运行，不会绕过评测或直接改写主进程。</p>
+          <p>查看从 Episode、候选变更、评测批准到生命周期激活的完整证据链。只有后续 turn、session、task 或 deployment 留下继承证明，才显示为真正生效。</p>
         </div>
         <div className="evolution-actions">
           <button type="button" onClick={props.onReconcile} disabled={!props.workspace || props.loading}>重建经验</button>
@@ -2515,13 +2517,24 @@ function EvolutionHub(props: {
       {!props.workspace ? <div className="evolution-empty">请先选择一个项目。</div> : (
         <>
           <section className="evolution-metrics" aria-label="进化治理概览">
-            <div><span>候选</span><strong>{candidates.length}</strong><small>{extensionCandidates.length} 个可执行扩展 · Sandbox {props.overview?.worker.pluginSandboxConfigured ? "ready" : "required"}</small></div>
+            <div><span>候选</span><strong>{candidates.length}</strong><small>{extensionCandidates.length} 个可选扩展资产</small></div>
             <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
-            <div><span>生产发布</span><strong>{activeProduction}</strong><small>已通过 canary telemetry</small></div>
+            <div><span>已继承生产版本</span><strong>{activeProduction}</strong><small>{activations.filter((item) => item.status === "waiting_for_activation").length} 个等待 Runtime 生效</small></div>
             <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
           </section>
 
           <div className="evolution-grid">
+            {sourceDeliveries.length ? <section className="evolution-panel">
+              <header><div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div></header>
+              <div className="evolution-list compact">
+                {sourceDeliveries.slice().reverse().map((delivery) => <article key={delivery.deliveryId}>
+                  <div><strong>{delivery.status}</strong><small>{delivery.sourceCommit?.slice(0, 12) ?? "尚未合并"}</small></div>
+                  <span className={`evolution-status ${delivery.status}`}>{delivery.status}</span>
+                  <p>{delivery.deploymentRef ? `deployment ${delivery.deploymentRef.id}@${delivery.deploymentRef.version}` : `candidate ${delivery.candidateId}`}</p>
+                  <code>{delivery.attestations.length} attestations</code>
+                </article>)}
+              </div>
+            </section> : null}
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Candidate ledger</span><h3>候选与验证</h3></div></header>
               <div className="evolution-list">
@@ -2539,14 +2552,18 @@ function EvolutionHub(props: {
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Promotion ledger</span><h3>分级发布</h3></div></header>
               <div className="evolution-list compact">
-                {releases.length ? releases.slice().reverse().map((release) => (
+                {releases.length ? releases.slice().reverse().map((release) => {
+                  const activation = activations.find((item) => item.promotionId === release.promotionId);
+                  const displayStatus = activation?.status ?? (release.stage === "shadow" ? release.status : "waiting_for_activation");
+                  return (
                   <article key={release.promotionId}>
-                    <div><strong>{release.stage}</strong><small>{release.toRelease.version} · {release.status}</small></div>
-                    <span className={`evolution-status ${release.status}`}>{release.status}</span>
+                    <div><strong>{release.stage}</strong><small>{release.toRelease.version} · {displayStatus}</small></div>
+                    <span className={`evolution-status ${displayStatus}`}>{displayStatus}</span>
                     <p>candidate {release.candidateId.slice(0, 18)} · policy {release.policyRef.version}</p>
-                    <code>{release.toRelease.contentHash.slice(0, 16)}</code>
+                    <code>{release.toRelease.contentHash.slice(0, 16)}{activation ? ` · ${activation.boundary} · proofs ${activation.proofCount}` : ""}</code>
                   </article>
-                )) : <p className="evolution-empty">尚无 shadow、canary 或 production 发布。</p>}
+                  );
+                }) : <p className="evolution-empty">尚无 shadow、canary 或 production 发布。</p>}
               </div>
             </section>
 

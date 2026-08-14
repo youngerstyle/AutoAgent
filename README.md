@@ -66,18 +66,13 @@ $env:ANTHROPIC_API_KEY="..."
 - `GET /api/providers/config`：返回脱敏后的模型服务配置。
 - `PATCH /api/providers/:provider`：保存 `openai` 或 `anthropic` 配置。
 
-## Evol 可执行扩展
+## Evol 自进化
 
-Evol 可以提案并评测 `plugin` 工具与 `harness` 工具守卫，但它们一律按 critical 风险治理：Agent 不能批准，系统不会自动晋升到 canary/production。生产挂载还必须配置独立 OS 沙箱；未配置时晋升和 Runtime 投影都会 fail closed。
+Evol 从真实运行事实中发现问题，产生并评测对 Memory、Skill、Agent Profile、Prompt、Workflow 或自身源码的版本化变更。变更被批准和激活后，由后续 turn、session、task、process restart 或 deployment 继承；临时执行一段新脚本不视为进化。
 
-Windows + WSL2 的参考 Launcher：
+源码进化生成绑定 base commit 的 patch/branch，经过 required checks、独立审查、合并和部署后，只有报告新 deployment revision 的进程才会使用它。Plugin/Harness 是独立的扩展执行设施，不是 Evol 的定义，也不是 Evol 的必需依赖。
 
-```powershell
-$env:AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM=(Resolve-Path ".\scripts\evolution-plugin-sandbox-wsl.ps1").Path
-$env:AUTOAGENT_EVOLUTION_PLUGIN_WSL_DISTRO="Ubuntu" # 可选
-```
-
-目标 WSL distribution 需要 `bubblewrap`（`bwrap`）和 `python3`。完整 Bundle、能力代理、审批、canary 与 rollback 契约见 `docs/superpowers/specs/2026-08-14-plugin-harness-evolution-v1.md`。
+完整语义见 `docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`。
 
 ## Agent 中心和项目团队
 

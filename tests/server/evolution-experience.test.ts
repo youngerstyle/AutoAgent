@@ -7,6 +7,7 @@ import { projectExperience } from "../../src/server/evolution/experience-project
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
+import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
 
 describe("evolution experience pipeline", () => {
   it("projects a stable successful episode only from terminal authoritative facts", () => {
@@ -121,6 +122,29 @@ describe("evolution experience pipeline", () => {
       "workspace-a", experience, new EvolutionStore("workspace-a", root, fixedNow),
     ).consolidate(2);
     expect(result).toMatchObject({ eligibleClusters: 0, conflictedClusters: 1, candidates: [] });
+  });
+
+  it("selects a high-risk Prompt mutation for repeated prompt-attributed episodes instead of disguising it as Memory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-prompt-consolidation-"));
+    const experience = new ExperienceStore("workspace-a", root);
+    const failure = {
+      component: "prompt" as const, symptom: "The answer asserted a deployment without runtime evidence",
+      cause: "The active prompt does not require an inheritance proof before claiming activation",
+      sourceRefs: [{ kind: "trace" as const, ref: "trace-prompt-proof", workspaceId: "workspace-a" }],
+    };
+    const first = facts({ ticket: { status: "failed" }, failures: [failure] });
+    const second = facts({ ticket: { status: "failed" }, failures: [failure] });
+    second.commandId = "prompt-episode-b"; second.taskId = "task-b"; second.taskRunId = "run-b";
+    second.ticket = { ...second.ticket, ticketId: "ticket-b", attemptId: "attempt-b" };
+    second.goal = { ...second.goal, goalId: "goal-b" };
+    await experience.record("prompt-a", projectExperience(first, fixedNow));
+    await experience.record("prompt-b", projectExperience(second, fixedNow));
+    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    expect((await new MemoryConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates).toEqual([]);
+    const result = await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2);
+    expect(result.candidates).toEqual([expect.objectContaining({ kind: "prompt", riskLevel: "high", proposedBy: { type: "system", id: "prompt-consolidator/v1" }, mutationSet: expect.objectContaining({ activationBoundary: "next_turn" }) })]);
+    expect(await candidates.artifactContent(result.candidates[0]!.candidateId)).toContain("cite the current trace/evidence");
+    expect((await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!.candidateId).toBe(result.candidates[0]!.candidateId);
   });
 });
 

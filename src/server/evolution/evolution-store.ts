@@ -5,6 +5,7 @@ import { createId } from "../../shared/ids.js";
 import {
   EVOLUTION_ARTIFACT_KINDS,
   EVOLUTION_SOURCE_KINDS,
+  DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY,
   type CreateEvolutionCandidateInput,
   type EvolutionCandidate,
   type EvolutionLedgerEvent,
@@ -14,6 +15,8 @@ import {
   type SkillScanReport,
   type PluginArtifactManifest,
   type PluginScanReport,
+  type EvolutionSourcePatchArtifact,
+  type EvolutionRuntimeConfigArtifact,
   type ValidateEvolutionCandidateInput,
   type VersionedEvolutionRef,
 } from "../../shared/contracts/evolution.js";
@@ -27,6 +30,7 @@ import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { MissionStore } from "../mission-process/mission-store.js";
 import { TicketStore } from "../tickets/ticket-store.js";
+import { EvolutionReleaseRegistry } from "./release-registry.js";
 
 const ledgerQueues = new Map<string, Promise<void>>();
 
@@ -93,6 +97,19 @@ export class EvolutionStore {
       artifactRef, contentHash, hypothesis: input.hypothesis, sourceRefs: input.sourceRefs,
       scope: input.scope, expectedMetrics: input.expectedMetrics, riskLevel: input.riskLevel,
       status: "proposed", proposedBy: input.proposedBy, createdAt: timestamp, updatedAt: timestamp,
+    };
+    const current = await new EvolutionReleaseRegistry(this.workspaceRoot, this.now).current("production", candidate);
+    const sourcePatch = candidate.kind === "source_patch" ? parseSourcePatchArtifact(input.artifactContent) : undefined;
+    const baseRef = sourcePatch
+      ? { id: `scm:${sourcePatch.repositoryId}`, version: sourcePatch.baseCommit, contentHash: hash(sourcePatch.baseCommit) }
+      : current?.active && current.release ? current.release : genesisRef(candidate);
+    if (input.baseVersion && ![baseRef.id, baseRef.version].includes(input.baseVersion)) throw conflict(`Evolution baseVersion does not match active base ${baseRef.version}`);
+    candidate.mutationSet = {
+      assetKind: candidate.kind, target: candidate.target, baseRef: structuredClone(baseRef),
+      candidateRef: { id: candidate.candidateId, version: String(candidate.revision), contentHash: candidate.contentHash },
+      representation: candidate.kind === "source_patch" ? "unified_diff" : "full",
+      activationBoundary: DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind],
+      compatibility: { runtime: "autoagent", mutationContract: "1" }, rollbackRef: structuredClone(baseRef),
     };
       await this.append({ eventId: createId("eve"), commandId: input.commandId, type: "candidate.proposed", occurredAt: timestamp, candidate });
       return candidate;
@@ -297,7 +314,7 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
     input[field] = input[field].trim() as never;
   }
   if (!EVOLUTION_ARTIFACT_KINDS.includes(input.kind)) throw invalid("Unknown evolution artifact kind");
-  if (!["skill", "memory", "plugin", "harness"].includes(input.kind)) throw invalid("Only memory, skill, plugin, and harness candidates are supported");
+  if (!["skill", "memory", "prompt", "agent_profile", "workflow", "runtime_config", "source_patch", "plugin", "harness"].includes(input.kind)) throw invalid("This evolution asset kind is not implemented yet");
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(input.target)) throw invalid("Evolution target is invalid");
   if (input.artifactContent.length > (input.kind === "plugin" || input.kind === "harness" ? 750_000 : 200_000)) throw invalid("Evolution artifact is too large");
   if (!Array.isArray(input.sourceRefs) || input.sourceRefs.length === 0) throw invalid("At least one sourceRef is required");
@@ -324,6 +341,8 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
   }
   if (!["low", "medium", "high", "critical"].includes(input.riskLevel)) throw invalid("Evolution risk level is invalid");
   if ((input.kind === "plugin" || input.kind === "harness") && input.riskLevel !== "critical") throw invalid("Plugin and harness candidates must be critical risk");
+  if (input.kind === "source_patch" && input.riskLevel !== "critical") throw invalid("Source Patch candidates must be critical risk");
+  if ((input.kind === "prompt" || input.kind === "agent_profile" || input.kind === "workflow" || input.kind === "runtime_config") && !["high", "critical"].includes(input.riskLevel)) throw invalid("Prompt, Agent Profile, Workflow, and Runtime Config candidates must be high or critical risk");
   if (!input.proposedBy || !["agent", "human", "system"].includes(input.proposedBy.type) || typeof input.proposedBy.id !== "string" || !input.proposedBy.id) throw invalid("Evolution proposer is invalid");
   return input;
 }
@@ -343,15 +362,50 @@ function validateCandidate(
   pluginBundle?: ParsedPluginBundle,
   pluginParseError?: string,
 ): EvolutionValidationCheck[] {
+  const mutation = candidate.mutationSet;
   const common: EvolutionValidationCheck[] = [
     { name: "source_evidence", passed: candidate.sourceRefs.length > 0 && sourceVerification.length === candidate.sourceRefs.length && sourceVerification.every(Boolean), message: "Candidate source references resolve in authoritative workspace stores" },
     { name: "metric_hypothesis", passed: candidate.expectedMetrics.length > 0 && candidate.hypothesis.length >= 20, message: "Candidate has a falsifiable metric hypothesis" },
     { name: "scope_boundary", passed: candidate.sourceRefs.every((ref) => ref.workspaceId === candidate.scope.workspaceId), message: "Candidate is workspace scoped" },
+    { name: "mutation_contract", passed: Boolean(mutation && mutation.assetKind === candidate.kind && mutation.target === candidate.target && mutation.candidateRef.id === candidate.candidateId && mutation.candidateRef.version === String(candidate.revision) && mutation.candidateRef.contentHash === candidate.contentHash && mutation.activationBoundary === DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind] && mutation.rollbackRef.id === mutation.baseRef.id && mutation.rollbackRef.contentHash === mutation.baseRef.contentHash), message: "MutationSet identity, base, rollback, and activation boundary match the immutable Candidate" },
   ];
   if (candidate.kind === "memory") return [...common,
     { name: "memory_body", passed: content.length >= 80 && content.length <= 50_000, message: "Memory contains a bounded operational lesson" },
     { name: "memory_safety", passed: !/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{16,}\b|\bignore\s+(?:all\s+)?previous\s+instructions\b|\bdisable\s+(?:the\s+)?(?:sandbox|approval|guardrails?)\b|\brm\s+-rf\s+\//i.test(content), message: "Memory contains no credential, governance bypass, or destructive directive" },
   ];
+  if (candidate.kind === "prompt") return [...common,
+    { name: "prompt_body", passed: content.length >= 40 && content.length <= 20_000, message: "Prompt fragment is non-empty and bounded" },
+    { name: "prompt_safety", passed: !/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{16,}\b|ignore\s+(?:all\s+)?previous\s+instructions|disable\s+(?:the\s+)?(?:approval|guardrails?)/i.test(content), message: "Prompt contains no credential or governance bypass" },
+  ];
+  if (candidate.kind === "agent_profile") {
+    const profile = parseAgentProfileArtifact(content);
+    return [...common,
+      { name: "agent_profile_contract", passed: Boolean(profile && profile.id === candidate.target), message: "Agent Profile artifact has schemaVersion 1 and matches the target profile" },
+      { name: "agent_profile_permissions", passed: Boolean(profile && !Object.keys(profile).some((key) => ["defaultPolicy", "defaultProvider", "defaultModel"].includes(key))), message: "V1 Agent Profile evolution cannot expand policy or change provider/model" },
+    ];
+  }
+  if (candidate.kind === "workflow") {
+    const workflow = parseWorkflowArtifact(content);
+    return [...common,
+      { name: "workflow_contract", passed: Boolean(workflow && workflow.templateId === candidate.target), message: "Workflow artifact has schemaVersion 1 and matches the target template" },
+      { name: "workflow_graph", passed: Boolean(workflow && Array.isArray(workflow.initialChange?.additions) && workflow.initialChange.additions.length > 0 && Array.isArray(workflow.initialChange?.requiredTerminalRefs) && workflow.initialChange.requiredTerminalRefs.length > 0), message: "Workflow declares initial tickets and at least one terminal reference" },
+    ];
+  }
+  if (candidate.kind === "source_patch") {
+    const patch = parseSourcePatchArtifact(content);
+    return [...common,
+      { name: "source_patch_contract", passed: Boolean(patch), message: "Source Patch declares repository, exact base commit, bounded paths, required checks, and unified diff" },
+      { name: "source_patch_scope", passed: Boolean(patch && patch.files.every(safeSourcePatchPath)), message: "Source Patch files remain inside the allowed repository scope" },
+      { name: "source_patch_sensitive_roots", passed: Boolean(patch && patch.files.every((file) => !/^(?:\.git|\.autoagent|node_modules|dist)(?:\/|$)/.test(file))), message: "Source Patch does not modify runtime state, SCM metadata, dependencies, or build output" },
+    ];
+  }
+  if (candidate.kind === "runtime_config") {
+    const runtimeConfig = parseRuntimeConfigArtifact(content);
+    return [...common,
+      { name: "runtime_config_contract", passed: Boolean(runtimeConfig && candidate.target === "runtime-host"), message: "Runtime Config uses the restricted schema and targets runtime-host" },
+      { name: "runtime_config_bounds", passed: Boolean(runtimeConfig && validRuntimeConfigBounds(runtimeConfig)), message: "Runtime Config values stay inside operational safety bounds" },
+    ];
+  }
   if (candidate.kind === "plugin" || candidate.kind === "harness") return [...common,
     { name: "plugin_bundle", passed: Boolean(pluginBundle), message: pluginBundle ? "Plugin bundle contract is valid" : `Plugin bundle is invalid: ${pluginParseError ?? "schema validation failed"}` },
     { name: "plugin_static_scan", passed: pluginBundle?.scan.decision === "pass", message: pluginBundle?.scan.decision === "pass" ? "Plugin static scan passed" : `Plugin static scan requires ${pluginBundle?.scan.decision ?? "block"}` },
@@ -399,6 +453,75 @@ async function writeImmutableSkillEntrypoint(workspaceRoot: string, contentHash:
 function relativeArtifactRef(contentHash: string): string { return path.join("artifacts", contentHash, "artifact.txt").replaceAll("\\", "/"); }
 function relativeArtifactManifestRef(contentHash: string, candidateId: string): string { return path.join("artifacts", contentHash, "manifests", `${candidateId}.json`).replaceAll("\\", "/"); }
 function hash(content: string): string { return createHash("sha256").update(content, "utf8").digest("hex"); }
+function parseAgentProfileArtifact(content: string): Record<string, unknown> | undefined {
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(content) as Record<string, unknown>; } catch { return undefined; }
+  const allowed = new Set(["schemaVersion", "id", "identity", "soul", "agentMd", "capabilities", "defaultSkills"]);
+  if (value.schemaVersion !== 1 || typeof value.id !== "string" || Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  for (const key of ["identity", "soul", "agentMd"] as const) if (value[key] !== undefined && (typeof value[key] !== "string" || value[key].length > 50_000)) return undefined;
+  for (const key of ["capabilities", "defaultSkills"] as const) if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length > 128 || value[key].some((item) => typeof item !== "string" || !item.trim()))) return undefined;
+  return value;
+}
+function parseWorkflowArtifact(content: string): { templateId: string; initialChange?: { additions?: unknown[]; requiredTerminalRefs?: unknown[] } } | undefined {
+  let value: Record<string, unknown>;
+  try { value = JSON.parse(content) as Record<string, unknown>; } catch { return undefined; }
+  const allowed = new Set(["schemaVersion", "templateId", "definitionVersion", "plannerAssignment", "amendmentTemplate", "initialChange"]);
+  if (value.schemaVersion !== 1 || typeof value.templateId !== "string" || !Number.isSafeInteger(value.definitionVersion) || Object.keys(value).some((key) => !allowed.has(key))) return undefined;
+  if (!value.plannerAssignment || typeof value.plannerAssignment !== "object" || !value.amendmentTemplate || typeof value.amendmentTemplate !== "object" || !value.initialChange || typeof value.initialChange !== "object") return undefined;
+  return value as unknown as { templateId: string; initialChange: { additions?: unknown[]; requiredTerminalRefs?: unknown[] } };
+}
+function parseSourcePatchArtifact(content: string): EvolutionSourcePatchArtifact | undefined {
+  let value: EvolutionSourcePatchArtifact;
+  try { value = JSON.parse(content) as EvolutionSourcePatchArtifact; } catch { return undefined; }
+  if (value?.schemaVersion !== 1 || !/^[a-z0-9][a-z0-9._/-]{0,199}$/i.test(value.repositoryId) || !/^[a-f0-9]{40,64}$/i.test(value.baseCommit)
+    || !/^[a-z0-9][a-z0-9._/-]{0,199}$/i.test(value.targetBranch) || !Array.isArray(value.files) || !value.files.length || value.files.length > 128
+    || value.files.some((file) => !safeSourcePatchPath(file)) || !Array.isArray(value.requiredChecks) || !value.requiredChecks.length || value.requiredChecks.length > 32
+    || value.requiredChecks.some((name) => typeof name !== "string" || !name.trim()) || typeof value.patch !== "string" || value.patch.length > 500_000
+    || !value.patch.startsWith("diff --git ") || /GIT binary patch|Binary files .* differ/.test(value.patch)) return undefined;
+  const declared = new Set(value.files);
+  const patched = new Set<string>();
+  for (const match of value.patch.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
+    if (match[1] !== match[2] || !declared.has(match[1]!)) return undefined;
+    patched.add(match[1]!);
+  }
+  if (patched.size !== declared.size || [...declared].some((file) => !patched.has(file))) return undefined;
+  return value;
+}
+
+function parseRuntimeConfigArtifact(content: string): EvolutionRuntimeConfigArtifact | undefined {
+  let value: unknown;
+  try { value = JSON.parse(content) as unknown; } catch { return undefined; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || record.target !== "runtime-host" || !record.settings || typeof record.settings !== "object" || Array.isArray(record.settings)) return undefined;
+  if (Object.keys(record).some((key) => !["schemaVersion", "target", "settings"].includes(key))) return undefined;
+  const allowed = new Set(["intervalMs", "providerRetryBaseMs", "providerRetryMaxMs", "staffingProviderFailureLimit", "staffingProviderRetryBaseMs", "staffingProviderRetryMaxMs"]);
+  const settings = record.settings as Record<string, unknown>;
+  if (Object.keys(settings).some((key) => !allowed.has(key))) return undefined;
+  if (Object.values(settings).some((item) => typeof item !== "number" || !Number.isSafeInteger(item))) return undefined;
+  return value as EvolutionRuntimeConfigArtifact;
+}
+
+function validRuntimeConfigBounds(value: EvolutionRuntimeConfigArtifact): boolean {
+  const settings = value.settings;
+  const inRange = (item: number | undefined, min: number, max: number) => item === undefined || (item >= min && item <= max);
+  if (!inRange(settings.intervalMs, 100, 60_000)
+    || !inRange(settings.providerRetryBaseMs, 100, 300_000)
+    || !inRange(settings.providerRetryMaxMs, 100, 900_000)
+    || !inRange(settings.staffingProviderFailureLimit, 1, 20)
+    || !inRange(settings.staffingProviderRetryBaseMs, 100, 300_000)
+    || !inRange(settings.staffingProviderRetryMaxMs, 100, 900_000)) return false;
+  if (settings.providerRetryBaseMs !== undefined && settings.providerRetryMaxMs !== undefined && settings.providerRetryMaxMs < settings.providerRetryBaseMs) return false;
+  return !(settings.staffingProviderRetryBaseMs !== undefined && settings.staffingProviderRetryMaxMs !== undefined && settings.staffingProviderRetryMaxMs < settings.staffingProviderRetryBaseMs);
+}
+function safeSourcePatchPath(value: string): boolean {
+  if (!value || value.includes("\\") || value.includes("\0") || path.posix.isAbsolute(value)) return false;
+  const normalized = path.posix.normalize(value);
+  return normalized === value && normalized !== ".." && !normalized.startsWith("../");
+}
+function genesisRef(candidate: Pick<EvolutionCandidate, "kind" | "target" | "scope">): VersionedEvolutionRef {
+  return { id: `genesis:${hash(canonical({ kind: candidate.kind, target: candidate.target, scope: candidate.scope })).slice(0, 24)}`, version: "0", contentHash: hash("") };
+}
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
