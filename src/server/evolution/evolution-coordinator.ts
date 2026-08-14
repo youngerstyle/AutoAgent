@@ -13,6 +13,7 @@ import { ExperienceStore } from "./experience-store.js";
 import { MemoryConsolidator } from "./memory-consolidator.js";
 import { PromptConsolidator } from "./prompt-consolidator.js";
 import { SkillConsolidator } from "./skill-consolidator.js";
+import { EvolutionAssetSelector } from "./asset-selector.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
@@ -117,6 +118,9 @@ export class EvolutionCoordinator {
     await new MemoryConsolidator(workspace.id, experience, candidates).consolidate(2);
     await new PromptConsolidator(workspace.id, experience, candidates).consolidate(2);
     await new SkillConsolidator(workspace.id, experience, candidates).consolidate(2);
+    const selectionEvaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
+    const selectionTelemetry = new EvolutionTelemetryStore(workspace.id, workspace.rootPath, candidates, selectionEvaluations, () => this.now());
+    await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, candidates, selectionTelemetry, () => this.now()).select(3);
     await this.prepareAutomatedEvaluations(workspace, candidates);
     await new MemoryLifecycleStore(workspace.id, workspace.rootPath, () => this.now()).maintain();
     await new CanaryTelemetryReconciler(workspace, () => this.now()).reconcile();

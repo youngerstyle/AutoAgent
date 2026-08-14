@@ -21,6 +21,7 @@ import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
 import { SourcePatchDeliveryStore } from "../evolution/source-delivery-store.js";
 import { SkillConsolidator } from "../evolution/skill-consolidator.js";
+import { EvolutionAssetSelector } from "../evolution/asset-selector.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -150,6 +151,23 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const result = await new SkillConsolidator(workspace.id, experience, candidates).consolidate(
       req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
+    );
+    res.json({ result });
+  }));
+  router.get("/asset-selections", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const stores = await storeFor(workspace.id);
+    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
+    const telemetry = new EvolutionTelemetryStore(workspace.id, workspace.rootPath, stores.candidates, stores.evaluations);
+    res.json({ selections: await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, stores.candidates, telemetry).list() });
+  }));
+  router.post("/asset-selections/reconcile", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const stores = await storeFor(workspace.id);
+    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
+    const telemetry = new EvolutionTelemetryStore(workspace.id, workspace.rootPath, stores.candidates, stores.evaluations);
+    const result = await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, stores.candidates, telemetry).select(
+      req.body?.minimumEpisodes === undefined ? 3 : Number(req.body.minimumEpisodes),
     );
     res.json({ result });
   }));

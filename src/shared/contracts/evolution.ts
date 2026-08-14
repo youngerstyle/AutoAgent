@@ -77,7 +77,13 @@ export interface ExperienceEpisode {
   contentHash: string;
 }
 
-export type AttributionComponent = "memory" | "prompt" | "skill" | "tool" | "provider" | "plan" | "policy" | "environment" | "unknown";
+export type AttributionComponent = "memory" | "prompt" | "skill" | "agent_profile" | "workflow" | "runtime_config" | "source_patch" | "tool" | "provider" | "plan" | "policy" | "environment" | "unknown";
+
+export interface FailedEvolutionAttemptRef {
+  telemetryId: string;
+  candidateId: string;
+  releaseRef: VersionedEvolutionRef;
+}
 
 export interface ExperienceAttribution {
   attributionId: string;
@@ -88,6 +94,8 @@ export interface ExperienceAttribution {
   confidence: number;
   sourceRefs: EvolutionSourceRef[];
   counterEvidenceRefs: EvolutionSourceRef[];
+  /** A verified failed lower-level release that justifies considering a more invasive asset. */
+  failedEvolutionAttempts?: FailedEvolutionAttemptRef[];
   scope: EvolutionScope;
   createdAt: string;
   redaction?: { count: number; policyRef: string };
@@ -134,7 +142,20 @@ export interface AuthoritativeEpisodeFacts {
     symptom: string;
     cause: string;
     sourceRefs: EvolutionSourceRef[];
+    failedEvolutionAttempts?: FailedEvolutionAttemptRef[];
   }>;
+}
+
+export interface EvolutionAssetSelectionRecord {
+  selectionId: string;
+  workspaceId: string;
+  selectedKind: "agent_profile" | "workflow" | "runtime_config" | "source_patch";
+  status: "eligible_for_authoring" | "insufficient_evidence";
+  episodeIds: string[];
+  attributionIds: string[];
+  verifiedFailedAttempts: FailedEvolutionAttemptRef[];
+  reason: string;
+  createdAt: string;
 }
 
 export interface EvolutionValidationCheck {

@@ -19,8 +19,8 @@
 - [x] Prompt 从真实终态 Episode 形成 Candidate，经独立评测与人类批准，由后续 Pi turn 继承，并被真实 cohort telemetry 回滚；
 - [x] Evol 管理页区分 requested、pointer changed、activated、health 与 rolled back，并展示 actual runtime proof；
 - [ ] 接入生产 SCM/CI/CD adapter 并完成真实托管环境部署演练；
-- [ ] 补齐 Workflow/Source Patch 的主动升级策略，并证明只有低风险资产不足时才升级；
-- [x] 完成全量回归、生产构建与文档一致性审计（94 files / 712 tests）。
+- [x] 补齐 Agent Profile/Workflow/Runtime Config/Source Patch 的主动升级选择：至少 3 个直接归因，并验证较低层 Release 的失败 telemetry；选择只允许进入 authoring，不创建 Candidate 或激活；
+- [x] 完成全量回归、生产构建与文档一致性审计（95 files / 714 tests）。
 
 实现口径：Evol 主链是“版本化变更 -> 生命周期边界切换 -> 后续运行继承 -> 效果衡量/恢复”。本地 Git、测试命令或未来托管 runner 只是 Source Patch Provider 的实现，不是 Evol 本身；WSL、PowerShell 和 sandbox 均不进入核心状态机。
 
@@ -61,8 +61,9 @@
 3. 激活后按 cohort 聚合后续 Episode/Telemetry。
 4. 形成 retain/refine/stale/rollback 决策，并防止重复学习同一失败。
 5. Evol 管理页展示 mutation lineage、activation boundary、inheritance proof 和效果窗口。
+6. 高层资产选择持久化为独立 selection record；没有较低层失败 telemetry 时只能记录 `insufficient_evidence`，不得自动生成高风险 Candidate。
 
-退出标准：至少一个非 Memory 资产从真实 Episode 自动形成候选，经人类批准后被后续运行继承，并能依据真实效果回滚。Prompt 已满足该链路；Milestone H 仍需完成 Workflow/Source Patch 的证据化升级策略。
+退出标准：至少一个非 Memory 资产从真实 Episode 自动形成候选，经人类批准后被后续运行继承，并能依据真实效果回滚；高层资产只有在较小变更的失败事实成立时才能进入 authoring。Prompt 已满足前一链路，Workflow/Source Patch 选择门满足后一约束。
 
 ## 明确不在本计划主线
 

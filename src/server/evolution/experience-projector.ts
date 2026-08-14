@@ -59,6 +59,7 @@ export function projectExperience(
     confidence: 1,
     sourceRefs: uniqueRefs(failure.sourceRefs),
     counterEvidenceRefs: [],
+    ...(failure.failedEvolutionAttempts?.length ? { failedEvolutionAttempts: structuredClone(failure.failedEvolutionAttempts) } : {}),
     scope: { workspaceId: facts.workspaceId },
     createdAt: timestamp,
     ...(redactionCount ? { redaction: { count: redactionCount, policyRef: "evolution-secret-redaction/v1" } } : {}),
@@ -91,6 +92,9 @@ function validateFacts(facts: AuthoritativeEpisodeFacts): void {
   }
   for (const failure of facts.failures ?? []) {
     if (!failure.symptom.trim() || !failure.cause.trim() || failure.sourceRefs.length === 0) throw invalid("Typed failure requires symptom, cause, and source evidence");
+    for (const attempt of failure.failedEvolutionAttempts ?? []) {
+      if (!attempt.telemetryId?.trim() || !attempt.candidateId?.trim() || !attempt.releaseRef?.id?.trim() || !attempt.releaseRef.version?.trim() || !attempt.releaseRef.contentHash?.trim()) throw invalid("Failed evolution attempt reference is invalid");
+    }
   }
 }
 

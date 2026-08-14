@@ -53,6 +53,10 @@ export function workspaceEvolutionAttributionsFile(workspaceRoot: string): strin
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "attributions.jsonl");
 }
 
+export function workspaceEvolutionAssetSelectionsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "asset-selections.jsonl");
+}
+
 export function workspaceEvolutionExtractionJobsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "extraction-jobs.jsonl");
 }

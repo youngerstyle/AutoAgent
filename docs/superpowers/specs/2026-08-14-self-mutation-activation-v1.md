@@ -203,6 +203,8 @@ Evol Coordinator 独立于业务任务运行：
 
 选择顺序遵循最小有效变化：Memory -> Prompt/Skill -> Agent Profile/Workflow -> Source Patch。更高层变更只有在证据表明低风险资产无法解决问题时才提出。
 
+“无法解决”必须由较低层 Release 的真实失败 telemetry 证明，不能由 proposer 自述。高层选择先写入独立的 asset-selection record；该记录仅授权进入 authoring，不是 Candidate、Release、Approval 或 Activation。
+
 ## 9. 风险与权限
 
 - low-risk scoped Memory 可以在证据、冲突和 telemetry gate 下自动激活；
