@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
@@ -305,7 +306,11 @@ async function evolutionDeclarativeAssetsForStage(
       prompts.push({ ...common, content });
     } else {
       if (release.target !== profile.id || !release.validationChecks.some((check) => check.name === "agent_profile_contract" && check.passed)) continue;
-      const artifact = JSON.parse(content) as Record<string, unknown>;
+      const artifact = parseRuntimeAgentProfileArtifact(content);
+      if ((artifact.defaultProvider !== undefined || artifact.defaultModel !== undefined || artifact.defaultPolicy !== undefined)
+        && !release.validationChecks.some((check) => check.name === "agent_profile_runtime_authority" && check.passed)) {
+        throw new Error(`${stage} Agent Profile release ${release.release.id} has no runtime-authority validation`);
+      }
       agentProfiles.push({ ...common, profile: {
         ...profile,
         ...(typeof artifact.identity === "string" ? { identity: artifact.identity } : {}),
@@ -313,10 +318,27 @@ async function evolutionDeclarativeAssetsForStage(
         ...(typeof artifact.agentMd === "string" ? { agentMd: artifact.agentMd } : {}),
         ...(Array.isArray(artifact.capabilities) ? { capabilities: artifact.capabilities as string[] } : {}),
         ...(Array.isArray(artifact.defaultSkills) ? { defaultSkills: artifact.defaultSkills as string[] } : {}),
+        ...(artifact.defaultProvider ? { defaultProvider: artifact.defaultProvider } : {}),
+        ...(artifact.defaultModel ? { defaultModel: artifact.defaultModel } : {}),
+        ...(artifact.defaultPolicy ? { defaultPolicy: { ...profile.defaultPolicy, ...artifact.defaultPolicy } } : {}),
       } });
     }
   }
   return { prompts: prompts.sort((a, b) => a.target.localeCompare(b.target)), agentProfiles: agentProfiles.sort((a, b) => a.target.localeCompare(b.target)) };
+}
+
+export async function evolutionAgentProfileForSession(
+  workspaceRoot: string,
+  workspaceId: string,
+  profile: AgentProfile,
+  agent: WorkspaceAgent,
+  context: RuntimeEvolutionContext,
+): Promise<RuntimeEvolutionAgentProfile | undefined> {
+  const [production, canary] = await Promise.all([
+    evolutionDeclarativeAssetsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
+    evolutionDeclarativeAssetsForStage(workspaceRoot, workspaceId, profile, agent, "canary", context.assignmentKey, context),
+  ]);
+  return overlayBy(production.agentProfiles, canary.agentProfiles, (item) => item.target).find((item) => item.target === profile.id);
 }
 
 export async function runtimeEvolutionProjection(
@@ -412,6 +434,18 @@ function parsePluginManifest(raw: string): PluginArtifactManifest {
     || !value.permissions || !Array.isArray(value.permissions.workspaceRead) || !value.contributions
     || !Array.isArray(value.contributions.tools) || !Array.isArray(value.contributions.guardrails) || !Array.isArray(value.files)
     || !value.compatibility || !value.scanner) throw new Error("Production Plugin scanner manifest is invalid");
+  return value;
+}
+function parseRuntimeAgentProfileArtifact(raw: string): EvolutionAgentProfileArtifact {
+  const value = JSON.parse(raw) as EvolutionAgentProfileArtifact;
+  const allowed = new Set(["schemaVersion", "id", "identity", "soul", "agentMd", "capabilities", "defaultSkills", "defaultProvider", "defaultModel", "defaultPolicy"]);
+  if (value?.schemaVersion !== 1 || typeof value.id !== "string" || Object.keys(value).some((key) => !allowed.has(key))) throw new Error("Evolution Agent Profile artifact is invalid");
+  if (value.defaultProvider !== undefined && !["mock", "openai", "anthropic"].includes(value.defaultProvider)) throw new Error("Evolution Agent Profile provider is invalid");
+  if (value.defaultModel !== undefined && (typeof value.defaultModel !== "string" || !value.defaultModel.trim())) throw new Error("Evolution Agent Profile model is invalid");
+  if (value.defaultPolicy) {
+    const policy = value.defaultPolicy;
+    if (policy.enabledTools?.some((tool) => !isKnownToolName(tool)) || policy.commandAllowlist?.some((item) => typeof item !== "string" || !item.trim())) throw new Error("Evolution Agent Profile policy is invalid");
+  }
   return value;
 }
 function matchesScope(

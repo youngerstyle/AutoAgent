@@ -28,9 +28,26 @@ describe("Evol activation and inheritance ledger", () => {
     expect(await store.list()).toEqual([expect.objectContaining({ status: "activated", proofCount: 1, firstInheritedAt: expect.any(String) })]);
     expect(await store.listProofs()).toHaveLength(1);
 
+    await store.recordHealth(promotion.promotionId, { telemetryId: "telemetry-healthy", decision: "pass" });
+    expect(await store.list()).toEqual([expect.objectContaining({ status: "activated", health: "healthy", healthTelemetryId: "telemetry-healthy" })]);
+
     await store.recordRollback(promotion);
     await store.recordRollback(promotion);
     expect(await store.list()).toEqual([expect.objectContaining({ status: "rolled_back", proofCount: 1 })]);
+
+    const restored = await store.recordRestoration(promotion.promotionId, candidate.mutationSet!.baseRef, 5);
+    expect(restored).toEqual(expect.objectContaining({ activationKind: "rollback_restore", status: "waiting_for_activation", desiredGeneration: 5 }));
+    await store.observe({
+      assetKind: "prompt", target: candidate.target, releaseRef: candidate.mutationSet!.baseRef,
+      desiredGeneration: 5, actualGeneration: 5, runtimeKind: "turn", runtimeRef: "turn-after-rollback",
+      runtimeSnapshotHash: "restored-runtime-snapshot",
+      traceRef: { kind: "trace", ref: "trace-after-rollback", workspaceId: "workspace-a", agentId: "agent-a" },
+    });
+    expect(await store.list()).toEqual([
+      expect.objectContaining({ activationKind: "release", status: "rolled_back", proofCount: 1 }),
+      expect.objectContaining({ activationKind: "rollback_restore", status: "activated", proofCount: 1, releaseRef: candidate.mutationSet!.baseRef }),
+    ]);
+    expect(await store.listProofs()).toHaveLength(2);
   });
 });
 

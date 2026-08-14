@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -23,6 +24,11 @@ import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/pa
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
+import type { EvolutionCandidate, PromotionRecord } from "../../src/shared/contracts/evolution.js";
+import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../../src/server/product/plan-template.js";
+import { EvolutionReleaseRegistry } from "../../src/server/evolution/release-registry.js";
+import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { RuntimeHostStore } from "../../src/server/runtime/runtime-host-store.js";
 
 const fixtureCleanups = new Set<() => Promise<void>>();
 
@@ -35,6 +41,21 @@ afterEach(async () => {
 });
 
 describe("RuntimeHost", () => {
+  it("freezes the inherited Workflow release and DAG hash in each new TaskRun", async () => {
+    const fixture = await createFixture();
+    const first = await publishWorkflow(fixture.root, fixture.workspace.id, fixture.policyRef, 101);
+    const firstTask = await fixture.host.createTask({ taskId: "task-workflow-v1", title: "workflow v1", objective: "use workflow v1" });
+    expect(firstTask.workflowSnapshot).toEqual(expect.objectContaining({ source: "evolution", definitionVersion: 101, generation: 1, releaseRef: first.promotion.toRelease, snapshotHash: expect.any(String) }));
+    expect((await new EvolutionActivationStore(fixture.root).listProofs()).find((item) => item.runtimeRef === firstTask.runId))
+      .toEqual(expect.objectContaining({ assetKind: "workflow", runtimeKind: "task", desiredGeneration: 1 }));
+
+    const second = await publishWorkflow(fixture.root, fixture.workspace.id, fixture.policyRef, 102, first.promotion.toRelease);
+    const secondTask = await fixture.host.createTask({ taskId: "task-workflow-v2", title: "workflow v2", objective: "use workflow v2" });
+    expect(secondTask.workflowSnapshot).toEqual(expect.objectContaining({ definitionVersion: 102, generation: 2, releaseRef: second.promotion.toRelease }));
+    expect((await new RuntimeHostStore(fixture.root).get(firstTask.taskId))?.workflowSnapshot)
+      .toEqual(expect.objectContaining({ definitionVersion: 101, generation: 1, releaseRef: first.promotion.toRelease }));
+  });
+
   it("shows active remediation work as running even while the Plan outcome is blocked", () => {
     expect(presentationStatus("blocked", "active", [{ status: "running" }])).toBe("running");
     expect(presentationStatus("blocked", "active", [{ status: "blocked", blocker: { type: "external_dependency", reason: "human input" } }])).toBe("blocked");
@@ -2441,4 +2462,37 @@ async function createFixture(options: {
     ]);
   });
   return { home, root, workspace, profiles, providers, policyStore, policyRef, host };
+}
+
+async function publishWorkflow(root: string, workspaceId: string, policyRef: Parameters<typeof createMinimalTeamPlanDefinition>[0], revision: number, base?: PromotionRecord["toRelease"]) {
+  const definition = createMinimalTeamPlanDefinition(policyRef, `workflow revision ${revision}`);
+  const artifact = JSON.stringify({
+    schemaVersion: 1, templateId: DEFAULT_PLAN_TEMPLATE_ID, definitionVersion: revision,
+    plannerAssignment: definition.plannerAssignment, amendmentTemplate: definition.amendmentTemplate, initialChange: definition.initialChange,
+  });
+  const contentHash = createHash("sha256").update(artifact, "utf8").digest("hex");
+  const candidateId = `candidate-workflow-${revision}`;
+  const artifactRef = `artifacts/${contentHash}/artifact.txt`;
+  await mkdir(path.dirname(path.join(root, ".autoagent", "evolution", artifactRef)), { recursive: true });
+  await writeFile(path.join(root, ".autoagent", "evolution", artifactRef), artifact, "utf8");
+  const baseRef = base ?? { id: "genesis:workflow", version: "0", contentHash: createHash("sha256").update("").digest("hex") };
+  const candidate: EvolutionCandidate = {
+    candidateId, revision, kind: "workflow", target: DEFAULT_PLAN_TEMPLATE_ID, title: `Workflow ${revision}`,
+    rationale: "Repeated plan outcomes justify a versioned workflow revision.", artifactRef, contentHash,
+    hypothesis: "The new workflow revision changes downstream task success while preserving the frozen DAG boundary.",
+    sourceRefs: [{ kind: "trace", ref: `trace-workflow-${revision}`, workspaceId }], scope: { workspaceId },
+    expectedMetrics: [{ metric: "task_success_rate", direction: "increase" }], riskLevel: "high", status: "ready_for_eval",
+    proposedBy: { type: "agent", id: "coordinator" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    validation: { passed: true, checkedAt: new Date().toISOString(), checks: [{ name: "workflow_contract", passed: true, message: "passed" }] },
+    mutationSet: { assetKind: "workflow", target: DEFAULT_PLAN_TEMPLATE_ID, baseRef, candidateRef: { id: candidateId, version: String(revision), contentHash }, representation: "full", activationBoundary: "next_task", compatibility: { runtime: "autoagent" }, rollbackRef: baseRef },
+  };
+  const promotion: PromotionRecord = {
+    promotionId: `promotion-workflow-${revision}`, candidateId, evaluationId: `evaluation-workflow-${revision}`,
+    ...(base ? { fromRelease: base } : {}), toRelease: { id: `release-workflow-${revision}`, version: String(revision), contentHash },
+    stage: "production", scope: { workspaceId }, approvedBy: { type: "human", id: "owner" },
+    policyRef: { id: policyRef.policyId, version: String(policyRef.policyVersion), contentHash: policyRef.contentHash },
+    status: "active", createdAt: new Date().toISOString(),
+  };
+  await new EvolutionReleaseRegistry(root).publish(promotion, candidate);
+  return { candidate, promotion };
 }

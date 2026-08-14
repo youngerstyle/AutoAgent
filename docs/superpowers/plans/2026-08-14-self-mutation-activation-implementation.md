@@ -9,15 +9,20 @@
 - [x] MutationSet、ActivationBoundary、ActivationRecord、InheritanceProof 与 append-only ledger；
 - [x] Promotion 与 Activation 分离，UI/API 不再把晋升显示成已生效；
 - [x] Memory/Prompt/Skill 的 next-turn 投影与证明；
-- [x] Agent Profile/Plugin/Harness 的 next-session 投影与证明；
-- [x] Workflow 的 next-task 冻结、证明与回滚边界；
+- [x] Agent Profile 的 next-session 投影、provider/model/policy 权威校验与证明；
+- [x] Workflow 的 next-task 持久快照、证明与回滚边界；
 - [x] Runtime Config 的受限 schema、启动快照冻结与 next-restart 证明；
 - [x] 平台无关 SCM/Build/Deployment Provider contracts；
-- [x] Source Patch 的 base commit、required checks、review、merge、build、canary、production、实际 commit 证明与可恢复交付 ledger；
-- [x] 明确归因的重复 Prompt Episode 自动形成高风险 Prompt Candidate，未知归因不变异资产；
+- [x] Source Patch 的 base commit、required checks、review、merge、build、canary、production、实际 commit 证明与可恢复交付 ledger（本地真实 Git + 测试 Provider）；
+- [x] 回滚创建新的 restoration generation，后续运行需再次证明恢复版本，而不是把历史 Release 直接改回 active；
+- [x] 明确归因的重复 Prompt/Skill Episode 自动形成最小 Candidate，未知归因不变异资产；
+- [x] Prompt 从真实终态 Episode 形成 Candidate，经独立评测与人类批准，由后续 Pi turn 继承，并被真实 cohort telemetry 回滚；
+- [x] Evol 管理页区分 requested、pointer changed、activated、health 与 rolled back，并展示 actual runtime proof；
 - [ ] 接入生产 SCM/CI/CD adapter 并完成真实托管环境部署演练；
-- [ ] 补齐 Skill/Workflow/Source Patch 的主动最小资产选择策略；
-- [ ] 完成全量回归、构建、文档一致性审计和发布提交。
+- [ ] 补齐 Workflow/Source Patch 的主动升级策略，并证明只有低风险资产不足时才升级；
+- [x] 完成全量回归、生产构建与文档一致性审计（94 files / 712 tests）。
+
+实现口径：Evol 主链是“版本化变更 -> 生命周期边界切换 -> 后续运行继承 -> 效果衡量/恢复”。本地 Git、测试命令或未来托管 runner 只是 Source Patch Provider 的实现，不是 Evol 本身；WSL、PowerShell 和 sandbox 均不进入核心状态机。
 
 ## Milestone E：统一 Mutation 与 Activation Contract
 
@@ -35,6 +40,7 @@
 3. Workflow revision 在 TaskRun 创建时冻结，已有任务不热更新。
 4. Trace 持久记录所有实际继承的 release refs 和 snapshot hash。
 5. Rollback 使用相同边界恢复 previous release。
+6. 恢复动作创建新的 `rollback_restore` generation，必须由新的后续运行留下恢复 proof。
 
 退出标准：三种边界均有端到端激活、继承证明和回滚测试。
 
@@ -56,7 +62,7 @@
 4. 形成 retain/refine/stale/rollback 决策，并防止重复学习同一失败。
 5. Evol 管理页展示 mutation lineage、activation boundary、inheritance proof 和效果窗口。
 
-退出标准：至少一个非 Memory 资产从真实 Episode 自动形成候选，经人类批准后被后续运行继承，并能依据真实效果回滚。
+退出标准：至少一个非 Memory 资产从真实 Episode 自动形成候选，经人类批准后被后续运行继承，并能依据真实效果回滚。Prompt 已满足该链路；Milestone H 仍需完成 Workflow/Source Patch 的证据化升级策略。
 
 ## 明确不在本计划主线
 

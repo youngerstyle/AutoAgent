@@ -17,9 +17,11 @@ import {
   type PluginScanReport,
   type EvolutionSourcePatchArtifact,
   type EvolutionRuntimeConfigArtifact,
+  type EvolutionAgentProfileArtifact,
   type ValidateEvolutionCandidateInput,
   type VersionedEvolutionRef,
 } from "../../shared/contracts/evolution.js";
+import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { HttpError } from "../errors.js";
 import { writeJson } from "../storage/json.js";
 import { workspaceEvolutionArtifactFile, workspaceEvolutionArtifactManifestFile, workspaceEvolutionLedgerFile, workspaceEvolutionSkillEntrypointFile } from "../storage/paths.js";
@@ -379,9 +381,10 @@ function validateCandidate(
   ];
   if (candidate.kind === "agent_profile") {
     const profile = parseAgentProfileArtifact(content);
+    const changesRuntimeAuthority = Boolean(profile && (profile.defaultProvider !== undefined || profile.defaultModel !== undefined || profile.defaultPolicy !== undefined));
     return [...common,
       { name: "agent_profile_contract", passed: Boolean(profile && profile.id === candidate.target), message: "Agent Profile artifact has schemaVersion 1 and matches the target profile" },
-      { name: "agent_profile_permissions", passed: Boolean(profile && !Object.keys(profile).some((key) => ["defaultPolicy", "defaultProvider", "defaultModel"].includes(key))), message: "V1 Agent Profile evolution cannot expand policy or change provider/model" },
+      { name: "agent_profile_runtime_authority", passed: Boolean(profile && (!changesRuntimeAuthority || candidate.riskLevel === "critical")), message: "Provider, model, or tool-policy changes require a critical-risk Candidate and human-controlled promotion" },
     ];
   }
   if (candidate.kind === "workflow") {
@@ -453,14 +456,25 @@ async function writeImmutableSkillEntrypoint(workspaceRoot: string, contentHash:
 function relativeArtifactRef(contentHash: string): string { return path.join("artifacts", contentHash, "artifact.txt").replaceAll("\\", "/"); }
 function relativeArtifactManifestRef(contentHash: string, candidateId: string): string { return path.join("artifacts", contentHash, "manifests", `${candidateId}.json`).replaceAll("\\", "/"); }
 function hash(content: string): string { return createHash("sha256").update(content, "utf8").digest("hex"); }
-function parseAgentProfileArtifact(content: string): Record<string, unknown> | undefined {
+function parseAgentProfileArtifact(content: string): EvolutionAgentProfileArtifact | undefined {
   let value: Record<string, unknown>;
   try { value = JSON.parse(content) as Record<string, unknown>; } catch { return undefined; }
-  const allowed = new Set(["schemaVersion", "id", "identity", "soul", "agentMd", "capabilities", "defaultSkills"]);
+  const allowed = new Set(["schemaVersion", "id", "identity", "soul", "agentMd", "capabilities", "defaultSkills", "defaultProvider", "defaultModel", "defaultPolicy"]);
   if (value.schemaVersion !== 1 || typeof value.id !== "string" || Object.keys(value).some((key) => !allowed.has(key))) return undefined;
   for (const key of ["identity", "soul", "agentMd"] as const) if (value[key] !== undefined && (typeof value[key] !== "string" || value[key].length > 50_000)) return undefined;
   for (const key of ["capabilities", "defaultSkills"] as const) if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length > 128 || value[key].some((item) => typeof item !== "string" || !item.trim()))) return undefined;
-  return value;
+  if (value.defaultProvider !== undefined && !["mock", "openai", "anthropic"].includes(String(value.defaultProvider))) return undefined;
+  if (value.defaultModel !== undefined && (typeof value.defaultModel !== "string" || !value.defaultModel.trim() || value.defaultModel.length > 200)) return undefined;
+  if (value.defaultPolicy !== undefined) {
+    if (!value.defaultPolicy || typeof value.defaultPolicy !== "object" || Array.isArray(value.defaultPolicy)) return undefined;
+    const policy = value.defaultPolicy as Record<string, unknown>;
+    const policyFields = new Set(["canReadWorkspace", "canWriteWorkspace", "canExecuteCommands", "enabledTools", "allowHostAccess", "commandAllowlist"]);
+    if (Object.keys(policy).some((key) => !policyFields.has(key))) return undefined;
+    for (const key of ["canReadWorkspace", "canWriteWorkspace", "canExecuteCommands", "allowHostAccess"] as const) if (policy[key] !== undefined && typeof policy[key] !== "boolean") return undefined;
+    if (policy.enabledTools !== undefined && (!Array.isArray(policy.enabledTools) || policy.enabledTools.length > 32 || policy.enabledTools.some((tool) => typeof tool !== "string" || !isKnownToolName(tool)))) return undefined;
+    if (policy.commandAllowlist !== undefined && (!Array.isArray(policy.commandAllowlist) || policy.commandAllowlist.length > 64 || policy.commandAllowlist.some((item) => typeof item !== "string" || !item.trim() || item.length > 500))) return undefined;
+  }
+  return value as unknown as EvolutionAgentProfileArtifact;
 }
 function parseWorkflowArtifact(content: string): { templateId: string; initialChange?: { additions?: unknown[]; requiredTerminalRefs?: unknown[] } } | undefined {
   let value: Record<string, unknown>;

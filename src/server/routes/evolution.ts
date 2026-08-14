@@ -20,6 +20,7 @@ import { configuredPluginSandboxProgram } from "../evolution/plugin-sandbox-conf
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
 import { SourcePatchDeliveryStore } from "../evolution/source-delivery-store.js";
+import { SkillConsolidator } from "../evolution/skill-consolidator.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -139,6 +140,15 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const result = await new PromptConsolidator(workspace.id, experience, candidates).consolidate(
+      req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
+    );
+    res.json({ result });
+  }));
+  router.post("/skill-candidates/consolidate", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
+    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
+    const result = await new SkillConsolidator(workspace.id, experience, candidates).consolidate(
       req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
     );
     res.json({ result });

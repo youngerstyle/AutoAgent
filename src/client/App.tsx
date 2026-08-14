@@ -2492,6 +2492,7 @@ function EvolutionHub(props: {
   const jobs = props.overview?.evaluationJobs ?? [];
   const memories = props.overview?.memories ?? [];
   const activations = props.overview?.activations ?? [];
+  const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
   const sourceDeliveries = props.overview?.sourceDeliveries ?? [];
   const extensionCandidates = candidates.filter((item) => item.kind === "plugin" || item.kind === "harness");
   const activeProduction = activations.filter((item) => item.stage === "production" && item.status === "activated").length;
@@ -2524,6 +2525,29 @@ function EvolutionHub(props: {
           </section>
 
           <div className="evolution-grid">
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Activation reconciliation</span><h3>激活、继承与效果</h3></div></header>
+              <div className="evolution-list compact">
+                {activations.length ? activations.slice().reverse().map((activation) => {
+                  const proofs = inheritanceProofs.filter((proof) => proof.activationId === activation.activationId);
+                  const latest = proofs.at(-1);
+                  return <article key={activation.activationId}>
+                    <div>
+                      <strong>{activation.assetKind} · {activation.target}</strong>
+                      <small>{activation.activationKind === "rollback_restore" ? "rollback restore" : activation.stage} · generation {activation.desiredGeneration}</small>
+                    </div>
+                    <span className={`evolution-status ${activation.status}`}>{activation.status}</span>
+                    <p>
+                      release {activation.releaseRef.id}@{activation.releaseRef.version}
+                      {activation.previousRelease ? ` · previous ${activation.previousRelease.id}@${activation.previousRelease.version}` : ""}
+                    </p>
+                    <code>{activation.boundary} · proofs {proofs.length}{activation.health ? ` · ${activation.health}` : ""}</code>
+                    {latest ? <small>actual {latest.runtimeKind}:{latest.runtimeRef} · snapshot {latest.runtimeSnapshotHash.slice(0, 16)}</small> : <small>{activation.pointerChangedAt ? "等待后续 Runtime 继承" : "已批准，尚未切换 pointer"}</small>}
+                    {activation.healthTelemetryId ? <small>telemetry {activation.healthTelemetryId}</small> : null}
+                  </article>;
+                }) : <p className="evolution-empty">尚无激活请求；Candidate 或 Promotion 不会被当成已生效。</p>}
+              </div>
+            </section>
             {sourceDeliveries.length ? <section className="evolution-panel">
               <header><div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div></header>
               <div className="evolution-list compact">

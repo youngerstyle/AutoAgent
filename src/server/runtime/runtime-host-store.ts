@@ -1,5 +1,16 @@
 import { readJson, writeJson } from "../storage/json.js";
 import { runtimeHostFile } from "../storage/paths.js";
+import type { VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
+
+export interface RuntimeWorkflowSnapshot {
+  source: "builtin" | "evolution";
+  target: string;
+  definitionId: string;
+  definitionVersion: number;
+  generation: number;
+  releaseRef: VersionedEvolutionRef;
+  snapshotHash: string;
+}
 
 export interface RuntimeTaskRecord {
   taskId: string;
@@ -10,6 +21,7 @@ export interface RuntimeTaskRecord {
   status: "active" | "paused" | "waiting" | "completed" | "failed" | "cancelled";
   retryStates?: Record<string, RuntimeRetryState>;
   runtimeError?: RuntimeTaskError;
+  workflowSnapshot?: RuntimeWorkflowSnapshot;
   createdAt: string;
   updatedAt: string;
 }

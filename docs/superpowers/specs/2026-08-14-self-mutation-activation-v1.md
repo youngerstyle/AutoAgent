@@ -26,6 +26,14 @@ Observe -> Attribute -> Mutate -> Validate -> Evaluate -> Approve
 
 创建 Candidate、通过离线 Eval、临时执行脚本或在当前进程内试跑新代码都不等于进化完成。
 
+它由三个严格分离的层组成：
+
+1. **变更生产**：根据 Episode、Trace、人工反馈和 telemetry 形成对 Memory、Prompt、Skill、Agent Profile、Workflow、Runtime Config 或 Source Patch 的版本化 MutationSet；
+2. **生命周期激活**：批准的 Release 只改变对应边界的 desired pointer，不直接篡改正在运行的 turn、session、TaskRun、process 或 deployment；
+3. **后续运行继承**：新的生命周期实例重新解析 active release，报告 actual generation、snapshot hash 与权威运行引用，之后才可称为已生效。
+
+所以 Evol 不是一种代码执行方式。脚本、Shell、容器和沙箱最多是某个 Validator、Build Provider 或高风险扩展的执行设施；它们既不是进化资产，也无权生成 inheritance proof。
+
 ## 2. 设计依据
 
 - QwenPaw 将 Skill Pool 与 Workspace runtime copy 分离，并从持久目录自动加载；长期 Memory 以跨会话文件保存。这证明能力资产与运行实例应分层。
@@ -105,19 +113,18 @@ Validator 必须拒绝：base 不存在、base 已漂移、边界与 asset kind 
 
 ## 6. Activation Ledger 与 Inheritance Proof
 
-Promotion 只产生受批准的 Release；Activation 才改变 desired active pointer。最少事件：
+Promotion 只产生受批准的 Release；Activation 才改变 desired active pointer。账本至少保存以下领域事实；括号内是 V1 的规范事件名：
 
 ```text
 release.approved
 activation.requested
 activation.pointer_changed
-runtime.reconciled
-runtime.inheritance_observed
-activation.healthy | activation.degraded
+runtime inheritance observed (activation.inherited)
+health telemetry observed (activation.health_observed, health=healthy|degraded|inconclusive)
 activation.rolled_back
 ```
 
-`runtime.inheritance_observed` 必须引用真实 Turn/Session/TaskRun/Process/Deployment，并记录：
+`activation.inherited` 必须引用真实 Turn/Session/TaskRun/Process/Deployment，并记录：
 
 - desired generation；
 - actual generation；
@@ -179,6 +186,8 @@ Candidate(base commit + patch)
 - V1 不自动批准触及认证、凭据、审计、权限根、Evol Gate 或部署控制面的 patch；
 - rollback 指向已知良好的 previous deployment，不依赖反向生成 patch。
 
+这里的 clean worktree、checks 和 build 都属于 Source Patch 的交付验证，不是所有 Evol 资产的前置条件。Memory、Prompt、Skill、Agent Profile 与 Workflow 的自进化不需要执行自身代码；它们在下一生命周期由 Runtime 重新加载后生效。
+
 ## 8. 主动进化循环
 
 Evol Coordinator 独立于业务任务运行：
@@ -213,7 +222,7 @@ Evol Control Plane、Artifact Registry、Activation Ledger 和 Runtime reconcili
 - `ScmProvider`：branch、commit、PR、review/status attestation；
 - `BuildProvider`：构建不可变 artifact/image；
 - `DeploymentProvider`：canary/production/rollback 与 deployment revision；
-- `SandboxProvider`：仅用于需要执行不可信 Candidate 的评测或扩展运行，不是 Evol 核心依赖。
+- `SandboxProvider`：可选，仅用于需要执行不可信 Source Patch/Plugin/Harness 的评测或扩展运行，不参与 active pointer、生命周期切换或继承判定。
 
 本地开发 adapter 可以调用本机 Git/进程；SaaS production adapter 可以调用 GitHub/GitLab、CI/CD、Kubernetes 或托管 runner。核心状态机不因 adapter 改变。
 
@@ -230,4 +239,4 @@ Self-Mutation V1 只有在以下端到端场景全部成立后完成：
 7. 每次执行都有 inheritance proof，可回答“这次行为继承了哪些进化资产”。
 8. 后续 telemetry 能驱动 retain/rollback，回滚恢复 previous known-good release/deployment。
 9. 控制面和数据契约不依赖 WSL/PowerShell；任何本地执行器都只是 adapter。
-10. 创建或执行一个临时脚本不能通过任何 API/UI 路径被标记为 evolution activated。
+10. 创建或执行一个临时脚本不能通过任何 API/UI 路径被标记为 evolution activated；只有 active pointer、后续生命周期 actual report 和 inheritance proof 三者一致才能进入 activated。

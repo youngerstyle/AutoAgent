@@ -6,14 +6,17 @@ import type {
   EvolutionCandidate,
   EvolutionInheritanceProof,
   PromotionRecord,
+  ReleaseTelemetry,
   VersionedEvolutionRef,
 } from "../../shared/contracts/evolution.js";
 import { DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY } from "../../shared/contracts/evolution.js";
 import { workspaceEvolutionActivationLedgerFile } from "../storage/paths.js";
 
 type ActivationEvent =
+  | { type: "activation.requested"; commandId: string; occurredAt: string; activation: EvolutionActivationRecord }
   | { type: "activation.pointer_changed"; commandId: string; occurredAt: string; activation: EvolutionActivationRecord }
   | { type: "activation.inherited"; commandId: string; occurredAt: string; activationId: string; proof: EvolutionInheritanceProof }
+  | { type: "activation.health_observed"; commandId: string; occurredAt: string; activationId: string; telemetryId: string; health: "healthy" | "degraded" | "inconclusive" }
   | { type: "activation.rolled_back"; commandId: string; occurredAt: string; activationId: string }
   | { type: "activation.superseded"; commandId: string; occurredAt: string; activationId: string };
 
@@ -45,28 +48,46 @@ export class EvolutionActivationStore {
 
   async recordPointerChanged(record: PromotionRecord, candidate: EvolutionCandidate, desiredGeneration: number, previousRelease?: VersionedEvolutionRef): Promise<EvolutionActivationRecord | undefined> {
     if (record.stage === "shadow") return undefined;
-    const state = await this.project();
+    let state = await this.project();
     const replay = state.commands.get(`pointer:${record.promotionId}`);
     if (replay?.type === "activation.pointer_changed") return structuredClone(state.activations.get(replay.activation.activationId));
+    const requested = await this.recordRequested(record, candidate, desiredGeneration, previousRelease);
+    if (!requested) return undefined;
+    state = await this.project();
+    const timestamp = this.now().toISOString();
+    const activation: EvolutionActivationRecord = { ...requested, pointerChangedAt: timestamp };
+    await this.append({ type: "activation.pointer_changed", commandId: `pointer:${record.promotionId}`, occurredAt: timestamp, activation });
+    return structuredClone((await this.project()).activations.get(activation.activationId));
+  }
+
+  async recordRequested(record: PromotionRecord, candidate: EvolutionCandidate, desiredGeneration: number, previousRelease?: VersionedEvolutionRef): Promise<EvolutionActivationRecord | undefined> {
+    if (record.stage === "shadow") return undefined;
+    const state = await this.project();
+    const commandId = `request:${record.promotionId}`;
+    const replay = state.commands.get(commandId);
+    if (replay?.type === "activation.requested") return structuredClone(state.activations.get(replay.activation.activationId));
+    const alreadyProjected = [...state.activations.values()].find((item) => item.promotionId === record.promotionId
+      && item.releaseRef.id === record.toRelease.id && item.releaseRef.contentHash === record.toRelease.contentHash);
+    if (alreadyProjected) return structuredClone(alreadyProjected);
     const activationId = stableId("activation", record.promotionId, record.toRelease.contentHash);
     const timestamp = this.now().toISOString();
     const activation: EvolutionActivationRecord = {
-      activationId, promotionId: record.promotionId, candidateId: candidate.candidateId,
+      activationId, promotionId: record.promotionId, activationKind: "release", candidateId: candidate.candidateId,
       assetKind: candidate.kind, target: candidate.target, stage: record.stage,
       boundary: candidate.mutationSet?.activationBoundary ?? DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind],
       desiredGeneration, releaseRef: structuredClone(record.toRelease),
       ...(previousRelease ? { previousRelease: structuredClone(previousRelease) } : {}),
-      scope: structuredClone(candidate.scope), status: "waiting_for_activation",
-      requestedAt: timestamp, pointerChangedAt: timestamp, proofCount: 0,
+      scope: structuredClone(candidate.scope), status: "waiting_for_activation", requestedAt: timestamp, proofCount: 0,
     };
-    await this.append({ type: "activation.pointer_changed", commandId: `pointer:${record.promotionId}`, occurredAt: timestamp, activation });
-    return (await this.project()).activations.get(activationId);
+    await this.append({ type: "activation.requested", commandId, occurredAt: timestamp, activation });
+    return structuredClone((await this.project()).activations.get(activationId));
   }
 
   async observe(input: Omit<EvolutionInheritanceProof, "proofId" | "activationId" | "boundary" | "observedAt">): Promise<EvolutionInheritanceProof | undefined> {
     const state = await this.project();
     const activation = [...state.activations.values()].find((item) =>
       item.status !== "rolled_back" && item.status !== "superseded"
+      && Boolean(item.pointerChangedAt)
       && item.assetKind === input.assetKind && item.target === input.target
       && item.releaseRef.id === input.releaseRef.id && item.releaseRef.contentHash === input.releaseRef.contentHash
       && item.desiredGeneration === input.desiredGeneration);
@@ -97,6 +118,34 @@ export class EvolutionActivationStore {
     await this.append({ type: "activation.rolled_back", commandId, occurredAt, activationId: activation.activationId });
   }
 
+  /** Create a new desired generation for the known-good release restored by rollback. */
+  async recordRestoration(
+    rollbackOfPromotionId: string,
+    restoredRelease: VersionedEvolutionRef,
+    desiredGeneration: number,
+    commandId = `rollback-restore:${rollbackOfPromotionId}:${desiredGeneration}`,
+  ): Promise<EvolutionActivationRecord | undefined> {
+    const state = await this.project();
+    const replay = state.commands.get(commandId);
+    if (replay?.type === "activation.pointer_changed") return structuredClone(state.activations.get(replay.activation.activationId));
+    const source = [...state.activations.values()].find((item) => item.promotionId === rollbackOfPromotionId && item.activationKind !== "rollback_restore");
+    if (!source) return undefined;
+    if (!Number.isSafeInteger(desiredGeneration) || desiredGeneration <= source.desiredGeneration) throw new Error("Rollback restoration generation must advance the active pointer");
+    const timestamp = this.now().toISOString();
+    const activationId = stableId("activation-restore", rollbackOfPromotionId, restoredRelease.id, restoredRelease.contentHash, String(desiredGeneration));
+    const requested: EvolutionActivationRecord = {
+      activationId, promotionId: `rollback:${rollbackOfPromotionId}:${desiredGeneration}`,
+      activationKind: "rollback_restore", rollbackOfPromotionId, candidateId: source.candidateId,
+      assetKind: source.assetKind, target: source.target, stage: source.stage, boundary: source.boundary,
+      desiredGeneration, releaseRef: structuredClone(restoredRelease), previousRelease: structuredClone(source.releaseRef),
+      scope: structuredClone(source.scope), status: "waiting_for_activation", requestedAt: timestamp, proofCount: 0,
+    };
+    await this.append({ type: "activation.requested", commandId: `${commandId}:requested`, occurredAt: timestamp, activation: requested });
+    const activation = { ...requested, pointerChangedAt: this.now().toISOString() };
+    await this.append({ type: "activation.pointer_changed", commandId, occurredAt: activation.pointerChangedAt, activation });
+    return structuredClone((await this.project()).activations.get(activationId));
+  }
+
   async recordSuperseded(promotionId: string): Promise<void> {
     const state = await this.project();
     const activation = [...state.activations.values()].find((item) => item.promotionId === promotionId);
@@ -104,6 +153,18 @@ export class EvolutionActivationStore {
     if (state.commands.has(`supersede:${promotionId}`)) return;
     const occurredAt = this.now().toISOString();
     await this.append({ type: "activation.superseded", commandId: `supersede:${promotionId}`, occurredAt, activationId: activation.activationId });
+  }
+
+  async recordHealth(promotionId: string, telemetry: Pick<ReleaseTelemetry, "telemetryId" | "decision">): Promise<EvolutionActivationRecord | undefined> {
+    const state = await this.project();
+    const activation = [...state.activations.values()].find((item) => item.promotionId === promotionId);
+    if (!activation) return undefined;
+    const commandId = `health:${promotionId}:${telemetry.telemetryId}`;
+    if (state.commands.has(commandId)) return structuredClone(activation);
+    const occurredAt = this.now().toISOString();
+    const health = telemetry.decision === "pass" ? "healthy" : telemetry.decision === "fail" ? "degraded" : "inconclusive";
+    await this.append({ type: "activation.health_observed", commandId, occurredAt, activationId: activation.activationId, telemetryId: telemetry.telemetryId, health });
+    return structuredClone((await this.project()).activations.get(activation.activationId));
   }
 
   private async append(event: ActivationEvent): Promise<void> {
@@ -132,9 +193,13 @@ export class EvolutionActivationStore {
       const replay = commands.get(event.commandId);
       if (replay && canonical(replay) !== canonical(event)) throw new Error("Evolution activation ledger command conflict");
       commands.set(event.commandId, event);
-      if (event.type === "activation.pointer_changed") {
+      if (event.type === "activation.requested") {
         const existing = activations.get(event.activation.activationId);
-        if (existing && canonical(existing) !== canonical(event.activation)) throw new Error("Evolution activation id conflict");
+        if (existing && (existing.promotionId !== event.activation.promotionId || existing.releaseRef.id !== event.activation.releaseRef.id || existing.releaseRef.contentHash !== event.activation.releaseRef.contentHash)) throw new Error("Evolution activation id conflict");
+        if (!existing || !existing.pointerChangedAt) activations.set(event.activation.activationId, structuredClone(event.activation));
+      } else if (event.type === "activation.pointer_changed") {
+        const existing = activations.get(event.activation.activationId);
+        if (existing && (existing.promotionId !== event.activation.promotionId || existing.releaseRef.id !== event.activation.releaseRef.id || existing.releaseRef.contentHash !== event.activation.releaseRef.contentHash)) throw new Error("Evolution activation pointer identity conflict");
         activations.set(event.activation.activationId, structuredClone(event.activation));
       } else if (event.type === "activation.inherited") {
         const activation = activations.get(event.activationId);
@@ -145,6 +210,13 @@ export class EvolutionActivationStore {
         activations.set(activation.activationId, {
           ...activation, status: "activated", firstInheritedAt: activation.firstInheritedAt ?? event.occurredAt,
           lastInheritedAt: event.occurredAt, proofCount: existing ? activation.proofCount : activation.proofCount + 1,
+        });
+      } else if (event.type === "activation.health_observed") {
+        const activation = activations.get(event.activationId);
+        if (!activation) throw new Error("Evolution health observation references a missing activation");
+        activations.set(activation.activationId, {
+          ...activation, health: event.health, healthTelemetryId: event.telemetryId, healthObservedAt: event.occurredAt,
+          ...(event.health === "degraded" && activation.status === "activated" ? { status: "degraded" as const } : {}),
         });
       } else {
         const activation = activations.get(event.activationId);

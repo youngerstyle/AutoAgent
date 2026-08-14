@@ -8,6 +8,7 @@ import { ExperienceStore } from "../../src/server/evolution/experience-store.js"
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
 import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
+import { SkillConsolidator } from "../../src/server/evolution/skill-consolidator.js";
 
 describe("evolution experience pipeline", () => {
   it("projects a stable successful episode only from terminal authoritative facts", () => {
@@ -145,6 +146,28 @@ describe("evolution experience pipeline", () => {
     expect(result.candidates).toEqual([expect.objectContaining({ kind: "prompt", riskLevel: "high", proposedBy: { type: "system", id: "prompt-consolidator/v1" }, mutationSet: expect.objectContaining({ activationBoundary: "next_turn" }) })]);
     expect(await candidates.artifactContent(result.candidates[0]!.candidateId)).toContain("cite the current trace/evidence");
     expect((await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!.candidateId).toBe(result.candidates[0]!.candidateId);
+  });
+
+  it("selects a reusable Skill mutation only for repeated explicitly skill-attributed Episodes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-skill-consolidation-"));
+    const experience = new ExperienceStore("workspace-a", root);
+    const failure = {
+      component: "skill" as const, symptom: "Release review omitted rollback verification",
+      cause: "The active release-review capability has no previous-deployment verification procedure",
+      sourceRefs: [{ kind: "human_feedback" as const, ref: "feedback-skill-gap", workspaceId: "workspace-a" }],
+    };
+    const first = facts({ ticket: { status: "failed" }, failures: [failure] });
+    const second = facts({ ticket: { status: "failed" }, failures: [failure] });
+    second.commandId = "skill-episode-b"; second.taskId = "task-b"; second.taskRunId = "run-b";
+    second.ticket = { ...second.ticket, ticketId: "ticket-b", attemptId: "attempt-b" };
+    second.goal = { ...second.goal, goalId: "goal-b" };
+    await experience.record("skill-a", projectExperience(first, fixedNow));
+    await experience.record("skill-b", projectExperience(second, fixedNow));
+    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    expect((await new MemoryConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates).toEqual([]);
+    const result = await new SkillConsolidator("workspace-a", experience, candidates).consolidate(2);
+    expect(result.candidates).toEqual([expect.objectContaining({ kind: "skill", riskLevel: "medium", proposedBy: { type: "system", id: "skill-consolidator/v1" }, mutationSet: expect.objectContaining({ activationBoundary: "next_turn" }) })]);
+    expect(await candidates.artifactContent(result.candidates[0]!.candidateId)).toContain("previous-deployment verification procedure");
   });
 });
 

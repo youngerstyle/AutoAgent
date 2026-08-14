@@ -14,6 +14,7 @@ import type {
 import { HttpError } from "../errors.js";
 import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
 import { workspaceEvolutionEvaluationsFile, workspaceEvolutionPromotionsFile } from "../storage/paths.js";
+import { EvolutionActivationStore } from "./activation-store.js";
 import type { EvolutionStore } from "./evolution-store.js";
 import { scoreMetricExpectations, withMandatoryEvolutionMetrics } from "./metric-gate.js";
 import { EvolutionReleaseRegistry } from "./release-registry.js";
@@ -84,6 +85,9 @@ export class EvolutionEvaluationStore {
         if (replay.action !== "promote" || replay.fingerprint !== fingerprint) throw conflict("Promotion command idempotency conflict");
         const replayCandidate = await this.candidates.get(replay.record.candidateId);
         await new EvolutionReleaseRegistry(this.workspaceRoot, this.now).publish(replay.record, replayCandidate);
+        if (replay.record.stage === "production" && replay.record.telemetryId) {
+          await new EvolutionActivationStore(this.workspaceRoot, this.now).recordHealth(replay.record.promotionId, { telemetryId: replay.record.telemetryId, decision: "pass" });
+        }
         if (replay.record.stage === "production" && replay.record.sourcePromotionId) {
           await this.markSuperseded(entries, replay.record.sourcePromotionId, replay.record.promotionId);
         }
@@ -143,6 +147,9 @@ export class EvolutionEvaluationStore {
       };
       await appendLine(workspaceEvolutionPromotionsFile(this.workspaceRoot), { commandId: input.commandId, record, action: "promote", fingerprint } satisfies PromotionEntry);
       await registry.publish(record, candidate);
+      if (record.stage === "production" && telemetryId) {
+        await new EvolutionActivationStore(this.workspaceRoot, this.now).recordHealth(record.promotionId, { telemetryId, decision: "pass" });
+      }
       if (record.stage === "production" && record.sourcePromotionId) {
         await this.markSuperseded(entries, record.sourcePromotionId, record.promotionId);
       }

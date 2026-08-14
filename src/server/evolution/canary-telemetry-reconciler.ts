@@ -10,6 +10,7 @@ import { EvolutionStore } from "./evolution-store.js";
 import { EvolutionEvaluationStore } from "./evaluation-store.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { ExperienceStore } from "./experience-store.js";
+import { EvolutionActivationStore } from "./activation-store.js";
 
 interface CanaryAssignment {
   target: string;
@@ -73,6 +74,7 @@ export class CanaryTelemetryReconciler {
         endedAt: pairs.reduce((value, pair) => later(value, pair.baseline.endedAt, pair.release.endedAt), pairs[0]!.release.endedAt),
       });
       recordedTelemetry.push(record);
+      await new EvolutionActivationStore(this.workspace.rootPath, this.now).recordHealth(promotion.promotionId, record);
       if (record.decision === "fail") {
         await promotions.rollback(
           `automatic-canary-rollback:${promotion.promotionId}:${record.telemetryId}`,

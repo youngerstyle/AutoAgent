@@ -25,7 +25,14 @@ describe("Evol Source Patch delivery", () => {
 
     const rolledBack = await pipeline.rollback("rollback-1", delivered.deliveryId);
     expect(rolledBack.status).toBe("rolled_back");
-    expect(await new EvolutionActivationStore(root).list()).toEqual([expect.objectContaining({ status: "rolled_back" })]);
+    expect(await new EvolutionActivationStore(root).list()).toEqual([
+      expect.objectContaining({ activationKind: "release", status: "rolled_back" }),
+      expect.objectContaining({ activationKind: "rollback_restore", status: "activated", releaseRef: delivered.previousDeployment }),
+    ]);
+    expect(await new EvolutionActivationStore(root).listProofs()).toEqual([
+      expect.objectContaining({ runtimeKind: "deployment", runtimeRef: "deployment-new" }),
+      expect.objectContaining({ runtimeKind: "deployment", runtimeRef: "deployment-old" }),
+    ]);
   });
 
   it("fails closed when the repository moved beyond the declared base", async () => {
@@ -36,7 +43,10 @@ describe("Evol Source Patch delivery", () => {
     await expect(new SourcePatchDeliveryPipeline(root, providers).deliver("deliver-stale", candidate, fixturePromotion(candidate)))
       .rejects.toThrow("SCM base changed");
     expect(providers.scm.prepareChange).not.toHaveBeenCalled();
-    expect(await new EvolutionActivationStore(root).list()).toEqual([]);
+    const waiting = await new EvolutionActivationStore(root).list();
+    expect(waiting).toEqual([expect.objectContaining({ status: "waiting_for_activation", proofCount: 0 })]);
+    expect(waiting[0]).not.toHaveProperty("pointerChangedAt");
+    expect(await new EvolutionActivationStore(root).listProofs()).toEqual([]);
   });
 
   it("resumes after the last attested gate without repeating merge", async () => {

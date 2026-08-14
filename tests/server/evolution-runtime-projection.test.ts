@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
+import type { EvolutionCandidate, PromotionRecord } from "../../src/shared/contracts/evolution.js";
 import { productionEvolutionMemories, productionEvolutionSkills, runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
 import { MemoryLifecycleStore } from "../../src/server/evolution/memory-lifecycle-store.js";
+import { EvolutionReleaseRegistry } from "../../src/server/evolution/release-registry.js";
+import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { inheritEvolvedProfileDefaults } from "../../src/server/runtime/runtime-host.js";
 
 describe("evolution production runtime projection", () => {
   it("loads only an active, scoped, hash-verified production Skill with passing scanner provenance", async () => {
@@ -123,12 +127,75 @@ describe("evolution production runtime projection", () => {
   it("projects activated Prompt and Agent Profile assets for the next Runtime session", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-declarative-"));
     await writeDeclarativeRelease(root, "prompt", "evidence-discipline", "Always distinguish observed facts from inference.", "prompt_safety", "prompt");
-    await writeDeclarativeRelease(root, "agent_profile", "profile-dev", JSON.stringify({ schemaVersion: 1, id: "profile-dev", soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"] }), "agent_profile_contract", "profile");
+    await writeDeclarativeRelease(root, "agent_profile", "profile-dev", JSON.stringify({
+      schemaVersion: 1, id: "profile-dev", soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"],
+      defaultProvider: "anthropic", defaultModel: "claude-governed", defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false, enabledTools: ["listFiles", "readFile"] },
+    }), "agent_profile_contract", "profile");
     const projected = await runtimeEvolutionProjection(root, "workspace-a", profile(), agent(), { assignmentKey: "thread-a", tools: [] });
     expect(projected.prompts).toEqual([expect.objectContaining({ target: "evidence-discipline", content: "Always distinguish observed facts from inference.", generation: 1 })]);
-    expect(projected.agentProfiles).toEqual([expect.objectContaining({ target: "profile-dev", profile: expect.objectContaining({ soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"] }) })]);
+    expect(projected.agentProfiles).toEqual([expect.objectContaining({ target: "profile-dev", profile: expect.objectContaining({
+      soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"], defaultProvider: "anthropic", defaultModel: "claude-governed",
+      defaultPolicy: expect.objectContaining({ canWriteWorkspace: false, enabledTools: ["listFiles", "readFile"] }),
+    }) })]);
+    const evolvedProfile = projected.agentProfiles[0]!.profile;
+    expect(inheritEvolvedProfileDefaults(agent(), profile(), evolvedProfile)).toMatchObject({ provider: "anthropic", model: "claude-governed", policyOverride: { canWriteWorkspace: false } });
+    expect(inheritEvolvedProfileDefaults({ ...agent(), provider: "openai", model: "explicit-model", policyOverride: { canReadWorkspace: true } }, profile(), evolvedProfile))
+      .toMatchObject({ provider: "openai", model: "explicit-model", policyOverride: { canReadWorkspace: true } });
+  });
+
+  it("restores the previous immutable Prompt release and proves its new rollback generation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-rollback-"));
+    const registry = new EvolutionReleaseRegistry(root);
+    const activations = new EvolutionActivationStore(root);
+    const first = await promptCandidate(root, 1, "Require observed evidence before making a release claim.");
+    const firstPromotion = promptPromotion(first, 1);
+    await registry.publish(firstPromotion, first);
+    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "turn-v1", runtimeSnapshotHash: "snapshot-v1" });
+
+    const second = await promptCandidate(root, 2, "Require only a model assertion before making a release claim.", firstPromotion.toRelease);
+    const secondPromotion = promptPromotion(second, 2, firstPromotion.toRelease);
+    await registry.publish(secondPromotion, second);
+    await activations.observe({ assetKind: "prompt", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "turn-v2", runtimeSnapshotHash: "snapshot-v2" });
+    await registry.rollback({ ...secondPromotion, status: "rolled_back", rolledBackAt: "2026-08-14T00:03:00.000Z" }, second);
+
+    expect(await registry.current("production", second)).toMatchObject({ active: true, generation: 3, release: firstPromotion.toRelease, promotionId: firstPromotion.promotionId, previousRelease: secondPromotion.toRelease });
+    const projected = await runtimeEvolutionProjection(root, "workspace-a", profile(), agent(), { assignmentKey: "rollback-turn", tools: [] });
+    expect(projected.prompts).toEqual([expect.objectContaining({ content: "Require observed evidence before making a release claim.", releaseId: firstPromotion.toRelease.id, generation: 3 })]);
+    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "turn-restored", runtimeSnapshotHash: "snapshot-restored" });
+    expect(await activations.list()).toEqual([
+      expect.objectContaining({ promotionId: firstPromotion.promotionId, status: "superseded" }),
+      expect.objectContaining({ promotionId: secondPromotion.promotionId, status: "rolled_back" }),
+      expect.objectContaining({ activationKind: "rollback_restore", rollbackOfPromotionId: secondPromotion.promotionId, status: "activated", releaseRef: firstPromotion.toRelease, desiredGeneration: 3 }),
+    ]);
   });
 });
+
+async function promptCandidate(root: string, revision: number, content: string, base?: PromotionRecord["toRelease"]): Promise<EvolutionCandidate> {
+  const contentHash = hash(content);
+  const candidateId = `candidate-prompt-${revision}`;
+  const artifactRef = `artifacts/${contentHash}/artifact.txt`;
+  await mkdir(path.dirname(path.join(root, ".autoagent", "evolution", artifactRef)), { recursive: true });
+  await writeFile(path.join(root, ".autoagent", "evolution", artifactRef), content, "utf8");
+  const baseRef = base ?? { id: "genesis:prompt", version: "0", contentHash: hash("") };
+  return {
+    candidateId, revision, kind: "prompt", target: "release-evidence", title: `Prompt ${revision}`,
+    rationale: "Repeated release claims require an evidence-backed behavior constraint.", artifactRef, contentHash,
+    hypothesis: "This prompt revision changes the rate of unsupported release claims in subsequent turns.",
+    sourceRefs: [{ kind: "trace", ref: `trace-${revision}`, workspaceId: "workspace-a" }], scope: { workspaceId: "workspace-a", roles: ["dev"] },
+    expectedMetrics: [{ metric: "evidence_completeness", direction: "increase" }], riskLevel: "high", status: "ready_for_eval",
+    proposedBy: { type: "agent", id: "coordinator" }, createdAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:00:00.000Z",
+    validation: { passed: true, checkedAt: "2026-08-14T00:00:00.000Z", checks: [{ name: "prompt_safety", passed: true, message: "passed" }] },
+    mutationSet: { assetKind: "prompt", target: "release-evidence", baseRef, candidateRef: { id: candidateId, version: String(revision), contentHash }, representation: "full", activationBoundary: "next_turn", compatibility: { runtime: "autoagent" }, rollbackRef: baseRef },
+  };
+}
+function promptPromotion(candidate: EvolutionCandidate, revision: number, fromRelease?: PromotionRecord["toRelease"]): PromotionRecord {
+  return {
+    promotionId: `promotion-prompt-${revision}`, candidateId: candidate.candidateId, evaluationId: `evaluation-${revision}`,
+    ...(fromRelease ? { fromRelease } : {}), toRelease: { id: `release-prompt-${revision}`, version: String(revision), contentHash: candidate.contentHash },
+    stage: "production", scope: candidate.scope, approvedBy: { type: "human", id: "owner" },
+    policyRef: { id: "policy", version: "1", contentHash: hash("policy") }, status: "active", createdAt: `2026-08-14T00:0${revision}:00.000Z`,
+  };
+}
 
 async function writeDeclarativeRelease(root: string, kind: "prompt" | "agent_profile", target: string, content: string, validationCheck: string, suffix: string): Promise<void> {
   const contentHash = hash(content);
@@ -141,7 +208,10 @@ async function writeDeclarativeRelease(root: string, kind: "prompt" | "agent_pro
     schemaVersion: 1, release: { id: releaseId, version: "1", contentHash }, stage: "production",
     candidateId: `candidate-${suffix}`, candidateHash: contentHash, candidateKind: kind, target, artifactRef,
     scope: { workspaceId: "workspace-a", roles: ["dev"] }, promotionId, runtimeActive: true, validationPassed: true,
-    validationChecks: [{ name: validationCheck, passed: true, message: "passed" }],
+    validationChecks: [
+      { name: validationCheck, passed: true, message: "passed" },
+      ...(kind === "agent_profile" ? [{ name: "agent_profile_runtime_authority", passed: true, message: "passed" }] : []),
+    ],
   });
   await writeJson(path.join(root, ".autoagent", "evolution", "active", "production", `pointer-${suffix}.json`), {
     schemaVersion: 1, target, stage: "production", scope: { workspaceId: "workspace-a", roles: ["dev"] }, generation: 1,

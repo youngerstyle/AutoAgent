@@ -24,6 +24,9 @@ import { AgentTraceStore } from "../../src/server/agent-engine/trace-store.js";
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { CanaryTelemetryReconciler } from "../../src/server/evolution/canary-telemetry-reconciler.js";
 import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
+import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
+import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 
 describe("evolution evaluation and promotion gate", () => {
   it("requires independent evaluation and only creates a non-runtime shadow release", async () => {
@@ -127,6 +130,8 @@ describe("evolution evaluation and promotion gate", () => {
     expect(await runPiAgentAndReadEvolutionReleases(fixture.root, "production-session")).toEqual([
       expect.objectContaining({ name: "failure-retrospective", releaseId: production.toRelease.id, contentHash: fixture.candidate.contentHash, generation: 1, stage: "production" }),
     ]);
+    expect((await new EvolutionActivationStore(fixture.root, fixedNow).list()).find((item) => item.promotionId === production.promotionId))
+      .toMatchObject({ status: "activated", health: "healthy", healthTelemetryId: telemetry.telemetryId });
 
     const rolledBack = await fixture.evaluations.rollback("rollback-production", production.promotionId, approvedBy);
     expect(rolledBack.status).toBe("rolled_back");
@@ -220,8 +225,75 @@ describe("evolution evaluation and promotion gate", () => {
     expect(result.recordedTelemetry[0]).toMatchObject({ decision: "fail", releaseRef: canary.toRelease });
     expect((await fixture.evaluations.listPromotions()).find((item) => item.promotionId === canary.promotionId))
       .toMatchObject({ status: "rolled_back", approvedBy: { type: "system", id: "evolution-canary-monitor/v1" } });
+    expect((await new EvolutionActivationStore(fixture.root, fixedNow).list()).find((item) => item.promotionId === canary.promotionId))
+      .toMatchObject({ status: "rolled_back", health: "degraded", healthTelemetryId: result.recordedTelemetry[0]!.telemetryId });
     expect(await new EvolutionReleaseRegistry(fixture.root, fixedNow).current("canary", fixture.candidate))
       .toMatchObject({ active: false, previousRelease: canary.toRelease, generation: 2 });
+  });
+
+  it("evolves a Prompt from terminal Episodes, inherits it in a later Pi turn, and rolls it back from real cohort telemetry", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-prompt-loop-"));
+    await new EvidenceLedger(root).append({
+      evidenceId: "prompt-human-feedback", agentId: "reviewer", threadId: "review-thread", goalId: "review-goal",
+      turnId: "review-turn", toolCallId: "review-call", toolName: "human-review", kind: "tool",
+      capture: { status: "recorded" }, observation: { status: "observed", result: { promptDefect: true } },
+      workspaceRoot: root, createdAt: "2026-08-14T00:08:00.000Z", input: {},
+    });
+    const experience = new ExperienceStore("workspace-a", root);
+    const failure = {
+      component: "prompt" as const, symptom: "The turn claimed activation without an inheritance proof",
+      cause: "The active prompt does not require runtime inheritance evidence before claiming activation",
+      sourceRefs: [{ kind: "human_feedback" as const, ref: "prompt-human-feedback", workspaceId: "workspace-a" }],
+    };
+    for (let index = 0; index < 2; index += 1) {
+      const suffix = String(index + 1);
+      await experience.record(`prompt-source-${suffix}`, projectExperience({
+        commandId: `prompt-project-${suffix}`, workspaceId: "workspace-a", taskId: `source-task-${suffix}`, taskRunId: `source-run-${suffix}`,
+        ticket: { ticketId: `source-ticket-${suffix}`, attemptId: `source-attempt-${suffix}`, status: "failed", startedAt: `2026-08-14T00:0${suffix}:00.000Z`, updatedAt: `2026-08-14T00:0${suffix}:30.000Z` },
+        goal: { goalId: `source-goal-${suffix}`, agentId: "agent-dev", status: "failed" },
+        sourceRefs: [{ kind: "human_feedback", ref: "prompt-human-feedback", workspaceId: "workspace-a" }], failures: [failure],
+      }, fixedNow));
+    }
+    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const proposed = (await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!;
+    expect(proposed).toMatchObject({ kind: "prompt", proposedBy: { type: "system", id: "prompt-consolidator/v1" } });
+    const validated = await candidates.validate({ commandId: "validate-prompt-loop", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
+    expect(validated.validation?.passed).toBe(true);
+    const suiteRef = { id: "prompt-loop-suite", version: "1", contentHash: "prompt-loop-suite-hash" };
+    await candidates.markReadyForEvaluation({ commandId: "bind-prompt-loop", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash, suiteRef });
+    const evaluations = new EvolutionEvaluationStore("workspace-a", root, candidates, fixedNow);
+    const evidenceRefs = [{ kind: "evidence" as const, ref: "prompt-human-feedback", workspaceId: "workspace-a" }];
+    const safeBaseline = { success: true, qualityScore: 1, costUsd: 0, costMeasured: true, latencyMs: 10, toolFailures: 0, policyViolations: 0, safetyViolations: 0, evidenceCompleteness: 0 };
+    const safeCandidate = { ...safeBaseline, evidenceCompleteness: 1 };
+    const evaluation = await evaluations.recordEvaluation({
+      commandId: "evaluate-prompt-loop", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash, suiteRef,
+      baselineRef: { id: "prompt-baseline", version: "1", contentHash: "prompt-baseline-hash" }, runtimeSnapshotRef: "prompt-runtime-snapshot",
+      caseResults: [
+        { caseId: "target", group: "target", baseline: { ...safeBaseline, success: false, qualityScore: 0 }, candidate: safeCandidate, evidenceRefs },
+        { caseId: "regression", group: "regression", baseline: safeBaseline, candidate: safeCandidate, evidenceRefs },
+        { caseId: "safety", group: "safety", baseline: safeBaseline, candidate: safeCandidate, evidenceRefs },
+      ], evaluatorPrincipal: { type: "system", id: "deterministic-evaluator" }, grader: { id: "evolution-gate", version: "1", type: "deterministic" },
+    });
+    const approvedBy = { type: "human" as const, id: "governor" };
+    const policyRef = { id: "evolution-policy", version: "1", contentHash: "policy-hash" };
+    const shadow = await evaluations.promote({ commandId: "prompt-shadow", candidateId: proposed.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: proposed.contentHash, stage: "shadow", approvedBy, policyRef });
+    const canary = await evaluations.promote({ commandId: "prompt-canary", candidateId: proposed.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: proposed.contentHash, stage: "canary", fromPromotionId: shadow.promotionId, rolloutPercent: 25, approvedBy, policyRef });
+
+    let inherited = false;
+    for (let index = 0; index < 100 && !inherited; index += 1) {
+      const context = await runPiAgentAndReadEvolutionContext(root, `prompt-canary-turn-${index}`);
+      inherited = Array.isArray(context.evolutionPrompts) && context.evolutionPrompts.some((item) => typeof item === "object" && item !== null && (item as { releaseId?: string }).releaseId === canary.toRelease.id);
+    }
+    expect(inherited).toBe(true);
+    expect((await new EvolutionActivationStore(root, fixedNow).listProofs()).some((proof) => proof.assetKind === "prompt" && proof.releaseRef.id === canary.toRelease.id && proof.runtimeKind === "turn")).toBe(true);
+
+    const workspace: Workspace = { id: "workspace-a", name: "Prompt loop", rootPath: root, policyProfile: "development", createdAt: fixedNow().toISOString() };
+    await ensureWorkspaceAgent(workspace, runtimeProfile(), "agent-dev");
+    await recordCanaryCohorts(workspace, proposed, canary, false, "prompt-loop-failing");
+    const telemetry = await new CanaryTelemetryReconciler(workspace, fixedNow).reconcile();
+    expect(telemetry.recordedTelemetry[0]).toMatchObject({ decision: "fail", candidateId: proposed.candidateId });
+    expect((await new EvolutionActivationStore(root, fixedNow).list()).find((item) => item.promotionId === canary.promotionId))
+      .toMatchObject({ status: "rolled_back", health: "degraded", proofCount: expect.any(Number) });
   });
 
   it("runs a versioned suite through a sandboxed executor instead of accepting client scores", async () => {
@@ -357,6 +429,16 @@ async function runPiAgentAndReadEvolutionReleases(
   capabilities: AgentProfile["capabilities"] = [],
   observedTools?: string[][],
 ): Promise<unknown[]> {
+  const context = await runPiAgentAndReadEvolutionContext(root, scopeId, capabilities, observedTools);
+  return (context.evolutionReleases as unknown[] | undefined) ?? [];
+}
+
+async function runPiAgentAndReadEvolutionContext(
+  root: string,
+  scopeId: string,
+  capabilities: AgentProfile["capabilities"] = [],
+  observedTools?: string[][],
+): Promise<Record<string, unknown>> {
   const profile = { ...runtimeProfile(), capabilities };
   const agent = runtimeAgent();
   const store = new AgentStore(root, agent.id);
@@ -394,7 +476,7 @@ async function runPiAgentAndReadEvolutionReleases(
     expect(recordedTraces.find((trace) => trace.kind === "provider_response")?.data).toMatchObject({
       costUsd: 0, costMeasured: false, totalTokens: expect.any(Number),
     });
-    return ((contextTrace!.data as { evolutionReleases?: unknown[] }).evolutionReleases ?? []);
+    return contextTrace!.data as Record<string, unknown>;
   } finally {
     await runtime.dispose();
   }

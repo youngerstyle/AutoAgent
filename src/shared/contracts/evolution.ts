@@ -321,6 +321,26 @@ export interface EvolutionRuntimeConfigArtifact {
   };
 }
 
+export interface EvolutionAgentProfileArtifact {
+  schemaVersion: 1;
+  id: string;
+  identity?: string;
+  soul?: string;
+  agentMd?: string;
+  capabilities?: string[];
+  defaultSkills?: string[];
+  defaultProvider?: "mock" | "openai" | "anthropic";
+  defaultModel?: string;
+  defaultPolicy?: {
+    canReadWorkspace?: boolean;
+    canWriteWorkspace?: boolean;
+    canExecuteCommands?: boolean;
+    enabledTools?: Array<"listFiles" | "readFile" | "readImage" | "writeFile" | "editFile" | "shell" | "startService" | "pollProcess" | "browser">;
+    allowHostAccess?: boolean;
+    commandAllowlist?: string[];
+  };
+}
+
 export interface EvolutionProviderAttestation {
   provider: string;
   subject: string;
@@ -348,6 +368,7 @@ export interface SourcePatchDeliveryRecord {
   commandId: string;
   candidateId: string;
   promotionId: string;
+  desiredGeneration?: number;
   status: SourcePatchDeliveryStatus;
   lastSuccessfulStatus?: Exclude<SourcePatchDeliveryStatus, "failed">;
   preparedChange?: ScmPreparedChange;
@@ -597,6 +618,8 @@ export type EvolutionActivationStatus = "waiting_for_activation" | "activated" |
 export interface EvolutionActivationRecord {
   activationId: string;
   promotionId: string;
+  activationKind?: "release" | "rollback_restore";
+  rollbackOfPromotionId?: string;
   candidateId: string;
   assetKind: EvolutionArtifactKind;
   target: string;
@@ -608,9 +631,12 @@ export interface EvolutionActivationRecord {
   scope: EvolutionScope;
   status: EvolutionActivationStatus;
   requestedAt: string;
-  pointerChangedAt: string;
+  pointerChangedAt?: string;
   firstInheritedAt?: string;
   lastInheritedAt?: string;
+  health?: "healthy" | "degraded" | "inconclusive";
+  healthTelemetryId?: string;
+  healthObservedAt?: string;
   rolledBackAt?: string;
   supersededAt?: string;
   proofCount: number;

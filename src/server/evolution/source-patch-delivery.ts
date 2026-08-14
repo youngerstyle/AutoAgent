@@ -24,10 +24,16 @@ export class SourcePatchDeliveryPipeline {
       return existing;
     }
     if (existing?.status === "failed" && existing.commandId === commandId) throw Object.assign(new Error(existing.error), { delivery: existing });
+    const activationStore = new EvolutionActivationStore(this.workspaceRoot, this.now);
+    const activationValues = await activationStore.list();
+    const requestedActivation = activationValues.find((item) => item.promotionId === promotion.promotionId);
+    const targetGenerations = activationValues.filter((item) => item.assetKind === "source_patch" && item.target === candidate.target).map((item) => item.desiredGeneration);
+    const desiredGeneration = existing?.desiredGeneration ?? requestedActivation?.desiredGeneration ?? (targetGenerations.length ? Math.max(...targetGenerations) + 1 : 1);
     let record: SourcePatchDeliveryRecord = existing ?? {
       deliveryId, commandId, candidateId: candidate.candidateId, promotionId: promotion.promotionId,
-      status: "requested", attestations: [], createdAt: this.now().toISOString(), updatedAt: this.now().toISOString(),
+      desiredGeneration, status: "requested", attestations: [], createdAt: this.now().toISOString(), updatedAt: this.now().toISOString(),
     };
+    await activationStore.recordRequested(promotion, candidate, desiredGeneration, candidate.mutationSet?.rollbackRef);
     const resumeStatus = record.status === "failed" ? record.lastSuccessfulStatus : record.status;
     if (record.status === "failed" && resumeStatus) record = { ...record, status: resumeStatus };
     try {
@@ -103,7 +109,16 @@ export class SourcePatchDeliveryPipeline {
     const actual = await this.providers.deployment.actualRevision(current.previousDeployment);
     requirePassed(actual.attestation, "rollback runtime revision observation");
     const record = await this.advance(commandId, current, "rolled_back", { attestations: [...current.attestations, attestation, actual.attestation] });
-    await new EvolutionActivationStore(this.workspaceRoot, this.now).recordPromotionRollback(current.promotionId, `source-delivery-rollback:${deliveryId}`);
+    const activations = new EvolutionActivationStore(this.workspaceRoot, this.now);
+    const bad = (await activations.list()).find((item) => item.promotionId === current.promotionId);
+    await activations.recordPromotionRollback(current.promotionId, `source-delivery-rollback:${deliveryId}`);
+    const restored = await activations.recordRestoration(current.promotionId, current.previousDeployment, (bad?.desiredGeneration ?? 0) + 1, `source-delivery-restore:${deliveryId}`);
+    if (restored) await activations.observe({
+      assetKind: restored.assetKind, target: restored.target, releaseRef: restored.releaseRef,
+      desiredGeneration: restored.desiredGeneration, actualGeneration: restored.desiredGeneration,
+      runtimeKind: "deployment", runtimeRef: current.previousDeployment.id, runtimeSnapshotHash: actual.runtimeSnapshotHash,
+      traceRef: { kind: "evidence", ref: `source-delivery-rollback:${deliveryId}`, workspaceId: restored.scope.workspaceId },
+    });
     return record;
   }
 
@@ -127,9 +142,8 @@ export class SourcePatchDeliveryPipeline {
     const actual = knownSnapshotHash ? undefined : await this.providers.deployment.actualRevision(record.deploymentRef);
     if (actual) { requirePassed(actual.attestation, "runtime revision reconciliation"); if (actual.sourceCommit !== record.sourceCommit) throw new Error("Runtime revision changed after Source Patch verification"); }
     const activation = new EvolutionActivationStore(this.workspaceRoot, this.now);
-    const existing = (await activation.list()).find((item) => item.promotionId === promotion.promotionId);
-    const generations = (await activation.list()).filter((item) => item.assetKind === "source_patch" && item.target === candidate.target).map((item) => item.desiredGeneration);
-    const generation = existing?.desiredGeneration ?? (generations.length ? Math.max(...generations) + 1 : 1);
+    const generation = record.desiredGeneration ?? (await activation.list()).find((item) => item.promotionId === promotion.promotionId)?.desiredGeneration;
+    if (!generation) throw new Error("Source Patch delivery is missing its requested activation generation");
     await activation.recordPointerChanged(promotion, candidate, generation, candidate.mutationSet?.rollbackRef);
     await activation.observe({
       assetKind: "source_patch", target: candidate.target, releaseRef: promotion.toRelease,

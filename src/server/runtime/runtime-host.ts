@@ -46,6 +46,7 @@ import type { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-sched
 import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
 import { productionEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
+import { evolutionAgentProfileForSession } from "../evolution/runtime-projection.js";
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
@@ -1586,6 +1587,7 @@ export class RuntimeHost {
     const context = await this.compose(record, team);
     const evolvedWorkflow = await productionEvolutionWorkflow(this.workspace.rootPath, this.workspace.id, DEFAULT_PLAN_TEMPLATE_ID, this.policyRef);
     const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
+    const planSnapshotHash = workflowSnapshotHash(planDefinition);
     await context.manager.startMission({
       missionId: record.missionId,
       objective: record.objective,
@@ -1597,11 +1599,26 @@ export class RuntimeHost {
         teamBindingId: team.teamBindingId,
       },
     });
+    record.workflowSnapshot = evolvedWorkflow ? {
+      source: "evolution", target: evolvedWorkflow.target,
+      definitionId: planDefinition.definitionId, definitionVersion: planDefinition.definitionVersion,
+      generation: evolvedWorkflow.generation,
+      releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
+      snapshotHash: planSnapshotHash,
+    } : {
+      source: "builtin", target: DEFAULT_PLAN_TEMPLATE_ID,
+      definitionId: planDefinition.definitionId, definitionVersion: planDefinition.definitionVersion, generation: 0,
+      releaseRef: { id: `builtin:${planDefinition.definitionId}`, version: String(planDefinition.definitionVersion), contentHash: planSnapshotHash },
+      snapshotHash: planSnapshotHash,
+    };
+    record.updatedAt = this.now().toISOString();
+    context.record = record;
+    await this.store.save(record);
     if (evolvedWorkflow) await new EvolutionActivationStore(this.workspace.rootPath, () => this.now()).observe({
       assetKind: "workflow", target: evolvedWorkflow.target,
       releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
       desiredGeneration: evolvedWorkflow.generation, actualGeneration: evolvedWorkflow.generation,
-      runtimeKind: "task", runtimeRef: record.runId, runtimeSnapshotHash: workflowSnapshotHash(planDefinition),
+      runtimeKind: "task", runtimeRef: record.runId, runtimeSnapshotHash: planSnapshotHash,
     });
     this.contexts.set(record.taskId, context);
   }
@@ -1738,8 +1755,14 @@ export class RuntimeHost {
     attemptId?: string,
     taskType?: string,
   ) {
-    const agent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
-    const profile = (await this.profiles.list()).find((item) => item.id === agent.profileId)!;
+    const storedAgent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
+    const baseProfile = (await this.profiles.list()).find((item) => item.id === storedAgent.profileId)!;
+    const basePolicy = resolvePolicy(this.workspace, storedAgent, baseProfile);
+    const evolved = await evolutionAgentProfileForSession(this.workspace.rootPath, this.workspace.id, baseProfile, storedAgent, {
+      assignmentKey: `${threadId}:${goalId ?? "idle"}`, taskType, tools: basePolicy.enabledTools ?? [],
+    });
+    const profile = evolved?.profile ?? baseProfile;
+    const agent = inheritEvolvedProfileDefaults(storedAgent, baseProfile, profile);
     const provider = agent.provider ?? profile.defaultProvider;
     const model = agent.model ?? profile.defaultModel;
     const modelRuntime = await this.providers.modelRuntimeConfig(provider, model);
@@ -1762,6 +1785,25 @@ export class RuntimeHost {
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+export function inheritEvolvedProfileDefaults(agent: WorkspaceAgent, base: AgentProfile, evolved: AgentProfile): WorkspaceAgent {
+  if (evolved === base) return agent;
+  const providerInherited = agent.provider === undefined || agent.provider === base.defaultProvider;
+  const modelInherited = agent.model === undefined || agent.model === base.defaultModel;
+  const policyInherited = agent.policyOverride === undefined || canonicalRuntimeValue(agent.policyOverride) === canonicalRuntimeValue(base.defaultPolicy);
+  return {
+    ...agent,
+    ...(providerInherited ? { provider: evolved.defaultProvider } : {}),
+    ...(modelInherited ? { model: evolved.defaultModel } : {}),
+    ...(policyInherited ? { policyOverride: structuredClone(evolved.defaultPolicy) } : {}),
+  };
+}
+
+function canonicalRuntimeValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalRuntimeValue).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalRuntimeValue(item)}`).join(",")}}`;
+  return JSON.stringify(value);
 }
 
 export function queuedMessageRoute(

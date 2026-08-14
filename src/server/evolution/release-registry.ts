@@ -56,6 +56,7 @@ export class EvolutionReleaseRegistry {
         promotionId: record.promotionId, active: true, updatedAt: this.now().toISOString(),
         ...(record.stage === "canary" && record.rollout ? { rollout: structuredClone(record.rollout) } : {}),
       };
+      await new EvolutionActivationStore(this.workspaceRoot, this.now).recordRequested(record, candidate, pointer.generation, pointer.previousRelease);
       await writeJson(workspaceEvolutionActiveReleaseFile(this.workspaceRoot, record.stage, pointerKey(candidate)), pointer);
     }
     const projected = await this.current(record.stage, candidate);
@@ -63,6 +64,9 @@ export class EvolutionReleaseRegistry {
       await new EvolutionActivationStore(this.workspaceRoot, this.now).recordPointerChanged(record, candidate, projected.generation, projected.previousRelease);
     }
     if (record.stage === "production") {
+      if (current?.active && current.promotionId && current.promotionId !== record.promotionId) {
+        await new EvolutionActivationStore(this.workspaceRoot, this.now).recordSuperseded(current.promotionId);
+      }
       const canary = await this.current("canary", candidate);
       if (canary?.active && canary.promotionId === record.sourcePromotionId) {
         await writeJson(workspaceEvolutionActiveReleaseFile(this.workspaceRoot, "canary", pointerKey(candidate)), {
@@ -79,13 +83,22 @@ export class EvolutionReleaseRegistry {
     const current = await this.current(record.stage, candidate);
     if (!current || current.promotionId !== record.promotionId) return;
     const restore = record.stage === "production" ? record.fromRelease : undefined;
+    const restoreManifest = restore
+      ? await readJson<ReleaseManifest | undefined>(workspaceEvolutionReleaseFile(this.workspaceRoot, restore.id), undefined)
+      : undefined;
+    if (restore && (!restoreManifest || restoreManifest.release.id !== restore.id || restoreManifest.release.contentHash !== restore.contentHash)) {
+      throw new Error("Rollback previous release manifest is missing or does not match the immutable release");
+    }
     const pointer: ActiveReleasePointer = {
       schemaVersion: 1, target: candidate.target, stage: record.stage, scope: structuredClone(candidate.scope),
       generation: current.generation + 1, ...(restore ? { release: restore } : {}),
+      ...(restoreManifest ? { promotionId: restoreManifest.promotionId } : {}),
       previousRelease: record.toRelease, active: Boolean(restore), updatedAt: this.now().toISOString(),
     };
     await writeJson(workspaceEvolutionActiveReleaseFile(this.workspaceRoot, record.stage, pointerKey(candidate)), pointer);
-    await new EvolutionActivationStore(this.workspaceRoot, this.now).recordRollback(record);
+    const activations = new EvolutionActivationStore(this.workspaceRoot, this.now);
+    await activations.recordRollback(record);
+    if (restore) await activations.recordRestoration(record.promotionId, restore, pointer.generation);
   }
 }
 
