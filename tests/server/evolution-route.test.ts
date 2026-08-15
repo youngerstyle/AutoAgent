@@ -103,7 +103,7 @@ describe("workspace evolution candidate control plane", () => {
   it("exposes Practice lineage and governs scope promotion without legacy direct consolidation", async () => {
     const { app, base, workspaceId } = await fixture();
     await request(app).get(`${base}/practices`).expect(200).expect(({ body }) => {
-      expect(body).toEqual({ drafts: [], practices: [], bindings: [], pluginAuthoringJobs: [] });
+      expect(body).toEqual({ drafts: [], practices: [], bindings: [], pluginAuthoringJobs: [], sharedPractices: [] });
     });
     const created = await request(app).post(`${base}/scope-promotions`).send({
       commandId: "api-scope-promotion", origin: { ownerLevel: "agent_project", workspaceId, profileId: "profile-a" },

@@ -2583,6 +2583,7 @@ function EvolutionHub(props: {
                     <p>{practice.procedure}</p>
                     <code>{practice.practiceId} · bindings {bindings.map((binding) => `${binding.kind}:${binding.status}`).join(", ") || "none"}</code>
                     <small>来源 {practice.applicability.workspaceId}/{practice.applicability.profileId} · Episodes {practice.sourceEpisodeRefs.join(", ")}</small>
+                    {practice.previousRevision ? <small>Revision {practice.previousRevision.id}@{practice.previousRevision.version} → v{practice.version} · {practice.revisionReason}</small> : null}
                     {pluginAuthoringJobs.filter((job) => job.practiceId === practice.practiceId && job.practiceVersion === practice.version).map((job) => <small key={job.jobId}>Plugin authoring {job.status} · attempts {job.attempts}/{job.maxAttempts}{job.lastError ? ` · ${job.lastError}` : ""}</small>)}
                   </article>;
                 }) : <p className="evolution-empty">尚无经过 Dream consolidation 的 Practice。</p>}

@@ -69,39 +69,39 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 ## Milestone A：公司与 Agent 身份
 
-- [ ] 在 `AUTOAGENT_HOME` 持久化稳定 `companyId`。
-- [ ] 明确复用现有全局 `AgentProfile/profileId` 作为稳定个人 Agent 身份，不建立第二套 identity store。
-- [ ] 保持现有 `WorkspaceAgent.profileId` 引用，并迁移/校验历史实例映射。
-- [ ] 证明同一 `profileId` 的多个 Workspace instances 共享 agent-level release，但不共享各自的 agent-project release。
+- [x] 在 `AUTOAGENT_HOME` 持久化稳定 `companyId`。
+- [x] 明确复用现有全局 `AgentProfile/profileId` 作为稳定个人 Agent 身份，不建立第二套 identity store。
+- [x] 保持现有 `WorkspaceAgent.profileId` 引用；历史实例仅在角色唯一可映射时迁移，未知或重复 profile 映射拒绝启动。
+- [x] 证明同一 `profileId` 的多个 Workspace instances 共享 agent-level release，但不共享各自的 agent-project release。
 - [x] 建立 Company Practice/Release/Promotion ledger；共享层保存不可变 Practice 快照、Promotion provenance、Release、active pointer 与 activation ledger。
 - [x] 建立 Agent long-term Practice/Release ledger；同一 profile 的共享层不依赖源 Workspace 继续存在。
-- [ ] 保留 Workspace Episode 与项目 Release store。
-- [ ] 证明两个私有部署之间完全隔离，同一公司多个 Workspace 可被公司控制面发现。
+- [x] 保留 Workspace Episode 与项目 Release store。
+- [x] 证明两个私有部署之间完全隔离，同一公司多个 Workspace 可被公司控制面发现。
 
 ## Milestone B：Evol 触发与调度
 
 - [x] 定义耐久 `EvolutionSignal`、ReflectionJob、ConsolidationJob 及幂等 command key；三类状态分账，Reflection/Consolidation 使用独立 lease、retry/backoff 与 dead-letter。
-- [ ] 复用 Ticket/Mission、Evidence Ledger、Agent Thread/Trace、telemetry 的现有耐久事实，不在业务提交路径双写 Evol。
-- [ ] 实现带耐久 cursor 的 ingestor，从终态、用户纠正、recovered failure、Practice feedback、context compaction 和 effect observation 幂等派生 EvolutionSignal。
-- [ ] 将当前固定轮询中混合的 extraction、consolidation、evaluation、promotion、telemetry reconciliation 拆成独立可恢复 worker。
+- [x] 复用 Ticket/Mission、Evidence Ledger、Agent Thread/Trace、telemetry 的现有耐久事实，不在业务提交路径双写 Evol。
+- [x] 实现 Episode、Telemetry、Agent Thread 三类耐久 cursor，从终态、用户纠正、recovered failure、Practice feedback、context compaction 和 effect observation 幂等派生 EvolutionSignal。
+- [x] 将 extraction、reflection、consolidation、evaluation、promotion、telemetry/trial reconciliation 拆为独立失败域；有任务形态的阶段使用独立耐久 job/lease，账本 reconciliation 从权威事实幂等恢复。
 - [x] 实现 P0-P4 优先队列、单私有部署 company 边界、Workspace 轮转和同优先级 Agent least-recently-served 公平调度，并保留每 Workspace drain budget。
 - [x] 支持 threshold、真实 Runtime idle budget、可配置 UTC maintenance window 与 manual trigger；高显著性即时进入 Reflection，普通事件延迟聚合，任何固定凌晨都不是正确性依赖。
-- [ ] 保证业务任务不等待 Evol，当前运行 snapshot 不被后台结果热修改。
+- [x] 保证业务任务不等待 Evol，当前运行 snapshot 不被后台结果热修改。
 
 ## Milestone C：开放式 Practice
 
-- [ ] 定义 Practice、PracticeRevision、Binding 和 provenance contracts。
-- [ ] 从 Episode/Attribution 归纳开放式 hypothesis、trigger、procedure、scope 和 contraindications。
-- [ ] 禁止无来源、单次偶然或预设模板反向归因生成 Practice。
+- [x] 定义 Practice、不可变 PracticeRevision、Binding 和 provenance contracts；新证据产生同一 practiceId 的下一版本，不能原地改写或借 revision 扩 scope。
+- [x] 从 Episode/Attribution 归纳开放式 hypothesis、trigger、procedure、scope 和 contraindications；成功 Episode 可由配置的真实 Provider 从权威事实开放归纳，不使用规则目录。
+- [x] 禁止无来源、单次偶然或预设模板反向归因生成 Practice；Dream 至少要求两个独立 Episode，Provider 证据不足必须返回空数组。
 
 ## Milestone D：个人与项目实验
 
 - [x] 建立确定性 project treatment/control assignment 与由 Episode/Trace/Activation/Evidence 权威账本自动派生的效果窗口。
-- [ ] 支持 agent-project、agent、project 三类局部 active pointer 与独立 rollback。
-- [ ] 将 Practice Binding 编译为 Memory/Prompt/Skill/Workflow/Plugin release。
+- [x] 支持 agent-project、agent、project 三类局部 active pointer 与独立 rollback。
+- [x] 将 Practice Binding 编译为 Memory/Prompt/Skill/Workflow/Plugin release。
   - 已完成 Memory/Prompt/Skill/Workflow；Workflow 由 Practice 内容生成可验证的完整 Plan artifact，并在 next-task 边界按 company < agent < project < agent-project 解析。
   - Local Plugin 使用 durable authoring job 和配置的真实 Provider 生成最小权限 PluginBundle；无 Provider 时保持 pending，产物始终作为 critical Candidate 经过 scanner、评测、人工批准和 next-session 激活，不能用文本 Skill 冒充。
-- [ ] 在对应 next-turn/next-task/next-session 边界继承和回滚。
+- [x] 在对应 next-turn/next-task/next-session 边界继承和回滚。
 
 ## Milestone E：公司推广
 
@@ -112,12 +112,11 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 ## Milestone F：分层解析与管理面
 
-- [ ] 实现 built-in < company < agent < project < agent-project < invocation safety 的行为解析顺序。
+- [x] 实现 built-in < company < agent < project < agent-project < invocation safety 的行为解析顺序。
 - [x] 强制 policy 使用单调收窄交集语义：布尔权限取 AND、工具取交集、命令 allowlist 取交集且空交集关闭命令执行；任何 Agent/Profile Evol 都不能放宽原项目有效策略。
-- [ ] 新项目自动继承公司默认；现有项目按生命周期边界重载。
+- [x] 新项目自动继承公司默认；现有项目按生命周期边界重载。
   - Memory/Prompt/Skill/Plugin/AgentProfile 使用 turn/session snapshot；Workflow 使用 task snapshot；Company Runtime Config 使用 process boot snapshot，均从各自共享层账本记录激活证明。
-- [ ] 项目 pin/override 与公司 rollback 相互独立。
-- [ ] UI 展示完整实践发现、Agent/项目效果、scope 晋升、公司评审、trial、active 与 rollback lineage。
-  - 已展示 Practice 的 Workspace/profile/Episode 来源、结构化公司评审、trial、局部及 Company/Agent 共享层 activation/inheritance/rollback、独立 Reflection/Dream job 状态；仍需审计 project/agent pin 与 override 的控制面。
+- [x] 项目 Memory pin 与所有项目/agent-project active override 均位于本地层，层级优先于 Company；Company rollback 只修改 Company 共享层 pointer，互不改写。
+- [x] UI 展示 Practice 的 Workspace/profile/Episode 来源与 revision、Binding/authoring、Agent/项目效果 refs、scope 晋升、结构化公司评审、trial、Company/Agent/local active、inheritance 与 rollback lineage，以及 Reflection/Dream 可恢复状态。
 
 退出标准：主规范第 12 节十五条完成定义全部有真实多 Agent、多 Workspace 与双私有实例端到端证据。
