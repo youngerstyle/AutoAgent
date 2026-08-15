@@ -81,7 +81,11 @@ describe("evolution production runtime projection", () => {
       },
     });
     expect(await productionEvolutionMemories(root, "workspace-a", profile(), agent())).toEqual([
-      { target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId, releaseVersion: "1", contentHash: memoryHash, generation: 1, stage: "production", ownerLevel: "project" },
+      expect.objectContaining({
+        target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId,
+        releaseVersion: "1", contentHash: memoryHash, generation: 1, stage: "production", ownerLevel: "project",
+        selection: expect.objectContaining({ policyVersion: "memory-selection/v1" }),
+      }),
     ]);
     await new MemoryLifecycleStore("workspace-a", root).transition(
       "stale-memory", memoryReleaseId, "stale", "No recent successful use", { type: "system", id: "memory-lifecycle-maintainer/v1" },

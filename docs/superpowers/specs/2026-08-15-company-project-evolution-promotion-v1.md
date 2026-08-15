@@ -129,6 +129,8 @@ Dream 的职责是跨 Episode 聚类、去重、寻找矛盾、归纳适用条�
 
 当前正在执行的 turn/task/session 使用冻结 snapshot，不因后台 Dream 完成而被中途改变。
 
+Memory 的 active 过滤、使用证据、过期语义与可解释排序以 `2026-08-15-memory-selection-lifecycle-v1.md` 为准；尚未实现的语义检索和策略学习分别记录在 `docs/evolution-backlog.md` 与 `docs/evolution-technical-debt.md`，不得从现有固定排序推断为已完成。
+
 ### 3.6 调度优先级
 
 ```text

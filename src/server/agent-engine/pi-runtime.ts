@@ -773,7 +773,11 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       data: {
         enabledSkills: skillNames, diagnostics: loader.getSkills().diagnostics,
         evolutionReleases: evolvedSkills.map((skill) => ({ name: skill.name, releaseId: skill.releaseId, releaseVersion: skill.releaseVersion, contentHash: skill.contentHash, generation: skill.generation, stage: skill.stage })),
-        evolutionMemories: evolvedMemories.map((memory) => ({ target: memory.target, releaseId: memory.releaseId, releaseVersion: memory.releaseVersion, contentHash: memory.contentHash, generation: memory.generation, stage: memory.stage })),
+        evolutionMemories: evolvedMemories.map((memory) => ({
+          target: memory.target, releaseId: memory.releaseId, releaseVersion: memory.releaseVersion,
+          contentHash: memory.contentHash, generation: memory.generation, stage: memory.stage,
+          selection: memory.selection,
+        })),
         evolutionPlugins: evolutionProjection.plugins.map((plugin) => ({ name: plugin.name, releaseId: plugin.releaseId, releaseVersion: plugin.releaseVersion, contentHash: plugin.contentHash, generation: plugin.generation, stage: plugin.stage, tools: plugin.manifest.contributions.tools.map((tool) => pluginToolName(plugin.name, tool.name)) })),
         evolutionHarnesses: evolutionProjection.harnesses.map((harness) => ({ name: harness.name, releaseId: harness.releaseId, releaseVersion: harness.releaseVersion, contentHash: harness.contentHash, generation: harness.generation, stage: harness.stage, guardrails: harness.manifest.contributions.guardrails.map((guard) => guard.name) })),
         evolutionPrompts: evolutionProjection.prompts.map((prompt) => ({ target: prompt.target, releaseId: prompt.releaseId, releaseVersion: prompt.releaseVersion, contentHash: prompt.contentHash, generation: prompt.generation, stage: prompt.stage })),

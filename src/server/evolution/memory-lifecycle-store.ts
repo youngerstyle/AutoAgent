@@ -92,7 +92,9 @@ export class MemoryLifecycleStore {
     const now = this.now();
     for (const state of await this.list()) {
       if (state.pinned || state.status === "archived") continue;
-      const reference = Date.parse(state.lastSuccessfulAt ?? state.lastUsedAt ?? state.registeredAt);
+      // Only a successful Episode proves that a Memory remained useful. Failed,
+      // returned, blocked, or cancelled attempts are telemetry, not freshness.
+      const reference = Date.parse(state.lastSuccessfulAt ?? state.registeredAt);
       const age = now.getTime() - reference;
       if (state.status === "active" && age >= staleAfterMs) {
         await this.transition(`maintenance:stale:${state.releaseId}:${now.toISOString()}`, state.releaseId, "stale", "No successful use within the stale window", { type: "system", id: "memory-lifecycle-maintainer/v1" });

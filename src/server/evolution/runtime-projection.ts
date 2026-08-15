@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionOwnerLevel, EvolutionScope, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionOwnerLevel, EvolutionScope, MemoryLifecycleState, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
@@ -46,6 +46,25 @@ export interface RuntimeEvolutionMemory {
   ownerLevel: EvolutionOwnerLevel;
   sourceWorkspaceId?: string;
   layer?: "workspace" | "organization";
+  selection: MemorySelectionExplanation;
+}
+
+export interface MemorySelectionExplanation {
+  policyVersion: "memory-selection/v1";
+  score: number;
+  components: {
+    scopeSpecificity: number;
+    effectiveness: number;
+    evidenceConfidence: number;
+    freshness: number;
+    exploration: number;
+  };
+  evidence: {
+    useCount: number;
+    successfulEpisodeCount: number;
+    failedEpisodeCount: number;
+    effectiveAt: string;
+  };
 }
 
 export interface RuntimeEvolutionExtension {
@@ -290,10 +309,8 @@ async function evolutionMemoriesForStage(
     const manifest = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (manifest.release.id !== pointer.release.id || manifest.release.contentHash !== pointer.release.contentHash || manifest.promotionId !== pointer.promotionId
       || manifest.stage !== stage || !manifest.runtimeActive || !manifest.validationPassed || manifest.candidateKind !== "memory" || !sameScope(manifest.scope, pointer.scope)) continue;
-    if (stage === "production") {
-      const memoryState = await lifecycle.get(manifest.release.id);
-      if (!memoryState || memoryState.status !== "active") continue;
-    }
+    const memoryState = stage === "production" ? await lifecycle.get(manifest.release.id) : undefined;
+    if (stage === "production" && (!memoryState || memoryState.status !== "active")) continue;
     const label = stage === "production" ? "Production" : "Canary";
     if (!manifest.validationChecks.some((check) => check.name === "memory_safety" && check.passed)) throw new Error(`${label} Memory release ${manifest.release.id} has no safety validation`);
     const artifactFile = safeResolve(workspaceRoot, path.join(".autoagent", "evolution", manifest.artifactRef));
@@ -302,10 +319,11 @@ async function evolutionMemoriesForStage(
     projected.push({
       target: manifest.target, content, releaseId: manifest.release.id, releaseVersion: manifest.release.version, contentHash: manifest.candidateHash, generation: pointer.generation, stage,
       ownerLevel: resolvedOwnerLevel(pointer.scope, Boolean(organizationSource)),
+      selection: explainMemorySelection(resolvedOwnerLevel(pointer.scope, Boolean(organizationSource)), stage, memoryState, pointer.updatedAt),
       ...(organizationSource ? { sourceWorkspaceId: storageWorkspaceId, layer: "organization" as const } : {}),
     });
   }
-  return resolveEvolutionLayers(projected, (item) => item.target).slice(0, 20);
+  return rankEvolutionMemories(resolveEvolutionLayers(projected, (item) => item.target));
 }
 
 async function evolutionDeclarativeAssetsForStage(
@@ -414,7 +432,7 @@ export async function runtimeEvolutionProjection(
   const productionMemories = resolveEvolutionLayers([...organizationMemories, ...sharedSets.flatMap((item) => item.memories), ...localProductionMemories], (item) => item.target);
   const canaryAssignments = await matchingCanaryAssignments(workspaceRoot, workspaceId, profile, agent, context);
   const skills = resolveEvolutionLayers([...productionSkills, ...canarySkills], (item) => item.name);
-  const memories = resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target).slice(0, 20);
+  const memories = rankEvolutionMemories(resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target));
   const extensions = resolveEvolutionLayers([...productionExtensions, ...canaryExtensions], (item) => `${item.kind}:${item.name}`);
   const prompts = resolveEvolutionLayers([...productionDeclarative.prompts, ...canaryDeclarative.prompts], (item) => item.target);
   const agentProfiles = resolveEvolutionLayers([...productionDeclarative.agentProfiles, ...canaryDeclarative.agentProfiles], (item) => item.target);
@@ -425,7 +443,10 @@ export async function runtimeEvolutionProjection(
     ...prompts.map((item) => resolvedRelease("prompt", item.target, item)),
     ...agentProfiles.map((item) => resolvedRelease("agent_profile", item.target, item)),
   ].sort((left, right) => `${left.assetKind}:${left.target}:${left.ownerLevel}`.localeCompare(`${right.assetKind}:${right.target}:${right.ownerLevel}`));
-  const snapshotHash = hash(canonical({ workspaceId, profileId: profile.id, resolvedReleases, organizationConflicts }));
+  const snapshotHash = hash(canonical({
+    workspaceId, profileId: profile.id, resolvedReleases, organizationConflicts,
+    memorySelections: memories.map((item) => ({ releaseId: item.releaseId, selection: item.selection })),
+  }));
   return {
     skills,
     memories,
@@ -556,8 +577,8 @@ export function matchesEvolutionOwner(scope: EvolutionScope, workspaceId: string
   return ownerLevel === "company";
 }
 
-export function resolveOrganizationMemoryConflicts(values: RuntimeEvolutionMemory[]): { memories: RuntimeEvolutionMemory[]; conflicts: string[] } {
-  const byTarget = new Map<string, RuntimeEvolutionMemory[]>();
+export function resolveOrganizationMemoryConflicts<T extends { target: string; contentHash: string }>(values: T[]): { memories: T[]; conflicts: string[] } {
+  const byTarget = new Map<string, T[]>();
   for (const value of values) byTarget.set(value.target, [...(byTarget.get(value.target) ?? []), value]);
   const conflicts = [...byTarget.entries()].filter(([, items]) => new Set(items.map((item) => item.contentHash)).size > 1).map(([target]) => target).sort();
   const conflictSet = new Set(conflicts);
@@ -577,6 +598,74 @@ export function isCanaryAssignment(rollout: { percentage: number; salt: string }
 }
 function resolvedOwnerLevel(scope: EvolutionScope, legacyOrganization = false): EvolutionOwnerLevel {
   return scope.ownerLevel ?? (legacyOrganization ? "company" : "project");
+}
+
+const MEMORY_SELECTION_WEIGHTS = {
+  scopeSpecificity: 0.30,
+  effectiveness: 0.30,
+  evidenceConfidence: 0.20,
+  freshness: 0.15,
+  exploration: 0.05,
+} as const;
+
+const MEMORY_SCOPE_SPECIFICITY: Record<EvolutionOwnerLevel, number> = {
+  company: 0.40,
+  agent: 0.65,
+  project: 0.80,
+  agent_project: 1,
+};
+
+/**
+ * Rank already-authorized, active Memories. This is deliberately separate from
+ * layer conflict resolution: a high score cannot override a more specific
+ * owner for the same target, and pinning never forces prompt injection.
+ */
+export function rankEvolutionMemories(memories: RuntimeEvolutionMemory[], limit = 20): RuntimeEvolutionMemory[] {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Memory selection limit must be a positive integer");
+  return [...memories].sort((left, right) => right.selection.score - left.selection.score
+    || left.target.localeCompare(right.target)
+    || left.releaseId.localeCompare(right.releaseId)).slice(0, limit);
+}
+
+export function explainMemorySelection(
+  ownerLevel: EvolutionOwnerLevel,
+  stage: "canary" | "production",
+  lifecycle: MemoryLifecycleState | undefined,
+  registeredAt: string,
+  now = new Date(),
+): MemorySelectionExplanation {
+  const successfulEpisodeCount = lifecycle?.successfulEpisodeCount ?? 0;
+  const failedEpisodeCount = lifecycle?.failedEpisodeCount ?? 0;
+  const measuredEpisodes = successfulEpisodeCount + failedEpisodeCount;
+  const effectiveAt = lifecycle?.lastSuccessfulAt ?? lifecycle?.registeredAt ?? registeredAt;
+  const ageMs = Math.max(0, now.getTime() - Date.parse(effectiveAt));
+  const ageDays = Number.isFinite(ageMs) ? ageMs / 86_400_000 : 0;
+  const components = {
+    scopeSpecificity: MEMORY_SCOPE_SPECIFICITY[ownerLevel],
+    // Beta(1,1) smoothing avoids treating a single success as certainty.
+    effectiveness: (successfulEpisodeCount + 1) / (measuredEpisodes + 2),
+    // Five outcome-bearing Episodes provide full V1 confidence. Neutral
+    // blocked/cancelled outcomes remain visible in useCount but do not distort it.
+    evidenceConfidence: Math.min(1, measuredEpisodes / 5),
+    freshness: 2 ** (-ageDays / 30),
+    // Canary gets bounded exploration capacity but cannot override same-target scope.
+    exploration: stage === "canary" ? 1 : 0,
+  };
+  const score = Object.entries(MEMORY_SELECTION_WEIGHTS).reduce(
+    (total, [key, weight]) => total + components[key as keyof typeof components] * weight,
+    0,
+  );
+  return {
+    policyVersion: "memory-selection/v1",
+    score: Number(score.toFixed(6)),
+    components: Object.fromEntries(Object.entries(components).map(([key, value]) => [key, Number(value.toFixed(6))])) as MemorySelectionExplanation["components"],
+    evidence: {
+      useCount: lifecycle?.useCount ?? 0,
+      successfulEpisodeCount,
+      failedEpisodeCount,
+      effectiveAt,
+    },
+  };
 }
 
 /** Resolve behavior defaults by scope first; Canary wins only inside the same scope layer. */

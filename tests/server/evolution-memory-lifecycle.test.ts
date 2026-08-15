@@ -71,6 +71,21 @@ describe("evolution Memory lifecycle", () => {
     expect(await reconciler.reconcile()).toMatchObject({ recordedUsages: 0 });
     expect((await lifecycle.get("release-memory-a"))!.useCount).toBe(1);
   });
+
+  it("does not let failed usage postpone staleness", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-memory-failed-freshness-"));
+    let time = Date.parse("2026-01-01T00:00:00.000Z");
+    const lifecycle = new MemoryLifecycleStore("workspace-a", root, () => new Date(time));
+    await lifecycle.register(promotion(), candidate());
+    await lifecycle.recordUsage({
+      commandId: "usage-failed", releaseId: "release-memory-a", episodeId: "episode-failed", outcome: "failed",
+      sourceRefs: [{ kind: "trace", ref: "trace-failed", workspaceId: "workspace-a" }], occurredAt: "2026-01-29T00:00:00.000Z",
+    });
+    time = Date.parse("2026-02-01T00:00:00.000Z");
+    expect((await lifecycle.maintain({ staleAfterDays: 30, archiveAfterDays: 90 }))[0]).toMatchObject({
+      status: "stale", useCount: 1, successfulEpisodeCount: 0, failedEpisodeCount: 1,
+    });
+  });
 });
 
 function candidate(): EvolutionCandidate {
