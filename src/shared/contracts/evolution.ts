@@ -579,6 +579,7 @@ export interface EvolutionWorkerStatus {
   reflectionSignalsProcessed: number;
   dreamPracticesProduced: number;
   practiceBindingsCreated: number;
+  scopePromotionArtifactsCreated: number;
   evaluationJobsProcessed: number;
   promotionTransitionsProcessed: number;
 }

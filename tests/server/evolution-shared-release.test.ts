@@ -37,6 +37,8 @@ describe("shared Agent and Company evolution releases", () => {
     expect(first.layerRoot).toContain(path.join("layers", "agent", "profile-a"));
     expect(first.manifest).toMatchObject({ candidateKind: "memory", candidateHash: contentHash, scope: { ownerLevel: "agent", profileId: "profile-a" }, scopePromotionProposalId: proposal.proposalId, originReleaseRef: originRelease });
     expect(first.pointer).toMatchObject({ active: true, generation: 1, scope: { ownerLevel: "agent", profileId: "profile-a" } });
+    expect(first.published).toBe(true);
+    expect(replay.published).toBe(false);
     expect(replay.pointer).toEqual(first.pointer);
     const otherWorkspace = await mkdtemp(path.join(os.tmpdir(), "autoagent-shared-target-"));
     const source = { layerRoot: first.layerRoot, ownerLevel: "agent" as const, ownerId: "profile-a", companyId: "company-a" };

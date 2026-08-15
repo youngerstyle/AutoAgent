@@ -22,6 +22,11 @@ import { PracticeDraftStore } from "./practice-draft-store.js";
 import { PracticeStore } from "./practice-store.js";
 import { PracticeBindingStore } from "./practice-binding-store.js";
 import { PracticeBindingCompiler } from "./practice-binding-compiler.js";
+import { CompanyIdentityStore } from "../storage/company-identity-store.js";
+import { ScopePromotionStore } from "./scope-promotion-store.js";
+import { ScopePromotionCandidateCompiler } from "./scope-promotion-compiler.js";
+import { SharedEvolutionReleaseRegistry } from "./shared-release-registry.js";
+import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 
 export class EvolutionCoordinator {
@@ -52,6 +57,7 @@ export class EvolutionCoordinator {
       reflectionSignalsProcessed: 0,
       dreamPracticesProduced: 0,
       practiceBindingsCreated: 0,
+      scopePromotionArtifactsCreated: 0,
       evaluationJobsProcessed: 0,
       promotionTransitionsProcessed: 0,
     };
@@ -92,6 +98,7 @@ export class EvolutionCoordinator {
     let reflectionSignalsProcessed = 0;
     let dreamPracticesProduced = 0;
     let practiceBindingsCreated = 0;
+    let scopePromotionArtifactsCreated = 0;
     let evaluationJobsProcessed = 0;
     let promotionTransitionsProcessed = 0;
     const errors: string[] = [];
@@ -118,15 +125,25 @@ export class EvolutionCoordinator {
         errors.push(`${workspace.id}/binding: ${safeMessage(error)}`);
       }
       try {
+        scopePromotionArtifactsCreated += await this.runProjectScopePromotions(workspace);
+      } catch (error) {
+        errors.push(`${workspace.id}/scope-promotion: ${safeMessage(error)}`);
+      }
+      try {
         evaluationJobsProcessed += await this.runEvaluations(workspace);
       } catch (error) {
         errors.push(`${workspace.id}/evaluation: ${safeMessage(error)}`);
       }
       try {
-        promotionTransitionsProcessed += await this.runPromotions(workspace);
+      promotionTransitionsProcessed += await this.runPromotions(workspace);
       } catch (error) {
         errors.push(`${workspace.id}/promotion: ${safeMessage(error)}`);
       }
+    }
+    try {
+      scopePromotionArtifactsCreated += await this.runSharedScopePromotions();
+    } catch (error) {
+      errors.push(`company/scope-promotion: ${safeMessage(error)}`);
     }
     this.statusValue = {
       running: false,
@@ -138,6 +155,7 @@ export class EvolutionCoordinator {
       reflectionSignalsProcessed,
       dreamPracticesProduced,
       practiceBindingsCreated,
+      scopePromotionArtifactsCreated,
       evaluationJobsProcessed,
       promotionTransitionsProcessed,
     };
@@ -169,6 +187,30 @@ export class EvolutionCoordinator {
       new EvolutionStore(workspace.id, workspace.rootPath, () => this.now()),
     ).compile();
     return result.bindingsProposed;
+  }
+
+  private async promotionContext(): Promise<{ companyId: string; proposals: ScopePromotionStore }> {
+    const identity = await new CompanyIdentityStore(this.workspaces.homePath(), () => this.now()).getOrCreate();
+    return { companyId: identity.companyId, proposals: new ScopePromotionStore(this.workspaces.homePath(), identity.companyId, () => this.now()) };
+  }
+
+  private async runProjectScopePromotions(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const { proposals } = await this.promotionContext();
+    return (await new ScopePromotionCandidateCompiler(workspace.id, workspace.rootPath, proposals, new EvolutionStore(workspace.id, workspace.rootPath, () => this.now())).compileApprovedProjectPromotions()).candidatesCreated.length;
+  }
+
+  private async runSharedScopePromotions(): Promise<number> {
+    const { companyId, proposals } = await this.promotionContext();
+    const registry = new SharedEvolutionReleaseRegistry(this.workspaces.homePath(), companyId, proposals, () => this.now());
+    let published = 0;
+    for (const proposal of (await proposals.list()).filter((item) => item.status === "approved" && ["agent", "company"].includes(item.targetScope.ownerLevel))) {
+      let sourceRoot: string;
+      if (proposal.origin.ownerLevel === "agent") sourceRoot = globalEvolutionLayerRoot(this.workspaces.homePath(), "agent", proposal.origin.profileId!);
+      else if (proposal.origin.workspaceId) sourceRoot = (await this.workspaces.get(proposal.origin.workspaceId)).rootPath;
+      else throw new Error(`Scope promotion source is unresolved: ${proposal.proposalId}`);
+      if ((await registry.publishApproved(proposal.proposalId, sourceRoot)).published) published += 1;
+    }
+    return published;
   }
 
   private async runMaintenance(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<void> {

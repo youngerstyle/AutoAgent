@@ -30,7 +30,7 @@ interface ReleaseManifest {
   originReleaseRef?: VersionedEvolutionRef;
 }
 
-export interface SharedReleasePublication { layerRoot: string; manifest: ReleaseManifest; pointer: ActiveReleasePointer }
+export interface SharedReleasePublication { layerRoot: string; manifest: ReleaseManifest; pointer: ActiveReleasePointer; published: boolean }
 
 /** Publishes an approved immutable local Release into a private Agent or Company layer. */
 export class SharedEvolutionReleaseRegistry {
@@ -93,7 +93,7 @@ export class SharedEvolutionReleaseRegistry {
         `shared-register:${proposal.proposalId}`, release, manifest.target, scope, pointer.updatedAt,
       );
     }
-    return { layerRoot, manifest, pointer };
+    return { layerRoot, manifest, pointer, published: !alreadyCurrent };
   }
 
   async rollback(proposalId: string, approvedBy: EvolutionPrincipalRef): Promise<ActiveReleasePointer> {
