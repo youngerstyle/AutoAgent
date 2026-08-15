@@ -28,6 +28,7 @@ import type { EvolutionCandidate, PromotionRecord } from "../../src/shared/contr
 import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../../src/server/product/plan-template.js";
 import { EvolutionReleaseRegistry } from "../../src/server/evolution/release-registry.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { EvolutionPlatformRuntimeAdapter } from "../../src/server/evolution-adapters/platform-runtime-adapter.js";
 import { RuntimeHostStore } from "../../src/server/runtime/runtime-host-store.js";
 
 const fixtureCleanups = new Set<() => Promise<void>>();
@@ -42,7 +43,7 @@ afterEach(async () => {
 
 describe("RuntimeHost", () => {
   it("freezes the inherited Workflow release and DAG hash in each new TaskRun", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({ evolution: true });
     const first = await publishWorkflow(fixture.root, fixture.workspace.id, fixture.policyRef, 101);
     const firstTask = await fixture.host.createTask({ taskId: "task-workflow-v1", title: "workflow v1", objective: "use workflow v1" });
     expect(firstTask.workflowSnapshot).toEqual(expect.objectContaining({ source: "evolution", definitionVersion: 101, generation: 1, releaseRef: first.promotion.toRelease, snapshotHash: expect.any(String) }));
@@ -2420,6 +2421,7 @@ async function createFixture(options: {
   providerRetryBaseMs?: number;
   providerRetryMaxMs?: number;
   useStaffing?: boolean;
+  evolution?: boolean;
 } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-home-"));
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-ws-"));
@@ -2442,6 +2444,7 @@ async function createFixture(options: {
     now: options.now,
     providerRetryBaseMs: options.providerRetryBaseMs,
     providerRetryMaxMs: options.providerRetryMaxMs,
+    ...(options.evolution ? { evolution: new EvolutionPlatformRuntimeAdapter(root, workspace.id, { now: options.now }) } : {}),
     initialTeamBinding: options.useStaffing
       ? undefined
       : async () => createTeamBinding(

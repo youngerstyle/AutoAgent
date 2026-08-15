@@ -6,7 +6,7 @@ import type { PluginArtifactManifest } from "../../src/shared/contracts/evolutio
 import { AgentToolRuntime } from "../../src/server/agent-engine/tool-runtime.js";
 import { IsolatedPluginHost } from "../../src/server/evolution/plugin-host.js";
 import type { RuntimeEvolutionExtension } from "../../src/server/evolution/runtime-projection.js";
-import { withEvolutionHarnesses } from "../../src/server/agent-engine/pi-runtime.js";
+import { withEvolutionHarnesses } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 

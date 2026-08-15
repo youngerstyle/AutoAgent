@@ -12,6 +12,7 @@ import { ExperienceStore } from "../../src/server/evolution/experience-store.js"
 import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 import { MemoryLifecycleStore } from "../../src/server/evolution/memory-lifecycle-store.js";
 import { MemoryUsageReconciler } from "../../src/server/evolution/memory-usage-reconciler.js";
+import { PlatformEvolutionObservationAdapter } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
 
 describe("evolution Memory lifecycle", () => {
   it("tracks evidence-correlated successful use and applies pin, stale, archive, and restore transitions", async () => {
@@ -65,7 +66,7 @@ describe("evolution Memory lifecycle", () => {
       sourceRefs: [{ kind: "ticket", ref: "ticket-a", workspaceId: workspace.id }],
     }, fixedNow);
     await new ExperienceStore(workspace.id, root).record("episode-a", projected);
-    const reconciler = new MemoryUsageReconciler(workspace);
+    const reconciler = new MemoryUsageReconciler(workspace, new PlatformEvolutionObservationAdapter(workspace));
     expect(await reconciler.reconcile()).toMatchObject({ inspectedEpisodes: 1, correlatedEpisodes: 1, recordedUsages: 1 });
     expect(await lifecycle.get("release-memory-a")).toMatchObject({ useCount: 1, successfulEpisodeCount: 1, lastEpisodeId: projected.episode.episodeId });
     expect(await reconciler.reconcile()).toMatchObject({ recordedUsages: 0 });

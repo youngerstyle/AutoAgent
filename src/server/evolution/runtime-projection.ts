@@ -3,6 +3,16 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionOwnerLevel, EvolutionScope, MemoryLifecycleState, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
+import type {
+  MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
+  RuntimeEvolutionMemory, RuntimeEvolutionProjection, RuntimeEvolutionPrompt, RuntimeEvolutionResolvedRelease,
+  RuntimeEvolutionSkill, SharedEvolutionLayerSource,
+} from "../../shared/contracts/evolution-runtime.js";
+export type {
+  MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
+  RuntimeEvolutionMemory, RuntimeEvolutionProjection, RuntimeEvolutionPrompt, RuntimeEvolutionResolvedRelease,
+  RuntimeEvolutionSkill, SharedEvolutionLayerSource,
+} from "../../shared/contracts/evolution-runtime.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 
@@ -24,119 +34,6 @@ interface ReleaseManifest {
   validationChecks: Array<{ name: string; passed: boolean; message: string }>;
 }
 
-export interface RuntimeEvolutionSkill {
-  name: string;
-  directory: string;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "canary" | "production";
-  ownerLevel: EvolutionOwnerLevel;
-}
-
-export interface RuntimeEvolutionMemory {
-  target: string;
-  content: string;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "canary" | "production";
-  ownerLevel: EvolutionOwnerLevel;
-  sourceWorkspaceId?: string;
-  layer?: "workspace" | "organization";
-  selection: MemorySelectionExplanation;
-}
-
-export interface MemorySelectionExplanation {
-  policyVersion: "memory-selection/v1";
-  score: number;
-  components: {
-    scopeSpecificity: number;
-    effectiveness: number;
-    evidenceConfidence: number;
-    freshness: number;
-    exploration: number;
-  };
-  evidence: {
-    useCount: number;
-    successfulEpisodeCount: number;
-    failedEpisodeCount: number;
-    effectiveAt: string;
-  };
-}
-
-export interface RuntimeEvolutionExtension {
-  name: string;
-  kind: "plugin" | "harness";
-  directory: string;
-  entrypoint: string;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "canary" | "production";
-  ownerLevel: EvolutionOwnerLevel;
-  manifest: PluginArtifactManifest;
-}
-
-export interface RuntimeEvolutionPrompt {
-  target: string;
-  content: string;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "canary" | "production";
-  ownerLevel: EvolutionOwnerLevel;
-}
-
-export interface RuntimeEvolutionAgentProfile {
-  target: string;
-  profile: AgentProfile;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "canary" | "production";
-  ownerLevel: EvolutionOwnerLevel;
-}
-
-export interface OrganizationMemorySource {
-  workspaceId: string;
-  workspaceRoot: string;
-  organizationId: string;
-}
-export interface SharedEvolutionLayerSource {
-  layerRoot: string;
-  ownerLevel: "agent" | "company";
-  ownerId: string;
-  companyId: string;
-}
-
-export interface RuntimeEvolutionProjection {
-  skills: RuntimeEvolutionSkill[];
-  memories: RuntimeEvolutionMemory[];
-  plugins: RuntimeEvolutionExtension[];
-  harnesses: RuntimeEvolutionExtension[];
-  prompts: RuntimeEvolutionPrompt[];
-  agentProfiles: RuntimeEvolutionAgentProfile[];
-  canaryReleases: Array<{ target: string; releaseId: string; contentHash: string }>;
-  canaryAssignments: Array<{ target: string; promotionId: string; releaseId: string; selected: boolean }>;
-  organizationConflicts: string[];
-  resolvedReleases: RuntimeEvolutionResolvedRelease[];
-  snapshotHash: string;
-}
-export interface RuntimeEvolutionResolvedRelease {
-  assetKind: "skill" | "memory" | "plugin" | "harness" | "prompt" | "agent_profile";
-  target: string;
-  ownerLevel: EvolutionOwnerLevel;
-  releaseRef: { id: string; version: string; contentHash: string };
-  generation: number;
-  stage: "canary" | "production";
-  sourceWorkspaceId?: string;
-}
 export interface RuntimeEvolutionContext {
   assignmentKey: string;
   taskType?: string;

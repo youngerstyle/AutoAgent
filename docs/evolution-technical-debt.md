@@ -2,6 +2,15 @@
 
 更新时间：2026-08-15
 
+## TD-EVOL-ARCH-001：Evol 内核仍有平台 Store 依赖
+
+- 严重度：最高
+- 当前状态：迁移中
+- 已偿还：Experience/Memory 输入改为 `EvolutionObservationPort`；Agent Loop 改为 `AgentEvolutionRuntimePort`；Mission Runtime 改为 `EvolutionPlatformPort`；平台知识集中到 `evolution-adapters`。
+- 剩余：Candidate source verification、Signal ingestion、Canary/Company Trial telemetry 仍直接读取 Agent、Ticket、Mission 或 Trace Store。
+- 风险：Evol 尚不能作为完全独立 package 或进程替换。
+- 偿还路径：按 `2026-08-15-evolution-framework-boundary-v1.md` 引入剩余五类端口，并以“evolution 目录无三大框架 import”的架构测试作为退出门槛。
+
 ## TD-EVOL-MEM-001：Runtime 缺少任务正文相关度
 
 - 严重度：高

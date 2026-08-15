@@ -12,6 +12,7 @@ import { ExtractionRunner } from "./extraction-runner.js";
 import { ExperienceStore } from "./experience-store.js";
 import { EvolutionAssetSelector } from "./asset-selector.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort } from "./observation-port.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
 import { CompanyTrialReconciler } from "./company-trial-reconciler.js";
@@ -58,6 +59,7 @@ export class EvolutionCoordinator {
       now?: () => Date;
       workerId?: string;
       pluginArtifactAuthor?: PluginArtifactAuthor;
+      observationPort?: (workspace: Awaited<ReturnType<WorkspaceStore["get"]>>) => EvolutionObservationPort;
     } = {},
   ) {
     this.workerId = options.workerId ?? `evolution-coordinator:${os.hostname()}:${process.pid}`;
@@ -254,7 +256,7 @@ export class EvolutionCoordinator {
     const bucket = Math.floor(this.now().getTime() / maintenanceIntervalMs);
     const jobs = new ExtractionJobStore(workspace.id, workspace.rootPath, () => this.now());
     await jobs.enqueue(`evolution-coordinator:${workspace.id}:maintenance:${bucket}`);
-    await new ExtractionRunner(workspace, jobs).runNext(`${this.workerId}:extraction`);
+    await new ExtractionRunner(workspace, this.options.observationPort?.(workspace) ?? EMPTY_EVOLUTION_OBSERVATION_PORT, jobs).runNext(`${this.workerId}:extraction`);
     await new EvolutionSignalIngestor(workspace.id, workspace.rootPath, undefined, undefined, undefined, () => this.now(), workspace).ingest();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());

@@ -26,6 +26,7 @@ import { ExperienceStore } from "../../src/server/evolution/experience-store.js"
 import { CanaryTelemetryReconciler } from "../../src/server/evolution/canary-telemetry-reconciler.js";
 import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
 import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
 import { SkillConsolidator } from "../../src/server/evolution/skill-consolidator.js";
@@ -397,7 +398,7 @@ describe("evolution evaluation and promotion gate", () => {
     const policy = { profile: "development" as const, workspaceRoot: root, canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false, allowHostAccess: false, enabledTools: [] };
     const runtime = new PiAgentRuntime(
       root, engine, store, new AgentContextAssembler(store), providers,
-      new AgentToolRuntime(policy, []), traces, { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000 },
+      new AgentToolRuntime(policy, []), traces, { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000, evolution: new EvolutionAgentRuntimeAdapter(root, workspaceAgent.workspaceId, { now: fixedNow }) },
     );
     try {
       await engine.sendMessage({ messageId: "profile-message-1", turnId: "profile-turn-1", threadId: thread.threadId, senderPrincipalId: "human", content: "Start with the current profile.", createdAt: fixedNow().toISOString() });
@@ -662,7 +663,7 @@ async function runPiAgentAndReadEvolutionContext(
   };
   const runtime = new PiAgentRuntime(
     root, engine, store, new AgentContextAssembler(store), providers,
-    new AgentToolRuntime(policy, []), traces, { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000 },
+    new AgentToolRuntime(policy, []), traces, { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000, evolution: new EvolutionAgentRuntimeAdapter(root, agent.workspaceId, { now: fixedNow }) },
   );
   try {
     const result = await runtime.runSlice({

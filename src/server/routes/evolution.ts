@@ -12,6 +12,7 @@ import { EvolutionReleaseRegistry } from "../evolution/release-registry.js";
 import { EvolutionTelemetryStore } from "../evolution/telemetry-store.js";
 import { MemoryLifecycleStore } from "../evolution/memory-lifecycle-store.js";
 import { MemoryUsageReconciler } from "../evolution/memory-usage-reconciler.js";
+import { PlatformEvolutionObservationAdapter } from "../evolution-adapters/platform-observation-adapter.js";
 import { asyncHandler, HttpError } from "../errors.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
@@ -99,7 +100,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   }));
   router.post("/memories/reconcile-usage", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
-    res.json({ result: await new MemoryUsageReconciler(workspace).reconcile() });
+    res.json({ result: await new MemoryUsageReconciler(workspace, new PlatformEvolutionObservationAdapter(workspace)).reconcile() });
   }));
   router.post("/candidates/:candidateId/evaluation-jobs", asyncHandler(async (req, res) => {
     const workspaceId = String(req.params.workspaceId);
@@ -244,7 +245,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const jobs = new ExtractionJobStore(workspace.id, workspace.rootPath);
     const commandId = typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID();
     const queued = await jobs.enqueue(commandId);
-    const job = queued.status === "succeeded" ? queued : await new ExtractionRunner(workspace, jobs).runNext(`api:${principalId(req)}`) ?? queued;
+    const job = queued.status === "succeeded" ? queued : await new ExtractionRunner(workspace, new PlatformEvolutionObservationAdapter(workspace), jobs).runNext(`api:${principalId(req)}`) ?? queued;
     res.status(job.status === "succeeded" ? 200 : 202).json({ job });
   }));
   router.get("/extraction-jobs", asyncHandler(async (req, res) => {

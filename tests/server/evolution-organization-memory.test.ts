@@ -13,6 +13,7 @@ import { EvolutionEvaluationStore } from "../../src/server/evolution/evaluation-
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { resolveOrganizationMemoryConflicts, runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
+import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
 import { resolveOrganizationMemorySources } from "../../src/server/runtime/runtime-host-registry.js";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
@@ -109,7 +110,7 @@ async function createTargetSession(root: string, workspaceId: string, workspaces
   const policy = { profile: "development" as const, workspaceRoot: root, canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false, allowHostAccess: false, enabledTools: [] };
   const runtime = new PiAgentRuntime(root, engine, store, new AgentContextAssembler(store), providers, new AgentToolRuntime(policy, []), traces, {
     now: () => new Date("2026-08-14T06:00:00.000Z"),
-    organizationMemorySources: () => resolveOrganizationMemorySources(workspaces, workspaceId),
+    evolution: new EvolutionAgentRuntimeAdapter(root, workspaceId, { organizationMemorySources: () => resolveOrganizationMemorySources(workspaces, workspaceId) }),
   });
   let sequence = 0;
   let latestTurnId = "";

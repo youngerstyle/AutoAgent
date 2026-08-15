@@ -2,12 +2,14 @@ import type { Workspace } from "../../shared/types.js";
 import type { ExtractionJob } from "../../shared/contracts/evolution.js";
 import { ExperienceReconciler } from "./experience-reconciler.js";
 import { ExtractionJobStore } from "./extraction-job-store.js";
+import type { EvolutionObservationPort } from "./observation-port.js";
 
 export class ExtractionRunner {
   constructor(
     private readonly workspace: Workspace,
+    private readonly observations: EvolutionObservationPort,
     private readonly jobs = new ExtractionJobStore(workspace.id, workspace.rootPath),
-    private readonly reconcile: () => Promise<NonNullable<ExtractionJob["result"]>> = () => new ExperienceReconciler(workspace).reconcile(),
+    private readonly reconcile: () => Promise<NonNullable<ExtractionJob["result"]>> = () => new ExperienceReconciler(workspace, observations).reconcile(),
   ) {}
 
   async runNext(workerId: string): Promise<ExtractionJob | undefined> {

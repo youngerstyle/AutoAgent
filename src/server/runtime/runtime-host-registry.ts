@@ -16,6 +16,8 @@ import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from ".
 import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
 import { ensureProjectOwner, migrateAndValidateWorkspaceAgentProfiles } from "../agents/roster.js";
 import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
+import { PlatformEvolutionObservationAdapter } from "../evolution-adapters/platform-observation-adapter.js";
+import { EvolutionPlatformRuntimeAdapter } from "../evolution-adapters/platform-runtime-adapter.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
 import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type RuntimeEvolutionConfig } from "../evolution/runtime-config-projection.js";
@@ -48,6 +50,7 @@ export class RuntimeHostRegistry {
     this.scheduler = new RuntimeHostScheduler(executionConcurrency);
     this.executionGate = new RuntimeExecutionGate(executionConcurrency);
     this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
+      observationPort: (workspace) => new PlatformEvolutionObservationAdapter(workspace),
       evaluatorProgramPath: options.evolutionEvaluatorProgramPath,
       intervalMs: options.evolutionWorkerIntervalMs,
       pluginArtifactAuthor: new ProviderPluginArtifactAuthor(providers),
@@ -271,8 +274,10 @@ export class RuntimeHostRegistry {
         scheduler: this.scheduler,
         schedulerKey: workspace.id,
         executionGate: this.executionGate,
-        organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, workspace.id),
-        sharedEvolutionLayerSources: (profileId) => resolveSharedEvolutionLayerSources(this.workspaces.homePath(), profileId),
+        evolution: new EvolutionPlatformRuntimeAdapter(workspace.rootPath, workspace.id, {
+          organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, workspace.id),
+          sharedEvolutionLayerSources: (profileId) => resolveSharedEvolutionLayerSources(this.workspaces.homePath(), profileId),
+        }),
         ...this.evolutionRuntimeConfigs.get(workspace.id)?.settings,
       });
       if (startScheduler) {

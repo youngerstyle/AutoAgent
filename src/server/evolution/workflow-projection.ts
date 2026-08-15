@@ -4,19 +4,9 @@ import path from "node:path";
 import type { ActiveReleasePointer, EvolutionOwnerLevel } from "../../shared/contracts/evolution.js";
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { SharedEvolutionLayerSource } from "./runtime-projection.js";
+import type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
+export type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
 import { resolveEvolutionLayers } from "./runtime-projection.js";
-
-export interface RuntimeEvolutionWorkflow {
-  target: string;
-  definition: PlanDefinition;
-  releaseId: string;
-  releaseVersion: string;
-  contentHash: string;
-  generation: number;
-  stage: "production";
-  ownerLevel: EvolutionOwnerLevel;
-  sourceRoot: string;
-}
 
 interface WorkflowReleaseManifest {
   schemaVersion: 1;

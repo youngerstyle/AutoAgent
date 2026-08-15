@@ -43,10 +43,7 @@ import { RuntimeHostStore, type RuntimeRetryState, type RuntimeTaskError, type R
 import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
 import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
 import type { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
-import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
-import { productionEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
-import { EvolutionActivationStore } from "../evolution/activation-store.js";
-import { evolutionAgentProfileForSession } from "../evolution/runtime-projection.js";
+import { DISABLED_EVOLUTION_PLATFORM_PORT, type EvolutionPlatformPort } from "./evolution-platform-port.js";
 
 interface RuntimeContext {
   record: RuntimeTaskRecord;
@@ -101,8 +98,7 @@ export class RuntimeHost {
       scheduler?: RuntimeHostScheduler;
       schedulerKey?: string;
       executionGate?: RuntimeExecutionGate;
-      organizationMemorySources?: () => Promise<OrganizationMemorySource[]>;
-      sharedEvolutionLayerSources?: (profileId: string) => Promise<SharedEvolutionLayerSource[]>;
+      evolution?: EvolutionPlatformPort;
     } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
@@ -118,7 +114,7 @@ export class RuntimeHost {
         baseDelayMs: options.staffingProviderRetryBaseMs ?? 5_000,
         maxDelayMs: options.staffingProviderRetryMaxMs ?? 60_000,
       },
-      options.organizationMemorySources,
+      options.evolution?.agentRuntime,
     );
   }
 
@@ -1586,10 +1582,10 @@ export class RuntimeHost {
     const owner = team.members.find((member) => member.capabilities.includes("mission:intake"));
     if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
     const context = await this.compose(record, team);
-    const workflowSharedSources = owner.profileId ? await this.options.sharedEvolutionLayerSources?.(owner.profileId) ?? [] : [];
-    const evolvedWorkflow = await productionEvolutionWorkflow(this.workspace.rootPath, this.workspace.id, DEFAULT_PLAN_TEMPLATE_ID, this.policyRef, { profileId: owner.profileId, sharedReleaseSources: workflowSharedSources });
+    const evolution = this.options.evolution ?? DISABLED_EVOLUTION_PLATFORM_PORT;
+    const evolvedWorkflow = await evolution.resolveWorkflow({ target: DEFAULT_PLAN_TEMPLATE_ID, policyRef: this.policyRef, profileId: owner.profileId });
     const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
-    const planSnapshotHash = workflowSnapshotHash(planDefinition);
+    const planSnapshotHash = evolution.workflowSnapshotHash(planDefinition);
     await context.manager.startMission({
       missionId: record.missionId,
       objective: record.objective,
@@ -1616,12 +1612,8 @@ export class RuntimeHost {
     record.updatedAt = this.now().toISOString();
     context.record = record;
     await this.store.save(record);
-    if (evolvedWorkflow) await new EvolutionActivationStore(evolvedWorkflow.sourceRoot, () => this.now()).observe({
-      assetKind: "workflow", target: evolvedWorkflow.target,
-      releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
-      desiredGeneration: evolvedWorkflow.generation, actualGeneration: evolvedWorkflow.generation,
-      runtimeKind: "task", runtimeRef: record.runId, runtimeSnapshotHash: planSnapshotHash,
-      ownerLevel: evolvedWorkflow.ownerLevel,
+    if (evolvedWorkflow) await evolution.observeWorkflow({
+      workflow: evolvedWorkflow, runtimeRef: record.runId, snapshotHash: planSnapshotHash,
       traceRef: { kind: "evidence", ref: `mission:${record.missionId}`, workspaceId: this.workspace.id, agentId: owner.agentId, ...(owner.profileId ? { profileId: owner.profileId } : {}) },
     });
     this.contexts.set(record.taskId, context);
@@ -1675,7 +1667,7 @@ export class RuntimeHost {
         this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: () => this.now(), organizationMemorySources: this.options.organizationMemorySources, sharedEvolutionLayerSources: this.options.sharedEvolutionLayerSources },
+        { evolution: (this.options.evolution ?? DISABLED_EVOLUTION_PLATFORM_PORT).agentRuntime },
       ));
     }
     const manager = new MissionProcessManager(
@@ -1762,10 +1754,9 @@ export class RuntimeHost {
     const storedAgent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const baseProfile = (await this.profiles.list()).find((item) => item.id === storedAgent.profileId)!;
     const basePolicy = resolvePolicy(this.workspace, storedAgent, baseProfile);
-    const evolved = await evolutionAgentProfileForSession(this.workspace.rootPath, this.workspace.id, baseProfile, storedAgent, {
-      assignmentKey: `${threadId}:${goalId ?? "idle"}`, taskType, tools: basePolicy.enabledTools ?? [],
-    });
-    const profile = evolved?.profile ?? baseProfile;
+    const profile = await (this.options.evolution ?? DISABLED_EVOLUTION_PLATFORM_PORT).resolveAgentProfile({
+      profile: baseProfile, agent: storedAgent, assignmentKey: `${threadId}:${goalId ?? "idle"}`, taskType, tools: basePolicy.enabledTools ?? [],
+    }) ?? baseProfile;
     const agent = inheritEvolvedProfileDefaults(storedAgent, baseProfile, profile);
     const provider = agent.provider ?? profile.defaultProvider;
     const model = agent.model ?? profile.defaultModel;

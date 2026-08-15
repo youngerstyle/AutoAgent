@@ -26,7 +26,7 @@ import { listWorkspaceAgents, selectProjectOwnerProfile } from "../agents/roster
 import { resolvePolicy } from "../policy/policy.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { StaffingRequestStore, type StaffingRequestRecord } from "./staffing-request-store.js";
-import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
+import type { AgentEvolutionRuntimePort } from "../agent-engine/evolution-runtime-port.js";
 
 interface StaffingRuntime {
   engine: AgentEngine<TeamStaffingOutcome>;
@@ -65,7 +65,7 @@ export class StaffingCoordinator {
       baseDelayMs: number;
       maxDelayMs: number;
     } = { maxProviderFailures: 3, baseDelayMs: 5_000, maxDelayMs: 60_000 },
-    private readonly organizationMemorySources?: () => Promise<OrganizationMemorySource[]>,
+    private readonly evolution?: AgentEvolutionRuntimePort,
   ) {
     this.store = new StaffingRequestStore(workspace.rootPath);
   }
@@ -365,7 +365,7 @@ export class StaffingCoordinator {
         this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: this.now, organizationMemorySources: this.organizationMemorySources },
+        { now: this.now, ...(this.evolution ? { evolution: this.evolution } : {}) },
       ),
     };
     this.runtimes.set(request.taskId, runtime);

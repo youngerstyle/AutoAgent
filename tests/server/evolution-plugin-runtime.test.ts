@@ -15,6 +15,7 @@ import { EvolutionEvaluationStore } from "../../src/server/evolution/evaluation-
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
 import { pluginToolName } from "../../src/server/evolution/plugin-host.js";
+import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
 import { productionEvolutionExtensions } from "../../src/server/evolution/runtime-projection.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
@@ -86,7 +87,7 @@ describe("Plugin Evolution in a real Pi session", () => {
       }
       return { items: [{ type: "assistant_message", content: "Plugin lifecycle observed." }], usage: { totalTokens: 1 } };
     };
-    const runtime = new PiAgentRuntime(root, engine, store, new AgentContextAssembler(store), providers, new AgentToolRuntime(policy, ["readFile"]), new AgentTraceStore(root, agent.id), { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000 });
+    const runtime = new PiAgentRuntime(root, engine, store, new AgentContextAssembler(store), providers, new AgentToolRuntime(policy, ["readFile"]), new AgentTraceStore(root, agent.id), { now: fixedNow, turnTimeoutMs: 10_000, turnInactivityTimeoutMs: 10_000, evolution: new EvolutionAgentRuntimeAdapter(root, agent.workspaceId, { now: fixedNow }) });
     try {
       const firstMessage = "plugin-message-1";
       await engine.sendMessage({ messageId: firstMessage, turnId: "plugin-turn-1", threadId: thread.threadId, senderPrincipalId: "human", content: "Use the release review plugin.", createdAt: fixedNow().toISOString() });
