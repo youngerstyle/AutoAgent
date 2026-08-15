@@ -49,6 +49,11 @@ export class ScopePromotionStore {
   }
 
   async list(): Promise<EvolutionScopePromotionProposal[]> { return [...(await this.project(await this.readEvents())).values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.proposalId.localeCompare(b.proposalId)); }
+  async get(proposalId: string): Promise<EvolutionScopePromotionProposal> {
+    const proposal = (await this.project(await this.readEvents())).get(proposalId);
+    if (!proposal) throw new HttpError(404, "Scope promotion proposal not found", "SCOPE_PROMOTION_NOT_FOUND");
+    return structuredClone(proposal);
+  }
   private async project(events: PromotionEvent[]): Promise<Map<string, EvolutionScopePromotionProposal>> { const result = new Map<string, EvolutionScopePromotionProposal>(); for (const event of events) { if (event.proposal.companyId !== this.companyId) throw new Error("Scope promotion crossed its company boundary"); result.set(event.proposal.proposalId, event.proposal); } return result; }
   private async readEvents(): Promise<PromotionEvent[]> { try { return (await readFile(globalCompanyEvolutionPromotionProposalsFile(this.homeDir), "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as PromotionEvent); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } }
   private async append(commandId: string, proposal: EvolutionScopePromotionProposal): Promise<void> { const file = globalCompanyEvolutionPromotionProposalsFile(this.homeDir); await mkdir(path.dirname(file), { recursive: true }); await appendFile(file, `${JSON.stringify({ eventId: randomUUID(), commandId, proposal })}\n`, { encoding: "utf8", mode: 0o600, flush: true }); }

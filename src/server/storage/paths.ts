@@ -33,6 +33,10 @@ export function globalCompanyEvolutionPromotionProposalsFile(home: string): stri
   return path.join(globalCompanyEvolutionDir(home), "scope-promotion-proposals.jsonl");
 }
 
+export function globalEvolutionLayerRoot(home: string, ownerLevel: "agent" | "company", ownerId: string): string {
+  return path.join(globalCompanyEvolutionDir(home), "layers", ownerLevel, ownerId);
+}
+
 export function workspaceAutoAgentDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, ".autoagent");
 }
