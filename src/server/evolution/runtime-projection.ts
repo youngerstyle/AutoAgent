@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionScope, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
@@ -460,12 +460,23 @@ function matchesScope(
     && pointer.scope.organization?.id === organizationSource.organizationId
     && pointer.scope.organization.workspaceIds.includes(workspaceId),
   );
-  return identityMatches
+  return identityMatches && matchesEvolutionOwner(scopeOf(pointer), workspaceId, agent)
     && (!pointer.scope.roles?.length || pointer.scope.roles.includes(agent.roleInWorkspace))
     && (!pointer.scope.providers?.length || pointer.scope.providers.includes(agent.provider ?? profile.defaultProvider))
     && (!pointer.scope.models?.length || pointer.scope.models.includes(agent.model ?? profile.defaultModel))
     && (!pointer.scope.taskTypes?.length || Boolean(context?.taskType && pointer.scope.taskTypes.includes(context.taskType)))
     && (!pointer.scope.tools?.length || pointer.scope.tools.every((tool) => context?.tools?.includes(tool)));
+}
+
+function scopeOf(pointer: ActiveReleasePointer): EvolutionScope { return pointer.scope; }
+
+/** Scope ownership is independent from role/task filters; legacy releases are project-owned. */
+export function matchesEvolutionOwner(scope: EvolutionScope, workspaceId: string, agent: WorkspaceAgent): boolean {
+  const ownerLevel = scope.ownerLevel ?? "project";
+  if (ownerLevel === "agent_project") return scope.workspaceId === workspaceId && scope.profileId === agent.profileId;
+  if (ownerLevel === "agent") return scope.profileId === agent.profileId;
+  if (ownerLevel === "project") return scope.workspaceId === workspaceId;
+  return ownerLevel === "company";
 }
 
 export function resolveOrganizationMemoryConflicts(values: RuntimeEvolutionMemory[]): { memories: RuntimeEvolutionMemory[]; conflicts: string[] } {
