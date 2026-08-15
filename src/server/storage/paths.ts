@@ -29,6 +29,10 @@ export function globalCompanyEvolutionDir(home: string): string {
   return path.join(home, "evolution");
 }
 
+export function globalCompanyEvolutionPromotionProposalsFile(home: string): string {
+  return path.join(globalCompanyEvolutionDir(home), "scope-promotion-proposals.jsonl");
+}
+
 export function workspaceAutoAgentDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, ".autoagent");
 }

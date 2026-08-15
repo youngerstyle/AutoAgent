@@ -459,6 +459,26 @@ export interface EvolutionPracticeBinding {
   updatedAt: string;
 }
 
+export type EvolutionOwnerLevel = "agent_project" | "agent" | "project" | "company";
+export type ScopePromotionStatus = "proposed" | "reviewed" | "trial" | "approved" | "rejected";
+
+export interface EvolutionScopePromotionProposal {
+  proposalId: string;
+  commandId: string;
+  companyId: string;
+  origin: { ownerLevel: Exclude<EvolutionOwnerLevel, "company">; workspaceId?: string; profileId?: string };
+  targetScope: EvolutionPracticeScope;
+  originReleaseRef: VersionedEvolutionRef;
+  practiceRef: VersionedEvolutionRef;
+  inheritanceProofRefs: string[];
+  effectWindowRefs: string[];
+  generalizationRisks: string[];
+  status: ScopePromotionStatus;
+  reviewedBy?: EvolutionPrincipalRef;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ValidateEvolutionCandidateInput {
   commandId: string;
   candidateId: string;
