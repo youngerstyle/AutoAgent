@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { EvolutionPhaseJobStore } from "../../src/server/evolution/phase-job-sto
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 import type { AuthoritativeEpisodeFacts } from "../../src/shared/contracts/evolution.js";
+import { workspaceEvolutionTelemetryFile } from "../../src/server/storage/paths.js";
 
 describe("EvolutionSignal queue", () => {
   it("is idempotent, prioritizes P0, and recovers transient work through a lease", async () => {
@@ -64,6 +65,26 @@ describe("EvolutionSignal queue", () => {
     expect(await new EvolutionPhaseJobStore("workspace-a", root).list()).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "reflection", sourceSignalId: expect.stringContaining("signal_"), status: "pending" }),
     ]));
+  });
+
+  it("derives recovered-failure and effect-observation signals from authoritative ledgers", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-derived-signals-")); const experience = new ExperienceStore("workspace-a", root);
+    const failed = facts("failed", false); failed.ticket.ticketId = "ticket-shared"; failed.ticket.status = "failed"; failed.goal.status = "failed"; failed.ticket.updatedAt = "2026-08-15T00:01:00.000Z";
+    const recovered = facts("recovered", false); recovered.ticket.ticketId = "ticket-shared"; recovered.ticket.updatedAt = "2026-08-15T00:03:00.000Z";
+    await experience.record("failed", projectExperience(failed, () => new Date("2026-08-15T00:01:00.000Z")));
+    await experience.record("recovered", projectExperience(recovered, () => new Date("2026-08-15T00:03:00.000Z")));
+    const telemetryFile = workspaceEvolutionTelemetryFile(root); await mkdir(path.dirname(telemetryFile), { recursive: true });
+    await writeFile(telemetryFile, `${JSON.stringify({ commandId: "telemetry", fingerprint: "fixture", telemetry: {
+      telemetryId: "telemetry-fail", releaseRef: { id: "release-a", version: "1", contentHash: "a".repeat(64) }, candidateId: "candidate-a", candidateHash: "a".repeat(64),
+      stage: "canary", sampleSize: 1, samples: [{ sampleId: "sample-a", baseline: {}, release: {}, evidenceRefs: [{ kind: "evidence", ref: "evidence-a", workspaceId: "workspace-a" }] }],
+      aggregateMetrics: [], decision: "fail", recorder: { type: "system", id: "monitor" }, startedAt: "2026-08-15T00:00:00.000Z", endedAt: "2026-08-15T00:04:00.000Z", createdAt: "2026-08-15T00:04:00.000Z",
+    } })}\n`, "utf8");
+    const signals = new EvolutionSignalStore("workspace-a", root, fixedNow); const ingestor = new EvolutionSignalIngestor("workspace-a", root, experience, signals);
+    expect(await ingestor.ingest()).toMatchObject({ inspectedEpisodes: 2, enqueuedSignals: 3 });
+    expect(await signals.list()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ trigger: "recovered_failure", priority: 2 }), expect.objectContaining({ trigger: "effect_observation", priority: 0 }),
+    ]));
+    expect(await ingestor.ingest()).toMatchObject({ inspectedEpisodes: 0, enqueuedSignals: 0 });
   });
 });
 

@@ -33,6 +33,7 @@ import { listWorkspaceAgents } from "../agents/roster.js";
 import { EvolutionSignalStore } from "../evolution/evolution-signal-store.js";
 import { EvolutionPhaseJobStore } from "../evolution/phase-job-store.js";
 import { SharedPracticeRegistry } from "../evolution/shared-practice-registry.js";
+import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -162,6 +163,21 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
       profileId: episode.profileId, episodeId: episode.episodeId, sourceRefs: episode.sourceRefs, salience: 1, novelty: 0, occurredAt: new Date().toISOString() });
     const job = await new EvolutionPhaseJobStore(workspace.id, workspace.rootPath).enqueue({ commandId: `reflection:${signal.signalId}`, kind: "reflection", priority: 1,
       profileId: episode.profileId, sourceSignalId: signal.signalId, sourceDraftRefs: [], scheduleReason: "manual", availableAt: new Date().toISOString() });
+    res.status(202).json({ signal, job });
+  }));
+  router.post("/practices/:practiceId/feedback", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId)); const version = Number(req.body?.version);
+    const practice = (await new PracticeStore(workspace.id, workspace.rootPath).list()).find((item) => item.practiceId === String(req.params.practiceId) && item.version === version);
+    if (!practice) throw new HttpError(404, "Evolution Practice not found", "EVOLUTION_PRACTICE_NOT_FOUND");
+    const evidenceId = String(req.body?.evidenceId ?? "");
+    if (!evidenceId || !await new EvidenceLedger(workspace.rootPath).get(evidenceId)) throw new HttpError(400, "Practice feedback requires an Evidence Ledger fact", "INVALID_PRACTICE_FEEDBACK");
+    const accepted = req.body?.accepted === true; const occurredAt = new Date().toISOString(); const commandId = typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID();
+    const signal = await new EvolutionSignalStore(workspace.id, workspace.rootPath).enqueue({ commandId: `practice-feedback:${commandId}`, trigger: "practice_feedback",
+      priority: accepted ? 3 : 1, profileId: practice.applicability.profileId, sourceRefs: [{ kind: "evidence", ref: evidenceId, workspaceId: workspace.id, profileId: practice.applicability.profileId }],
+      salience: accepted ? 0.5 : 1, novelty: 0, occurredAt });
+    const job = await new EvolutionPhaseJobStore(workspace.id, workspace.rootPath).enqueue({ commandId: `reflection:${signal.signalId}`, kind: "reflection", priority: signal.priority,
+      profileId: signal.profileId, sourceSignalId: signal.signalId, sourceDraftRefs: [], scheduleReason: accepted ? "maintenance" : "high_salience",
+      availableAt: accepted ? new Date(Date.parse(occurredAt) + 5 * 60_000).toISOString() : occurredAt });
     res.status(202).json({ signal, job });
   }));
   router.get("/scope-promotions", asyncHandler(async (_req, res) => {
