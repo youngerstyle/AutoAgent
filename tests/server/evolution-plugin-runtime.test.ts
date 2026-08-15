@@ -22,7 +22,7 @@ import { ProviderRegistry } from "../../src/server/providers/provider-registry.j
 describe("Plugin Evolution in a real Pi session", () => {
   it("mounts and executes a production Plugin, then rebuilds the same thread and unloads it after rollback", async () => {
     const previousSandbox = process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
-    process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM = path.resolve("tests/fixtures/evolution-plugin-sandbox.mjs");
+    delete process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plugin-pi-"));
     await mkdir(path.join(root, "docs"), { recursive: true });
     await writeFile(path.join(root, "docs", "release.md"), "verified release evidence", "utf8");

@@ -512,8 +512,6 @@ export interface EvaluationJob {
 export interface EvolutionWorkerStatus {
   running: boolean;
   evaluatorConfigured: boolean;
-  pluginSandboxConfigured?: boolean;
-  deliveryProviderConfigured?: boolean;
   lastStartedAt?: string;
   lastCompletedAt?: string;
   lastError?: string;

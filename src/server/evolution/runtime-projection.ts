@@ -5,7 +5,6 @@ import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, PluginArtifac
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
-import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -213,7 +212,6 @@ async function evolutionExtensionsForStage(
     const release = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (release.release.id !== pointer.release.id || release.release.contentHash !== pointer.release.contentHash || release.promotionId !== pointer.promotionId
       || release.stage !== stage || !release.runtimeActive || !release.validationPassed || !["plugin", "harness"].includes(release.candidateKind) || !sameScope(release.scope, pointer.scope)) continue;
-    if (!configuredPluginSandboxProgram()) throw new Error(`Active ${release.candidateKind} release ${release.release.id} requires an operator-configured OS sandbox launcher`);
     const label = stage === "production" ? "Production" : "Canary";
     if (!release.artifactManifestRef || !release.artifactManifestHash) throw new Error(`${label} extension ${release.release.id} has no scanner manifest`);
     const manifest = parsePluginManifest(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", release.artifactManifestRef)), "utf8"));

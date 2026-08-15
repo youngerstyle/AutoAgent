@@ -9,7 +9,7 @@ import { isCanaryAssignment, runtimeEvolutionProjection } from "../../src/server
 describe("Plugin canary runtime projection", () => {
   it("mounts an extension only for the stable selected cohort", async () => {
     const previous = process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
-    process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM = path.resolve("tests/fixtures/evolution-plugin-sandbox.mjs");
+    delete process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     try {
       const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plugin-canary-"));
       const source = "export default { async health(){return {ok:true}}, async invokeTool(){return {ok:true}} };\n";

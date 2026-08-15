@@ -20,7 +20,6 @@ import { scoreMetricExpectations, withMandatoryEvolutionMetrics } from "./metric
 import { EvolutionReleaseRegistry } from "./release-registry.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
-import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
 const queues = new Map<string, Promise<void>>();
 interface EvaluationEntry { commandId: string; run: EvaluationRun }
@@ -268,7 +267,6 @@ function sameVersionedRef(left: { id: string; version: string; contentHash: stri
 function enforceApproval(candidate: EvolutionCandidate, stage: PromoteEvolutionCandidateInput["stage"], principal: PromoteEvolutionCandidateInput["approvedBy"]): void {
   if (stage === "shadow") return;
   if ((candidate.kind === "plugin" || candidate.kind === "harness") && principal.type !== "human") throw new HttpError(403, `${stage} promotion requires human approval for executable extensions`, "EVOLUTION_APPROVAL_REQUIRED");
-  if ((candidate.kind === "plugin" || candidate.kind === "harness") && !configuredPluginSandboxProgram()) throw new HttpError(409, `${stage} promotion requires an operator-configured OS sandbox launcher`, "EVOLUTION_PLUGIN_SANDBOX_REQUIRED");
   const systemEligible = candidate.kind === "memory" && candidate.riskLevel === "low";
   if (principal.type !== "human" && !systemEligible) throw new HttpError(403, `${stage} promotion requires human approval for this artifact risk`, "EVOLUTION_APPROVAL_REQUIRED");
 }

@@ -16,7 +16,6 @@ import { MemoryUsageReconciler } from "../evolution/memory-usage-reconciler.js";
 import { asyncHandler, HttpError } from "../errors.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
-import { configuredPluginSandboxProgram } from "../evolution/plugin-sandbox-config.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
 import { SourcePatchDeliveryStore } from "../evolution/source-delivery-store.js";
@@ -40,10 +39,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   };
 
   router.get("/worker", (_req, res) => res.json({
-    worker: {
-      ...(workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, evaluationJobsProcessed: 0 }),
-      pluginSandboxConfigured: Boolean(configuredPluginSandboxProgram()), deliveryProviderConfigured: Boolean(deliveryProviders),
-    },
+    worker: workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, evaluationJobsProcessed: 0 },
   }));
 
   router.get("/candidates", asyncHandler(async (req, res) => res.json({ candidates: await (await storeFor(String(req.params.workspaceId))).candidates.list() })));

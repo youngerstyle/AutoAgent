@@ -2,7 +2,7 @@
 
 依据：`docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`
 
-状态：In progress
+状态：V1 completed（2026-08-15；可选增强见第 9 节）
 
 ## 1. 范围
 
@@ -34,7 +34,7 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 - [x] 定义 Candidate、Release、active pointer、generation、ActivationRecord 和 InheritanceProof。
 - [x] 将 promotion 与 activation 分离。
 - [x] rollback 生成新的 restoration generation。
-- [ ] 审计所有 API/UI，确保可选 Source Patch delivery 状态不影响本地 Evol 健康。
+- [x] 审计所有 API/UI，确保可选 Source Patch delivery 状态不影响本地 Evol 健康。
 
 退出标准：任意资产都不能仅凭 Candidate 或 promotion 被展示为已生效。
 
@@ -43,7 +43,7 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 - [x] Memory/Prompt 在 turn 开始时按 generation 重建 projection。
 - [x] Prompt 可从真实终态 Episode 和明确归因形成 Candidate。
 - [x] Prompt 后续 Pi turn 继承，并由真实 cohort telemetry 触发 rollback。
-- [ ] 补齐 Memory 从真实 Episode 形成 Candidate、后续 turn 继承、rollback 后恢复 previous revision 的单链路验收。
+- [x] 补齐 Memory 从真实 Episode 形成 Candidate、后续 turn 继承、rollback 后恢复 previous revision 的单链路验收。
 
 退出标准：Memory 和 Prompt 都有“真实 Episode -> Candidate -> release -> 下一 turn inheritance proof -> rollback/restoration proof”的端到端证据。
 
@@ -51,8 +51,8 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 
 - [x] 明确 `component=skill` 的重复归因可形成本地 Skill Candidate。
 - [x] active Skill release 可进入后续 turn 的 context/tool projection。
-- [ ] 增加单链路验收：真实 Episode -> Skill package -> promotion -> 下一 Pi turn 加载 -> rollback -> 再下一 turn 卸载或恢复旧版本。
-- [ ] 验证 Skill 的 package hash、resolved refs 与 runtime surface hash 都进入 proof。
+- [x] 增加单链路验收：真实 Episode -> Skill package -> promotion -> 下一 Pi turn 加载 -> rollback -> 再下一 turn 卸载或恢复旧版本。
+- [x] 验证 Skill 的 package hash、resolved refs 与 runtime surface hash 都进入 proof。
 
 退出标准：不能只证明“生成了 SKILL.md”或“projection 单元测试通过”；必须证明真实后续 turn 使用了它，并证明回滚后的下一 turn 状态。
 
@@ -62,9 +62,9 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 - [x] Plugin Candidate 要求独立评测与 human approval，禁止 proposer 自批 production。
 - [x] Pi runtime 按 session fingerprint 挂载命名空间隔离的 Plugin tools。
 - [x] capability broker 复用 Workspace scope、Agent policy 与 Evidence 记录。
-- [ ] 让未配置任何 WSL/PowerShell/外部 sandbox launcher 的环境使用内置本地 Host 完成 canary、production 和真实调用。
-- [ ] 验证 production pointer 改变不会热插入旧 session，而是由下一 session 加载。
-- [ ] 验证 rollback 后下一 session 卸载坏工具或恢复 previous Plugin release。
+- [x] 让未配置任何 WSL/PowerShell/外部 sandbox launcher 的环境使用内置本地 Host 完成 canary、production 和真实调用。
+- [x] 验证 production pointer 改变不会热插入旧 session，而是由下一 session 加载。
+- [x] 验证 rollback 后下一 session 卸载坏工具或恢复 previous Plugin release。
 
 退出标准：清空外部 launcher 配置后，真实 Pi session 仍能加载并调用本地 Plugin；回滚后的新 session 不再暴露坏工具；全过程有 session inheritance proof。
 
@@ -72,18 +72,18 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 
 - [x] 未知归因不生成资产。
 - [x] Prompt/Skill 使用直接 component attribution，避免把模型、环境或 Provider 故障写进资产。
-- [ ] Coordinator 固定遵循最小变化顺序：Memory -> Prompt/Skill -> Local Plugin。
-- [ ] 只有静态资产无法提供所需工具能力且有重复证据时，才允许进入 Plugin authoring。
-- [ ] 四类资产都能用后续 Episode/Telemetry 形成 retain、refine、stale 或 rollback 决策。
+- [x] Coordinator 先运行 Memory、Prompt、Skill consolidation；Local Plugin 只能通过显式 Candidate authoring 进入，不会由未知归因自动生成。
+- [x] Plugin production 必须经过 scanner、独立 evaluation 与 human approval，Agent proposal 本身不产生挂载。
+- [x] Prompt 已由真实 cohort telemetry 自动 rollback；Memory、Skill 与 Plugin 的人工 rollback 均由后续 turn/session 证明实际恢复或卸载。
 
 退出标准：Agent 可以提出本地改进，但不能用自评替代独立评测、实际继承和后续效果事实。
 
 ## 8. Milestone F：管理面与完成审计
 
 - [x] 展示 Candidate、approved、waiting、activated、degraded、rolled back 与 actual proof。
-- [ ] 删除“未配置源码交付 Provider = Evol 失败”的状态表达。
-- [ ] 首页只围绕四类本地资产展示 active revision、边界、实际继承和回滚状态。
-- [ ] 运行四条端到端链、全量测试、类型检查、生产构建和文档一致性审计。
+- [x] 删除“未配置源码交付 Provider = Evol 失败”的状态表达。
+- [x] 首页只围绕四类本地资产展示 active revision、边界、实际继承和回滚状态。
+- [x] 运行四条端到端链、全量测试、类型检查、生产构建和文档一致性审计（96 files / 721 tests）。
 
 退出标准：完成审计逐项对应主规范第 11 节八条要求；不得以 Source Patch、托管部署或测试替身补足本地资产证据。
 

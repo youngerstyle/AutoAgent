@@ -31,7 +31,9 @@ describe("workspace evolution candidate control plane", () => {
   it("persists and validates an evidence-backed candidate without changing the active runtime", async () => {
     const { app, base } = await fixture();
     const worker = await request(app).get(`${base}/worker`).expect(200);
-    expect(worker.body.worker).toMatchObject({ running: false, evaluatorConfigured: false, deliveryProviderConfigured: false });
+    expect(worker.body.worker).toMatchObject({ running: false, evaluatorConfigured: false });
+    expect(worker.body.worker).not.toHaveProperty("deliveryProviderConfigured");
+    expect(worker.body.worker).not.toHaveProperty("pluginSandboxConfigured");
     const input = candidateInput("candidate-create-a");
     const created = await request(app).post(`${base}/candidates`).send(input).expect(201);
     expect(created.body.candidate).toMatchObject({

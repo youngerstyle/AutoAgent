@@ -4,45 +4,50 @@
 
 依据：`docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`
 
-结论：**尚未完成，正在按四类本地资产重新验收。** 旧审计把 Source Patch、托管 CI/CD 和 Runtime deployment report 当成关闭条件，这是错误的，现已废止。
+结论：**本地 Evol V1 完成。** Memory、Prompt、Skill 和 Local Plugin 均已有版本化 Candidate/Release、后续生命周期实际继承和 rollback 证据。旧审计把 Source Patch、托管 CI/CD 和 Runtime deployment report 当成关闭条件，这是错误的，已废止。
 
 ## 审计口径
 
 - 唯一核心资产是 Memory、Prompt、Skill、Local Plugin。
-- Memory/Prompt/Skill 必须由下一 turn 重新加载；Local Plugin 必须由下一 session 重新加载。
+- Memory/Prompt/Skill 由下一 turn 重新加载；Local Plugin 由下一 session 重新加载。
 - Candidate、测试中构造的 projection 或一次性脚本执行都不等于自进化完成。
-- “activated” 必须同时有 active pointer change、后续真实运行 observation 和 inheritance proof。
-- rollback 必须在相同生命周期边界被后续运行观察，并留下 restoration proof。
+- “activated” 同时要求 active pointer change、后续真实运行 observation 和 inheritance proof。
+- rollback 在相同生命周期边界被后续运行观察，并留下 restoration/unmount 事实。
 - 模型 Provider 继续正常存在；远端交付 Provider 未配置不影响本地 Evol 健康。
 
-## 当前证据账本
+## 完成定义逐项证据
 
-| 资产/要求 | 当前判断 | 已有证据 | 仍需补齐 |
+| # | 要求 | 结论 | 权威证据 |
 | --- | --- | --- | --- |
-| Memory：真实 Episode -> 下一 turn -> rollback | 部分证明 | 已有 Memory consolidation、next-turn projection、两个不可变 release 的 restoration generation/proof 测试 | 用单条真实链串起 Episode、Candidate、继承与恢复 |
-| Prompt：明确归因 -> 下一 turn -> telemetry rollback | 已证明 | `evolution-evaluation.test.ts` 已覆盖真实终态 Episode、Candidate、后续 Pi turn inheritance 和真实 cohort rollback | 回归确认即可 |
-| Skill：明确归因 -> 本地 package -> 下一 turn -> rollback | 部分证明 | 已有真实 attribution 生成 Skill Candidate，以及 active Skill projection/卸载测试 | 增加真实 Pi turn 的完整生成、加载、回滚单链路 |
-| Local Plugin：Bundle -> 下一 session -> 调用 -> rollback | 待重新确认 | 已有 Bundle/scanner/eval/approval/Pi session/rollback 测试链 | 去掉外部 launcher 前提后，确认内置本地 Host 独立通过整条链 |
-| 当前 turn/session 不热修改 | 已有结构性证据 | turn 开始解析 generation；Plugin fingerprint 变化重建 session | 随四条资产链回归验证 |
-| UI 展示 actual proof，外部交付不影响健康 | 未完成 | 已能显示 activation proof 与 lifecycle 状态 | 删除源码交付 Provider 红色失败状态并重新审计 |
+| 1 | Memory：真实 Episode -> Candidate -> 下一 turn -> previous release rollback | 已证明 | `evolution-evaluation.test.ts` 的 “evolves Memory from terminal Episodes and restores the previous release in a later Pi turn” 从两条终态 Episode 形成 Memory Candidate，先后发布两个不可变 release，后续 Pi turn 继承新版本，rollback 后下一 Pi turn 恢复旧版本并记录 generation 3 proof。 |
+| 2 | Prompt：明确归因 -> Candidate -> 下一 turn -> telemetry rollback | 已证明 | 同文件的 “evolves a Prompt from terminal Episodes, inherits it in a later Pi turn, and rolls it back from real cohort telemetry” 使用真实终态 Episode、后续 Pi context 和 selected/control cohort telemetry 完成自动回滚。 |
+| 3 | Skill：明确归因 -> 本地 package -> 下一 turn -> rollback | 已证明 | 同文件的 “evolves a Skill from terminal Episodes, loads it in a later Pi turn, and unloads it after rollback” 形成真实 Skill package，经 validation/evaluation/promotion 后由后续 Pi turn 继承；rollback 后再下一 turn 不再加载。 |
+| 4 | Local Plugin：Bundle -> scan/eval/approval -> 下一 session 调用 | 已证明 | `evolution-plugin-runtime.test.ts` 在未配置外部 launcher 时发布 Plugin Bundle；真实 Pi session 看到并调用 namespaced tool，Activation Store 写入 session inheritance proof。 |
+| 5 | Plugin rollback 后下一 session 卸载 | 已证明 | 同一 Plugin runtime 测试在同一 Thread rollback 后触发 session fingerprint 重建，下一 session 不再暴露坏工具。 |
+| 6 | 当前 turn/session 不热修改，切换有 actual proof | 已证明 | turn projection 只在 turn 开始解析 generation；Plugin 只在 session fingerprint 重建时挂载。`evolution-activation.test.ts` 验证 pointer change 只能进入 waiting，actual observation 后才 activated。 |
+| 7 | UI 区分生命周期状态并展示 proof | 已证明 | Evol 页面展示 Candidate、promotion、waiting、activated、degraded、rolled back、generation、boundary 和 actual runtime snapshot；核心指标只统计四类本地资产。类型检查与生产构建通过。 |
+| 8 | 不依赖 SCM/CI/K8s/WSL/PowerShell/外部交付或沙箱 Provider | 已证明 | Plugin scanner/canary/runtime/host 测试显式清空外部 launcher 后通过；worker API 不再暴露 delivery/sandbox configured 健康字段；可选源码交付面板仅在确有记录时出现。 |
 
-## 明确废止的旧结论
+## 安全与权限结论
 
-以下内容不再属于本地 Evol V1 的完成证据或阻塞项：
+- Runtime 只加载 active immutable release，不读取 Candidate 草稿。
+- Plugin 使用内置本地子进程 Host、最小环境、deadline、协议上限、Node Permission Model 和 broker capability；外部强隔离 Host 是不受信多租户部署的可选加固。
+- Plugin production 仍要求 scanner、独立 evaluation 与 human approval；Agent 不能自批。
+- 模型 Provider 保留现有 OpenAI、Anthropic、Mock 配置，不与可选软件交付 Provider 混淆。
 
-- GitHub/GitLab 可操作身份、branch、PR 或独立 reviewer；
-- 外部 CI、build artifact、镜像仓库；
-- Kubernetes、canary/production deployment；
-- Runtime actual source revision report；
-- WSL、PowerShell、bubblewrap 或外部 Sandbox Provider；
-- 修改、构建、发布 AutoAgent 自身源码。
+## 明确不计入 V1 的能力
 
-仓库里的 Source Patch 和远端 Delivery Gateway 实验代码可以作为未来团队/SaaS 软件交付 adapter 保留，但必须与本地资产自进化分栏、分状态、分验收，不能再冒充 Evol 核心。
+- 修改或发布 AutoAgent 自身源码；
+- GitHub/GitLab branch、PR、CI、build artifact 或 reviewer；
+- Kubernetes、canary/production 应用部署与 Runtime source revision report；
+- WSL、PowerShell、bubblewrap、container、gVisor 或 Firecracker；
+- 远端 Source Patch Delivery Gateway。
 
-## 关闭目标前的实际工作
+这些能力可以作为未来团队/SaaS adapter 独立演进，但未配置时不能改变本地 Evol 的状态或完成结论。
 
-1. 完成 Memory 真实 Episode 单链路验收。
-2. 完成 Skill 真实 Pi turn 单链路验收。
-3. 证明 Local Plugin 无任何外部 launcher 时在下一 session 加载并可回滚。
-4. 清除 UI、README 和相关设计中“交付 Provider 未配置 = Evol 失败”的残留。
-5. 通过四条聚焦验收、全量测试、类型检查和生产构建后，更新本审计为最终事实。
+## 最终验证
+
+- `npm.cmd run typecheck`：通过。
+- `npm.cmd test -- --run`：96 个测试文件、721 项测试全部通过。
+- `npm.cmd run build`：通过；Vite client 与 TypeScript server production build 成功。
+- `git diff --check`：通过。

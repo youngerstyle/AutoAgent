@@ -58,7 +58,7 @@ describe("Plugin/Harness evolution supply chain", () => {
     expect(rejected.validation?.pluginScanner?.findings.map((item) => item.ruleId)).toContain("code.python_import");
   });
 
-  it("allows independent shadow evaluation but requires a human for Plugin canary", async () => {
+  it("allows a locally hosted Plugin canary after independent evaluation and human approval", async () => {
     const previousSandbox = process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     delete process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     const root = await workspace();
@@ -79,11 +79,12 @@ describe("Plugin/Harness evolution supply chain", () => {
       expectedContentHash: validated.contentHash, stage: "canary", fromPromotionId: shadow.promotionId,
       approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: { id: "plugin-policy", version: "1", contentHash: "policy-hash" },
     })).rejects.toMatchObject({ code: "EVOLUTION_APPROVAL_REQUIRED" });
-    await expect(evaluations.promote({
-      commandId: "plugin-canary-no-sandbox", candidateId: validated.candidateId, evaluationId: run.evaluationId,
+    const canary = await evaluations.promote({
+      commandId: "plugin-canary-local-host", candidateId: validated.candidateId, evaluationId: run.evaluationId,
       expectedContentHash: validated.contentHash, stage: "canary", fromPromotionId: shadow.promotionId,
       approvedBy: { type: "human", id: "owner" }, policyRef: { id: "plugin-policy", version: "1", contentHash: "policy-hash" },
-    })).rejects.toMatchObject({ code: "EVOLUTION_PLUGIN_SANDBOX_REQUIRED" });
+    });
+    expect(canary).toMatchObject({ stage: "canary", status: "active", approvedBy: { type: "human", id: "owner" } });
     if (previousSandbox !== undefined) process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM = previousSandbox;
   });
 });

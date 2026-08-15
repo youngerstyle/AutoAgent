@@ -2494,8 +2494,13 @@ function EvolutionHub(props: {
   const activations = props.overview?.activations ?? [];
   const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
   const sourceDeliveries = props.overview?.sourceDeliveries ?? [];
-  const extensionCandidates = candidates.filter((item) => item.kind === "plugin" || item.kind === "harness");
-  const activeProduction = activations.filter((item) => item.stage === "production" && item.status === "activated").length;
+  const localAssetKinds = new Set(["memory", "prompt", "skill", "plugin", "harness"]);
+  const localCandidates = candidates.filter((item) => localAssetKinds.has(item.kind));
+  const localCandidateIds = new Set(localCandidates.map((item) => item.candidateId));
+  const localReleases = releases.filter((item) => localCandidateIds.has(item.candidateId));
+  const localActivations = activations.filter((item) => localAssetKinds.has(item.assetKind));
+  const extensionCandidates = localCandidates.filter((item) => item.kind === "plugin" || item.kind === "harness");
+  const activeProduction = localActivations.filter((item) => item.stage === "production" && item.status === "activated").length;
   const pendingJobs = jobs.filter((item) => item.status === "pending" || item.status === "running" || item.status === "retry_wait").length;
 
   return (
@@ -2504,7 +2509,7 @@ function EvolutionHub(props: {
         <div>
           <span className="section-kicker">Evidence-driven governance</span>
           <h2>公司进化</h2>
-          <p>查看从 Episode、候选变更、评测批准到生命周期激活的完整证据链。只有后续 turn、session、task 或 deployment 留下继承证明，才显示为真正生效。</p>
+          <p>查看 Memory、Prompt、Skill 与本地 Plugin 从 Episode、候选变更、评测批准到生命周期激活的完整证据链。只有后续 turn 或 session 留下继承证明，才显示为真正生效。</p>
         </div>
         <div className="evolution-actions">
           <button type="button" onClick={props.onReconcile} disabled={!props.workspace || props.loading}>重建经验</button>
@@ -2518,9 +2523,9 @@ function EvolutionHub(props: {
       {!props.workspace ? <div className="evolution-empty">请先选择一个项目。</div> : (
         <>
           <section className="evolution-metrics" aria-label="进化治理概览">
-            <div><span>候选</span><strong>{candidates.length}</strong><small>{extensionCandidates.length} 个可选扩展资产</small></div>
+            <div><span>本地资产候选</span><strong>{localCandidates.length}</strong><small>{extensionCandidates.length} 个 Plugin/Harness Bundle</small></div>
             <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
-            <div><span>已继承生产版本</span><strong>{activeProduction}</strong><small>{activations.filter((item) => item.status === "waiting_for_activation").length} 个等待 Runtime 生效</small></div>
+            <div><span>已继承生产版本</span><strong>{activeProduction}</strong><small>{localActivations.filter((item) => item.status === "waiting_for_activation").length} 个等待下一 turn/session</small></div>
             <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
           </section>
 
@@ -2528,7 +2533,7 @@ function EvolutionHub(props: {
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Activation reconciliation</span><h3>激活、继承与效果</h3></div></header>
               <div className="evolution-list compact">
-                {activations.length ? activations.slice().reverse().map((activation) => {
+                {localActivations.length ? localActivations.slice().reverse().map((activation) => {
                   const proofs = inheritanceProofs.filter((proof) => proof.activationId === activation.activationId);
                   const latest = proofs.at(-1);
                   return <article key={activation.activationId}>
@@ -2548,26 +2553,21 @@ function EvolutionHub(props: {
                 }) : <p className="evolution-empty">尚无激活请求；Candidate 或 Promotion 不会被当成已生效。</p>}
               </div>
             </section>
-            <section className="evolution-panel">
-              <header>
-                <div><span className="section-kicker">Source delivery lineage</span><h3>源码交付证明</h3></div>
-                <span className={`evolution-status ${props.overview?.worker.deliveryProviderConfigured ? "active" : "failed"}`}>
-                  {props.overview?.worker.deliveryProviderConfigured ? "provider configured" : "provider not configured"}
-                </span>
-              </header>
+            {sourceDeliveries.length ? <section className="evolution-panel">
+              <header><div><span className="section-kicker">Optional team delivery</span><h3>可选源码交付记录</h3></div></header>
               <div className="evolution-list compact">
-                {sourceDeliveries.length ? sourceDeliveries.slice().reverse().map((delivery) => <article key={delivery.deliveryId}>
+                {sourceDeliveries.slice().reverse().map((delivery) => <article key={delivery.deliveryId}>
                   <div><strong>{delivery.status}</strong><small>{delivery.sourceCommit?.slice(0, 12) ?? "尚未合并"}</small></div>
                   <span className={`evolution-status ${delivery.status}`}>{delivery.status}</span>
                   <p>{delivery.deploymentRef ? `deployment ${delivery.deploymentRef.id}@${delivery.deploymentRef.version}` : `candidate ${delivery.candidateId}`}</p>
                   <code>{delivery.attestations.length} attestations</code>
-                </article>) : <p className="evolution-empty">尚无外部 SCM/CI/CD 交付记录；Provider 未配置时不会用本地脚本冒充部署。</p>}
+                </article>)}
               </div>
-            </section>
+            </section> : null}
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Candidate ledger</span><h3>候选与验证</h3></div></header>
               <div className="evolution-list">
-                {candidates.length ? candidates.slice().reverse().map((candidate) => (
+                {localCandidates.length ? localCandidates.slice().reverse().map((candidate) => (
                   <article key={candidate.candidateId}>
                     <div><strong>{candidate.title}</strong><small>{candidate.kind} · {candidate.target} · r{candidate.revision}{candidate.validation?.pluginScanner ? ` · scanner ${candidate.validation.pluginScanner.decision}` : ""}</small></div>
                     <span className={`evolution-status ${candidate.status}`}>{candidate.status}</span>
@@ -2581,8 +2581,8 @@ function EvolutionHub(props: {
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Promotion ledger</span><h3>分级发布</h3></div></header>
               <div className="evolution-list compact">
-                {releases.length ? releases.slice().reverse().map((release) => {
-                  const activation = activations.find((item) => item.promotionId === release.promotionId);
+                {localReleases.length ? localReleases.slice().reverse().map((release) => {
+                  const activation = localActivations.find((item) => item.promotionId === release.promotionId);
                   const displayStatus = activation?.status ?? (release.stage === "shadow" ? release.status : "waiting_for_activation");
                   return (
                   <article key={release.promotionId}>
