@@ -113,6 +113,24 @@ export interface EvolutionPracticeDraft {
   updatedAt: string;
 }
 
+export interface EvolutionPractice {
+  practiceId: string;
+  version: number;
+  statement: string;
+  trigger: string;
+  procedure: string;
+  expectedOutcome: MetricExpectation[];
+  applicability: EvolutionPracticeScope;
+  contraindications: string[];
+  sourceDraftRefs: string[];
+  sourceEpisodeRefs: string[];
+  sourceRefs: EvolutionSourceRef[];
+  provenanceHash: string;
+  status: "candidate" | "released" | "retired" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ExperienceEpisode {
   episodeId: string;
   workspaceId: string;
@@ -521,6 +539,7 @@ export interface EvolutionWorkerStatus {
   lastError?: string;
   workspacesScanned: number;
   reflectionSignalsProcessed: number;
+  dreamPracticesProduced: number;
   evaluationJobsProcessed: number;
 }
 

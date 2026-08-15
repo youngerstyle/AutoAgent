@@ -10,9 +10,6 @@ import { NodePermissionSandboxExecutor } from "./node-permission-sandbox-executo
 import { ExtractionJobStore } from "./extraction-job-store.js";
 import { ExtractionRunner } from "./extraction-runner.js";
 import { ExperienceStore } from "./experience-store.js";
-import { MemoryConsolidator } from "./memory-consolidator.js";
-import { PromptConsolidator } from "./prompt-consolidator.js";
-import { SkillConsolidator } from "./skill-consolidator.js";
 import { EvolutionAssetSelector } from "./asset-selector.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
@@ -20,6 +17,9 @@ import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { EvolutionSignalIngestor } from "./evolution-signal-ingestor.js";
 import { EvolutionReflectionWorker } from "./reflection-worker.js";
+import { EvolutionDreamWorker } from "./dream-worker.js";
+import { PracticeDraftStore } from "./practice-draft-store.js";
+import { PracticeStore } from "./practice-store.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 
 export class EvolutionCoordinator {
@@ -48,6 +48,7 @@ export class EvolutionCoordinator {
       evaluatorConfigured: Boolean(options.evaluatorProgramPath),
       workspacesScanned: 0,
       reflectionSignalsProcessed: 0,
+      dreamPracticesProduced: 0,
       evaluationJobsProcessed: 0,
     };
   }
@@ -85,6 +86,7 @@ export class EvolutionCoordinator {
     this.statusValue = { ...this.statusValue, running: true, lastStartedAt: startedAt, lastError: undefined };
     let workspacesScanned = 0;
     let reflectionSignalsProcessed = 0;
+    let dreamPracticesProduced = 0;
     let evaluationJobsProcessed = 0;
     const errors: string[] = [];
     for (const workspace of await this.workspaces.list()) {
@@ -100,6 +102,11 @@ export class EvolutionCoordinator {
         errors.push(`${workspace.id}/reflection: ${safeMessage(error)}`);
       }
       try {
+        dreamPracticesProduced += await this.runDream(workspace);
+      } catch (error) {
+        errors.push(`${workspace.id}/dream: ${safeMessage(error)}`);
+      }
+      try {
         evaluationJobsProcessed += await this.runEvaluations(workspace);
       } catch (error) {
         errors.push(`${workspace.id}/evaluation: ${safeMessage(error)}`);
@@ -113,6 +120,7 @@ export class EvolutionCoordinator {
       ...(errors.length ? { lastError: errors.join("; ").slice(0, 2_000) } : {}),
       workspacesScanned,
       reflectionSignalsProcessed,
+      dreamPracticesProduced,
       evaluationJobsProcessed,
     };
   }
@@ -126,6 +134,15 @@ export class EvolutionCoordinator {
     return processed;
   }
 
+  private async runDream(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const result = await new EvolutionDreamWorker(
+      workspace.id,
+      new PracticeDraftStore(workspace.id, workspace.rootPath, () => this.now()),
+      new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
+    ).run(2);
+    return result.practicesProduced;
+  }
+
   private async runMaintenance(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<void> {
     const maintenanceIntervalMs = this.options.maintenanceIntervalMs ?? 5 * 60_000;
     if (!Number.isSafeInteger(maintenanceIntervalMs) || maintenanceIntervalMs < 10_000) throw new Error("Evolution maintenance interval must be at least ten seconds");
@@ -136,9 +153,6 @@ export class EvolutionCoordinator {
     await new EvolutionSignalIngestor(workspace.id, workspace.rootPath).ingest();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
-    await new MemoryConsolidator(workspace.id, experience, candidates).consolidate(2);
-    await new PromptConsolidator(workspace.id, experience, candidates).consolidate(2);
-    await new SkillConsolidator(workspace.id, experience, candidates).consolidate(2);
     const selectionEvaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
     const selectionTelemetry = new EvolutionTelemetryStore(workspace.id, workspace.rootPath, candidates, selectionEvaluations, () => this.now());
     await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, candidates, selectionTelemetry, () => this.now()).select(3);
