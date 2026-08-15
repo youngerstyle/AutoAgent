@@ -1,246 +1,201 @@
-# AutoAgent Evol Self-Mutation 与 Activation V1
+# AutoAgent Evol 本地资产自进化与生命周期激活 V1
 
-日期：2026-08-14
+日期：2026-08-15
+
 状态：Accepted for implementation
-取代：此前把 Plugin/Harness 执行等同于自进化的定义
 
-实现状态说明：本文是完成定义，不以“接口存在”代替端到端完成。当前实现进度与尚未完成项以对应 implementation plan 为准。
+取代：把自进化错误扩张为源码交付、远端 CI/CD 或托管部署的设计
 
 ## 1. 定义
 
-Evol 是对系统可继承资产的闭环优化：
+Evol 是本地 Agent 系统对可复用运行资产的持续改进：
 
 ```text
 Observe -> Attribute -> Mutate -> Validate -> Evaluate -> Approve
-        -> Activate at boundary -> Inherit -> Measure -> Retain/Rollback
+        -> Publish local release -> Inherit at boundary -> Measure -> Retain/Rollback
 ```
 
-一次变化只有同时满足以下条件才算进化：
+V1 的核心资产只有：
 
-1. 修改被保存为不可变、版本化资产；
-2. 存在明确的 previous/base version；
-3. 变更通过与风险相称的验证和批准；
-4. 后续运行在规定边界继承新版本；
-5. Trace 能证明实际继承的版本；
-6. 效果由后续事实衡量并可回滚。
+- Memory
+- Prompt
+- Skill
+- Local Plugin
 
-创建 Candidate、通过离线 Eval、临时执行脚本或在当前进程内试跑新代码都不等于进化完成。
+一次变化同时满足以下条件才算完成一次进化：
 
-它由三个严格分离的层组成：
+1. 从真实 Episode、Trace、人工反馈或 telemetry 识别可复现问题；
+2. 变化保存为本地、不可变、版本化的资产，并引用 previous/base revision；
+3. 通过与风险相称的验证、评测和批准；
+4. active pointer 在安全生命周期边界改变；
+5. 后续 turn 或 session 实际重新加载该 revision；
+6. Trace 留下 inheritance proof；
+7. 后续事实可以保留、改进或回滚该 revision。
 
-1. **变更生产**：根据 Episode、Trace、人工反馈和 telemetry 形成对 Memory、Prompt、Skill、Agent Profile、Workflow、Runtime Config 或 Source Patch 的版本化 MutationSet；
-2. **生命周期激活**：批准的 Release 只改变对应边界的 desired pointer，不直接篡改正在运行的 turn、session、TaskRun、process 或 deployment；
-3. **后续运行继承**：新的生命周期实例重新解析 active release，报告 actual generation、snapshot hash 与权威运行引用，之后才可称为已生效。
+写一个脚本并执行一次不是进化；修改本地 Skill/Memory/Prompt/Plugin 库，并被后续运行自动继承，才是进化。
 
-所以 Evol 不是一种代码执行方式。脚本、Shell、容器和沙箱最多是某个 Validator、Build Provider 或高风险扩展的执行设施；它们既不是进化资产，也无权生成 inheritance proof。
+## 2. V1 不是什么
 
-## 2. 设计依据
+以下能力都不是本地 Evol 的前提：
 
-- QwenPaw 将 Skill Pool 与 Workspace runtime copy 分离，并从持久目录自动加载；长期 Memory 以跨会话文件保存。这证明能力资产与运行实例应分层。
-- Qwen Skill Self-Play 采用“技能库 -> 验证任务 -> frontier feedback -> refinement/pruning/induction -> 写回技能库”的闭环；关键是更新可复用库，而不是一次执行。
-- OpenGitOps 要求 desired state 声明式、版本化且不可变，由软件自动拉取并持续对账。Evol activation 使用相同的 desired/actual reconciliation 思路。
-- Git protected branches 与 required status checks 把源码 mutation、独立验证和合并权限分离；源码自进化不得直接覆盖运行中生产文件。
-- Evolutionary Architecture 使用小步变化与 fitness functions 持续反馈；Evol 的 Eval/Telemetry 是可执行 fitness functions，而不是模型自评。
+- GitHub/GitLab 身份；
+- PR、远端 CI、镜像构建；
+- Kubernetes、托管部署或 Runtime deployment report；
+- WSL、PowerShell、bubblewrap、Docker；
+- 修改 AutoAgent 自身源码。
+
+远端 SCM/CD 可以作为团队版或 SaaS 的可选软件交付能力，但不得出现在本地自进化完成定义中，也不得让管理页在未配置时显示 Evol 失败。
+
+这里移除的是错误引入的“交付 Provider”依赖，不是模型 Provider。OpenAI、Anthropic、Mock 等模型 Provider 仍由现有模型服务配置和 Agent Profile 选择；Evol 可以在调用模型时沿用它们，但不得把“换模型 Provider”偷换成 Memory/Prompt/Skill/Plugin 自进化，也不得要求配置某个模型 Provider 才能加载本地进化资产。
+
+## 3. 行业依据
+
+- QwenPaw 将持久 Skill Pool 与运行时加载副本分开，并把长期 Memory 写入跨会话存储；核心是“更新本地资产库，后续运行重新加载”。
+- Qwen Skill Self-Play 使用任务反馈持续 refinement、pruning、induction，再写回 Skill 库；不是要求每次能力改进都发布一版应用。
+- Agent harness/plugin 系统把新能力保存为本地扩展包，由下一 session 发现和挂载；扩展宿主是实现细节，不是自进化本身。
+- Evolutionary Architecture 的 fitness function 对应本地 Eval 与后续 telemetry；模型不能用自评代替运行事实。
 
 参考：
 
 - https://qwenpaw.agentscope.io/docs/skills/
 - https://qwenpaw.agentscope.io/docs/memory/
 - https://github.com/Qwen-Applications/skill-self-play
-- https://opengitops.dev/blog/1.0-announcement/
-- https://docs.github.com/en/pull-requests/reference/status-checks
 - https://martinfowler.com/articles/evo-arch-forward.html
 
-## 3. 两个控制面
+## 4. 两个控制面
 
-### 3.1 Mutation Control Plane
+### 4.1 Mutation Control Plane
 
-负责 Experience、Attribution、Candidate、Validation、Evaluation、Approval 和 Release。它只能产生 desired state，不能把“候选已写入”冒充“Runtime 已采用”。
+负责 Experience、Attribution、Candidate、Validation、Evaluation、Approval 和本地 Release。Candidate 写入不等于 Runtime 已采用。
 
-### 3.2 Activation/Reconciliation Plane
+### 4.2 Activation/Reconciliation Plane
 
-负责在生命周期边界比较 desired revision 与 actual revision，原子切换 active release，重建需要重建的 Runtime，并写入 inheritance proof。
+负责维护本地 active pointer。新的 turn/session 比较 generation，重新加载对应本地资产，并写入 inheritance proof。
 
-Mutation 与 Activation 必须是两个独立命令和账本事件。同一 Agent 可以提出 Candidate，但不能伪造 Evaluation、Approval、Deployment 或 Inheritance。
+Mutation 与 Activation 是两个独立事件。同一 Agent 可以提出 Candidate，但不能伪造独立评测、批准、后续继承或效果数据。
 
-## 4. 可进化资产与激活边界
+## 5. 资产与边界
 
-| Asset kind | 持久形态 | 默认激活边界 | Actual proof |
+| Asset | 持久形态 | 激活边界 | Actual proof |
 | --- | --- | --- | --- |
 | `memory` | 内容寻址 Memory release | `next_turn` | Turn Trace 的 memory release refs |
-| `prompt` | 版本化 prompt fragment/template | `next_turn` | Turn context snapshot hash |
-| `skill` | 版本化 Skill package | `next_turn`；含 session state 时 `next_session` | resolved skill refs/tool surface hash |
-| `agent_profile` | Soul/Identity/model/tool-policy desired state | `next_session` | Agent session profile revision |
-| `workflow` | Workflow template/DAG revision | `next_task` | TaskRun template revision |
-| `runtime_config` | 非凭据、非根安全策略配置 | `next_restart` | process boot/config revision |
-| `source_patch` | base commit + patch/branch + checks | `next_deployment` | deployment id + source commit |
-| `plugin/harness` | 扩展 release | `next_session` | extension release refs；执行设施另行定义 |
+| `prompt` | 版本化 prompt fragment/template | `next_turn` | Turn context snapshot 与 prompt release ref |
+| `skill` | 本地版本化 Skill package | `next_turn` | resolved Skill refs 与 tool/context surface hash |
+| `plugin` | 本地版本化 Plugin bundle | `next_session` | 新 session 的 plugin/tool refs 与 bundle hash |
 
-边界规则：
+扩展资产 `agent_profile`、`workflow`、`runtime_config` 可以继续复用统一 MutationSet，分别在 next session、next task、next restart 生效；它们不是本地 Evol V1 关闭目标的阻塞条件。
 
-- in-flight turn、session 中的原子工具调用、已实例化 TaskRun 和当前进程代码不得被中途替换；
-- `next_turn` 在开始下一 turn 前比较 generation，不一致则重建 context/tool projection；
-- `next_session` 只影响新 session，旧 session 在安全边界结束或被显式 drain；
-- `next_task` 只影响新 TaskRun，已有 DAG 保持创建时快照；
-- `next_restart` 必须由新进程报告 boot revision；
-- `next_deployment` 只有运行实例报告目标 source commit/deployment id 后才算 activated。
+边界不变量：
 
-## 5. Candidate 与 MutationSet
+- 正在执行的 turn、工具调用和 session 不热替换；
+- Memory/Prompt/Skill 在下一 turn 开始前比较 generation；
+- Plugin 变化会 drain 旧 session，并在新 session 重建工具面；
+- rollback 也产生新 generation，在相同边界由后续运行继承；
+- 没有后续 inheritance proof 时 UI 只能显示“等待生效”。
 
-每个 Candidate 除现有证据、scope、hypothesis、metrics 和 content hash 外，还必须包含：
+## 6. MutationSet
 
 ```ts
-type ActivationBoundary =
-  | "next_turn"
-  | "next_session"
-  | "next_task"
-  | "next_restart"
-  | "next_deployment";
-
 interface MutationSet {
-  assetKind: EvolutionArtifactKind;
+  assetKind: "memory" | "prompt" | "skill" | "plugin";
   target: string;
   baseRef: { id: string; revision: string; contentHash: string };
   candidateRef: { id: string; revision: string; contentHash: string };
-  representation: "full" | "json_patch" | "unified_diff";
-  activationBoundary: ActivationBoundary;
+  representation: "full" | "json_patch";
+  activationBoundary: "next_turn" | "next_session";
   compatibility: Record<string, string>;
   rollbackRef: { id: string; revision: string; contentHash: string };
 }
 ```
 
-Validator 必须拒绝：base 不存在、base 已漂移、边界与 asset kind 不兼容、目标越出 scope、rollbackRef 不可解析、Candidate 修改未声明文件或字段。
+Validator 必须拒绝：base 不存在或漂移、目标越出 workspace scope、资产 hash 不一致、声明边界错误、Plugin Bundle 文件未声明、Plugin 权限与实际静态扫描不一致。
 
-## 6. Activation Ledger 与 Inheritance Proof
+## 7. 本地 Release 与 Inheritance Proof
 
-Promotion 只产生受批准的 Release；Activation 才改变 desired active pointer。账本至少保存以下领域事实；括号内是 V1 的规范事件名：
+最少事件：
 
 ```text
+candidate.proposed
+candidate.validated
 release.approved
 activation.requested
 activation.pointer_changed
-runtime inheritance observed (activation.inherited)
-health telemetry observed (activation.health_observed, health=healthy|degraded|inconclusive)
+activation.inherited
+activation.health_observed
 activation.rolled_back
 ```
 
-`activation.inherited` 必须引用真实 Turn/Session/TaskRun/Process/Deployment，并记录：
+`activation.inherited` 必须记录：
 
-- desired generation；
-- actual generation；
-- asset kind/target/release/content hash；
-- Runtime snapshot hash；
-- observedAt 与权威 Trace ref。
+- desired/actual generation；
+- asset kind、target、release id、content hash；
+- turn 或 session ref；
+- Runtime context/tool snapshot hash；
+- 权威 Trace ref 与 observedAt。
 
-UI 只有在看到 inheritance proof 后才能显示“已生效”。Pointer 已改变但 Runtime 尚未对账时显示“等待生效”，不能显示 active。
+## 8. 四类资产语义
 
-## 7. 各资产的激活语义
+### 8.1 Memory
 
-### 7.1 Memory、Prompt 与 Skill
+- 从重复、明确归因的终态 Episode 形成 scoped Memory Candidate；
+- 低风险 Memory 可在独立评测与 telemetry gate 后自动晋升；
+- 下一 turn 重建 Memory projection；
+- stale/conflict/rollback 后下一 turn 移除或恢复 previous revision。
 
-- active pointer 改变 generation；
-- 下一 turn 开始前读取 generation；
-- 如果变化，销毁旧 context projection 并从 active release 重建；
-- 本 turn 使用的 release refs 写入 Trace；
-- rollback 同样通过 generation 在下一 turn 生效。
+### 8.2 Prompt
 
-### 7.2 Agent Profile
+- 只有明确 `component=prompt` 的重复归因才能改变 Prompt；
+- Candidate 保存最小 prompt fragment，不重写整个 Agent；
+- 下一 turn 重建 context；当前 turn 不受影响；
+- selected/control 后续 Episode 驱动 retain/rollback。
 
-- Profile mutation 不直接修改正在执行的 Agent object；
-- 新 session 按 active revision 建立 Soul、Identity、model selection、tool policy；
-- tool permission 扩大默认视为 critical，必须 human approval；
-- 旧 session 可 drain，但不得静默混用两个 revision。
+### 8.3 Skill
 
-### 7.3 Workflow
+- 只有明确 `component=skill` 的重复归因才能生成 Skill；
+- Skill 保存为本地 `SKILL.md` package，并带 provenance、适用条件和验证步骤；
+- 下一 turn 自动从 active Skill release 重新加载；
+- 回滚后下一 turn 的 Skill/tool surface 恢复。
 
-- Workflow revision 只在创建 TaskRun 时解析一次；
-- TaskRun 保存完整 template revision 和 DAG hash；
-- 已创建任务不因新 revision 改变拓扑；
-- 效果比较以不同 revision 的后续 TaskRun cohort 为单位。
+### 8.4 Local Plugin
 
-### 7.4 Source Patch
+- Plugin 是本地版本化 Bundle，不修改 AutoAgent 源码；
+- Bundle 必须有 manifest、入口文件、content hash、权限声明和静态扫描报告；
+- Plugin 在独立本地子进程 Host 中运行，只能调用 manifest 与 Candidate scope 共同允许的 broker capability；
+- 默认 Host 不继承模型密钥和业务环境变量，不开放网络、子进程或任意 Workspace 写入；
+- 新 production release 只在下一 session 挂载贡献的工具；旧 session 不热插入；
+- rollback 后下一 session 卸载坏版本，或恢复 previous known-good Plugin release；
+- 外部 OS 隔离器可以作为高安全部署的可选加固，但不是本地 Plugin 激活前提。
 
-源码自进化不是让运行进程执行 patch，而是软件交付流程：
+## 9. 主动选择
+
+Evol Coordinator 按最小变化原则工作：
 
 ```text
-Candidate(base commit + patch)
- -> clean worktree/branch
- -> deterministic checks
- -> independent review
- -> merge protected branch
- -> build immutable artifact/image
- -> deploy canary
- -> process reports source commit
- -> inheritance proof
- -> production/rollback
+Memory -> Prompt/Skill -> Local Plugin
 ```
 
-规则：
+未知归因不生成资产。Plugin 只有在证据表明静态 Prompt/Skill 无法提供所需工具能力时才进入 authoring；Plugin Candidate 不因被生成就自动获得批准。
 
-- patch 必须绑定精确 base commit；base 漂移则重新生成 revision；
-- Candidate 只能写 Evol policy 允许的 repository/path scope；
-- 不允许直接修改当前生产 checkout、active binary 或进程内模块缓存；
-- tests/build/security checks 必须绑定 candidate commit；
-- proposer 不得写入自己的 check result 或 approval；
-- merge/deploy 由外部受信 SCM/CD adapter attestation；
-- V1 不自动批准触及认证、凭据、审计、权限根、Evol Gate 或部署控制面的 patch；
-- rollback 指向已知良好的 previous deployment，不依赖反向生成 patch。
+## 10. 风险与权限
 
-这里的 clean worktree、checks 和 build 都属于 Source Patch 的交付验证，不是所有 Evol 资产的前置条件。Memory、Prompt、Skill、Agent Profile 与 Workflow 的自进化不需要执行自身代码；它们在下一生命周期由 Runtime 重新加载后生效。
-
-## 8. 主动进化循环
-
-Evol Coordinator 独立于业务任务运行：
-
-1. 周期性从权威终态组装 Episode；
-2. 聚合同因失败、成本、延迟、返工和人工反馈；
-3. 识别最小可变资产，不默认选择源码；
-4. 生成最小 MutationSet 和可证伪 hypothesis；
-5. 按风险运行 deterministic validation、frozen Eval 和 reviewer；
-6. 激活后等待真实 inheritance proof；
-7. 从 selected/control 后续事实计算效果；
-8. retain、refine、stale 或 rollback。
-
-选择顺序遵循最小有效变化：Memory -> Prompt/Skill -> Agent Profile/Workflow -> Source Patch。更高层变更只有在证据表明低风险资产无法解决问题时才提出。
-
-“无法解决”必须由较低层 Release 的真实失败 telemetry 证明，不能由 proposer 自述。高层选择先写入独立的 asset-selection record；该记录仅授权进入 authoring，不是 Candidate、Release、Approval 或 Activation。
-
-## 9. 风险与权限
-
-- low-risk scoped Memory 可以在证据、冲突和 telemetry gate 下自动激活；
-- Prompt、Skill、Agent Profile、Workflow 默认不得由 proposer 自批；
-- 权限扩大、根治理配置、Plugin/Harness 与 Source Patch 为 critical；
-- Agent 只有 propose/status 权限；Validator、Evaluator、Approver、Activator 分权；
-- Activator 只能激活已批准的精确 content hash；
-- Runtime 只拉取 active release，不读取 Candidate 工作区；
-- Evol 不能将 Ticket/Goal 状态改写为自己的“成功证据”。
-
-## 10. SaaS 与跨平台边界
-
-Evol Control Plane、Artifact Registry、Activation Ledger 和 Runtime reconciliation contract 必须平台无关。它们不得依赖 WSL、PowerShell、bubblewrap、Docker socket 或某个本地可执行路径。
-
-外部能力通过 adapter 接入：
-
-- `ScmProvider`：branch、commit、PR、review/status attestation；
-- `BuildProvider`：构建不可变 artifact/image；
-- `DeploymentProvider`：canary/production/rollback 与 deployment revision；
-- `SandboxProvider`：可选，仅用于需要执行不可信 Source Patch/Plugin/Harness 的评测或扩展运行，不参与 active pointer、生命周期切换或继承判定。
-
-本地开发 adapter 可以调用本机 Git/进程；SaaS production adapter 可以调用 GitHub/GitLab、CI/CD、Kubernetes 或托管 runner。核心状态机不因 adapter 改变。
-
-生产 SaaS adapter 使用受信 HTTPS Provider Gateway 时必须满足：凭据仅来自服务部署配置；请求带稳定幂等键；重定向不得携带凭据；响应有大小和超时上限；SCM、check、review、build、deployment、actual revision 与 rollback 均返回严格校验的 attestation。Gateway 未配置或只配置一半时服务启动/交付入口 fail closed。Gateway 的协议验收测试只证明 adapter contract，不等于真实托管环境演练；完成 Source Patch 条件仍需外部仓库、CI、部署实例和 Runtime actual report。
+- scoped Memory 为 low risk；
+- Prompt/Skill 需要独立评测，默认不能由 proposer 自批；
+- Plugin 为 critical：可以由 Agent 编写，但 production 激活需要独立评测、静态扫描和 human approval；
+- Runtime 只加载 active release，不读取 Candidate 工作区；
+- Plugin 能力请求全部经过现有 AgentToolRuntime 权限与 Evidence Ledger；
+- Evol 不得把 Ticket/Goal 状态改写为自己的成功证据。
 
 ## 11. 完成定义
 
-Self-Mutation V1 只有在以下端到端场景全部成立后完成：
+本地 Evol V1 只有在以下场景全部成立后完成：
 
-1. Memory release 激活后，同一 Thread 下一 turn 继承新 revision，Trace 可证明；rollback 后下一 turn 恢复旧 revision。
-2. Skill/Prompt release 激活后，下一 turn 的 context/tool surface hash 改变，当前 turn 不受影响。
-3. Agent Profile 激活后，新 session 使用新 revision，已有 session 不被中途混合。
-4. Workflow 激活后，新 TaskRun 使用新 DAG revision，已有 TaskRun 保持原快照。
-5. Source Patch 生成绑定 base commit 的 branch/patch；checks 或审查失败时不能 merge/activate。
-6. 部署完成前 UI 只显示 approved/deploying；Runtime 报告目标 commit 后才显示 activated。
-7. 每次执行都有 inheritance proof，可回答“这次行为继承了哪些进化资产”。
-8. 后续 telemetry 能驱动 retain/rollback，回滚恢复 previous known-good release/deployment。
-9. 控制面和数据契约不依赖 WSL/PowerShell；任何本地执行器都只是 adapter。
-10. 创建或执行一个临时脚本不能通过任何 API/UI 路径被标记为 evolution activated；只有 active pointer、后续生命周期 actual report 和 inheritance proof 三者一致才能进入 activated。
+1. Memory 从真实 Episode 形成版本化 Candidate，后续 turn 继承；rollback 后后续 turn 恢复 previous revision。
+2. Prompt 从明确归因的真实 Episode 形成 Candidate，后续 turn 继承，真实 cohort telemetry 可触发 rollback。
+3. Skill 从明确归因的真实 Episode 形成本地 package，后续 turn 自动加载；rollback 后后续 turn 不再加载坏版本或恢复旧版本。
+4. Plugin Bundle 由本地 Candidate 产生，经过扫描、独立评测与批准后，下一 session 真实看到并调用新工具。
+5. Plugin rollback 后，同一 Thread 的下一 session 不再看到坏工具，或恢复 previous known-good Plugin revision。
+6. 当前 turn/session 不被中途修改；每次边界切换都有 inheritance proof。
+7. Evol UI 能区分 Candidate、approved、waiting、activated、degraded、rolled back，并展示实际 turn/session proof。
+8. 整个闭环不要求 GitHub、CI、Kubernetes、WSL、PowerShell 或外部 deployment Provider。
+
+Source Patch、远端 SCM/CD 和应用部署另立项目，不计入本地 Evol V1 完成或失败。

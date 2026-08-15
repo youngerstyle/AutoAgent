@@ -1,78 +1,100 @@
-# Evol Self-Mutation 与 Activation 实施计划
+# Evol 本地资产自进化实施计划
 
 依据：`docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`
 
 状态：In progress
 
-## 2026-08-14 实施进度
+## 1. 范围
 
-- [x] MutationSet、ActivationBoundary、ActivationRecord、InheritanceProof 与 append-only ledger；
-- [x] Promotion 与 Activation 分离，UI/API 不再把晋升显示成已生效；
-- [x] Memory/Prompt/Skill 的 next-turn 投影与证明；
-- [x] Agent Profile 的 next-session 投影、provider/model/policy 权威校验与证明；
-- [x] Workflow 的 next-task 持久快照、证明与回滚边界；
-- [x] Runtime Config 的受限 schema、启动快照冻结与 next-restart 证明；
-- [x] 平台无关 SCM/Build/Deployment Provider contracts；
-- [x] Source Patch 的 base commit、required checks、review、merge、build、canary、production、实际 commit 证明与可恢复交付 ledger（本地真实 Git + 测试 Provider）；
-- [x] 回滚创建新的 restoration generation，后续运行需再次证明恢复版本，而不是把历史 Release 直接改回 active；
-- [x] 明确归因的重复 Prompt/Skill Episode 自动形成最小 Candidate，未知归因不变异资产；
-- [x] Prompt 从真实终态 Episode 形成 Candidate，经独立评测与人类批准，由后续 Pi turn 继承，并被真实 cohort telemetry 回滚；
-- [x] Evol 管理页区分 requested、pointer changed、activated、health 与 rolled back，并展示 actual runtime proof；
-- [x] 接入跨平台 HTTPS SCM/CI/CD Provider Gateway adapter：TLS、Bearer secret、幂等键、有限重试、响应上限、严格 attestation schema 与 fail-closed API；
-- [ ] 配置真实托管 Provider Gateway，并在外部仓库、CI 与部署环境完成 canary/production/rollback 演练；
-- [x] 补齐 Agent Profile/Workflow/Runtime Config/Source Patch 的主动升级选择：至少 3 个直接归因，并验证较低层 Release 的失败 telemetry；选择只允许进入 authoring，不创建 Candidate 或激活；
-- [x] 完成全量回归、生产构建与文档一致性审计（96 files / 719 tests）。
+V1 只交付四类本地、版本化资产：
 
-实现口径：Evol 主链是“版本化变更 -> 生命周期边界切换 -> 后续运行继承 -> 效果衡量/恢复”。本地 Git、测试命令或未来托管 runner 只是 Source Patch Provider 的实现，不是 Evol 本身；WSL、PowerShell 和 sandbox 均不进入核心状态机。
+| Asset | 形成方式 | 生效边界 | 回滚边界 |
+| --- | --- | --- | --- |
+| Memory | 真实 Episode 归纳为 scoped release | 下一 turn | 下一 turn 恢复 previous release |
+| Prompt | 明确 prompt attribution 形成最小 fragment | 下一 turn | 下一 turn 恢复 previous release |
+| Skill | 明确 skill attribution 形成本地 Skill package | 下一 turn | 下一 turn 卸载坏版本或恢复 previous release |
+| Local Plugin | 生成本地 Bundle，经扫描、评测、批准 | 下一 session | 下一 session 卸载坏版本或恢复 previous release |
 
-## Milestone E：统一 Mutation 与 Activation Contract
+模型 Provider 保留现有配置与选择机制。它是模型调用依赖，不是本地 Evol 的“交付 Provider”，也不改变上述四类资产的生效边界。
 
-1. 扩展 artifact kind：`agent_profile`、`prompt`、`workflow`、`runtime_config`、`source_patch`。
-2. 引入 `MutationSet`、`ActivationBoundary`、`ActivationRecord`、`InheritanceProof`。
-3. 把 Promotion 与 Activation 分离；pointer changed 不再等同 runtime active。
-4. UI/API 区分 approved、waiting_for_activation、activated、degraded 与 rolled_back。
+Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernetes 和 Runtime deployment report 不属于本计划。仓库中已有的相关 adapter 只能作为可选团队/SaaS 软件交付实验存在，不参与 Evol 状态、健康判断或完成验收。
 
-退出标准：没有 inheritance proof 的 release 不能显示“已生效”。
+## 2. 核心不变量
 
-## Milestone F：Turn/Session/Task Inheritance
+1. Candidate、approved release、active pointer 和 runtime inheritance 是不同事实。
+2. 当前 turn/session 不热替换；只在声明的下一生命周期边界重新解析 active generation。
+3. Runtime 只从不可变本地 release store 加载，不从 Candidate 草稿目录加载。
+4. 每次实际加载必须记录 release id、content hash、generation、turn/session ref 和 runtime surface hash。
+5. rollback 创建新的 restoration generation，不能篡改历史 ledger。
+6. 没有后续 inheritance proof 时，UI 只能显示“等待生效”，不能显示“已生效”。
+7. 本地 Plugin 默认由 AutoAgent 内置跨平台子进程 Host 加载；外部 OS 隔离器是可选加固，不是激活前提。
 
-1. Memory/Prompt/Skill generation 在 next turn 重建 projection。
-2. Agent Profile generation 在 next session 重建 Runtime Agent。
-3. Workflow revision 在 TaskRun 创建时冻结，已有任务不热更新。
-4. Trace 持久记录所有实际继承的 release refs 和 snapshot hash。
-5. Rollback 使用相同边界恢复 previous release。
-6. 恢复动作创建新的 `rollback_restore` generation，必须由新的后续运行留下恢复 proof。
+## 3. Milestone A：统一本地 Mutation 与 Activation
 
-退出标准：三种边界均有端到端激活、继承证明和回滚测试。
+- [x] 定义 Candidate、Release、active pointer、generation、ActivationRecord 和 InheritanceProof。
+- [x] 将 promotion 与 activation 分离。
+- [x] rollback 生成新的 restoration generation。
+- [ ] 审计所有 API/UI，确保可选 Source Patch delivery 状态不影响本地 Evol 健康。
 
-## Milestone G：Source Patch Delivery Pipeline
+退出标准：任意资产都不能仅凭 Candidate 或 promotion 被展示为已生效。
 
-1. 建立平台无关 `ScmProvider`、`BuildProvider`、`DeploymentProvider` contracts。
-2. Source Patch Candidate 绑定 base commit、path scope、unified diff 和 rollback deployment。
-3. 本地 adapter 在独立 worktree/branch 应用 patch并运行 checks，不修改当前服务 checkout。
-4. checks/review/merge/build/deploy attestation 独立持久化，proposer 无权伪造。
-5. Runtime boot report source commit/deployment id；匹配后生成 inheritance proof。
-6. SaaS 服务通过 HTTPS Provider Gateway 调用外部 SCM/CI/CD；未配置、部分配置、非 TLS、畸形 attestation 或远端 gate 失败均不得改变 active pointer。
+## 4. Milestone B：Memory 与 Prompt 的 next-turn 闭环
 
-退出标准：Source Patch 从 Candidate 到新部署继承可完整追踪；任一 gate 失败不改变 active deployment。
+- [x] Memory/Prompt 在 turn 开始时按 generation 重建 projection。
+- [x] Prompt 可从真实终态 Episode 和明确归因形成 Candidate。
+- [x] Prompt 后续 Pi turn 继承，并由真实 cohort telemetry 触发 rollback。
+- [ ] 补齐 Memory 从真实 Episode 形成 Candidate、后续 turn 继承、rollback 后恢复 previous revision 的单链路验收。
 
-## Milestone H：主动选择与效果闭环
+退出标准：Memory 和 Prompt 都有“真实 Episode -> Candidate -> release -> 下一 turn inheritance proof -> rollback/restoration proof”的端到端证据。
 
-1. Coordinator 根据 Attribution 选择最小可变资产。
-2. 先尝试 Memory/Prompt/Skill，再升级到 Agent Profile/Workflow/Source Patch。
-3. 激活后按 cohort 聚合后续 Episode/Telemetry。
-4. 形成 retain/refine/stale/rollback 决策，并防止重复学习同一失败。
-5. Evol 管理页展示 mutation lineage、activation boundary、inheritance proof 和效果窗口。
-6. 高层资产选择持久化为独立 selection record；没有较低层失败 telemetry 时只能记录 `insufficient_evidence`，不得自动生成高风险 Candidate。
+## 5. Milestone C：Skill 的 next-turn 闭环
 
-退出标准：至少一个非 Memory 资产从真实 Episode 自动形成候选，经人类批准后被后续运行继承，并能依据真实效果回滚；高层资产只有在较小变更的失败事实成立时才能进入 authoring。Prompt 已满足前一链路，Workflow/Source Patch 选择门满足后一约束。
+- [x] 明确 `component=skill` 的重复归因可形成本地 Skill Candidate。
+- [x] active Skill release 可进入后续 turn 的 context/tool projection。
+- [ ] 增加单链路验收：真实 Episode -> Skill package -> promotion -> 下一 Pi turn 加载 -> rollback -> 再下一 turn 卸载或恢复旧版本。
+- [ ] 验证 Skill 的 package hash、resolved refs 与 runtime surface hash 都进入 proof。
 
-## 明确不在本计划主线
+退出标准：不能只证明“生成了 SKILL.md”或“projection 单元测试通过”；必须证明真实后续 turn 使用了它，并证明回滚后的下一 turn 状态。
 
-- WSL/PowerShell/bubblewrap Launcher；
-- Plugin/Harness invocation protocol；
-- 模型权重训练；
-- Agent 自动批准自身源码；
-- 在当前运行进程中热替换源码模块。
+## 6. Milestone D：Local Plugin 的 next-session 闭环
 
-这些能力可以作为独立 adapter 或后续项目存在，但不能替代 Self-Mutation 与 Activation 的完成标准。
+- [x] 定义不可变 Plugin Bundle、manifest、文件 hash、权限声明与静态扫描。
+- [x] Plugin Candidate 要求独立评测与 human approval，禁止 proposer 自批 production。
+- [x] Pi runtime 按 session fingerprint 挂载命名空间隔离的 Plugin tools。
+- [x] capability broker 复用 Workspace scope、Agent policy 与 Evidence 记录。
+- [ ] 让未配置任何 WSL/PowerShell/外部 sandbox launcher 的环境使用内置本地 Host 完成 canary、production 和真实调用。
+- [ ] 验证 production pointer 改变不会热插入旧 session，而是由下一 session 加载。
+- [ ] 验证 rollback 后下一 session 卸载坏工具或恢复 previous Plugin release。
+
+退出标准：清空外部 launcher 配置后，真实 Pi session 仍能加载并调用本地 Plugin；回滚后的新 session 不再暴露坏工具；全过程有 session inheritance proof。
+
+## 7. Milestone E：主动选择与效果闭环
+
+- [x] 未知归因不生成资产。
+- [x] Prompt/Skill 使用直接 component attribution，避免把模型、环境或 Provider 故障写进资产。
+- [ ] Coordinator 固定遵循最小变化顺序：Memory -> Prompt/Skill -> Local Plugin。
+- [ ] 只有静态资产无法提供所需工具能力且有重复证据时，才允许进入 Plugin authoring。
+- [ ] 四类资产都能用后续 Episode/Telemetry 形成 retain、refine、stale 或 rollback 决策。
+
+退出标准：Agent 可以提出本地改进，但不能用自评替代独立评测、实际继承和后续效果事实。
+
+## 8. Milestone F：管理面与完成审计
+
+- [x] 展示 Candidate、approved、waiting、activated、degraded、rolled back 与 actual proof。
+- [ ] 删除“未配置源码交付 Provider = Evol 失败”的状态表达。
+- [ ] 首页只围绕四类本地资产展示 active revision、边界、实际继承和回滚状态。
+- [ ] 运行四条端到端链、全量测试、类型检查、生产构建和文档一致性审计。
+
+退出标准：完成审计逐项对应主规范第 11 节八条要求；不得以 Source Patch、托管部署或测试替身补足本地资产证据。
+
+## 9. 非阻塞扩展
+
+以下代码或设计可以保留，但必须明确标记为 V1 之外的可选 adapter：
+
+- 远端 SCM/CI/CD Provider Gateway；
+- Source Patch 与应用部署；
+- WSL、bubblewrap、container、gVisor、Firecracker 等外部隔离器；
+- Agent Profile、Workflow、Runtime Config 等扩展资产边界；
+- 模型权重训练和当前进程热替换。
+
+它们未配置、未部署或未验收时，不得阻塞本地 Memory/Prompt/Skill/Plugin Evol，也不得让 Evol UI 显示失败。

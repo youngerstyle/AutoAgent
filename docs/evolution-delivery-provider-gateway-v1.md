@@ -1,5 +1,7 @@
 # Evolution Delivery Provider Gateway V1
 
+> **范围声明：可选团队/SaaS 软件交付 adapter，明确不属于 Evol 本地资产自进化 V1。** 未配置本 Gateway 不影响 Memory、Prompt、Skill 或 Local Plugin 的生成、激活、回滚和健康状态。本文件只描述另行启用 Source Patch/应用部署能力时的协议。
+
 该协议把 AutoAgent Evol 控制面与具体 GitHub/GitLab、CI、镜像仓库、Kubernetes 或 SaaS 部署平台隔离。Gateway 是受信生产组件；它负责调用平台 API、等待平台事实并返回 attestation，不能根据请求方声明伪造 check、review、deployment 或 Runtime 状态。
 
 ## 传输与认证

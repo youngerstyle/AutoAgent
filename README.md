@@ -68,19 +68,11 @@ $env:ANTHROPIC_API_KEY="..."
 
 ## Evol 自进化
 
-Evol 从真实运行事实中发现问题，产生并评测对 Memory、Skill、Agent Profile、Prompt、Workflow 或自身源码的版本化变更。变更被批准和激活后，由后续 turn、session、task、process restart 或 deployment 继承；临时执行一段新脚本不视为进化。
+Evol 从真实运行事实中发现能力缺口，产生并评测四类本地版本化资产：Memory、Prompt、Skill 和 Local Plugin。Memory、Prompt、Skill 在 active pointer 改变后的下一 turn 重新加载；Local Plugin 在下一 session 重建工具面。当前 turn/session 不热修改，rollback 也在相同的下一生命周期边界生效，并留下 inheritance proof。
 
-源码进化生成绑定 base commit 的 patch/branch，经过 required checks、独立审查、合并和部署后，只有报告新 deployment revision 的进程才会使用它。Plugin/Harness 是独立的扩展执行设施，不是 Evol 的定义，也不是 Evol 的必需依赖。
+临时执行脚本、只写 Candidate 文件或只通过离线评测都不算进化。Local Plugin 必须保存为不可变 Bundle，经过扫描、独立评测和批准，再由内置跨平台子进程 Host 在下一 session 挂载；默认不依赖 WSL、PowerShell、Docker 或外部 Sandbox Provider。
 
-SaaS 部署可通过受信 HTTPS Provider Gateway 接入 SCM、CI 和部署平台：
-
-```powershell
-$env:AUTOAGENT_EVOLUTION_DELIVERY_BASE_URL="https://evolution-provider.example/"
-$env:AUTOAGENT_EVOLUTION_DELIVERY_TOKEN="..."
-$env:AUTOAGENT_EVOLUTION_DELIVERY_TIMEOUT_MS="30000" # 可选
-```
-
-URL 与 Token 必须同时配置；生产只接受 HTTPS。Token 只驻留服务进程内存，不写入 Candidate、delivery ledger 或 attestation。源码交付由 `POST /api/workspaces/:workspaceId/evolution/candidates/:candidateId/source-delivery` 显式启动，回滚使用 `POST /api/workspaces/:workspaceId/evolution/source-deliveries/:deliveryId/rollback`。未配置 Gateway 时两个入口返回 503，不会用本地脚本或 Fake Provider 代替生产交付。
+OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent 配置选择，不因 Evol 设计而移除。远端 SCM/CI/CD、Source Patch 和应用部署仅是另行启用的团队/SaaS 软件交付 adapter；未配置它们不影响本地 Evol 的生成、激活、回滚或健康状态。
 
 完整语义见 `docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`。
 

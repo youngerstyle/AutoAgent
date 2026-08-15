@@ -1,32 +1,51 @@
-# Plugin/Harness Extension Host 实施记录
+# Local Plugin Evolution 实施计划
 
 依据：`docs/superpowers/specs/2026-08-14-plugin-harness-evolution-v1.md`
 
-状态：Prototype completed（2026-08-14）；已从 Evol Self-Mutation 主线中移出
+状态：In progress
 
-说明：本计划只证明可执行扩展能被治理和挂载，不证明系统完成自进化。WSL/PowerShell Launcher 是本地开发适配器；跨平台 SaaS 需要后续独立的 Sandbox Provider/Data Plane 设计。
+说明：Local Plugin 是 Evol V1 的第四类本地资产。完成标准不是“执行了一次插件脚本”，而是“本地版本化 Bundle 被批准，active pointer 改变，下一 session 实际挂载，rollback 后再下一 session 卸载或恢复”。
 
-## Milestone E：Bundle 与安全供应链
+## Milestone A：Bundle 与供应链
 
-1. 增加 Plugin Bundle/manifest/scanner contracts。
-2. 支持 plugin/harness Candidate，并生成不可变解包目录和 provenance manifest。
-3. 把 plugin/harness 加入隔离 Eval Suite，但禁止自动晋升。
+- [x] Plugin Bundle、manifest、scanner 和 content-addressed provenance。
+- [x] 路径、文件数、大小、entrypoint、工具名和权限声明校验。
+- [x] 危险 import、动态代码、网络、子进程、凭据与能力不一致拒绝。
+- [x] Plugin 设为 critical，要求独立评测和 human approval。
 
-退出标准：路径逃逸、危险 import、动态代码、能力声明不一致均确定性拒绝。
+退出标准：只有与 Candidate、manifest 和文件 hash 完全一致的不可变 Bundle 能进入 release store。
 
-## Milestone F：隔离 Extension Host
+## Milestone B：跨平台内置 Local Host
 
-1. 实现版本化子进程协议；Node Permission Model 只作为开发/纵深防御，production 要求运维配置 OS Sandbox Launcher。
-2. 实现 activate/health/invoke/guard/deactivate deadlines 与输出上限。
-3. 实现只读 capability broker，并复用 AgentToolRuntime 的 policy 与 Evidence 管线。
+- [x] Node ESM 子进程协议与 `activate -> health -> invoke/guard -> deactivate` 生命周期。
+- [x] 最小环境、deadline、输出上限、协议校验和异常 fail closed。
+- [x] 只读 capability broker，并复用 AgentToolRuntime policy 与 Evidence 管线。
+- [ ] 清空 `AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM` 后完成 scanner、canary、production 和调用回归。
+- [ ] 确认 Windows、Linux 与 macOS 默认路径不依赖 WSL、PowerShell 或 shell command。
 
-退出标准：未配置 OS Sandbox Launcher 时 canary/production fail closed；配置后插件无法直接读 Workspace、联网、写文件或创建进程；授权 broker read 可追溯。
+退出标准：不安装、不配置任何外部隔离器时，受控本地 Plugin 能在内置 Host 中运行；超时、崩溃、协议污染和越权请求仍确定性失败。
 
-## Milestone G：Runtime Mount 与治理
+## Milestone C：next-session Mount 与 Rollback
 
-1. Runtime projection 校验并输出 plugins/harnesses。
-2. Pi tool surface 挂载 plugin tools，并以 harness 包装工具调用。
-3. runtime fingerprint 驱动 release/rollback 后 session 重建。
-4. 增加 API/UI 状态与端到端验收。
+- [x] Runtime projection 输出 active plugins/harnesses。
+- [x] Pi tool surface 使用 `evo_<plugin>_<tool>` 命名空间挂载工具。
+- [x] runtime fingerprint 感知 Plugin generation。
+- [ ] 证明 promotion 不修改已创建 session，下一 session 才出现工具与 inheritance proof。
+- [ ] 证明 rollback 后同一 Thread 的下一 session 不再看到坏工具，或恢复 previous known-good release。
 
-退出标准：真实 Pi session 可执行 production plugin；canary 稳定分桶；rollback 下一轮卸载；全量验证通过。
+退出标准：真实 Pi session 完成“未加载 -> 下一 session 加载并调用 -> rollback -> 下一 session 卸载/恢复”的整条链。
+
+## Milestone D：可选外部隔离 adapter
+
+- [x] 保留与内置 Host 相同的协议 seam。
+- [x] 允许部署方显式配置 container/gVisor/Firecracker/WSL 等 adapter。
+- [ ] 文档和 UI 不得把外部 adapter 未配置显示为 Plugin 或 Evol 失败。
+
+退出标准：外部 adapter 只替换执行位置，不参与 Candidate、promotion、active pointer、session lifecycle 或本地 V1 完成判断。
+
+## 最终验收
+
+- [ ] 无外部 Launcher 的 Local Plugin 端到端测试通过。
+- [ ] rollback 的新 session 证据通过。
+- [ ] 全量测试、类型检查与生产构建通过。
+- [ ] 主 Evol 完成审计引用实际测试输出，不引用 SCM/CI/Kubernetes/Source Patch 作为 Plugin 证据。

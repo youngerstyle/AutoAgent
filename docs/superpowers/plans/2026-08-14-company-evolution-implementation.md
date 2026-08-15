@@ -8,8 +8,8 @@
 - Milestone B：已完成；包括确定性 Episode projector、typed failure attribution、append-only Experience Store、权威存储 reconcile、extraction job lease/heartbeat/backoff/dead-letter、入库前 secret redaction、基于多 Episode 同因证据且遇 counter-evidence 即隔离的 scoped Memory candidate consolidation，以及可回放的 usage/stale/archive/pin 生命周期。Organization Memory 使用源 scope 点名目标、目标 trust allowlist 点名源、organization id 一致的双边授权；撤销 trust 会使 Pi 会话下一轮重建，多源内容冲突 fail closed。
 - Milestone C：已完成；包括内容寻址且版本不可变的 EvalSuite、historical/sealed-holdout 分区、Node Permission Model 真实隔离进程、静态 Skill Scanner/manifest、evaluation job lease/recovery、Evidence Ledger 校验、确定性 metric gate，以及由 lineage、独立审批和 canary telemetry 驱动的 shadow→canary→production/rollback。成本与延迟为不可省略的强制门禁；observation 同时支持 token、返工、重复工具调用、人工介入、证据完整度和仅从 sealed holdout 计算的泛化成功率。
 - Milestone D：实现完成，自动化与代码级验收通过；已建立带 generation 的 canary/production active pointer、治理 API 与 Evol 管理页。Pi Runtime 对 production 执行严格 scope/manifest/scanner/content hash/lifecycle 校验，并对 active canary 按稳定 assignment key 做 1–25% 小流量分桶；role、provider、model、task type 与 tool scope 不匹配时 fail closed。Agent context trace 记录 selected/control cohort 和 provider token usage，Coordinator 从真实终态 Episode 自动构造 canary telemetry，门槛失败时以系统身份自动回滚 canary；未知美元成本记为 inconclusive，不伪造零成本。Production 晋升会以 append-only `superseded` 事件关闭同源 canary 的账本状态。Organization trust model、跨 Workspace Production Memory 投影、撤销会话重建与冲突隔离已通过端到端验证。独立 Evolution Coordinator 随服务恢复启动，即使没有活跃 RuntimeHost 也会执行经验对账、Memory 维护，并在服务器配置受信 evaluator 后消费持久化评测队列。带 automation selector 的 Suite 会驱动确定性 validation、Suite 绑定、持久化评测和分级晋升；只有低风险 Memory 可在独立评测与实测 telemetry 全部通过后自动到 production，Skill 自动流程止于 shadow。真实 Pi Agent 会话已验证 production Skill 加载与 rollback 后移除。管理页已通过类型检查与生产构建；浏览器视觉验收因当前浏览器插件初始化错误尚未执行，单独列为人工验收项，不计作已通过。
-- Plugin/Harness Host：已实现扩展执行原型，但此前被错误计入 Evol 完成范围。它现被重新分类为独立、可选的 extension execution infrastructure；本地 WSL/PowerShell Launcher 只用于开发验真，不是跨平台 SaaS 架构，也不是 Self-Mutation 的完成条件。
-- Milestone E–H：待按 `2026-08-14-self-mutation-activation-v1.md` 实现 Agent Profile、Prompt、Workflow、Source Patch、激活边界、Runtime inheritance proof 与部署对账。完成前不得宣称公司能够修改并继承自身能力。
+- Local Plugin：Bundle/scanner/Host/runtime mount 原型已存在；现按第四类本地 Evol 资产重新验收。默认必须由内置跨平台子进程 Host 运行，不要求 WSL、PowerShell 或外部 Sandbox Provider。
+- Milestone E–H：按 `2026-08-14-self-mutation-activation-v1.md` 收口 Memory、Prompt、Skill、Local Plugin 的 next-turn/next-session 激活、inheritance proof 与 rollback。Source Patch、SCM/CI/Kubernetes/应用部署不再是关闭条件。
 
 ## Milestone A：Candidate Control Plane
 
@@ -61,3 +61,20 @@
 11. Evaluation 与 Canary Telemetry 强制执行 cost/latency 门禁，并记录 token、QA return、重复工具调用、人工介入、证据完整度和 sealed-holdout 泛化成功率；未知成本不得以零值通过。
 
 退出标准：重启、并发评测、并发 promotion、回滚和旧版本运行均通过；管理页浏览器视觉验收作为独立人工检查项记录，不得以构建通过冒充视觉通过。
+
+## Milestone E：四类本地资产生命周期
+
+1. Memory、Prompt、Skill 在下一 turn 解析新的 active generation，并记录实际继承。
+2. Local Plugin 在下一 session 重建工具面，不热插入当前 session。
+3. rollback 生成新的 restoration generation，并在相同边界由后续运行证明。
+4. 模型 Provider 沿用现有配置；外部 delivery provider 状态不进入 Evol 健康判断。
+
+退出标准：四类资产分别通过真实 Episode/Candidate、后续运行加载和 rollback 端到端验收。
+
+## Milestone F：Local Plugin 默认 Host
+
+1. 未配置任何外部 launcher 时使用内置跨平台子进程 Host。
+2. Bundle scanner、独立评测、human approval 和 capability broker 仍然是强制门禁。
+3. 外部 container/WSL/gVisor/Firecracker 仅作为不受信多租户部署的可选执行 adapter。
+
+退出标准：无 WSL、PowerShell、SCM、CI 或 Kubernetes 的本地环境可以完成 Plugin 下一 session 加载、调用与 rollback。

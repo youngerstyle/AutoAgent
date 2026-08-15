@@ -463,18 +463,18 @@ Agent 不获得 validate、evaluate、promote、rollback 工具。它可以请�
 
 ### Phase 4：Self-Mutation 与 Activation
 
-- 将 Agent Profile、Prompt、Workflow 与 Source Patch 建模为不可变 Candidate；
-- 每类资产声明 next turn/session/task/restart/deployment 激活边界；
+- 将 Memory、Prompt、Skill 与 Local Plugin 建模为不可变本地 Candidate/Release；
+- Memory、Prompt、Skill 声明 next-turn 边界，Local Plugin 声明 next-session 边界；
 - Runtime generation/revision 对账并在边界重建，不改变进行中的原子执行；
-- 每次执行 Trace 记录实际继承的 release/deployment refs；
-- Source Patch 只生成绑定 base commit 的 patch/branch，经过 required checks、独立审查、合并与 deployment attestation；
-- 激活后继续收集 selected/control telemetry，失败时恢复 previous active release 或 previous deployment。
+- 每次执行 Trace 记录实际继承的本地 release refs 与 runtime surface hash；
+- Local Plugin 保存为不可变 Bundle，经 scanner、独立评测和 human approval 后只在下一 session 挂载；
+- 激活后继续收集 selected/control telemetry，失败时恢复 previous active release。
 
 验收：变更必须被后续运行实际继承并能从 Trace 证明；临时执行候选代码、只写 Candidate 文件或只通过 Eval 均不得宣称进化完成。
 
-### 独立扩展基础设施：Plugin/Harness Host
+### Local Plugin 执行基础设施
 
-`2026-08-14-plugin-harness-evolution-v1.md` 已实现一套扩展执行原型，但它不是 Phase 4 的替代品，也不构成 Evol 完成证据。该设施后续应从 Evol 主路径解耦，并通过平台无关 Provider 接口接入 SaaS execution plane；本地 WSL/PowerShell Launcher 仅保留为开发适配器。
+`2026-08-14-plugin-harness-evolution-v1.md` 定义 Local Plugin 的 Bundle、Host 与 session mount。Host 本身不是进化证据；只有 production release 被下一 session 实际加载并留下 inheritance proof 才算进化。内置跨平台子进程 Host 是默认路径，WSL/container 等外部隔离器仅是多租户部署的可选加固。
 
 ## 14. 当前代码处置
 
@@ -504,6 +504,8 @@ Company Evolution 只有同时满足以下条件才能称为完成：
 - 服务重启不重复或丢失评测/晋升；
 - 所有 UI 状态都能追溯到权威 Evol ledger；
 - 每个 active 资产都有明确激活边界，进行中的原子执行不被热切换破坏；
-- 后续 Trace 能证明它实际继承了哪个 Memory、Skill、Agent Profile、Prompt、Workflow 和 deployment revision；
-- Source Patch 只有在 checks、审查、合并、部署和运行时版本对账完成后才算 activated；
+- 后续 Trace 能证明它实际继承了哪个 Memory、Prompt、Skill 和 Local Plugin revision；
+- Local Plugin 只有在下一 session 实际挂载对应 Bundle/tool surface 后才算 activated；
 - 临时执行脚本、创建 Candidate 或通过离线评测本身都不算进化完成。
+
+Source Patch、远端 SCM/CI/CD 和应用部署属于可选团队/SaaS 软件交付项目，不是本地 Company Evolution V1 的完成或失败条件。OpenAI、Anthropic、Mock 等模型 Provider 仍由现有模型服务配置管理，不与“交付 Provider”混为一谈。
