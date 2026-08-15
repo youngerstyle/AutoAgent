@@ -20,6 +20,8 @@ import { EvolutionReflectionWorker } from "./reflection-worker.js";
 import { EvolutionDreamWorker } from "./dream-worker.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { PracticeStore } from "./practice-store.js";
+import { PracticeBindingStore } from "./practice-binding-store.js";
+import { PracticeBindingCompiler } from "./practice-binding-compiler.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 
 export class EvolutionCoordinator {
@@ -49,6 +51,7 @@ export class EvolutionCoordinator {
       workspacesScanned: 0,
       reflectionSignalsProcessed: 0,
       dreamPracticesProduced: 0,
+      practiceBindingsCreated: 0,
       evaluationJobsProcessed: 0,
     };
   }
@@ -87,6 +90,7 @@ export class EvolutionCoordinator {
     let workspacesScanned = 0;
     let reflectionSignalsProcessed = 0;
     let dreamPracticesProduced = 0;
+    let practiceBindingsCreated = 0;
     let evaluationJobsProcessed = 0;
     const errors: string[] = [];
     for (const workspace of await this.workspaces.list()) {
@@ -107,6 +111,11 @@ export class EvolutionCoordinator {
         errors.push(`${workspace.id}/dream: ${safeMessage(error)}`);
       }
       try {
+        practiceBindingsCreated += await this.runBindings(workspace);
+      } catch (error) {
+        errors.push(`${workspace.id}/binding: ${safeMessage(error)}`);
+      }
+      try {
         evaluationJobsProcessed += await this.runEvaluations(workspace);
       } catch (error) {
         errors.push(`${workspace.id}/evaluation: ${safeMessage(error)}`);
@@ -121,6 +130,7 @@ export class EvolutionCoordinator {
       workspacesScanned,
       reflectionSignalsProcessed,
       dreamPracticesProduced,
+      practiceBindingsCreated,
       evaluationJobsProcessed,
     };
   }
@@ -141,6 +151,16 @@ export class EvolutionCoordinator {
       new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
     ).run(2);
     return result.practicesProduced;
+  }
+
+  private async runBindings(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const result = await new PracticeBindingCompiler(
+      workspace.id,
+      new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
+      new PracticeBindingStore(workspace.rootPath, () => this.now()),
+      new EvolutionStore(workspace.id, workspace.rootPath, () => this.now()),
+    ).compile();
+    return result.bindingsProposed;
   }
 
   private async runMaintenance(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<void> {

@@ -36,7 +36,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   };
 
   router.get("/worker", (_req, res) => res.json({
-    worker: workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, evaluationJobsProcessed: 0 },
+    worker: workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, evaluationJobsProcessed: 0 },
   }));
 
   router.get("/candidates", asyncHandler(async (req, res) => res.json({ candidates: await (await storeFor(String(req.params.workspaceId))).candidates.list() })));

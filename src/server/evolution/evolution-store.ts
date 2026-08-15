@@ -32,6 +32,7 @@ import { AgentStore } from "../agent-engine/agent-store.js";
 import { MissionStore } from "../mission-process/mission-store.js";
 import { TicketStore } from "../tickets/ticket-store.js";
 import { EvolutionReleaseRegistry } from "./release-registry.js";
+import { PracticeStore } from "./practice-store.js";
 
 const ledgerQueues = new Map<string, Promise<void>>();
 
@@ -81,6 +82,7 @@ export class EvolutionStore {
         expectedMetrics: replay.candidate.expectedMetrics,
         riskLevel: replay.candidate.riskLevel,
         proposedBy: replay.candidate.proposedBy,
+        ...(replay.candidate.practiceRef ? { practiceRef: replay.candidate.practiceRef } : {}),
       })) throw conflict("Evolution command idempotency conflict");
       return structuredClone(replay.candidate);
     }
@@ -98,6 +100,7 @@ export class EvolutionStore {
       artifactRef, contentHash, hypothesis: input.hypothesis, sourceRefs: input.sourceRefs,
       scope: input.scope, expectedMetrics: input.expectedMetrics, riskLevel: input.riskLevel,
       status: "proposed", proposedBy: input.proposedBy, createdAt: timestamp, updatedAt: timestamp,
+      ...(input.practiceRef ? { practiceRef: structuredClone(input.practiceRef) } : {}),
     };
     const current = await new EvolutionReleaseRegistry(this.workspaceRoot, this.now).current("production", candidate);
     const baseRef = current?.active && current.release ? current.release : genesisRef(candidate);
@@ -138,7 +141,9 @@ export class EvolutionStore {
       catch (error) { pluginParseError = error instanceof Error ? error.message : String(error); }
     }
     const sourceVerification = await Promise.all(candidate.sourceRefs.map((ref) => this.verifySourceRef(ref)));
-    const checks = validateCandidate(candidate, content, scanner, sourceVerification, pluginBundle, pluginParseError);
+    const practiceVerification = candidate.practiceRef ? (await new PracticeStore(this.workspaceId, this.workspaceRoot).list()).some((practice) =>
+      practice.practiceId === candidate.practiceRef!.id && String(practice.version) === candidate.practiceRef!.version && practice.provenanceHash === candidate.practiceRef!.contentHash) : true;
+    const checks = validateCandidate(candidate, content, scanner, sourceVerification, practiceVerification, pluginBundle, pluginParseError);
     const timestamp = this.now().toISOString();
     const artifactManifestRef = scanner || pluginBundle ? relativeArtifactManifestRef(candidate.contentHash, candidate.candidateId) : undefined;
     let artifactManifestHash: string | undefined;
@@ -341,6 +346,9 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
   if ((input.kind === "plugin" || input.kind === "harness") && input.riskLevel !== "critical") throw invalid("Plugin and harness candidates must be critical risk");
   if ((input.kind === "prompt" || input.kind === "agent_profile" || input.kind === "workflow" || input.kind === "runtime_config") && !["high", "critical"].includes(input.riskLevel)) throw invalid("Prompt, Agent Profile, Workflow, and Runtime Config candidates must be high or critical risk");
   if (!input.proposedBy || !["agent", "human", "system"].includes(input.proposedBy.type) || typeof input.proposedBy.id !== "string" || !input.proposedBy.id) throw invalid("Evolution proposer is invalid");
+  if (input.practiceRef && (!input.practiceRef.id || !input.practiceRef.version || !/^[a-f0-9]{64}$/.test(input.practiceRef.contentHash))) throw invalid("Evolution practice reference is invalid");
+  if (input.scope.ownerLevel && !["agent_project", "agent", "project", "company"].includes(input.scope.ownerLevel)) throw invalid("Evolution owner level is invalid");
+  if (["agent_project", "agent"].includes(input.scope.ownerLevel ?? "") && !input.scope.profileId) throw invalid("Agent-owned evolution scope requires profileId");
   return input;
 }
 
@@ -356,12 +364,14 @@ function validateCandidate(
   content: string,
   scanner: SkillScanReport | undefined,
   sourceVerification: boolean[],
+  practiceVerification: boolean,
   pluginBundle?: ParsedPluginBundle,
   pluginParseError?: string,
 ): EvolutionValidationCheck[] {
   const mutation = candidate.mutationSet;
   const common: EvolutionValidationCheck[] = [
     { name: "source_evidence", passed: candidate.sourceRefs.length > 0 && sourceVerification.length === candidate.sourceRefs.length && sourceVerification.every(Boolean), message: "Candidate source references resolve in authoritative workspace stores" },
+    { name: "practice_provenance", passed: practiceVerification, message: "Candidate Practice provenance resolves to the immutable local Practice version" },
     { name: "metric_hypothesis", passed: candidate.expectedMetrics.length > 0 && candidate.hypothesis.length >= 20, message: "Candidate has a falsifiable metric hypothesis" },
     { name: "scope_boundary", passed: candidate.sourceRefs.every((ref) => ref.workspaceId === candidate.scope.workspaceId), message: "Candidate is workspace scoped" },
     { name: "mutation_contract", passed: Boolean(mutation && mutation.assetKind === candidate.kind && mutation.target === candidate.target && mutation.candidateRef.id === candidate.candidateId && mutation.candidateRef.version === String(candidate.revision) && mutation.candidateRef.contentHash === candidate.contentHash && mutation.activationBoundary === DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind] && mutation.rollbackRef.id === mutation.baseRef.id && mutation.rollbackRef.contentHash === mutation.baseRef.contentHash), message: "MutationSet identity, base, rollback, and activation boundary match the immutable Candidate" },

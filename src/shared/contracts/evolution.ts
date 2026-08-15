@@ -35,6 +35,8 @@ export interface EvolutionSourceRef {
 
 export interface EvolutionScope {
   workspaceId: string;
+  ownerLevel?: "agent_project" | "agent" | "project" | "company";
+  profileId?: string;
   organization?: {
     id: string;
     /** Explicit target workspaces; each target must independently trust the source workspace. */
@@ -103,6 +105,8 @@ export interface EvolutionPracticeDraft {
   trigger: string;
   procedure: string;
   expectedOutcome: MetricExpectation[];
+  /** Optional only for drafts persisted before Practice/Binding separation. */
+  observedComponents?: AttributionComponent[];
   applicability: EvolutionPracticeScope;
   contraindications: string[];
   sourceEpisodeRefs: string[];
@@ -120,6 +124,7 @@ export interface EvolutionPractice {
   trigger: string;
   procedure: string;
   expectedOutcome: MetricExpectation[];
+  observedComponents: AttributionComponent[];
   applicability: EvolutionPracticeScope;
   contraindications: string[];
   sourceDraftRefs: string[];
@@ -361,6 +366,7 @@ export interface EvolutionCandidate {
   riskLevel: EvolutionRiskLevel;
   status: EvolutionCandidateStatus;
   proposedBy: EvolutionPrincipalRef;
+  practiceRef?: VersionedEvolutionRef;
   mutationSet?: EvolutionMutationSet;
   createdAt: string;
   updatedAt: string;
@@ -439,6 +445,18 @@ export interface CreateEvolutionCandidateInput {
   expectedMetrics: MetricExpectation[];
   riskLevel: EvolutionRiskLevel;
   proposedBy: EvolutionPrincipalRef;
+  practiceRef?: VersionedEvolutionRef;
+}
+
+export interface EvolutionPracticeBinding {
+  bindingId: string;
+  practiceRef: VersionedEvolutionRef;
+  kind: EvolutionArtifactKind;
+  target: string;
+  status: "proposed" | "candidate_created" | "rejected";
+  candidateRef?: VersionedEvolutionRef;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ValidateEvolutionCandidateInput {
@@ -540,6 +558,7 @@ export interface EvolutionWorkerStatus {
   workspacesScanned: number;
   reflectionSignalsProcessed: number;
   dreamPracticesProduced: number;
+  practiceBindingsCreated: number;
   evaluationJobsProcessed: number;
 }
 

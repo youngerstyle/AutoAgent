@@ -38,6 +38,7 @@ function draftFrom(signalId: string, profileId: string, episodeId: string, item:
     statement: item.cause, trigger: item.symptom,
     procedure: `When current evidence confirms this cause, apply the smallest correction that addresses it and verify the task outcome; stop if counter-evidence appears.`,
     expectedOutcome: [{ metric: item.component === "tool" ? "tool_failure_rate" : "task_success_rate", direction: item.component === "tool" ? "decrease" : "increase", minimumDelta: 0.01 }],
+    observedComponents: [item.component],
     applicability: { ownerLevel: "agent_project", workspaceId: item.scope.workspaceId, profileId },
     contraindications: item.counterEvidenceRefs.map((ref) => `${ref.kind}:${ref.ref}`),
     sourceEpisodeRefs: [episodeId], sourceRefs: structuredClone(item.sourceRefs),

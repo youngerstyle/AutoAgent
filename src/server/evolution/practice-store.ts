@@ -28,6 +28,7 @@ export class PracticeStore {
         trigger: input.trigger,
         procedure: input.procedure,
         expectedOutcome: structuredClone(input.expectedOutcome),
+        observedComponents: [...new Set(input.observedComponents)].sort(),
         applicability: structuredClone(input.applicability),
         contraindications: [...new Set(input.contraindications)].sort(),
         sourceDraftRefs: [...new Set(input.sourceDraftRefs)].sort(),
@@ -67,7 +68,7 @@ export class PracticeStore {
 
 function validate(input: PracticeInput, workspaceId: string): void {
   if (!input.commandId.trim() || !input.statement.trim() || !input.trigger.trim() || !input.procedure.trim()
-    || input.sourceDraftRefs.length < 2 || input.sourceEpisodeRefs.length < 2 || !input.sourceRefs.length
+    || input.sourceDraftRefs.length < 2 || input.sourceEpisodeRefs.length < 2 || !input.sourceRefs.length || !input.observedComponents.length
     || input.sourceRefs.some((ref) => ref.workspaceId !== workspaceId)
     || input.applicability.ownerLevel !== "agent_project" || input.applicability.workspaceId !== workspaceId || !input.applicability.profileId) {
     throw new HttpError(400, "Practice candidate is invalid", "INVALID_PRACTICE");

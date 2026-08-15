@@ -52,6 +52,7 @@ function draftInput(commandId: string, signalId: string, episodeId: string, evid
     trigger: "A project task starts with multiple participating agents",
     procedure: "Brief the current document, confirm acknowledgement, then begin execution",
     expectedOutcome: [{ metric: "task_success_rate", direction: "increase" as const, minimumDelta: 0.01 }],
+    observedComponents: ["workflow" as const],
     applicability: { ownerLevel: "agent_project" as const, workspaceId: "workspace-a", profileId: "profile-a" },
     contraindications: [],
     sourceEpisodeRefs: [episodeId],

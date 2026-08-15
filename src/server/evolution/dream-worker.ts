@@ -32,6 +32,7 @@ export class EvolutionDreamWorker {
         trigger: exemplar.trigger,
         procedure: exemplar.procedure,
         expectedOutcome: uniqueMetrics(ordered.flatMap((draft) => draft.expectedOutcome)),
+        observedComponents: unique(ordered.flatMap((draft) => draft.observedComponents ?? [])),
         applicability: structuredClone(exemplar.applicability),
         contraindications: [],
         sourceDraftRefs: ordered.map((draft) => draft.draftId),
@@ -50,6 +51,6 @@ function clusterKey(draft: EvolutionPracticeDraft): string {
   return [scope.ownerLevel, scope.workspaceId ?? "", scope.profileId ?? "", normalize(draft.statement), normalize(draft.trigger)].join("\u001f");
 }
 function normalize(value: string): string { return value.trim().toLocaleLowerCase().replace(/\s+/g, " "); }
-function unique(values: string[]): string[] { return [...new Set(values)].sort(); }
+function unique<T extends string>(values: T[]): T[] { return [...new Set(values)].sort(); }
 function uniqueMetrics(values: MetricExpectation[]): MetricExpectation[] { return uniqueByJson(values); }
 function uniqueByJson<T>(values: T[]): T[] { return [...new Map(values.map((value) => [JSON.stringify(value), structuredClone(value)])).values()]; }
