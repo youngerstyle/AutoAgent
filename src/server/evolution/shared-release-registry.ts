@@ -6,6 +6,7 @@ import { HttpError } from "../errors.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { globalEvolutionLayerRoot, workspaceEvolutionActiveReleaseFile, workspaceEvolutionReleaseFile } from "../storage/paths.js";
 import { ScopePromotionStore } from "./scope-promotion-store.js";
+import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -50,7 +51,7 @@ export class SharedEvolutionReleaseRegistry {
     const source = await readJson<ReleaseManifest | undefined>(workspaceEvolutionReleaseFile(sourceWorkspaceRoot, proposal.originReleaseRef.id), undefined);
     verifySource(source, proposal);
     const scope: EvolutionScope = {
-      workspaceId: proposal.origin.workspaceId ?? source!.scope.workspaceId,
+      workspaceId: `shared:${ownerLevel}:${ownerId}`,
       ownerLevel,
       ...(ownerLevel === "agent" ? { profileId: ownerId } : {}),
       ...(proposal.targetScope.roles ? { roles: proposal.targetScope.roles } : {}),
@@ -87,6 +88,11 @@ export class SharedEvolutionReleaseRegistry {
       active: true, updatedAt: this.now().toISOString(),
     };
     if (!alreadyCurrent) await writeJson(pointerFile, pointer);
+    if (manifest.candidateKind === "memory") {
+      await new MemoryLifecycleStore(scope.workspaceId, layerRoot, this.now).registerRelease(
+        `shared-register:${proposal.proposalId}`, release, manifest.target, scope, pointer.updatedAt,
+      );
+    }
     return { layerRoot, manifest, pointer };
   }
 }

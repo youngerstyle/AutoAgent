@@ -5,6 +5,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ScopePromotionStore } from "../../src/server/evolution/scope-promotion-store.js";
 import { SharedEvolutionReleaseRegistry } from "../../src/server/evolution/shared-release-registry.js";
+import { runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
+import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 
 describe("shared Agent and Company evolution releases", () => {
   it("publishes an approved local release into the stable Agent layer idempotently", async () => {
@@ -33,6 +35,13 @@ describe("shared Agent and Company evolution releases", () => {
     expect(first.manifest).toMatchObject({ candidateKind: "memory", candidateHash: contentHash, scope: { ownerLevel: "agent", profileId: "profile-a" }, scopePromotionProposalId: proposal.proposalId, originReleaseRef: originRelease });
     expect(first.pointer).toMatchObject({ active: true, generation: 1, scope: { ownerLevel: "agent", profileId: "profile-a" } });
     expect(replay.pointer).toEqual(first.pointer);
+    const otherWorkspace = await mkdtemp(path.join(os.tmpdir(), "autoagent-shared-target-"));
+    const source = { layerRoot: first.layerRoot, ownerLevel: "agent" as const, ownerId: "profile-a", companyId: "company-a" };
+    const inherited = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-a"), agent("workspace-b", "profile-a"), { assignmentKey: "turn-a", sharedReleaseSources: [source] });
+    expect(inherited.memories).toEqual([expect.objectContaining({ content, ownerLevel: "agent", releaseId: first.manifest.release.id })]);
+    expect(inherited.resolvedReleases).toEqual([expect.objectContaining({ assetKind: "memory", ownerLevel: "agent", target: "practice.memory.briefing" })]);
+    const peer = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-b"), agent("workspace-b", "profile-b"), { assignmentKey: "turn-peer", sharedReleaseSources: [source] });
+    expect(peer.memories).toEqual([]);
   });
 
   it("refuses unapproved promotion and a source release whose immutable hash does not match", async () => {
@@ -66,3 +75,6 @@ async function writeOriginRelease(root: string, release: { id: string; version: 
     promotionId: "promotion-a", runtimeActive: true, validationPassed: true, validationChecks: [{ name: "memory_safety", passed: true, message: "safe" }],
   }), "utf8");
 }
+
+function profile(id: string): AgentProfile { return { id, name: id, role: "dev", capabilities: [], defaultProvider: "mock", defaultModel: "mock", defaultPolicy: {} }; }
+function agent(workspaceId: string, profileId: string): WorkspaceAgent { return { id: `${workspaceId}-${profileId}`, workspaceId, profileId, roleInWorkspace: "dev", agentDir: `agents/${profileId}`, status: "idle" }; }

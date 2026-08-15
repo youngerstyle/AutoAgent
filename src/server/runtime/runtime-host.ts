@@ -43,7 +43,7 @@ import { RuntimeHostStore, type RuntimeRetryState, type RuntimeTaskError, type R
 import { StaffingCoordinator } from "../staffing/staffing-coordinator.js";
 import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
 import type { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
-import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
+import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
 import { productionEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { evolutionAgentProfileForSession } from "../evolution/runtime-projection.js";
@@ -102,6 +102,7 @@ export class RuntimeHost {
       schedulerKey?: string;
       executionGate?: RuntimeExecutionGate;
       organizationMemorySources?: () => Promise<OrganizationMemorySource[]>;
+      sharedEvolutionLayerSources?: (profileId: string) => Promise<SharedEvolutionLayerSource[]>;
     } = {},
   ) {
     this.store = new RuntimeHostStore(workspace.rootPath);
@@ -1671,7 +1672,7 @@ export class RuntimeHost {
         this.providers,
         new AgentToolRuntime(policy, enabled),
         new AgentTraceStore(this.workspace.rootPath, agent.id),
-        { now: () => this.now(), organizationMemorySources: this.options.organizationMemorySources },
+        { now: () => this.now(), organizationMemorySources: this.options.organizationMemorySources, sharedEvolutionLayerSources: this.options.sharedEvolutionLayerSources },
       ));
     }
     const manager = new MissionProcessManager(

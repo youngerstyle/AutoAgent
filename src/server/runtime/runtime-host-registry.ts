@@ -17,9 +17,11 @@ import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.
 import { ensureProjectOwner } from "../agents/roster.js";
 import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
-import type { OrganizationMemorySource } from "../evolution/runtime-projection.js";
+import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
 import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type RuntimeEvolutionConfig } from "../evolution/runtime-config-projection.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
+import { CompanyIdentityStore } from "../storage/company-identity-store.js";
+import { globalEvolutionLayerRoot } from "../storage/paths.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -256,6 +258,7 @@ export class RuntimeHostRegistry {
         schedulerKey: workspace.id,
         executionGate: this.executionGate,
         organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, workspace.id),
+        sharedEvolutionLayerSources: (profileId) => resolveSharedEvolutionLayerSources(this.workspaces.homePath(), profileId),
         ...this.evolutionRuntimeConfigs.get(workspace.id)?.settings,
       });
       if (startScheduler) {
@@ -270,6 +273,14 @@ export class RuntimeHostRegistry {
     }
   }
 
+}
+
+export async function resolveSharedEvolutionLayerSources(homeDir: string, profileId: string): Promise<SharedEvolutionLayerSource[]> {
+  const identity = await new CompanyIdentityStore(homeDir).getOrCreate();
+  return [
+    { layerRoot: globalEvolutionLayerRoot(homeDir, "company", identity.companyId), ownerLevel: "company", ownerId: identity.companyId, companyId: identity.companyId },
+    { layerRoot: globalEvolutionLayerRoot(homeDir, "agent", profileId), ownerLevel: "agent", ownerId: profileId, companyId: identity.companyId },
+  ];
 }
 
 export async function resolveOrganizationMemorySources(

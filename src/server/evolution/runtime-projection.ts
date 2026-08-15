@@ -89,6 +89,12 @@ export interface OrganizationMemorySource {
   workspaceRoot: string;
   organizationId: string;
 }
+export interface SharedEvolutionLayerSource {
+  layerRoot: string;
+  ownerLevel: "agent" | "company";
+  ownerId: string;
+  companyId: string;
+}
 
 export interface RuntimeEvolutionProjection {
   skills: RuntimeEvolutionSkill[];
@@ -117,10 +123,15 @@ export interface RuntimeEvolutionContext {
   taskType?: string;
   tools?: string[];
   organizationMemorySources?: OrganizationMemorySource[];
+  sharedReleaseSources?: SharedEvolutionLayerSource[];
 }
 
-export async function runtimeEvolutionStateFingerprint(workspaceRoot: string, organizationSources: OrganizationMemorySource[] = []): Promise<string> {
-  const roots = [{ workspaceId: "local", workspaceRoot }, ...organizationSources.map((item) => ({ workspaceId: item.workspaceId, workspaceRoot: item.workspaceRoot }))];
+export async function runtimeEvolutionStateFingerprint(workspaceRoot: string, organizationSources: OrganizationMemorySource[] = [], sharedSources: SharedEvolutionLayerSource[] = []): Promise<string> {
+  const roots = [
+    { workspaceId: "local", workspaceRoot },
+    ...organizationSources.map((item) => ({ workspaceId: `organization:${item.workspaceId}`, workspaceRoot: item.workspaceRoot })),
+    ...sharedSources.map((item) => ({ workspaceId: `${item.ownerLevel}:${item.ownerId}`, workspaceRoot: item.layerRoot })),
+  ];
   const values: string[] = [];
   for (const root of roots.sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))) {
     for (const relative of [path.join("active", "canary"), path.join("active", "production")]) {
@@ -135,6 +146,7 @@ export async function runtimeEvolutionStateFingerprint(workspaceRoot: string, or
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   values.push(canonical(organizationSources));
+  values.push(canonical(sharedSources.map((item) => ({ ownerLevel: item.ownerLevel, ownerId: item.ownerId, companyId: item.companyId }))));
   return hash(values.join("\n"));
 }
 
@@ -156,6 +168,7 @@ async function evolutionSkillsForStage(
   stage: "canary" | "production",
   assignmentKey?: string,
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
+  sharedSource?: SharedEvolutionLayerSource,
 ): Promise<RuntimeEvolutionSkill[]> {
   const activeDir = path.join(workspaceRoot, ".autoagent", "evolution", "active", stage);
   let files: string[];
@@ -164,7 +177,7 @@ async function evolutionSkillsForStage(
   const projected: RuntimeEvolutionSkill[] = [];
   for (const file of files.sort()) {
     const pointer = parsePointer(await readFile(path.join(activeDir, file), "utf8"), stage);
-    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context) || !selected(pointer, assignmentKey)) continue;
+    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context, undefined, sharedSource) || !selected(pointer, assignmentKey)) continue;
     const manifestFile = safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json"));
     const manifest = parseRelease(await readFile(manifestFile, "utf8"));
     if (manifest.release.id !== pointer.release.id || manifest.release.contentHash !== pointer.release.contentHash || manifest.promotionId !== pointer.promotionId
@@ -216,6 +229,7 @@ async function evolutionExtensionsForStage(
   stage: "canary" | "production",
   assignmentKey?: string,
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
+  sharedSource?: SharedEvolutionLayerSource,
 ): Promise<RuntimeEvolutionExtension[]> {
   const activeDir = path.join(workspaceRoot, ".autoagent", "evolution", "active", stage);
   let files: string[];
@@ -224,7 +238,7 @@ async function evolutionExtensionsForStage(
   const projected: RuntimeEvolutionExtension[] = [];
   for (const file of files.sort()) {
     const pointer = parsePointer(await readFile(path.join(activeDir, file), "utf8"), stage);
-    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context) || !selected(pointer, assignmentKey)) continue;
+    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context, undefined, sharedSource) || !selected(pointer, assignmentKey)) continue;
     const release = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (release.release.id !== pointer.release.id || release.release.contentHash !== pointer.release.contentHash || release.promotionId !== pointer.promotionId
       || release.stage !== stage || !release.runtimeActive || !release.validationPassed || !["plugin", "harness"].includes(release.candidateKind) || !sameScope(release.scope, pointer.scope)) continue;
@@ -262,6 +276,7 @@ async function evolutionMemoriesForStage(
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
   storageWorkspaceId = workspaceId,
   organizationSource?: OrganizationMemorySource,
+  sharedSource?: SharedEvolutionLayerSource,
 ): Promise<RuntimeEvolutionMemory[]> {
   const activeDir = path.join(workspaceRoot, ".autoagent", "evolution", "active", stage);
   let files: string[];
@@ -271,7 +286,7 @@ async function evolutionMemoriesForStage(
   const lifecycle = new MemoryLifecycleStore(storageWorkspaceId, workspaceRoot);
   for (const file of files.sort()) {
     const pointer = parsePointer(await readFile(path.join(activeDir, file), "utf8"), stage);
-    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context, organizationSource) || !selected(pointer, assignmentKey)) continue;
+    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context, organizationSource, sharedSource) || !selected(pointer, assignmentKey)) continue;
     const manifest = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (manifest.release.id !== pointer.release.id || manifest.release.contentHash !== pointer.release.contentHash || manifest.promotionId !== pointer.promotionId
       || manifest.stage !== stage || !manifest.runtimeActive || !manifest.validationPassed || manifest.candidateKind !== "memory" || !sameScope(manifest.scope, pointer.scope)) continue;
@@ -301,6 +316,7 @@ async function evolutionDeclarativeAssetsForStage(
   stage: "canary" | "production",
   assignmentKey?: string,
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
+  sharedSource?: SharedEvolutionLayerSource,
 ): Promise<{ prompts: RuntimeEvolutionPrompt[]; agentProfiles: RuntimeEvolutionAgentProfile[] }> {
   const activeDir = path.join(workspaceRoot, ".autoagent", "evolution", "active", stage);
   let files: string[];
@@ -310,7 +326,7 @@ async function evolutionDeclarativeAssetsForStage(
   const agentProfiles: RuntimeEvolutionAgentProfile[] = [];
   for (const file of files.sort()) {
     const pointer = parsePointer(await readFile(path.join(activeDir, file), "utf8"), stage);
-    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context) || !selected(pointer, assignmentKey)) continue;
+    if (!pointer?.active || !pointer.release || !matchesScope(pointer, workspaceId, profile, agent, context, undefined, sharedSource) || !selected(pointer, assignmentKey)) continue;
     const release = parseRelease(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (release.release.id !== pointer.release.id || release.release.contentHash !== pointer.release.contentHash || release.promotionId !== pointer.promotionId
       || release.stage !== stage || !release.runtimeActive || !release.validationPassed || !["prompt", "agent_profile"].includes(release.candidateKind) || !sameScope(release.scope, pointer.scope)) continue;
@@ -364,7 +380,17 @@ export async function runtimeEvolutionProjection(
   agent: WorkspaceAgent,
   context: RuntimeEvolutionContext,
 ): Promise<RuntimeEvolutionProjection> {
-  const [productionSkills, localProductionMemories, productionExtensions, productionDeclarative, canarySkills, canaryMemories, canaryExtensions, canaryDeclarative, organizationMemorySets] = await Promise.all([
+  const sharedSetsPromise = Promise.all((context.sharedReleaseSources ?? []).map(async (source) => {
+    const storageWorkspaceId = `shared:${source.ownerLevel}:${source.ownerId}`;
+    const [skills, memories, extensions, declarative] = await Promise.all([
+      evolutionSkillsForStage(source.layerRoot, workspaceId, profile, agent, "production", undefined, context, source),
+      evolutionMemoriesForStage(source.layerRoot, workspaceId, profile, agent, "production", undefined, context, storageWorkspaceId, undefined, source),
+      evolutionExtensionsForStage(source.layerRoot, workspaceId, profile, agent, "production", undefined, context, source),
+      evolutionDeclarativeAssetsForStage(source.layerRoot, workspaceId, profile, agent, "production", undefined, context, source),
+    ]);
+    return { skills, memories, extensions, declarative };
+  }));
+  const [localProductionSkills, localProductionMemories, localProductionExtensions, localProductionDeclarative, canarySkills, canaryMemories, canaryExtensions, canaryDeclarative, organizationMemorySets, sharedSets] = await Promise.all([
     evolutionSkillsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
     evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
     evolutionExtensionsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
@@ -376,9 +402,16 @@ export async function runtimeEvolutionProjection(
     Promise.all((context.organizationMemorySources ?? []).map((source) => evolutionMemoriesForStage(
       source.workspaceRoot, workspaceId, profile, agent, "production", undefined, context, source.workspaceId, source,
     ))),
+    sharedSetsPromise,
   ]);
+  const productionSkills = resolveEvolutionLayers([...sharedSets.flatMap((item) => item.skills), ...localProductionSkills], (item) => item.name);
+  const productionExtensions = resolveEvolutionLayers([...sharedSets.flatMap((item) => item.extensions), ...localProductionExtensions], (item) => `${item.kind}:${item.name}`);
+  const productionDeclarative = {
+    prompts: resolveEvolutionLayers([...sharedSets.flatMap((item) => item.declarative.prompts), ...localProductionDeclarative.prompts], (item) => item.target),
+    agentProfiles: resolveEvolutionLayers([...sharedSets.flatMap((item) => item.declarative.agentProfiles), ...localProductionDeclarative.agentProfiles], (item) => item.target),
+  };
   const { memories: organizationMemories, conflicts: organizationConflicts } = resolveOrganizationMemoryConflicts(organizationMemorySets.flat());
-  const productionMemories = resolveEvolutionLayers([...organizationMemories, ...localProductionMemories], (item) => item.target);
+  const productionMemories = resolveEvolutionLayers([...organizationMemories, ...sharedSets.flatMap((item) => item.memories), ...localProductionMemories], (item) => item.target);
   const canaryAssignments = await matchingCanaryAssignments(workspaceRoot, workspaceId, profile, agent, context);
   const skills = resolveEvolutionLayers([...productionSkills, ...canarySkills], (item) => item.name);
   const memories = resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target).slice(0, 20);
@@ -490,13 +523,17 @@ function matchesScope(
   agent: WorkspaceAgent,
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
   organizationSource?: OrganizationMemorySource,
+  sharedSource?: SharedEvolutionLayerSource,
 ): boolean {
-  const identityMatches = pointer.scope.workspaceId === workspaceId || Boolean(
-    organizationSource
-    && pointer.scope.workspaceId === organizationSource.workspaceId
-    && pointer.scope.organization?.id === organizationSource.organizationId
-    && pointer.scope.organization.workspaceIds.includes(workspaceId),
-  );
+  const sharedIdentityMatches = Boolean(sharedSource
+    && pointer.scope.ownerLevel === sharedSource.ownerLevel
+    && (sharedSource.ownerLevel === "company" || pointer.scope.profileId === sharedSource.ownerId));
+  const identityMatches = sharedSource ? sharedIdentityMatches : pointer.scope.workspaceId === workspaceId || Boolean(
+      organizationSource
+      && pointer.scope.workspaceId === organizationSource.workspaceId
+      && pointer.scope.organization?.id === organizationSource.organizationId
+      && pointer.scope.organization.workspaceIds.includes(workspaceId),
+    );
   const ownerMatches = organizationSource && pointer.scope.ownerLevel === undefined
     ? true
     : matchesEvolutionOwner(scopeOf(pointer), workspaceId, agent);

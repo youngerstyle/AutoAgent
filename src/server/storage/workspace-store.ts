@@ -12,6 +12,8 @@ const registryMutationQueues = new Map<string, Promise<void>>();
 export class WorkspaceStore {
   constructor(private readonly homeDir: string) {}
 
+  homePath(): string { return this.homeDir; }
+
   async list(): Promise<Workspace[]> {
     return readJson<Workspace[]>(globalWorkspacesFile(this.homeDir), []);
   }

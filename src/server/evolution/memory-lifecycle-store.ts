@@ -34,15 +34,21 @@ export class MemoryLifecycleStore {
     if (candidate.kind !== "memory" || promotion.stage !== "production" || promotion.candidateId !== candidate.candidateId || promotion.toRelease.contentHash !== candidate.contentHash) {
       throw invalid("Only a matching production Memory release can enter lifecycle governance");
     }
-    const timestamp = promotion.createdAt;
+    return this.registerRelease(`register:${promotion.promotionId}`, promotion.toRelease, candidate.target, candidate.scope, promotion.createdAt, { promotionId: promotion.promotionId });
+  }
+
+  async registerRelease(commandId: string, releaseRef: PromotionRecord["toRelease"], target: string, scope: EvolutionCandidate["scope"], registeredAt: string, legacyFingerprint?: { promotionId: string }): Promise<MemoryLifecycleState> {
+    if (!commandId.trim() || !releaseRef.id || !releaseRef.version || !/^[a-f0-9]{64}$/.test(releaseRef.contentHash) || !target.trim()
+      || scope.workspaceId !== this.workspaceId || !Number.isFinite(Date.parse(registeredAt))) throw invalid("Immutable Memory release registration is invalid");
+    const timestamp = registeredAt;
     const state: MemoryLifecycleState = {
-      releaseId: promotion.toRelease.id, releaseRef: structuredClone(promotion.toRelease), target: candidate.target,
-      scope: structuredClone(candidate.scope), status: "active", pinned: false, registeredAt: timestamp, updatedAt: timestamp,
+      releaseId: releaseRef.id, releaseRef: structuredClone(releaseRef), target,
+      scope: structuredClone(scope), status: "active", pinned: false, registeredAt: timestamp, updatedAt: timestamp,
       useCount: 0, successfulEpisodeCount: 0, failedEpisodeCount: 0,
     };
     await this.append({
-      type: "memory.registered", commandId: `register:${promotion.promotionId}`, occurredAt: timestamp,
-      fingerprint: hash(JSON.stringify({ promotionId: promotion.promotionId, state })), state,
+      type: "memory.registered", commandId, occurredAt: timestamp,
+      fingerprint: hash(JSON.stringify(legacyFingerprint ? { promotionId: legacyFingerprint.promotionId, state } : { commandId, state })), state,
     });
     return (await this.get(state.releaseId))!;
   }

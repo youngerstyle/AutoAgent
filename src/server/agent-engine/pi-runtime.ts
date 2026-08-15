@@ -50,7 +50,7 @@ import { AttachmentStore } from "../storage/attachment-store.js";
 import { schemaValidationRecoveryHint } from "./tool-validation-feedback.js";
 import { EvolutionStore } from "../evolution/evolution-store.js";
 import { EvolutionEvaluationStore } from "../evolution/evaluation-store.js";
-import { runtimeEvolutionProjection, runtimeEvolutionStateFingerprint, type OrganizationMemorySource, type RuntimeEvolutionExtension, type RuntimeEvolutionMemory, type RuntimeEvolutionPrompt } from "../evolution/runtime-projection.js";
+import { runtimeEvolutionProjection, runtimeEvolutionStateFingerprint, type OrganizationMemorySource, type SharedEvolutionLayerSource, type RuntimeEvolutionExtension, type RuntimeEvolutionMemory, type RuntimeEvolutionPrompt } from "../evolution/runtime-projection.js";
 import { IsolatedPluginHost, pluginToolName } from "../evolution/plugin-host.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import {
@@ -137,6 +137,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       turnTimeoutMs?: number;
       turnInactivityTimeoutMs?: number;
       organizationMemorySources?: () => Promise<OrganizationMemorySource[]>;
+      sharedEvolutionLayerSources?: (profileId: string) => Promise<SharedEvolutionLayerSource[]>;
     } = {},
   ) {
     this.now = options.now ?? (() => new Date());
@@ -598,7 +599,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   private async requireSession(input: AgentExecutionSliceInput): Promise<SessionState> {
     const key = piWorkSessionKey(input.threadId, input.goalId);
     const organizationMemorySources = await this.options.organizationMemorySources?.() ?? [];
-    const runtimeEvolutionFingerprint = await runtimeEvolutionStateFingerprint(this.workspaceRoot, organizationMemorySources);
+    const sharedReleaseSources = await this.options.sharedEvolutionLayerSources?.(input.agent.profileId) ?? [];
+    const runtimeEvolutionFingerprint = await runtimeEvolutionStateFingerprint(this.workspaceRoot, organizationMemorySources, sharedReleaseSources);
     const existing = this.sessions.get(key);
     if (existing) {
       const state = await existing;
@@ -606,7 +608,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       this.sessions.delete(key);
       await abortPiSessionPromptly(state.session, DEFAULT_SESSION_ABORT_GRACE_MS);
     }
-    const pending = this.createSession(input, organizationMemorySources, runtimeEvolutionFingerprint);
+    const pending = this.createSession(input, organizationMemorySources, sharedReleaseSources, runtimeEvolutionFingerprint);
     this.sessions.set(key, pending);
     return pending;
   }
@@ -614,6 +616,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
   private async createSession(
     input: AgentExecutionSliceInput,
     organizationMemorySources: OrganizationMemorySource[],
+    sharedReleaseSources: SharedEvolutionLayerSource[],
     runtimeEvolutionFingerprint: string,
   ): Promise<SessionState> {
     const sessionDir = piWorkSessionDirectory(
@@ -653,6 +656,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         taskType: input.taskType,
         tools: input.policy.enabledTools ?? [],
         organizationMemorySources,
+        sharedReleaseSources,
       },
     );
     const evolvedSkills = evolutionProjection.skills;
