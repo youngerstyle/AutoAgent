@@ -263,6 +263,8 @@ Agent 可以从自己的重复 Episode 中提出任意 Practice hypothesis。系
 
 Practice 通过评测后成为对应 scope 的 release。Memory、Prompt、Skill 在下一 turn 生效；Workflow 在下一 task 生效；Local Plugin 在下一 session 生效。
 
+Local Plugin 不允许由固定脚本模板伪装成“自进化”。只有 Practice 的权威归因明确落在 tool capability 时，Binding 才创建 Plugin authoring job；配置的真实 Provider 根据该 Practice 编写最小权限 PluginBundle。生成物只成为 `critical` 风险 Candidate，必须经过不可变来源校验、静态 scanner、独立评测和人工批准，之后才可在下一 session 加载。Provider 不可用时 job 保持 pending；生成或扫描失败进入可重试/死信状态，绝不降级为自动执行源码或普通 Skill。
+
 允许的晋升路径：
 
 ```text

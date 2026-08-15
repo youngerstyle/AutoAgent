@@ -45,7 +45,8 @@ export class PracticeBindingCompiler {
 
 function bindingKinds(components: AttributionComponent[]): EvolutionArtifactKind[] {
   const kinds = components.map((component): EvolutionArtifactKind | undefined => {
-    if (["memory", "tool", "provider", "environment"].includes(component)) return "memory";
+    if (["memory", "provider", "environment"].includes(component)) return "memory";
+    if (component === "tool") return "plugin";
     if (component === "prompt") return "prompt";
     if (component === "skill") return "skill";
     if (["workflow", "plan"].includes(component)) return "workflow";
@@ -64,6 +65,7 @@ function versionedPracticeRef(practice: EvolutionPractice): VersionedEvolutionRe
 }
 function targetFor(practice: EvolutionPractice, kind: EvolutionArtifactKind): string {
   if (kind === "workflow") return DEFAULT_PLAN_TEMPLATE_ID;
+  if (kind === "plugin") return `practice_plugin_${hash(`${practice.practiceId}:${practice.version}`).slice(0, 16)}`;
   return `practice.${kind}.${hash(`${practice.practiceId}:${practice.version}`).slice(0, 16)}`;
 }
 function candidateInput(practice: EvolutionPractice, practiceRef: VersionedEvolutionRef, kind: "memory" | "prompt" | "skill" | "workflow", target: string) {

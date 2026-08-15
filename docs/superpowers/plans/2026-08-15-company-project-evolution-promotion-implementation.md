@@ -99,7 +99,8 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 - [x] 建立确定性 project treatment/control assignment 与由 Episode/Trace/Activation/Evidence 权威账本自动派生的效果窗口。
 - [ ] 支持 agent-project、agent、project 三类局部 active pointer 与独立 rollback。
 - [ ] 将 Practice Binding 编译为 Memory/Prompt/Skill/Workflow/Plugin release。
-  - 已完成 Memory/Prompt/Skill/Workflow；Workflow 由 Practice 内容生成可验证的完整 Plan artifact，并在 next-task 边界按 company < agent < project < agent-project 解析。Local Plugin 仍需独立安全 authoring worker，不能用文本 Skill 冒充。
+  - 已完成 Memory/Prompt/Skill/Workflow；Workflow 由 Practice 内容生成可验证的完整 Plan artifact，并在 next-task 边界按 company < agent < project < agent-project 解析。
+  - Local Plugin 使用 durable authoring job 和配置的真实 Provider 生成最小权限 PluginBundle；无 Provider 时保持 pending，产物始终作为 critical Candidate 经过 scanner、评测、人工批准和 next-session 激活，不能用文本 Skill 冒充。
 - [ ] 在对应 next-turn/next-task/next-session 边界继承和回滚。
 
 ## Milestone E：公司推广

@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { CompanyEvolutionTrial, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
+import type { CompanyEvolutionTrial, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PluginAuthoringJob, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -200,6 +200,7 @@ export interface EvolutionOverview {
   practiceDrafts: EvolutionPracticeDraft[];
   practices: EvolutionPractice[];
   practiceBindings: EvolutionPracticeBinding[];
+  pluginAuthoringJobs: PluginAuthoringJob[];
   scopePromotions: EvolutionScopePromotionProposal[];
   companyTrials: CompanyEvolutionTrial[];
   companyTrialEvidence: CompanyTrialEvidence[];
@@ -215,14 +216,14 @@ export async function getEvolutionOverview(workspaceId: string): Promise<Evoluti
     api<{ jobs: EvaluationJob[] }>(`${root}/evaluation-jobs`),
     api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
     api<{ activations: EvolutionActivationRecord[]; proofs: EvolutionInheritanceProof[] }>(`${root}/activations`),
-    api<{ drafts: EvolutionPracticeDraft[]; practices: EvolutionPractice[]; bindings: EvolutionPracticeBinding[] }>(`${root}/practices`),
+    api<{ drafts: EvolutionPracticeDraft[]; practices: EvolutionPractice[]; bindings: EvolutionPracticeBinding[]; pluginAuthoringJobs: PluginAuthoringJob[] }>(`${root}/practices`),
     api<{ company: { companyId: string }; proposals: EvolutionScopePromotionProposal[]; trials: CompanyEvolutionTrial[]; trialEvidence: CompanyTrialEvidence[] }>(`${root}/scope-promotions`),
     api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
   ]);
   return {
     candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories,
     activations: activations.activations, inheritanceProofs: activations.proofs,
-    practiceDrafts: practices.drafts, practices: practices.practices, practiceBindings: practices.bindings,
+    practiceDrafts: practices.drafts, practices: practices.practices, practiceBindings: practices.bindings, pluginAuthoringJobs: practices.pluginAuthoringJobs,
     scopePromotions: promotions.proposals, companyTrials: promotions.trials, companyTrialEvidence: promotions.trialEvidence, companyId: promotions.company.companyId, worker: worker.worker,
   };
 }

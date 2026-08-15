@@ -22,6 +22,7 @@ import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type Runti
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { CompanyIdentityStore } from "../storage/company-identity-store.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
+import { ProviderPluginArtifactAuthor } from "../evolution/plugin-authoring-worker.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -48,6 +49,7 @@ export class RuntimeHostRegistry {
     this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
       evaluatorProgramPath: options.evolutionEvaluatorProgramPath,
       intervalMs: options.evolutionWorkerIntervalMs,
+      pluginArtifactAuthor: new ProviderPluginArtifactAuthor(providers),
     });
   }
 

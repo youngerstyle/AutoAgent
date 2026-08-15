@@ -2504,6 +2504,7 @@ function EvolutionHub(props: {
   const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
   const practices = props.overview?.practices ?? [];
   const practiceBindings = props.overview?.practiceBindings ?? [];
+  const pluginAuthoringJobs = props.overview?.pluginAuthoringJobs ?? [];
   const scopePromotions = props.overview?.scopePromotions ?? [];
   const companyTrials = props.overview?.companyTrials ?? [];
   const companyTrialEvidence = props.overview?.companyTrialEvidence ?? [];
@@ -2556,6 +2557,7 @@ function EvolutionHub(props: {
                     <span className={`evolution-status ${practice.status}`}>{practice.status}</span>
                     <p>{practice.procedure}</p>
                     <code>{practice.practiceId} · bindings {bindings.map((binding) => `${binding.kind}:${binding.status}`).join(", ") || "none"}</code>
+                    {pluginAuthoringJobs.filter((job) => job.practiceId === practice.practiceId && job.practiceVersion === practice.version).map((job) => <small key={job.jobId}>Plugin authoring {job.status} · attempts {job.attempts}/{job.maxAttempts}{job.lastError ? ` · ${job.lastError}` : ""}</small>)}
                   </article>;
                 }) : <p className="evolution-empty">尚无经过 Dream consolidation 的 Practice。</p>}
               </div>

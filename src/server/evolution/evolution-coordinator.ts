@@ -29,6 +29,7 @@ import { ScopePromotionCandidateCompiler } from "./scope-promotion-compiler.js";
 import { SharedEvolutionReleaseRegistry } from "./shared-release-registry.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
+import { PluginAuthoringWorker, type PluginArtifactAuthor } from "./plugin-authoring-worker.js";
 
 export class EvolutionCoordinator {
   private timer?: ReturnType<typeof setInterval>;
@@ -48,6 +49,7 @@ export class EvolutionCoordinator {
       maxReflectionSignalsPerWorkspace?: number;
       now?: () => Date;
       workerId?: string;
+      pluginArtifactAuthor?: PluginArtifactAuthor;
     } = {},
   ) {
     this.workerId = options.workerId ?? `evolution-coordinator:${os.hostname()}:${process.pid}`;
@@ -187,6 +189,7 @@ export class EvolutionCoordinator {
       new PracticeBindingStore(workspace.rootPath, () => this.now()),
       new EvolutionStore(workspace.id, workspace.rootPath, () => this.now()),
     ).compile();
+    if (this.options.pluginArtifactAuthor) await new PluginAuthoringWorker(workspace.id, workspace.rootPath, this.options.pluginArtifactAuthor, () => this.now()).run();
     return result.bindingsProposed;
   }
 

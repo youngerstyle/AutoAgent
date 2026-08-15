@@ -459,6 +459,22 @@ export interface EvolutionPracticeBinding {
   updatedAt: string;
 }
 
+export interface PluginAuthoringJob {
+  jobId: string;
+  commandId: string;
+  bindingId: string;
+  practiceId: string;
+  practiceVersion: number;
+  status: "pending" | "running" | "retry_wait" | "succeeded" | "dead_letter";
+  attempts: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt?: string;
+  candidateId?: string;
+  lastError?: string;
+}
+
 export type EvolutionOwnerLevel = "agent_project" | "agent" | "project" | "company";
 export type ScopePromotionStatus = "proposed" | "reviewed" | "trial" | "approved" | "rejected";
 

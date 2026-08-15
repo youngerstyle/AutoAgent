@@ -27,6 +27,7 @@ import { ScopePromotionEvidenceService } from "../evolution/scope-promotion-evid
 import { CompanyTrialStore } from "../evolution/company-trial-store.js";
 import { CompanyTrialReleaseRegistry } from "../evolution/company-trial-registry.js";
 import { CompanyTrialEvidenceStore } from "../evolution/company-trial-evidence-store.js";
+import { PluginAuthoringJobStore } from "../evolution/plugin-authoring-job-store.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import { listWorkspaceAgents } from "../agents/roster.js";
 
@@ -128,6 +129,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
       drafts: await new PracticeDraftStore(workspace.id, workspace.rootPath).list(),
       practices: await new PracticeStore(workspace.id, workspace.rootPath).list(),
       bindings: await new PracticeBindingStore(workspace.rootPath).list(),
+      pluginAuthoringJobs: await new PluginAuthoringJobStore(workspace.rootPath).list(),
     });
   }));
   router.get("/scope-promotions", asyncHandler(async (_req, res) => {
