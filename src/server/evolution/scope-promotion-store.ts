@@ -51,9 +51,35 @@ export class ScopePromotionStore {
       const current = (await this.project(events)).get(proposalId);
       if (!current) throw new HttpError(404, "Scope promotion proposal not found", "SCOPE_PROMOTION_NOT_FOUND");
       if (["reviewed", "trial", "approved"].includes(targetStatus) && !current.evidenceVerification) throw conflict("Scope promotion evidence has not been verified against authoritative ledgers");
+      if (targetStatus === "trial" && current.targetScope.ownerLevel === "company" && !current.trialRefs?.length) throw conflict("Company promotion cannot enter trial before a cross-project trial Release is deployed");
+      if (targetStatus === "approved" && current.targetScope.ownerLevel === "company" && !current.trialEvidenceRefs?.length) throw conflict("Company promotion requires verified cross-project trial evidence before approval");
       if (!allowed(current.status, targetStatus, current.targetScope)) throw conflict(`Scope promotion cannot move from ${current.status} to ${targetStatus}`);
       if (["reviewed", "approved", "rejected"].includes(targetStatus) && reviewedBy.type !== "human") throw new HttpError(403, "Scope promotion review requires a human", "SCOPE_PROMOTION_HUMAN_REQUIRED");
       const next: EvolutionScopePromotionProposal = { ...current, status: targetStatus, reviewedBy: structuredClone(reviewedBy), updatedAt: this.now().toISOString() };
+      await this.append(commandId, next); return next;
+    });
+  }
+
+  async attachTrial(commandId: string, proposalId: string, trialId: string): Promise<EvolutionScopePromotionProposal> {
+    if (!commandId.trim() || !trialId.trim()) throw invalid("Scope promotion trial attachment is invalid");
+    return this.exclusive(async () => {
+      const events = await this.readEvents(); const replay = events.find((event) => event.commandId === commandId);
+      if (replay) return replay.proposal;
+      const current = (await this.project(events)).get(proposalId);
+      if (!current || current.targetScope.ownerLevel !== "company" || current.status !== "reviewed") throw conflict("Only a reviewed Company proposal can receive a trial");
+      const next = { ...current, trialRefs: unique([...(current.trialRefs ?? []), trialId]), updatedAt: this.now().toISOString() };
+      await this.append(commandId, next); return next;
+    });
+  }
+
+  async attachTrialEvidence(commandId: string, proposalId: string, evidenceRef: string): Promise<EvolutionScopePromotionProposal> {
+    if (!commandId.trim() || !evidenceRef.trim()) throw invalid("Scope promotion trial evidence attachment is invalid");
+    return this.exclusive(async () => {
+      const events = await this.readEvents(); const replay = events.find((event) => event.commandId === commandId);
+      if (replay) return replay.proposal;
+      const current = (await this.project(events)).get(proposalId);
+      if (!current || current.status !== "trial" || !current.trialRefs?.length) throw conflict("Only an active Company trial can receive evidence");
+      const next = { ...current, trialEvidenceRefs: unique([...(current.trialEvidenceRefs ?? []), evidenceRef]), updatedAt: this.now().toISOString() };
       await this.append(commandId, next); return next;
     });
   }

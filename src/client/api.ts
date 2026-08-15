@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
+import type { CompanyEvolutionTrial, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -201,6 +201,8 @@ export interface EvolutionOverview {
   practices: EvolutionPractice[];
   practiceBindings: EvolutionPracticeBinding[];
   scopePromotions: EvolutionScopePromotionProposal[];
+  companyTrials: CompanyEvolutionTrial[];
+  companyTrialEvidence: CompanyTrialEvidence[];
   companyId: string;
   worker: EvolutionWorkerStatus;
 }
@@ -214,19 +216,23 @@ export async function getEvolutionOverview(workspaceId: string): Promise<Evoluti
     api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
     api<{ activations: EvolutionActivationRecord[]; proofs: EvolutionInheritanceProof[] }>(`${root}/activations`),
     api<{ drafts: EvolutionPracticeDraft[]; practices: EvolutionPractice[]; bindings: EvolutionPracticeBinding[] }>(`${root}/practices`),
-    api<{ company: { companyId: string }; proposals: EvolutionScopePromotionProposal[] }>(`${root}/scope-promotions`),
+    api<{ company: { companyId: string }; proposals: EvolutionScopePromotionProposal[]; trials: CompanyEvolutionTrial[]; trialEvidence: CompanyTrialEvidence[] }>(`${root}/scope-promotions`),
     api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
   ]);
   return {
     candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories,
     activations: activations.activations, inheritanceProofs: activations.proofs,
     practiceDrafts: practices.drafts, practices: practices.practices, practiceBindings: practices.bindings,
-    scopePromotions: promotions.proposals, companyId: promotions.company.companyId, worker: worker.worker,
+    scopePromotions: promotions.proposals, companyTrials: promotions.trials, companyTrialEvidence: promotions.trialEvidence, companyId: promotions.company.companyId, worker: worker.worker,
   };
 }
 
 export function transitionEvolutionScopePromotion(workspaceId: string, proposalId: string, status: Exclude<ScopePromotionStatus, "proposed">): Promise<{ proposal: EvolutionScopePromotionProposal }> {
   return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/transition`, { method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), status }) });
+}
+
+export function deployEvolutionCompanyTrial(workspaceId: string, proposalId: string, targetWorkspaceId: string, targetProfileId: string): Promise<{ trial: CompanyEvolutionTrial; proposal: EvolutionScopePromotionProposal }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/trials`, { method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), targetWorkspaceId, targetProfileId, percentage: 20, minimumSamplesPerArm: 5 }) });
 }
 
 export function rollbackEvolutionScopePromotion(workspaceId: string, proposalId: string): Promise<unknown> {

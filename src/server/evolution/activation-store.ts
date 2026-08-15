@@ -70,6 +70,7 @@ export class EvolutionActivationStore {
     releaseRef: VersionedEvolutionRef;
     desiredGeneration: number;
     previousRelease?: VersionedEvolutionRef;
+    stage?: "canary" | "production";
   }): Promise<EvolutionActivationRecord> {
     if (!input.promotionId || !input.candidateId || !input.target || !Number.isSafeInteger(input.desiredGeneration) || input.desiredGeneration < 1) throw new Error("Shared evolution activation input is invalid");
     const commandId = `shared-pointer:${input.promotionId}:${input.desiredGeneration}`;
@@ -84,7 +85,7 @@ export class EvolutionActivationStore {
       candidateId: input.candidateId,
       assetKind: input.assetKind,
       target: input.target,
-      stage: "production",
+      stage: input.stage ?? "production",
       boundary: DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[input.assetKind],
       desiredGeneration: input.desiredGeneration,
       releaseRef: structuredClone(input.releaseRef),

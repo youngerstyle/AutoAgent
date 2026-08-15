@@ -24,6 +24,11 @@ import { CompanyIdentityStore } from "../storage/company-identity-store.js";
 import { ScopePromotionStore } from "../evolution/scope-promotion-store.js";
 import { SharedEvolutionReleaseRegistry } from "../evolution/shared-release-registry.js";
 import { ScopePromotionEvidenceService } from "../evolution/scope-promotion-evidence.js";
+import { CompanyTrialStore } from "../evolution/company-trial-store.js";
+import { CompanyTrialReleaseRegistry } from "../evolution/company-trial-registry.js";
+import { CompanyTrialEvidenceStore } from "../evolution/company-trial-evidence-store.js";
+import { globalEvolutionLayerRoot } from "../storage/paths.js";
+import { listWorkspaceAgents } from "../agents/roster.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -127,7 +132,30 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   }));
   router.get("/scope-promotions", asyncHandler(async (_req, res) => {
     const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
-    res.json({ company: identity, proposals: await new ScopePromotionStore(workspaces.homePath(), identity.companyId).list() });
+    const proposals = new ScopePromotionStore(workspaces.homePath(), identity.companyId);
+    const trials = new CompanyTrialStore(workspaces.homePath(), identity.companyId);
+    const evidence = new CompanyTrialEvidenceStore(workspaces.homePath(), identity.companyId, trials, proposals);
+    res.json({ company: identity, proposals: await proposals.list(), trials: await trials.list(), trialEvidence: await evidence.list() });
+  }));
+  router.post("/scope-promotions/:proposalId/trials", asyncHandler(async (req, res) => {
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const proposals = new ScopePromotionStore(workspaces.homePath(), identity.companyId);
+    const proposal = await proposals.get(String(req.params.proposalId));
+    const target = await workspaces.get(String(req.body?.targetWorkspaceId ?? ""));
+    const targetProfileId = String(req.body?.targetProfileId ?? "");
+    const targetAgent = (await listWorkspaceAgents(target)).find((agent) => agent.profileId === targetProfileId);
+    if (!targetAgent) throw new HttpError(409, "Company trial target Agent is not assigned to the target project", "COMPANY_TRIAL_AGENT_NOT_FOUND");
+    const sourceRoot = proposal.origin.ownerLevel === "agent"
+      ? globalEvolutionLayerRoot(workspaces.homePath(), "agent", proposal.origin.profileId ?? "")
+      : (await workspaces.get(proposal.origin.workspaceId ?? "")).rootPath;
+    const trial = await new CompanyTrialReleaseRegistry(workspaces.homePath(), identity.companyId, proposals).deploy({
+      commandId: typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), proposalId: proposal.proposalId,
+      sourceRoot, targetWorkspaceId: target.id, targetWorkspaceRoot: target.rootPath, targetProfileId, targetAgentId: targetAgent.id,
+      ...(req.body?.percentage !== undefined ? { percentage: Number(req.body.percentage) } : {}),
+      ...(typeof req.body?.salt === "string" ? { salt: req.body.salt } : {}),
+      ...(req.body?.minimumSamplesPerArm !== undefined ? { minimumSamplesPerArm: Number(req.body.minimumSamplesPerArm) } : {}),
+    });
+    res.status(201).json({ trial, proposal: await proposals.get(proposal.proposalId) });
   }));
   router.post("/scope-promotions", asyncHandler(async (req, res) => {
     const workspaceId = String(req.params.workspaceId);

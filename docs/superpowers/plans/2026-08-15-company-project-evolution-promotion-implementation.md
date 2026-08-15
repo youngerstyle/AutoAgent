@@ -96,7 +96,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 ## Milestone D：个人与项目实验
 
-- [ ] 建立 project treatment/control assignment 与效果窗口。
+- [x] 建立确定性 project treatment/control assignment 与由 Episode/Trace/Activation/Evidence 权威账本自动派生的效果窗口。
 - [ ] 支持 agent-project、agent、project 三类局部 active pointer 与独立 rollback。
 - [ ] 将 Practice Binding 编译为 Memory/Prompt/Skill/Workflow/Plugin release。
 - [ ] 在对应 next-turn/next-task/next-session 边界继承和回滚。
@@ -105,8 +105,8 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 - [x] 支持 agent-project -> agent、agent-project -> project、agent/project -> company 的显式 Promotion Proposal，并用 active Release、Activation Proof、passing Telemetry 三类权威账本校验来源证据。
 - [ ] 公司评审 generalizability、脱敏、适用范围、成本和风险。
-- [ ] 在其他代表性项目运行 company trial。
-- [ ] 通过跨项目效果门禁后发布 company active release。
+- [x] 将 reviewed Company 提案以受限 agent-project canary 部署到其他代表性项目和其他 Agent，并在窗口完成后自动关闭。
+- [x] 只有跨项目 selected/control、继承、回归和安全证据通过后才允许批准并由既有发布 worker 写 company active release。
 
 ## Milestone F：分层解析与管理面
 

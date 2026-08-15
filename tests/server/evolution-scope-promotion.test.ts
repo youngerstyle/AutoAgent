@@ -36,7 +36,10 @@ describe("Evolution scope promotion", () => {
     });
     await expect(store.transition("approve-too-early", proposal.proposalId, "approved", { type: "human", id: "owner" })).rejects.toMatchObject({ code: "SCOPE_PROMOTION_CONFLICT" });
     await store.transition("review-company", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await store.attachTrial("attach-company-trial", proposal.proposalId, "trial-a");
     await store.transition("trial-company", proposal.proposalId, "trial", { type: "system", id: "trial-worker" });
+    await expect(store.transition("approve-without-evidence", proposal.proposalId, "approved", { type: "human", id: "owner" })).rejects.toMatchObject({ code: "SCOPE_PROMOTION_CONFLICT" });
+    await store.attachTrialEvidence("attach-company-trial-evidence", proposal.proposalId, "trial-effect-a");
     expect(await store.transition("approve-company", proposal.proposalId, "approved", { type: "human", id: "owner" })).toMatchObject({ status: "approved" });
   });
 

@@ -331,6 +331,8 @@ project_production
 
 个人 Practice 也可以作为公司推广来源，但 company trial 必须由其他 Agent 执行，避免把某个 Agent 的个人优势误判成可复用公司方法。
 
+实现约束：`reviewed -> trial` 不能由一个裸状态迁移完成。系统必须先创建不可变 `CompanyEvolutionTrial`，把来源 Release 作为受限 `agent_project` canary 部署到非来源 Workspace 的其他稳定 `profileId` 实例，并声明确定性 selected/control rollout、观察单位和每组最小样本。Runtime Trace 记录每个任务的 assignment；selected 样本必须同时存在对应 Release 的 Activation inheritance proof，control 样本必须证明未加载该 Release。后台 reconciler 只能从完成的 Episode、Trace、Activation Ledger 和 Evidence Ledger 派生效果，达到两组最小样本且改善、回归、安全门禁通过后才附加不可变 trial evidence。效果窗口结束立即关闭 trial pointer；`trial -> approved` 必须存在 passing trial evidence，不能通过 API 手填结果或直接修改状态绕过。
+
 ## 10. 解析优先级
 
 Runtime 使用与 OpenFeature context merging 相似的确定性覆盖顺序：

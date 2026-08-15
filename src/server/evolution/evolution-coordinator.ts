@@ -14,6 +14,7 @@ import { EvolutionAssetSelector } from "./asset-selector.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
+import { CompanyTrialReconciler } from "./company-trial-reconciler.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { EvolutionSignalIngestor } from "./evolution-signal-ingestor.js";
 import { EvolutionReflectionWorker } from "./reflection-worker.js";
@@ -229,6 +230,7 @@ export class EvolutionCoordinator {
     await this.prepareAutomatedEvaluations(workspace, candidates);
     await new MemoryLifecycleStore(workspace.id, workspace.rootPath, () => this.now()).maintain();
     await new CanaryTelemetryReconciler(workspace, () => this.now()).reconcile();
+    await new CompanyTrialReconciler(this.workspaces.homePath(), workspace, () => this.now()).reconcile();
   }
 
   private async runEvaluations(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {

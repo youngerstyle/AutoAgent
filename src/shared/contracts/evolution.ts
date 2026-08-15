@@ -479,11 +479,56 @@ export interface EvolutionScopePromotionProposal {
     inheritanceProofCount: number;
     effectWindowCount: number;
   };
+  trialRefs?: string[];
+  trialEvidenceRefs?: string[];
   generalizationRisks: string[];
   status: ScopePromotionStatus;
   reviewedBy?: EvolutionPrincipalRef;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CompanyEvolutionTrial {
+  trialId: string;
+  commandId: string;
+  companyId: string;
+  proposalId: string;
+  practiceRef: VersionedEvolutionRef;
+  originReleaseRef: VersionedEvolutionRef;
+  trialReleaseRef: VersionedEvolutionRef;
+  source: { ownerLevel: "agent" | "project"; workspaceId?: string; profileId?: string };
+  target: { workspaceId: string; profileId: string; agentId: string };
+  assignment: { unit: "runtime_assignment"; percentage: number; salt: string; minimumSamplesPerArm: number };
+  status: "deployed" | "evidence_ready" | "failed" | "rolled_back";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CompanyTrialObservation {
+  observationId: string;
+  assignmentKey: string;
+  arm: "selected" | "control";
+  traceRef: EvolutionSourceRef;
+  inheritanceProofRef?: string;
+  evidenceRefs: EvolutionSourceRef[];
+  result: EvaluationObservation;
+}
+
+export interface CompanyTrialEvidence {
+  evidenceId: string;
+  commandId: string;
+  companyId: string;
+  proposalId: string;
+  trialId: string;
+  trialReleaseRef: VersionedEvolutionRef;
+  selectedSampleSize: number;
+  controlSampleSize: number;
+  observations: CompanyTrialObservation[];
+  aggregateMetrics: MetricResult[];
+  decision: "pass" | "fail" | "inconclusive";
+  startedAt: string;
+  endedAt: string;
+  createdAt: string;
 }
 
 export interface ValidateEvolutionCandidateInput {

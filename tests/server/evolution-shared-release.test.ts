@@ -100,7 +100,9 @@ describe("shared Agent and Company evolution releases", () => {
       inheritanceProofRefs: ["proof-source"], effectWindowRefs: ["effect-source"], generalizationRisks: ["May vary with project topology"],
     });
     await proposals.transition("company-review", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await proposals.attachTrial("attach-company-trial", proposal.proposalId, "trial-company");
     await proposals.transition("company-trial", proposal.proposalId, "trial", { type: "system", id: "trial-worker" });
+    await proposals.attachTrialEvidence("attach-company-evidence", proposal.proposalId, "trial-effect-company");
     await proposals.transition("company-approve", proposal.proposalId, "approved", { type: "human", id: "owner" });
     await new SharedEvolutionReleaseRegistry(firstHome, firstCompany.companyId, proposals).publishApproved(proposal.proposalId, sourceRoot);
 

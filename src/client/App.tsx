@@ -53,6 +53,7 @@ import {
   reconcileEvolution,
   restoreEvolutionMemory,
   rollbackEvolutionScopePromotion,
+  deployEvolutionCompanyTrial,
   transitionEvolutionScopePromotion,
   pauseTask,
   removeWorkspaceAgent,
@@ -974,6 +975,7 @@ export function App() {
               onPin={(releaseId, pinned) => void runEvolutionAction(() => pinEvolutionMemory(selectedId, releaseId, pinned))}
               onRestore={(releaseId) => void runEvolutionAction(() => restoreEvolutionMemory(selectedId, releaseId))}
               onScopeTransition={(proposalId, status) => void runEvolutionAction(() => transitionEvolutionScopePromotion(selectedId, proposalId, status))}
+              onDeployTrial={(proposalId, targetWorkspaceId, targetProfileId) => void runEvolutionAction(() => deployEvolutionCompanyTrial(selectedId, proposalId, targetWorkspaceId, targetProfileId))}
               onScopeRollback={(proposalId) => void runEvolutionAction(() => rollbackEvolutionScopePromotion(selectedId, proposalId))}
             />
           ) : null}
@@ -2491,6 +2493,7 @@ function EvolutionHub(props: {
   onPin: (releaseId: string, pinned: boolean) => void;
   onRestore: (releaseId: string) => void;
   onScopeTransition: (proposalId: string, status: "reviewed" | "trial" | "approved" | "rejected") => void;
+  onDeployTrial: (proposalId: string, targetWorkspaceId: string, targetProfileId: string) => void;
   onScopeRollback: (proposalId: string) => void;
 }) {
   const candidates = props.overview?.candidates ?? [];
@@ -2502,6 +2505,10 @@ function EvolutionHub(props: {
   const practices = props.overview?.practices ?? [];
   const practiceBindings = props.overview?.practiceBindings ?? [];
   const scopePromotions = props.overview?.scopePromotions ?? [];
+  const companyTrials = props.overview?.companyTrials ?? [];
+  const companyTrialEvidence = props.overview?.companyTrialEvidence ?? [];
+  const [trialTargetWorkspaceId, setTrialTargetWorkspaceId] = useState("");
+  const [trialTargetProfileId, setTrialTargetProfileId] = useState("");
   const localAssetKinds = new Set(["memory", "prompt", "skill", "plugin", "harness"]);
   const localCandidates = candidates.filter((item) => localAssetKinds.has(item.kind));
   const localCandidateIds = new Set(localCandidates.map((item) => item.candidateId));
@@ -2565,12 +2572,20 @@ function EvolutionHub(props: {
                     <code>{proposal.originReleaseRef.id}@{proposal.originReleaseRef.version}</code>
                     <div className="memory-actions">
                       {proposal.status === "proposed" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "reviewed")} disabled={props.loading}>评审通过</button> : null}
-                      {proposal.status === "reviewed" && proposal.targetScope.ownerLevel === "company" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "trial")} disabled={props.loading}>进入跨项目 Trial</button> : null}
+                      {proposal.status === "reviewed" && proposal.targetScope.ownerLevel === "company" ? <>
+                        <input aria-label="Trial target workspace ID" placeholder="目标 Workspace ID" value={trialTargetWorkspaceId} onChange={(event) => setTrialTargetWorkspaceId(event.target.value)} />
+                        <input aria-label="Trial target profile ID" placeholder="其他 Agent profileId" value={trialTargetProfileId} onChange={(event) => setTrialTargetProfileId(event.target.value)} />
+                        <button type="button" onClick={() => props.onDeployTrial(proposal.proposalId, trialTargetWorkspaceId, trialTargetProfileId)} disabled={props.loading || !trialTargetWorkspaceId.trim() || !trialTargetProfileId.trim()}>部署跨项目 Trial</button>
+                      </> : null}
                       {proposal.status === "reviewed" && proposal.targetScope.ownerLevel !== "company" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "approved")} disabled={props.loading}>批准晋升</button> : null}
-                      {proposal.status === "trial" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "approved")} disabled={props.loading}>批准公司发布</button> : null}
+                      {proposal.status === "trial" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "approved")} disabled={props.loading || !proposal.trialEvidenceRefs?.length}>批准公司发布</button> : null}
                       {["proposed", "reviewed", "trial"].includes(proposal.status) ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "rejected")} disabled={props.loading}>拒绝</button> : null}
                       {proposal.status === "approved" && ["agent", "company"].includes(proposal.targetScope.ownerLevel) ? <button type="button" onClick={() => props.onScopeRollback(proposal.proposalId)} disabled={props.loading}>回滚共享层</button> : null}
                     </div>
+                    {companyTrials.filter((trial) => trial.proposalId === proposal.proposalId).map((trial) => {
+                      const evidence = companyTrialEvidence.filter((item) => item.trialId === trial.trialId);
+                      return <small key={trial.trialId}>Trial {trial.status} · {trial.target.workspaceId}/{trial.target.profileId} · selected {trial.assignment.percentage}% · min {trial.assignment.minimumSamplesPerArm}/arm · evidence {evidence.map((item) => `${item.decision}:${item.selectedSampleSize}/${item.controlSampleSize}`).join(", ") || "pending"}</small>;
+                    })}
                   </article>
                 )) : <p className="evolution-empty">尚无范围扩大提案；局部成功不会自动影响其他 Agent 或项目。</p>}
               </div>
