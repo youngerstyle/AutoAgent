@@ -1,6 +1,7 @@
 import type { EvolutionPracticeDraft, MetricExpectation } from "../../shared/contracts/evolution.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { PracticeStore } from "./practice-store.js";
+import { EvolutionPhaseJobStore } from "./phase-job-store.js";
 
 export interface DreamResult { draftsInspected: number; clustersEligible: number; clustersConflicted: number; practicesProduced: number }
 
@@ -11,9 +12,23 @@ export class EvolutionDreamWorker {
     private readonly practices: PracticeStore,
   ) {}
 
-  async run(minimumIndependentEpisodes = 2): Promise<DreamResult> {
+  async runNext(workerId: string, jobs: EvolutionPhaseJobStore, minimumIndependentEpisodes = 2): Promise<DreamResult | undefined> {
+    const job = await jobs.claim("consolidation", workerId);
+    if (!job) return undefined;
+    try {
+      const result = await this.run(minimumIndependentEpisodes, job.sourceDraftRefs);
+      await jobs.succeed(job.jobId, job.lease!.token);
+      return result;
+    } catch (error) {
+      await jobs.fail(job.jobId, job.lease!.token, { category: "transient", message: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  async run(minimumIndependentEpisodes = 2, sourceDraftRefs?: string[]): Promise<DreamResult> {
     if (!Number.isSafeInteger(minimumIndependentEpisodes) || minimumIndependentEpisodes < 2) throw new Error("Dream evidence threshold must be at least two independent episodes");
-    const pending = (await this.drafts.list()).filter((draft) => draft.status === "draft");
+    const selected = sourceDraftRefs ? new Set(sourceDraftRefs) : undefined;
+    const pending = (await this.drafts.list()).filter((draft) => draft.status === "draft" && (!selected || selected.has(draft.draftId)));
     const clusters = new Map<string, EvolutionPracticeDraft[]>();
     for (const draft of pending) {
       const key = clusterKey(draft); const values = clusters.get(key) ?? []; values.push(draft); clusters.set(key, values);

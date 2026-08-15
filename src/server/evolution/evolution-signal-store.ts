@@ -33,13 +33,13 @@ export class EvolutionSignalStore {
     });
   }
 
-  async claim(workerId: string, leaseMs = 30_000): Promise<EvolutionSignal | undefined> {
+  async claim(workerId: string, leaseMs = 30_000, signalId?: string): Promise<EvolutionSignal | undefined> {
     if (!workerId.trim() || !Number.isSafeInteger(leaseMs) || leaseMs < 1_000) throw invalid("Evolution signal lease is invalid");
     return this.exclusive(async () => {
       const now = this.now();
-      const due = [...(await this.project()).values()].filter((item) => item.status === "pending"
+      const due = [...(await this.project()).values()].filter((item) => (!signalId || item.signalId === signalId) && (item.status === "pending"
         || (item.status === "retry_wait" && Date.parse(item.nextAttemptAt ?? "") <= now.getTime())
-        || (item.status === "running" && Date.parse(item.lease?.expiresAt ?? "") <= now.getTime()))
+        || (item.status === "running" && Date.parse(item.lease?.expiresAt ?? "") <= now.getTime())))
         .sort((left, right) => left.priority - right.priority || left.occurredAt.localeCompare(right.occurredAt) || left.signalId.localeCompare(right.signalId));
       for (const current of due) {
         const token = randomUUID();

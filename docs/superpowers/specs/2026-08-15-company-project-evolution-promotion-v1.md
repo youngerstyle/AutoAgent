@@ -388,6 +388,7 @@ Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 11. 强制 policy 逐层取交集，任何个人成长都不能放宽公司/项目安全约束。
 12. UI 能展示 Practice 从具体 Agent 和项目、局部实验、scope 晋升、公司评审、company trial 到 company active 的完整 provenance。
 13. 事实捕获不阻塞业务任务且不依赖后台在线；快速反思、Dream consolidation、评测、晋升和生效分别有独立可恢复状态。
+   - `EvolutionSignal` 只代表捕获的事实；ReflectionJob 与 ConsolidationJob 必须分别持久化、租约执行、失败重试和进入 dead-letter，不能再用一个 signal 状态冒充所有阶段。
 14. 高显著性事件可快速进入 reflection，普通事件按阈值/idle/maintenance 聚合，任何公司都不依赖固定“凌晨”才能进化。
 15. 当前运行使用冻结 snapshot；后台完成的 release 只在声明的下一 turn/task/session 边界生效。
 

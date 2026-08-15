@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { EvolutionSignalIngestor } from "../../src/server/evolution/evolution-signal-ingestor.js";
 import { EvolutionSignalStore } from "../../src/server/evolution/evolution-signal-store.js";
+import { EvolutionPhaseJobStore } from "../../src/server/evolution/phase-job-store.js";
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 import type { AuthoritativeEpisodeFacts } from "../../src/shared/contracts/evolution.js";
@@ -59,6 +60,9 @@ describe("EvolutionSignal queue", () => {
     expect(await signals.list()).toEqual(expect.arrayContaining([
       expect.objectContaining({ episodeId: expect.stringContaining("episode_"), profileId: "profile-a", trigger: "terminal_outcome", priority: 3 }),
       expect.objectContaining({ profileId: "profile-a", trigger: "user_correction", priority: 1 }),
+    ]));
+    expect(await new EvolutionPhaseJobStore("workspace-a", root).list()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "reflection", sourceSignalId: expect.stringContaining("signal_"), status: "pending" }),
     ]));
   });
 });

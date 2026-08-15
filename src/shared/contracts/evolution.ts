@@ -89,6 +89,28 @@ export interface EvolutionSignal {
   lastError?: { category: "transient" | "terminal"; message: string };
 }
 
+export type EvolutionPhaseJobKind = "reflection" | "consolidation";
+export interface EvolutionPhaseJob {
+  jobId: string;
+  commandId: string;
+  workspaceId: string;
+  profileId?: string;
+  kind: EvolutionPhaseJobKind;
+  priority: 0 | 1 | 2 | 3 | 4;
+  sourceSignalId?: string;
+  sourceDraftRefs: string[];
+  scheduleReason: "high_salience" | "threshold" | "idle" | "maintenance" | "manual" | "recovery";
+  status: EvolutionSignalStatus;
+  attempts: number;
+  maxAttempts: number;
+  availableAt: string;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt?: string;
+  lease?: { token: string; workerId: string; heartbeatAt: string; expiresAt: string };
+  lastError?: { category: "transient" | "terminal"; message: string };
+}
+
 export interface EvolutionPracticeScope {
   ownerLevel: "agent_project" | "agent" | "project" | "company";
   workspaceId?: string;

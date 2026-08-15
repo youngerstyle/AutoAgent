@@ -30,6 +30,8 @@ import { CompanyTrialEvidenceStore } from "../evolution/company-trial-evidence-s
 import { PluginAuthoringJobStore } from "../evolution/plugin-authoring-job-store.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import { listWorkspaceAgents } from "../agents/roster.js";
+import { EvolutionSignalStore } from "../evolution/evolution-signal-store.js";
+import { EvolutionPhaseJobStore } from "../evolution/phase-job-store.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -131,6 +133,31 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
       bindings: await new PracticeBindingStore(workspace.rootPath).list(),
       pluginAuthoringJobs: await new PluginAuthoringJobStore(workspace.rootPath).list(),
     });
+  }));
+  router.get("/phase-jobs", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    res.json({ jobs: await new EvolutionPhaseJobStore(workspace.id, workspace.rootPath).list() });
+  }));
+  router.post("/phase-jobs/consolidation", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const drafts = (await new PracticeDraftStore(workspace.id, workspace.rootPath).list()).filter((draft) => draft.status === "draft");
+    if (!drafts.length) throw new HttpError(409, "No pending Practice drafts are available for consolidation", "EVOLUTION_DREAM_EMPTY");
+    const job = await new EvolutionPhaseJobStore(workspace.id, workspace.rootPath).enqueue({
+      commandId: typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), kind: "consolidation", priority: 1,
+      sourceDraftRefs: drafts.map((draft) => draft.draftId).sort(), scheduleReason: "manual", availableAt: new Date().toISOString(),
+    });
+    res.status(202).json({ job });
+  }));
+  router.post("/episodes/:episodeId/reflection", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    const episode = (await new ExperienceStore(workspace.id, workspace.rootPath).listEpisodes()).find((item) => item.episodeId === String(req.params.episodeId));
+    if (!episode) throw new HttpError(404, "Evolution Episode not found", "EVOLUTION_EPISODE_NOT_FOUND");
+    const commandId = typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID();
+    const signal = await new EvolutionSignalStore(workspace.id, workspace.rootPath).enqueue({ commandId: `manual:${commandId}`, trigger: "manual", priority: 1,
+      profileId: episode.profileId, episodeId: episode.episodeId, sourceRefs: episode.sourceRefs, salience: 1, novelty: 0, occurredAt: new Date().toISOString() });
+    const job = await new EvolutionPhaseJobStore(workspace.id, workspace.rootPath).enqueue({ commandId: `reflection:${signal.signalId}`, kind: "reflection", priority: 1,
+      profileId: episode.profileId, sourceSignalId: signal.signalId, sourceDraftRefs: [], scheduleReason: "manual", availableAt: new Date().toISOString() });
+    res.status(202).json({ signal, job });
   }));
   router.get("/scope-promotions", asyncHandler(async (_req, res) => {
     const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();

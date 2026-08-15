@@ -81,6 +81,14 @@ export function workspaceEvolutionSignalsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "signals.jsonl");
 }
 
+export function workspaceEvolutionPhaseJobsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "phase-jobs.jsonl");
+}
+
+export function workspaceEvolutionPhaseJobLeaseFile(workspaceRoot: string, jobId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "leases", "phase-jobs", `${jobId}.json`);
+}
+
 export function workspaceEvolutionPracticeDraftsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "practice-drafts.jsonl");
 }

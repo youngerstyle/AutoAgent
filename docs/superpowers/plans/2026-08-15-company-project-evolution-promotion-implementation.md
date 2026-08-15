@@ -80,12 +80,13 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 ## Milestone B：Evol 触发与调度
 
-- [ ] 定义耐久 `EvolutionSignal`、ReflectionJob、ConsolidationJob 及幂等 command key。
+- [x] 定义耐久 `EvolutionSignal`、ReflectionJob、ConsolidationJob 及幂等 command key；三类状态分账，Reflection/Consolidation 使用独立 lease、retry/backoff 与 dead-letter。
 - [ ] 复用 Ticket/Mission、Evidence Ledger、Agent Thread/Trace、telemetry 的现有耐久事实，不在业务提交路径双写 Evol。
 - [ ] 实现带耐久 cursor 的 ingestor，从终态、用户纠正、recovered failure、Practice feedback、context compaction 和 effect observation 幂等派生 EvolutionSignal。
 - [ ] 将当前固定轮询中混合的 extraction、consolidation、evaluation、promotion、telemetry reconciliation 拆成独立可恢复 worker。
-- [ ] 实现 P0-P4 优先队列、company/workspace/agent 公平调度和资源预算。
+- [x] 实现 P0-P4 优先队列、单私有部署 company 边界、Workspace 轮转和同优先级 Agent least-recently-served 公平调度，并保留每 Workspace drain budget。
 - [ ] 支持 threshold、idle budget、可配置 maintenance window 与 manual trigger；不得把固定凌晨作为正确性依赖。
+  - 已完成高显著性即时 Reflection job、普通事件延迟 maintenance Reflection、跨 Episode threshold Dream、周期 maintenance Dream 与显式人工 Reflection/Dream trigger；仍需把真实 Runtime idle budget 和可配置 maintenance window 接入调度器。
 - [ ] 保证业务任务不等待 Evol，当前运行 snapshot 不被后台结果热修改。
 
 ## Milestone C：开放式 Practice

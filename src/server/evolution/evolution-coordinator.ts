@@ -30,11 +30,13 @@ import { SharedEvolutionReleaseRegistry } from "./shared-release-registry.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 import { PluginAuthoringWorker, type PluginArtifactAuthor } from "./plugin-authoring-worker.js";
+import { EvolutionPhaseJobStore } from "./phase-job-store.js";
 
 export class EvolutionCoordinator {
   private timer?: ReturnType<typeof setInterval>;
   private running?: Promise<void>;
   private stopped = true;
+  private workspaceCursor = 0;
   private readonly workerId: string;
   private statusValue: EvolutionWorkerStatus;
 
@@ -47,6 +49,7 @@ export class EvolutionCoordinator {
       evaluationLeaseMs?: number;
       maxEvaluationJobsPerWorkspace?: number;
       maxReflectionSignalsPerWorkspace?: number;
+      dreamMinimumIndependentEpisodes?: number;
       now?: () => Date;
       workerId?: string;
       pluginArtifactAuthor?: PluginArtifactAuthor;
@@ -105,7 +108,10 @@ export class EvolutionCoordinator {
     let evaluationJobsProcessed = 0;
     let promotionTransitionsProcessed = 0;
     const errors: string[] = [];
-    for (const workspace of await this.workspaces.list()) {
+    const listedWorkspaces = await this.workspaces.list();
+    const workspaces = listedWorkspaces.length ? [...listedWorkspaces.slice(this.workspaceCursor % listedWorkspaces.length), ...listedWorkspaces.slice(0, this.workspaceCursor % listedWorkspaces.length)] : [];
+    this.workspaceCursor = listedWorkspaces.length ? (this.workspaceCursor + 1) % listedWorkspaces.length : 0;
+    for (const workspace of workspaces) {
       workspacesScanned += 1;
       try {
         await this.runMaintenance(workspace);
@@ -174,12 +180,25 @@ export class EvolutionCoordinator {
   }
 
   private async runDream(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const minimum = this.options.dreamMinimumIndependentEpisodes ?? 2;
+    const drafts = new PracticeDraftStore(workspace.id, workspace.rootPath, () => this.now());
+    const pending = (await drafts.list()).filter((draft) => draft.status === "draft");
+    if (!pending.length) return 0;
+    const phaseJobs = new EvolutionPhaseJobStore(workspace.id, workspace.rootPath, () => this.now());
+    const maintenanceIntervalMs = this.options.maintenanceIntervalMs ?? 5 * 60_000;
+    const bucket = Math.floor(this.now().getTime() / maintenanceIntervalMs);
+    const reason = new Set(pending.flatMap((draft) => draft.sourceEpisodeRefs)).size >= minimum ? "threshold" : "maintenance";
+    await phaseJobs.enqueue({
+      commandId: `dream:${reason}:${reason === "threshold" ? pending.map((draft) => draft.draftId).sort().join(":") : bucket}`,
+      kind: "consolidation", priority: reason === "threshold" ? 2 : 4, sourceDraftRefs: pending.map((draft) => draft.draftId).sort(),
+      scheduleReason: reason, availableAt: this.now().toISOString(),
+    });
     const result = await new EvolutionDreamWorker(
       workspace.id,
-      new PracticeDraftStore(workspace.id, workspace.rootPath, () => this.now()),
+      drafts,
       new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
-    ).run(2);
-    return result.practicesProduced;
+    ).runNext(`${this.workerId}:dream`, phaseJobs, minimum);
+    return result?.practicesProduced ?? 0;
   }
 
   private async runBindings(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
