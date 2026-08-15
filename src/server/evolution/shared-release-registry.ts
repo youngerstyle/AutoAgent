@@ -98,9 +98,13 @@ export class SharedEvolutionReleaseRegistry {
 }
 
 function verifySource(source: ReleaseManifest | undefined, proposal: EvolutionScopePromotionProposal): asserts source is ReleaseManifest {
+  const sourceOwner = source?.scope.ownerLevel ?? "project";
   if (!source || source.schemaVersion !== 1 || source.stage !== "production" || !source.runtimeActive || !source.validationPassed
     || source.release.id !== proposal.originReleaseRef.id || source.release.version !== proposal.originReleaseRef.version
-    || source.release.contentHash !== proposal.originReleaseRef.contentHash || source.candidateHash !== proposal.originReleaseRef.contentHash) {
+    || source.release.contentHash !== proposal.originReleaseRef.contentHash || source.candidateHash !== proposal.originReleaseRef.contentHash
+    || sourceOwner !== proposal.origin.ownerLevel
+    || Boolean(proposal.origin.workspaceId && source.scope.workspaceId !== proposal.origin.workspaceId)
+    || Boolean(proposal.origin.profileId && source.scope.profileId !== proposal.origin.profileId)) {
     throw new HttpError(409, "Scope promotion origin Release is missing or not an active validated immutable release", "INVALID_SCOPE_PROMOTION_ORIGIN");
   }
 }

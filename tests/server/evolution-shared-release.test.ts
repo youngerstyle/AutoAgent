@@ -7,6 +7,9 @@ import { ScopePromotionStore } from "../../src/server/evolution/scope-promotion-
 import { SharedEvolutionReleaseRegistry } from "../../src/server/evolution/shared-release-registry.js";
 import { runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
+import type { EvolutionScope } from "../../src/shared/contracts/evolution.js";
+import { CompanyIdentityStore } from "../../src/server/storage/company-identity-store.js";
+import { resolveSharedEvolutionLayerSources } from "../../src/server/runtime/runtime-host-registry.js";
 
 describe("shared Agent and Company evolution releases", () => {
   it("publishes an approved local release into the stable Agent layer idempotently", async () => {
@@ -61,9 +64,44 @@ describe("shared Agent and Company evolution releases", () => {
     await proposals.transition("approve", proposal.proposalId, "approved", { type: "human", id: "owner" });
     await expect(registry.publishApproved(proposal.proposalId, workspaceRoot)).rejects.toThrow("immutable content verification");
   });
+
+  it("makes an approved Company release a new-project default without crossing private deployments", async () => {
+    const firstHome = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-layer-a-"));
+    const secondHome = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-layer-b-"));
+    const firstCompany = await new CompanyIdentityStore(firstHome).getOrCreate();
+    const secondCompany = await new CompanyIdentityStore(secondHome).getOrCreate();
+    const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-source-"));
+    const content = "# Company operational memory\n\nBrief the authoritative document before any multi-agent project execution.";
+    const contentHash = createHash("sha256").update(content).digest("hex");
+    const originRelease = { id: "project-release", version: "1", contentHash };
+    await writeOriginRelease(sourceRoot, originRelease, content, { workspaceId: "workspace-source", ownerLevel: "project" });
+    const proposals = new ScopePromotionStore(firstHome, firstCompany.companyId);
+    const proposal = await proposals.propose({
+      commandId: "share-company", companyId: firstCompany.companyId,
+      origin: { ownerLevel: "project", workspaceId: "workspace-source" }, targetScope: { ownerLevel: "company" },
+      originReleaseRef: originRelease, practiceRef: { id: "practice-company", version: "1", contentHash: "d".repeat(64) },
+      inheritanceProofRefs: ["proof-source"], effectWindowRefs: ["effect-source"], generalizationRisks: ["May vary with project topology"],
+    });
+    await proposals.transition("company-review", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await proposals.transition("company-trial", proposal.proposalId, "trial", { type: "system", id: "trial-worker" });
+    await proposals.transition("company-approve", proposal.proposalId, "approved", { type: "human", id: "owner" });
+    await new SharedEvolutionReleaseRegistry(firstHome, firstCompany.companyId, proposals).publishApproved(proposal.proposalId, sourceRoot);
+
+    const newProjectRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-new-project-"));
+    const firstProjection = await runtimeEvolutionProjection(newProjectRoot, "brand-new-workspace", profile("unrelated-profile"), agent("brand-new-workspace", "unrelated-profile"), {
+      assignmentKey: "new-project-turn", sharedReleaseSources: await resolveSharedEvolutionLayerSources(firstHome, "unrelated-profile"),
+    });
+    expect(firstProjection.memories).toEqual([expect.objectContaining({ content, ownerLevel: "company" })]);
+
+    const isolatedProjection = await runtimeEvolutionProjection(newProjectRoot, "brand-new-workspace", profile("unrelated-profile"), agent("brand-new-workspace", "unrelated-profile"), {
+      assignmentKey: "isolated-turn", sharedReleaseSources: await resolveSharedEvolutionLayerSources(secondHome, "unrelated-profile"),
+    });
+    expect(secondCompany.companyId).not.toBe(firstCompany.companyId);
+    expect(isolatedProjection.memories).toEqual([]);
+  });
 });
 
-async function writeOriginRelease(root: string, release: { id: string; version: string; contentHash: string }, content: string): Promise<void> {
+async function writeOriginRelease(root: string, release: { id: string; version: string; contentHash: string }, content: string, scope: EvolutionScope = { workspaceId: "workspace-a", ownerLevel: "agent_project", profileId: "profile-a" }): Promise<void> {
   const evolution = path.join(root, ".autoagent", "evolution");
   const artifactRef = path.join("artifacts", release.contentHash, "artifact.txt");
   await mkdir(path.dirname(path.join(evolution, artifactRef)), { recursive: true });
@@ -71,7 +109,7 @@ async function writeOriginRelease(root: string, release: { id: string; version: 
   await mkdir(path.join(evolution, "releases", release.id), { recursive: true });
   await writeFile(path.join(evolution, "releases", release.id, "manifest.json"), JSON.stringify({
     schemaVersion: 1, release, stage: "production", candidateId: "candidate-a", candidateHash: release.contentHash,
-    candidateKind: "memory", target: "practice.memory.briefing", artifactRef, evaluationId: "evaluation-a", scope: { workspaceId: "workspace-a", ownerLevel: "agent_project", profileId: "profile-a" },
+    candidateKind: "memory", target: "practice.memory.briefing", artifactRef, evaluationId: "evaluation-a", scope,
     promotionId: "promotion-a", runtimeActive: true, validationPassed: true, validationChecks: [{ name: "memory_safety", passed: true, message: "safe" }],
   }), "utf8");
 }
