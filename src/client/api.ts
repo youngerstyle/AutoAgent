@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { CompanyEvolutionTrial, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PluginAuthoringJob, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
+import type { CompanyEvolutionTrial, CompanyPromotionReview, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PluginAuthoringJob, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -228,8 +228,9 @@ export async function getEvolutionOverview(workspaceId: string): Promise<Evoluti
   };
 }
 
-export function transitionEvolutionScopePromotion(workspaceId: string, proposalId: string, status: Exclude<ScopePromotionStatus, "proposed">): Promise<{ proposal: EvolutionScopePromotionProposal }> {
-  return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/transition`, { method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), status }) });
+export function transitionEvolutionScopePromotion(workspaceId: string, proposalId: string, status: Exclude<ScopePromotionStatus, "proposed">,
+  companyReview?: Omit<CompanyPromotionReview, "reviewedBy" | "reviewedAt">): Promise<{ proposal: EvolutionScopePromotionProposal }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/transition`, { method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), status, companyReview }) });
 }
 
 export function deployEvolutionCompanyTrial(workspaceId: string, proposalId: string, targetWorkspaceId: string, targetProfileId: string): Promise<{ trial: CompanyEvolutionTrial; proposal: EvolutionScopePromotionProposal }> {

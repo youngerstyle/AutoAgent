@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { EvolutionPrincipalRef, EvolutionScopePromotionProposal, EvolutionPracticeScope, ScopePromotionStatus, VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
+import type { CompanyPromotionReview, EvolutionPrincipalRef, EvolutionScopePromotionProposal, EvolutionPracticeScope, ScopePromotionStatus, VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
 import { HttpError } from "../errors.js";
 import { globalCompanyEvolutionPromotionProposalsFile } from "../storage/paths.js";
 
@@ -40,7 +40,8 @@ export class ScopePromotionStore {
     });
   }
 
-  async transition(commandId: string, proposalId: string, targetStatus: Exclude<ScopePromotionStatus, "proposed">, reviewedBy: EvolutionPrincipalRef): Promise<EvolutionScopePromotionProposal> {
+  async transition(commandId: string, proposalId: string, targetStatus: Exclude<ScopePromotionStatus, "proposed">, reviewedBy: EvolutionPrincipalRef,
+    companyReview?: Omit<CompanyPromotionReview, "reviewedBy" | "reviewedAt">): Promise<EvolutionScopePromotionProposal> {
     if (!commandId.trim() || !proposalId || !reviewedBy?.id || !["agent", "human", "system"].includes(reviewedBy.type)) throw invalid("Scope promotion transition is invalid");
     return this.exclusive(async () => {
       const events = await this.readEvents(); const replay = events.find((event) => event.commandId === commandId);
@@ -51,11 +52,15 @@ export class ScopePromotionStore {
       const current = (await this.project(events)).get(proposalId);
       if (!current) throw new HttpError(404, "Scope promotion proposal not found", "SCOPE_PROMOTION_NOT_FOUND");
       if (["reviewed", "trial", "approved"].includes(targetStatus) && !current.evidenceVerification) throw conflict("Scope promotion evidence has not been verified against authoritative ledgers");
+      if (targetStatus === "reviewed" && current.targetScope.ownerLevel === "company") validateCompanyReview(companyReview);
       if (targetStatus === "trial" && current.targetScope.ownerLevel === "company" && !current.trialRefs?.length) throw conflict("Company promotion cannot enter trial before a cross-project trial Release is deployed");
       if (targetStatus === "approved" && current.targetScope.ownerLevel === "company" && !current.trialEvidenceRefs?.length) throw conflict("Company promotion requires verified cross-project trial evidence before approval");
       if (!allowed(current.status, targetStatus, current.targetScope)) throw conflict(`Scope promotion cannot move from ${current.status} to ${targetStatus}`);
       if (["reviewed", "approved", "rejected"].includes(targetStatus) && reviewedBy.type !== "human") throw new HttpError(403, "Scope promotion review requires a human", "SCOPE_PROMOTION_HUMAN_REQUIRED");
-      const next: EvolutionScopePromotionProposal = { ...current, status: targetStatus, reviewedBy: structuredClone(reviewedBy), updatedAt: this.now().toISOString() };
+      const updatedAt = this.now().toISOString();
+      const next: EvolutionScopePromotionProposal = { ...current, status: targetStatus, reviewedBy: structuredClone(reviewedBy), updatedAt,
+        ...(targetStatus === "reviewed" && current.targetScope.ownerLevel === "company" ? { companyReview: { ...structuredClone(companyReview!), reviewedBy: structuredClone(reviewedBy), reviewedAt: updatedAt } } : {}),
+      };
       await this.append(commandId, next); return next;
     });
   }
@@ -119,5 +124,11 @@ function validRef(value: VersionedEvolutionRef): boolean { return Boolean(value?
 function unique(values: string[]): string[] { return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort(); }
 function invalid(message: string): HttpError { return new HttpError(400, message, "INVALID_SCOPE_PROMOTION"); }
 function conflict(message: string): HttpError { return new HttpError(409, message, "SCOPE_PROMOTION_CONFLICT"); }
+function validateCompanyReview(review: Omit<CompanyPromotionReview, "reviewedBy" | "reviewedAt"> | undefined): void {
+  const sections = review && [review.generalizability, review.redaction, review.applicability, review.cost, review.risk];
+  if (!sections || sections.some((section) => section.passed !== true || !section.notes?.trim())) {
+    throw conflict("Company promotion review must explicitly pass generalizability, redaction, applicability, cost, and risk with notes");
+  }
+}
 function hash(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`; return JSON.stringify(value); }

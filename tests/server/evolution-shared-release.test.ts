@@ -9,6 +9,14 @@ import { runtimeEvolutionProjection } from "../../src/server/evolution/runtime-p
 import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 import type { EvolutionScope } from "../../src/shared/contracts/evolution.js";
 import { CompanyIdentityStore } from "../../src/server/storage/company-identity-store.js";
+
+const passingCompanyReview = () => ({
+  generalizability: { passed: true, notes: "A different project and Agent are required by the trial." },
+  redaction: { passed: true, notes: "Evidence was checked for secrets and personal data." },
+  applicability: { passed: true, notes: "Scope and contraindications are explicit." },
+  cost: { passed: true, notes: "The bounded rollout cost is acceptable." },
+  risk: { passed: true, notes: "Regression and safety risks have rollback controls." },
+});
 import { resolveSharedEvolutionLayerSources } from "../../src/server/runtime/runtime-host-registry.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 
@@ -99,7 +107,7 @@ describe("shared Agent and Company evolution releases", () => {
       originReleaseRef: originRelease, practiceRef: { id: "practice-company", version: "1", contentHash: "d".repeat(64) },
       inheritanceProofRefs: ["proof-source"], effectWindowRefs: ["effect-source"], generalizationRisks: ["May vary with project topology"],
     });
-    await proposals.transition("company-review", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await proposals.transition("company-review", proposal.proposalId, "reviewed", { type: "human", id: "owner" }, passingCompanyReview());
     await proposals.attachTrial("attach-company-trial", proposal.proposalId, "trial-company");
     await proposals.transition("company-trial", proposal.proposalId, "trial", { type: "system", id: "trial-worker" });
     await proposals.attachTrialEvidence("attach-company-evidence", proposal.proposalId, "trial-effect-company");

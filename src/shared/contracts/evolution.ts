@@ -478,6 +478,16 @@ export interface PluginAuthoringJob {
 export type EvolutionOwnerLevel = "agent_project" | "agent" | "project" | "company";
 export type ScopePromotionStatus = "proposed" | "reviewed" | "trial" | "approved" | "rejected";
 
+export interface CompanyPromotionReview {
+  generalizability: { passed: boolean; notes: string };
+  redaction: { passed: boolean; notes: string };
+  applicability: { passed: boolean; notes: string };
+  cost: { passed: boolean; notes: string };
+  risk: { passed: boolean; notes: string };
+  reviewedBy: EvolutionPrincipalRef;
+  reviewedAt: string;
+}
+
 export interface EvolutionScopePromotionProposal {
   proposalId: string;
   commandId: string;
@@ -498,6 +508,7 @@ export interface EvolutionScopePromotionProposal {
   trialRefs?: string[];
   trialEvidenceRefs?: string[];
   generalizationRisks: string[];
+  companyReview?: CompanyPromotionReview;
   status: ScopePromotionStatus;
   reviewedBy?: EvolutionPrincipalRef;
   createdAt: string;

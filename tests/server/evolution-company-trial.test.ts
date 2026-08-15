@@ -17,6 +17,14 @@ import { ExperienceStore } from "../../src/server/evolution/experience-store.js"
 import { CompanyTrialReconciler } from "../../src/server/evolution/company-trial-reconciler.js";
 import { CompanyIdentityStore } from "../../src/server/storage/company-identity-store.js";
 
+const passingCompanyReview = () => ({
+  generalizability: { passed: true, notes: "A different project and Agent are required by the trial." },
+  redaction: { passed: true, notes: "Evidence was checked for secrets and personal data." },
+  applicability: { passed: true, notes: "Scope and contraindications are explicit." },
+  cost: { passed: true, notes: "The bounded trial cost is acceptable." },
+  risk: { passed: true, notes: "Regression and safety risks are bounded by canary rollback." },
+});
+
 describe("cross-project company trial", () => {
   it("deploys a reviewed Project practice only to another project's selected Agent with recorded control assignment", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-trial-home-"));
@@ -32,7 +40,7 @@ describe("cross-project company trial", () => {
       commandId: "propose-company", companyId, origin: { ownerLevel: "project", workspaceId: "workspace-a" }, targetScope: { ownerLevel: "company" },
       originReleaseRef: release, practiceRef: { id: "practice-a", version: "1", contentHash: "b".repeat(64) }, inheritanceProofRefs: ["proof-a"], effectWindowRefs: ["effect-a"], generalizationRisks: ["Team topology may differ"],
     });
-    await proposals.transition("review-company", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await proposals.transition("review-company", proposal.proposalId, "reviewed", { type: "human", id: "owner" }, passingCompanyReview());
     const trials = new CompanyTrialStore(home, companyId, now);
     const trial = await new CompanyTrialReleaseRegistry(home, companyId, proposals, trials, now).deploy({
       commandId: "deploy-trial", proposalId: proposal.proposalId, sourceRoot, targetWorkspaceId: "workspace-b", targetWorkspaceRoot: targetRoot, targetProfileId: "profile-b", targetAgentId: "workspace-b-profile-b", percentage: 20, salt: "stable-trial-salt",

@@ -382,6 +382,7 @@ Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 6. scope 扩大只能通过新的 Promotion Proposal，原 release 不被原地改写。
 7. 有实际效果的个人或项目 Release 只能通过 CompanyPromotionProposal 进入公司评审。
 8. 公司 trial 使用其他 Agent、其他代表性项目和 selected/control 事实验证可泛化性。
+   - 进入 trial 前必须持久化人类完成的五项结构化评审：可泛化性、脱敏、适用范围、成本和风险；每项都必须明确通过并附证据说明，不能用一个 `reviewed` 状态代替评审内容。
 9. 公司 active release 成为匹配 Agent、项目和新项目的默认值，个人/项目 pin 与 override 保持更高优先级。
 10. company、agent、project、agent-project rollback 相互独立，并由后续运行留下新的 inheritance proof。
 11. 强制 policy 逐层取交集，任何个人成长都不能放宽公司/项目安全约束。

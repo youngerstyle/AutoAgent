@@ -179,6 +179,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const proposal = await new ScopePromotionStore(workspaces.homePath(), identity.companyId).transition(
       typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), String(req.params.proposalId), req.body?.status,
       { type: "human", id: principalId(req) },
+      req.body?.companyReview,
     );
     res.json({ proposal });
   }));

@@ -106,7 +106,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 ## Milestone E：公司推广
 
 - [x] 支持 agent-project -> agent、agent-project -> project、agent/project -> company 的显式 Promotion Proposal，并用 active Release、Activation Proof、passing Telemetry 三类权威账本校验来源证据。
-- [ ] 公司评审 generalizability、脱敏、适用范围、成本和风险。
+- [x] 公司评审 generalizability、脱敏、适用范围、成本和风险；五项均需人类逐项给出通过结论与说明并持久化，缺项或空说明不能进入 reviewed。
 - [x] 将 reviewed Company 提案以受限 agent-project canary 部署到其他代表性项目和其他 Agent，并在窗口完成后自动关闭。
 - [x] 只有跨项目 selected/control、继承、回归和安全证据通过后才允许批准并由既有发布 worker 写 company active release。
 

@@ -35,7 +35,10 @@ describe("Evolution scope promotion", () => {
       generalizationRisks: ["The result may depend on the source project's team structure"],
     });
     await expect(store.transition("approve-too-early", proposal.proposalId, "approved", { type: "human", id: "owner" })).rejects.toMatchObject({ code: "SCOPE_PROMOTION_CONFLICT" });
-    await store.transition("review-company", proposal.proposalId, "reviewed", { type: "human", id: "owner" });
+    await expect(store.transition("review-company-missing", proposal.proposalId, "reviewed", { type: "human", id: "owner" }))
+      .rejects.toMatchObject({ code: "SCOPE_PROMOTION_CONFLICT" });
+    const reviewedCompany = await store.transition("review-company", proposal.proposalId, "reviewed", { type: "human", id: "owner" }, passingCompanyReview());
+    expect(reviewedCompany.companyReview).toMatchObject({ generalizability: { passed: true }, reviewedBy: { type: "human", id: "owner" } });
     await store.attachTrial("attach-company-trial", proposal.proposalId, "trial-a");
     await store.transition("trial-company", proposal.proposalId, "trial", { type: "system", id: "trial-worker" });
     await expect(store.transition("approve-without-evidence", proposal.proposalId, "approved", { type: "human", id: "owner" })).rejects.toMatchObject({ code: "SCOPE_PROMOTION_CONFLICT" });
@@ -54,4 +57,14 @@ describe("Evolution scope promotion", () => {
 
 function verifiedStore(home: string, now: () => Date = () => new Date()): ScopePromotionStore {
   return new ScopePromotionStore(home, "company-a", now, async (input) => ({ verifierId: "test-ledger-verifier", verifiedAt: now().toISOString(), originRootId: input.origin.workspaceId ?? `agent:${input.origin.profileId}`, inheritanceProofCount: input.inheritanceProofRefs.length, effectWindowCount: input.effectWindowRefs.length }));
+}
+
+function passingCompanyReview() {
+  return {
+    generalizability: { passed: true, notes: "Trial population covers a different project and Agent." },
+    redaction: { passed: true, notes: "Evidence references contain no project secrets or personal data." },
+    applicability: { passed: true, notes: "The declared company scope and contraindications are bounded." },
+    cost: { passed: true, notes: "Expected runtime and Provider cost is acceptable." },
+    risk: { passed: true, notes: "Known regression and safety risks have mitigations." },
+  };
 }

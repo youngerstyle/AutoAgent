@@ -29,6 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { AgentPolicy, AgentProfile, AutoAgentEvent, LoopDebugEntry, LoopDebugLog, ModelConfig, ProviderName, Workspace, WorkspaceSnapshot, WorkspaceToolName } from "../shared/types";
+import type { CompanyPromotionReview } from "../shared/contracts/evolution";
 import { DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS } from "../shared/model-context";
 import { capabilityLabels, displayText, phaseLabel, roleLabel, statusLabel } from "../shared/labels";
 import { permissionPatchForTool, TOOL_CATALOG, toolsForPolicy } from "../shared/tool-catalog";
@@ -974,7 +975,7 @@ export function App() {
               onMaintain={() => void runEvolutionAction(() => maintainEvolutionMemories(selectedId))}
               onPin={(releaseId, pinned) => void runEvolutionAction(() => pinEvolutionMemory(selectedId, releaseId, pinned))}
               onRestore={(releaseId) => void runEvolutionAction(() => restoreEvolutionMemory(selectedId, releaseId))}
-              onScopeTransition={(proposalId, status) => void runEvolutionAction(() => transitionEvolutionScopePromotion(selectedId, proposalId, status))}
+              onScopeTransition={(proposalId, status, review) => void runEvolutionAction(() => transitionEvolutionScopePromotion(selectedId, proposalId, status, review))}
               onDeployTrial={(proposalId, targetWorkspaceId, targetProfileId) => void runEvolutionAction(() => deployEvolutionCompanyTrial(selectedId, proposalId, targetWorkspaceId, targetProfileId))}
               onScopeRollback={(proposalId) => void runEvolutionAction(() => rollbackEvolutionScopePromotion(selectedId, proposalId))}
             />
@@ -2483,6 +2484,28 @@ function thinkingLevelOptions(): Array<{ value: ModelConfig["thinkingLevel"]; la
   ];
 }
 
+type CompanyReviewInput = Omit<CompanyPromotionReview, "reviewedBy" | "reviewedAt">;
+type CompanyReviewSection = keyof CompanyReviewInput;
+
+function CompanyReviewControl(props: { disabled: boolean; onSubmit: (review: CompanyReviewInput) => void }) {
+  const [review, setReview] = useState<CompanyReviewInput>({
+    generalizability: { passed: false, notes: "" }, redaction: { passed: false, notes: "" },
+    applicability: { passed: false, notes: "" }, cost: { passed: false, notes: "" }, risk: { passed: false, notes: "" },
+  });
+  const sections: Array<[CompanyReviewSection, string]> = [["generalizability", "可泛化性"], ["redaction", "脱敏"], ["applicability", "适用范围"], ["cost", "成本"], ["risk", "风险"]];
+  const ready = sections.every(([key]) => review[key].passed && review[key].notes.trim());
+  const update = (key: CompanyReviewSection, patch: Partial<CompanyReviewInput[CompanyReviewSection]>) => setReview((current) => ({ ...current, [key]: { ...current[key], ...patch } }));
+  return <details>
+    <summary>填写公司评审</summary>
+    {sections.map(([key, label]) => <label key={key} className="company-review-row">
+      <input type="checkbox" checked={review[key].passed} onChange={(event) => update(key, { passed: event.target.checked })} />
+      <span>{label}</span>
+      <input aria-label={`${label}评审说明`} placeholder={`${label}证据与结论`} value={review[key].notes} onChange={(event) => update(key, { notes: event.target.value })} />
+    </label>)}
+    <button type="button" onClick={() => props.onSubmit(review)} disabled={props.disabled || !ready}>提交五项评审</button>
+  </details>;
+}
+
 function EvolutionHub(props: {
   workspace?: Workspace;
   overview?: EvolutionOverview;
@@ -2492,7 +2515,7 @@ function EvolutionHub(props: {
   onMaintain: () => void;
   onPin: (releaseId: string, pinned: boolean) => void;
   onRestore: (releaseId: string) => void;
-  onScopeTransition: (proposalId: string, status: "reviewed" | "trial" | "approved" | "rejected") => void;
+  onScopeTransition: (proposalId: string, status: "reviewed" | "trial" | "approved" | "rejected", review?: CompanyReviewInput) => void;
   onDeployTrial: (proposalId: string, targetWorkspaceId: string, targetProfileId: string) => void;
   onScopeRollback: (proposalId: string) => void;
 }) {
@@ -2572,8 +2595,10 @@ function EvolutionHub(props: {
                     <span className={`evolution-status ${proposal.status}`}>{proposal.status}</span>
                     <p>Practice {proposal.practiceRef.id}@{proposal.practiceRef.version}{proposal.generalizationRisks.length ? ` · risks: ${proposal.generalizationRisks.join("; ")}` : ""}</p>
                     <code>{proposal.originReleaseRef.id}@{proposal.originReleaseRef.version}</code>
+                    {proposal.companyReview ? <small>公司评审已通过：泛化、脱敏、范围、成本、风险 · {proposal.companyReview.reviewedBy.id} · {proposal.companyReview.reviewedAt}</small> : null}
                     <div className="memory-actions">
-                      {proposal.status === "proposed" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "reviewed")} disabled={props.loading}>评审通过</button> : null}
+                      {proposal.status === "proposed" && proposal.targetScope.ownerLevel === "company" ? <CompanyReviewControl disabled={props.loading} onSubmit={(review) => props.onScopeTransition(proposal.proposalId, "reviewed", review)} /> : null}
+                      {proposal.status === "proposed" && proposal.targetScope.ownerLevel !== "company" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "reviewed")} disabled={props.loading}>评审通过</button> : null}
                       {proposal.status === "reviewed" && proposal.targetScope.ownerLevel === "company" ? <>
                         <input aria-label="Trial target workspace ID" placeholder="目标 Workspace ID" value={trialTargetWorkspaceId} onChange={(event) => setTrialTargetWorkspaceId(event.target.value)} />
                         <input aria-label="Trial target profile ID" placeholder="其他 Agent profileId" value={trialTargetProfileId} onChange={(event) => setTrialTargetProfileId(event.target.value)} />
