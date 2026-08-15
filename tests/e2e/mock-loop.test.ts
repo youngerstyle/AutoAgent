@@ -5,6 +5,12 @@ import request from "supertest";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/server/app";
 import type { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
+import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
+import { EvolutionCoordinator } from "../../src/server/evolution/evolution-coordinator.js";
+import { PlatformEvolutionObservationAdapter } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
+import { PlatformEvolutionSourceVerifier } from "../../src/server/evolution-adapters/platform-source-verifier.js";
+import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
+import { EvolutionSignalStore } from "../../src/server/evolution/evolution-signal-store.js";
 
 describe("mock team loop E2E", () => {
   let registry: RuntimeHostRegistry | undefined;
@@ -55,6 +61,30 @@ describe("mock team loop E2E", () => {
       expect(tickets[index].dependsOnTicketIds).toEqual([tickets[index - 1].id]);
     }
     expect(Object.values(snapshot.agentThreads).flat().length).toBeGreaterThan(0);
+
+    // Freeze the operational side, then prove Evol consumes the same durable
+    // Mission/Ticket/Agent facts through its anti-corruption adapter.
+    await registry.stopAll();
+    registry = undefined;
+    const workspaces = new WorkspaceStore(home);
+    const coordinator = new EvolutionCoordinator(workspaces, {
+      observationPort: (workspace) => new PlatformEvolutionObservationAdapter(workspace),
+      sourceVerificationPort: (workspace) => new PlatformEvolutionSourceVerifier(workspace.id, workspace.rootPath),
+      maintenanceIntervalMs: 10_000,
+      workerId: "four-framework-e2e",
+    });
+    await coordinator.runOnce();
+
+    const episodes = await new ExperienceStore(workspaceId, rootPath).listEpisodes();
+    expect(episodes).toHaveLength(tickets.length);
+    expect(new Set(episodes.map((episode) => episode.ticketId))).toEqual(new Set(tickets.map((ticket) => ticket.id)));
+    expect(episodes.every((episode) => episode.outcome === "succeeded" && episode.agentId && episode.goalId)).toBe(true);
+    expect(episodes.every((episode) => episode.sourceRefs.some((ref) => ref.kind === "mission" && ref.ref === snapshot.mission.missionId))).toBe(true);
+    expect(episodes.every((episode) => episode.sourceRefs.some((ref) => ref.kind === "ticket" && ref.ref === episode.ticketId))).toBe(true);
+
+    const signals = await new EvolutionSignalStore(workspaceId, rootPath).list();
+    expect(signals).toHaveLength(episodes.length);
+    expect(signals.every((signal) => signal.trigger === "terminal_outcome" && signal.episodeId)).toBe(true);
   }, 120_000);
 });
 
