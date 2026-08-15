@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, rm } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import type { AgentProfile, AgentRole, Workspace, WorkspaceAgent } from "../../shared/types.js";
 import { createId } from "../../shared/ids.js";
 import { workspaceAgentDir, workspaceAgentFile, workspaceAgentSessionsDir } from "../storage/paths.js";
@@ -105,6 +106,31 @@ export async function ensureWorkspaceAgent(workspace: Workspace, profile: AgentP
   await mkdir(workspaceAgentSessionsDir(workspace.rootPath, workspaceAgentId), { recursive: true });
   await writeJson(workspaceAgentFile(workspace.rootPath, workspaceAgentId), agent);
   return agent;
+}
+
+/** One-time compatibility migration plus a hard identity-integrity check. */
+export async function migrateAndValidateWorkspaceAgentProfiles(workspace: Workspace, profiles: AgentProfile[]): Promise<WorkspaceAgent[]> {
+  const agentsRoot = workspaceAgentDir(workspace.rootPath, "");
+  let entries: Dirent[];
+  try { entries = await readdir(agentsRoot, { withFileTypes: true }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  const known = new Map(profiles.map((profile) => [profile.id, profile])); const seen = new Set<string>(); const result: WorkspaceAgent[] = [];
+  for (const entry of entries.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+    const file = workspaceAgentFile(workspace.rootPath, entry.name); const raw = await readJson<Partial<WorkspaceAgent> | undefined>(file, undefined);
+    if (!raw) continue;
+    if (!raw.id || raw.id !== entry.name || raw.workspaceId !== workspace.id || !raw.roleInWorkspace) throw new Error(`Workspace Agent identity record is invalid: ${entry.name}`);
+    let profileId = raw.profileId;
+    if (!profileId) {
+      const candidates = profiles.filter((profile) => profile.role === raw.roleInWorkspace);
+      if (candidates.length !== 1) throw new Error(`Legacy Workspace Agent ${raw.id} has no unambiguous AgentProfile mapping`);
+      profileId = candidates[0]!.id;
+      await writeJson(file, { ...raw, profileId });
+    }
+    if (!known.has(profileId)) throw new Error(`Workspace Agent ${raw.id} references unknown AgentProfile ${profileId}`);
+    if (seen.has(profileId)) throw new Error(`Workspace ${workspace.id} contains duplicate instances of AgentProfile ${profileId}`);
+    seen.add(profileId); result.push({ ...raw, profileId } as WorkspaceAgent);
+  }
+  return result;
 }
 
 export async function ensureProjectOwner(workspace: Workspace, profiles: AgentProfile[]): Promise<WorkspaceAgent> {

@@ -14,7 +14,7 @@ import { TicketStore } from "../tickets/ticket-store.js";
 import { StaffingRequestStore } from "../staffing/staffing-request-store.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
 import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
-import { ensureProjectOwner } from "../agents/roster.js";
+import { ensureProjectOwner, migrateAndValidateWorkspaceAgentProfiles } from "../agents/roster.js";
 import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
@@ -261,7 +261,9 @@ export class RuntimeHostRegistry {
   private async createHost(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
     try {
       const workspace = await this.workspaces.get(workspaceId);
-      await ensureProjectOwner(workspace, await this.profiles.list());
+      const profiles = await this.profiles.list();
+      await migrateAndValidateWorkspaceAgentProfiles(workspace, profiles);
+      await ensureProjectOwner(workspace, profiles);
       await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
       const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef, {
         scheduler: this.scheduler,
