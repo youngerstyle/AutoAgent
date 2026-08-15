@@ -3,6 +3,7 @@ import type { AttributionComponent, EvolutionArtifactKind, EvolutionCandidate, E
 import { EvolutionStore } from "./evolution-store.js";
 import { PracticeBindingStore } from "./practice-binding-store.js";
 import { PracticeStore } from "./practice-store.js";
+import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../product/plan-template.js";
 
 export interface PracticeBindingResult { practicesInspected: number; bindingsProposed: number; candidatesCreated: EvolutionCandidate[] }
 
@@ -55,16 +56,17 @@ function bindingKinds(components: AttributionComponent[]): EvolutionArtifactKind
   return [...new Set(kinds)].sort();
 }
 
-function autoRenderable(kind: EvolutionArtifactKind): kind is "memory" | "prompt" | "skill" {
-  return ["memory", "prompt", "skill"].includes(kind);
+function autoRenderable(kind: EvolutionArtifactKind): kind is "memory" | "prompt" | "skill" | "workflow" {
+  return ["memory", "prompt", "skill", "workflow"].includes(kind);
 }
 function versionedPracticeRef(practice: EvolutionPractice): VersionedEvolutionRef {
   return { id: practice.practiceId, version: String(practice.version), contentHash: practice.provenanceHash };
 }
 function targetFor(practice: EvolutionPractice, kind: EvolutionArtifactKind): string {
+  if (kind === "workflow") return DEFAULT_PLAN_TEMPLATE_ID;
   return `practice.${kind}.${hash(`${practice.practiceId}:${practice.version}`).slice(0, 16)}`;
 }
-function candidateInput(practice: EvolutionPractice, practiceRef: VersionedEvolutionRef, kind: "memory" | "prompt" | "skill", target: string) {
+function candidateInput(practice: EvolutionPractice, practiceRef: VersionedEvolutionRef, kind: "memory" | "prompt" | "skill" | "workflow", target: string) {
   const scope: EvolutionScope = {
     workspaceId: practice.applicability.workspaceId!, ownerLevel: practice.applicability.ownerLevel,
     ...(practice.applicability.profileId ? { profileId: practice.applicability.profileId } : {}),
@@ -82,10 +84,25 @@ function candidateInput(practice: EvolutionPractice, practiceRef: VersionedEvolu
     proposedBy: { type: "system" as const, id: "practice-binding-compiler/v1" }, practiceRef,
   };
 }
-function render(practice: EvolutionPractice, kind: "memory" | "prompt" | "skill", target: string): string {
+function render(practice: EvolutionPractice, kind: "memory" | "prompt" | "skill" | "workflow", target: string): string {
   const support = `Support episodes: ${practice.sourceEpisodeRefs.join(", ")}`;
   if (kind === "memory") return ["# Scoped operational memory", "", `Trigger: ${practice.trigger}`, `Learned practice: ${practice.statement}`, "", "## Procedure", "", practice.procedure, "", "Apply only when current evidence matches the trigger. Stop when counter-evidence appears.", "", support, ""].join("\n");
   if (kind === "prompt") return ["## Evidence-backed behavior constraint", "", `When current evidence matches: ${practice.trigger}`, "", `Follow this learned practice: ${practice.statement}`, `Procedure: ${practice.procedure}`, "If the trigger is absent or counter-evidence appears, do not apply this fragment.", "", support, ""].join("\n");
+  if (kind === "workflow") {
+    const base = createMinimalTeamPlanDefinition({ policyId: "runtime-supplied", policyVersion: 1, contentHash: "runtime-supplied" }, "Compile an evidence-backed learned Practice into the mission workflow.");
+    const practiceStep = {
+      clientRef: `evolution-practice-${hash(practice.practiceId).slice(0, 8)}`,
+      title: short(practice.statement, 80), objective: `${practice.procedure}\n\nActivation condition: ${practice.trigger}`,
+      successCriteria: [`The learned Practice was executed only when its trigger matched.`, `The result preserves the Practice provenance ${practice.practiceId}@${practice.version}.`],
+      assignment: { requiredCapabilities: ["plan:plan"] }, outputContract: { schemaRef: "evolution-practice-result-v1" },
+      contextPolicy: { includeOriginalRequest: true, requiresMissionBaseline: true },
+    };
+    const intakeRef = base.initialChange.additions[0]!.clientRef; const planningRef = base.initialChange.additions[1]!.clientRef;
+    return JSON.stringify({ schemaVersion: 1, templateId: target, definitionVersion: base.definitionVersion + practice.version,
+      plannerAssignment: base.plannerAssignment, amendmentTemplate: base.amendmentTemplate,
+      initialChange: { ...base.initialChange, additions: [...base.initialChange.additions, practiceStep], dependencyAdditions: [{ from: { clientRef: intakeRef }, to: { clientRef: practiceStep.clientRef } }, { from: { clientRef: practiceStep.clientRef }, to: { clientRef: planningRef } }] },
+    });
+  }
   return ["---", `name: ${target}`, `description: Evidence-backed procedure for ${plain(practice.trigger, 120)}`, "---", `# ${target}`, "", "## Activation rule", "", `Use only when current evidence matches: ${practice.trigger}`, "", "## Procedure", "", practice.procedure, "", "## Stop condition", "", "Stop and request review when counter-evidence appears.", "", "## Provenance", "", support, ""].join("\n");
 }
 function plain(value: string, length: number): string { return short(value.replace(/[\r\n]+/g, " ").replace(/[:#]/g, " "), length); }

@@ -61,16 +61,19 @@ export class RuntimeHostRegistry {
     if (this.evolutionRuntimeConfigsInitialized) return;
     const resolved = new Map<string, RuntimeEvolutionConfig>();
     const observations: Promise<unknown>[] = [];
+    const identity = await new CompanyIdentityStore(this.workspaces.homePath()).getOrCreate();
+    const companyLayerRoot = globalEvolutionLayerRoot(this.workspaces.homePath(), "company", identity.companyId);
     for (const workspace of await this.workspaces.list()) {
-      const config = await productionEvolutionRuntimeConfig(workspace.rootPath, workspace.id);
+      const config = await productionEvolutionRuntimeConfig(workspace.rootPath, workspace.id, companyLayerRoot);
       if (!config) continue;
       resolved.set(workspace.id, config);
-      observations.push(new EvolutionActivationStore(workspace.rootPath).observe({
+      observations.push(new EvolutionActivationStore(config.sourceRoot).observe({
         assetKind: "runtime_config", target: config.target,
         releaseRef: { id: config.releaseId, version: config.releaseVersion, contentHash: config.contentHash },
         desiredGeneration: config.generation, actualGeneration: config.generation,
         runtimeKind: "process", runtimeRef: this.bootId,
         runtimeSnapshotHash: runtimeConfigSnapshotHash(config),
+        ownerLevel: config.ownerLevel,
         traceRef: { kind: "evidence", ref: `boot:${this.bootId}`, workspaceId: workspace.id },
       }));
     }

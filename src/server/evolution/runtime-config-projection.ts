@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionRuntimeConfigArtifact } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionOwnerLevel, EvolutionRuntimeConfigArtifact } from "../../shared/contracts/evolution.js";
+import { resolveEvolutionLayers } from "./runtime-projection.js";
 
 interface RuntimeConfigReleaseManifest {
   schemaVersion: 1;
@@ -26,40 +27,47 @@ export interface RuntimeEvolutionConfig {
   releaseVersion: string;
   contentHash: string;
   generation: number;
+  stage: "production";
+  ownerLevel: EvolutionOwnerLevel;
+  sourceRoot: string;
 }
 
 /** Resolve the immutable production desired state once during process boot. */
 export async function productionEvolutionRuntimeConfig(
   workspaceRoot: string,
   workspaceId: string,
+  sharedCompanyRoot?: string,
 ): Promise<RuntimeEvolutionConfig | undefined> {
-  const directory = path.join(workspaceRoot, ".autoagent", "evolution", "active", "production");
-  let files: string[];
-  try { files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort(); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   const matches: RuntimeEvolutionConfig[] = [];
-  for (const file of files) {
+  for (const root of [sharedCompanyRoot, workspaceRoot].filter((value): value is string => Boolean(value))) {
+    const directory = path.join(root, ".autoagent", "evolution", "active", "production");
+    let files: string[];
+    try { files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    for (const file of files) {
     const pointer = JSON.parse(await readFile(path.join(directory, file), "utf8")) as ActiveReleasePointer;
     if (pointer?.schemaVersion !== 1 || pointer.stage !== "production" || !pointer.active || !pointer.release
-      || pointer.target !== "runtime-host" || pointer.scope.workspaceId !== workspaceId) continue;
-    const manifest = parseManifest(await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
+      || pointer.target !== "runtime-host" || !["company", "project"].includes(pointer.scope.ownerLevel ?? "project")
+      || ((pointer.scope.ownerLevel ?? "project") === "project" && pointer.scope.workspaceId !== workspaceId)) continue;
+    const manifest = parseManifest(await readFile(safeResolve(root, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
     if (manifest.candidateKind !== "runtime_config" || manifest.target !== pointer.target || manifest.promotionId !== pointer.promotionId
-      || manifest.release.id !== pointer.release.id || manifest.release.contentHash !== pointer.release.contentHash || manifest.scope.workspaceId !== workspaceId
+      || manifest.release.id !== pointer.release.id || manifest.release.contentHash !== pointer.release.contentHash || canonical(manifest.scope) !== canonical(pointer.scope)
       || !manifest.validationPassed || !manifest.validationChecks.some((check) => check.name === "runtime_config_contract" && check.passed)) continue;
-    const content = await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", manifest.artifactRef)), "utf8");
+    const content = await readFile(safeResolve(root, path.join(".autoagent", "evolution", manifest.artifactRef)), "utf8");
     if (hash(content) !== manifest.candidateHash) throw new Error(`Production Runtime Config release ${pointer.release.id} failed content verification`);
     const artifact = parseArtifact(content);
     matches.push({
       target: "runtime-host", settings: structuredClone(artifact.settings), releaseId: pointer.release.id,
       releaseVersion: pointer.release.version, contentHash: pointer.release.contentHash, generation: pointer.generation,
+      stage: "production", ownerLevel: pointer.scope.ownerLevel ?? "project", sourceRoot: root,
     });
+    }
   }
-  if (matches.length > 1) throw new Error("Multiple active production Runtime Config releases target runtime-host");
-  return matches[0];
+  return resolveEvolutionLayers(matches, (item) => item.target)[0];
 }
 
 export function runtimeConfigSnapshotHash(config: RuntimeEvolutionConfig): string {
-  return hash(canonical({ target: config.target, settings: config.settings, releaseId: config.releaseId, generation: config.generation }));
+  return hash(canonical({ target: config.target, settings: config.settings, releaseId: config.releaseId, generation: config.generation, ownerLevel: config.ownerLevel }));
 }
 
 function parseManifest(raw: string): RuntimeConfigReleaseManifest {

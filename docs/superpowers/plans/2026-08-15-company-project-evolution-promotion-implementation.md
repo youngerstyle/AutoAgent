@@ -99,6 +99,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 - [x] 建立确定性 project treatment/control assignment 与由 Episode/Trace/Activation/Evidence 权威账本自动派生的效果窗口。
 - [ ] 支持 agent-project、agent、project 三类局部 active pointer 与独立 rollback。
 - [ ] 将 Practice Binding 编译为 Memory/Prompt/Skill/Workflow/Plugin release。
+  - 已完成 Memory/Prompt/Skill/Workflow；Workflow 由 Practice 内容生成可验证的完整 Plan artifact，并在 next-task 边界按 company < agent < project < agent-project 解析。Local Plugin 仍需独立安全 authoring worker，不能用文本 Skill 冒充。
 - [ ] 在对应 next-turn/next-task/next-session 边界继承和回滚。
 
 ## Milestone E：公司推广
@@ -113,6 +114,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 - [ ] 实现 built-in < company < agent < project < agent-project < invocation safety 的行为解析顺序。
 - [ ] 强制 policy 使用逐层取交集语义，任何下层资产不能放宽上层约束。
 - [ ] 新项目自动继承公司默认；现有项目按生命周期边界重载。
+  - Memory/Prompt/Skill/Plugin/AgentProfile 使用 turn/session snapshot；Workflow 使用 task snapshot；Company Runtime Config 使用 process boot snapshot，均从各自共享层账本记录激活证明。
 - [ ] 项目 pin/override 与公司 rollback 相互独立。
 - [ ] UI 展示完整实践发现、Agent/项目效果、scope 晋升、公司评审、trial、active 与 rollback lineage。
 

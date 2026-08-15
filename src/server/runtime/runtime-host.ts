@@ -1586,7 +1586,8 @@ export class RuntimeHost {
     const owner = team.members.find((member) => member.capabilities.includes("mission:intake"));
     if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
     const context = await this.compose(record, team);
-    const evolvedWorkflow = await productionEvolutionWorkflow(this.workspace.rootPath, this.workspace.id, DEFAULT_PLAN_TEMPLATE_ID, this.policyRef);
+    const workflowSharedSources = owner.profileId ? await this.options.sharedEvolutionLayerSources?.(owner.profileId) ?? [] : [];
+    const evolvedWorkflow = await productionEvolutionWorkflow(this.workspace.rootPath, this.workspace.id, DEFAULT_PLAN_TEMPLATE_ID, this.policyRef, { profileId: owner.profileId, sharedReleaseSources: workflowSharedSources });
     const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
     const planSnapshotHash = workflowSnapshotHash(planDefinition);
     await context.manager.startMission({
@@ -1615,11 +1616,13 @@ export class RuntimeHost {
     record.updatedAt = this.now().toISOString();
     context.record = record;
     await this.store.save(record);
-    if (evolvedWorkflow) await new EvolutionActivationStore(this.workspace.rootPath, () => this.now()).observe({
+    if (evolvedWorkflow) await new EvolutionActivationStore(evolvedWorkflow.sourceRoot, () => this.now()).observe({
       assetKind: "workflow", target: evolvedWorkflow.target,
       releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
       desiredGeneration: evolvedWorkflow.generation, actualGeneration: evolvedWorkflow.generation,
       runtimeKind: "task", runtimeRef: record.runId, runtimeSnapshotHash: planSnapshotHash,
+      ownerLevel: evolvedWorkflow.ownerLevel,
+      traceRef: { kind: "evidence", ref: `mission:${record.missionId}`, workspaceId: this.workspace.id, agentId: owner.agentId, ...(owner.profileId ? { profileId: owner.profileId } : {}) },
     });
     this.contexts.set(record.taskId, context);
   }
