@@ -68,7 +68,7 @@ async function hostFixture(source: string, timeout = 2_000, kind: "plugin" | "ha
     compatibility: { runtime: "autoagent", manifestVersion: 1, hostApi: "autoagent.plugin/v1" },
     scanner: { scannerRef: { id: "scanner", version: "1", contentHash: "scanner-hash" }, candidateHash: "content-hash", decision: "pass", declaredCapabilities: ["workspace.read"], detectedCapabilities: [], findings: [], scannedAt: "2026-08-14T00:00:00.000Z" },
   };
-  const extension: RuntimeEvolutionExtension = { name: manifest.name, kind, directory, entrypoint, releaseId: "release-a", releaseVersion: "1", contentHash: manifest.contentHash, generation: 1, stage: "production", manifest };
+  const extension: RuntimeEvolutionExtension = { name: manifest.name, kind, directory, entrypoint, releaseId: "release-a", releaseVersion: "1", contentHash: manifest.contentHash, generation: 1, stage: "production", ownerLevel: "project", manifest };
   const runtime = new AgentToolRuntime({ profile: "development", workspaceRoot: root, canReadWorkspace: true, canWriteWorkspace: false, canExecuteCommands: false }, ["readFile"]);
   const host = new IsolatedPluginHost(extension, runtime, { agentId: "agent-a", threadId: "thread-a", goalId: "goal-a", turnId: "turn-a" });
   return { root, extension, host };

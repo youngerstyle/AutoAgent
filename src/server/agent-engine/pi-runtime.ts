@@ -777,6 +777,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         evolutionCanaries: evolutionProjection.canaryReleases,
         evolutionCanaryAssignments: evolutionProjection.canaryAssignments,
         evolutionOrganizationConflicts: evolutionProjection.organizationConflicts,
+        evolutionResolvedReleases: evolutionProjection.resolvedReleases,
+        evolutionSnapshotHash: evolutionProjection.snapshotHash,
       },
     });
     const activationStore = new EvolutionActivationStore(this.workspaceRoot, this.now);
@@ -786,37 +788,37 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         assetKind: "skill", target: skill.name,
         releaseRef: { id: skill.releaseId, version: skill.releaseVersion, contentHash: skill.contentHash },
         desiredGeneration: skill.generation, actualGeneration: skill.generation,
-        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: skill.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
       ...evolvedMemories.filter((memory) => !memory.sourceWorkspaceId).map((memory) => activationStore.observe({
         assetKind: "memory", target: memory.target,
         releaseRef: { id: memory.releaseId, version: memory.releaseVersion, contentHash: memory.contentHash },
         desiredGeneration: memory.generation, actualGeneration: memory.generation,
-        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: memory.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
       ...evolutionProjection.plugins.map((plugin) => activationStore.observe({
         assetKind: "plugin", target: plugin.name,
         releaseRef: { id: plugin.releaseId, version: plugin.releaseVersion, contentHash: plugin.contentHash },
         desiredGeneration: plugin.generation, actualGeneration: plugin.generation,
-        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: plugin.ownerLevel, runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
       ...evolutionProjection.harnesses.map((harness) => activationStore.observe({
         assetKind: "harness", target: harness.name,
         releaseRef: { id: harness.releaseId, version: harness.releaseVersion, contentHash: harness.contentHash },
         desiredGeneration: harness.generation, actualGeneration: harness.generation,
-        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: harness.ownerLevel, runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
       ...evolutionProjection.prompts.map((prompt) => activationStore.observe({
         assetKind: "prompt", target: prompt.target,
         releaseRef: { id: prompt.releaseId, version: prompt.releaseVersion, contentHash: prompt.contentHash },
         desiredGeneration: prompt.generation, actualGeneration: prompt.generation,
-        runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: prompt.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
       ...evolutionProjection.agentProfiles.map((item) => activationStore.observe({
         assetKind: "agent_profile", target: item.target,
         releaseRef: { id: item.releaseId, version: item.releaseVersion, contentHash: item.contentHash },
         desiredGeneration: item.generation, actualGeneration: item.generation,
-        runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: runtimeEvolutionFingerprint, traceRef,
+        ownerLevel: item.ownerLevel, runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
     ]);
     return { session, goalVersions, resolution, toolExecution, safety, runtimeEvolutionFingerprint, evolutionToolNames: pluginTools.map((tool) => tool.name) };

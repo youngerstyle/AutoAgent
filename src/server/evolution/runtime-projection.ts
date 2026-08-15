@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionScope, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionOwnerLevel, EvolutionScope, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
@@ -32,6 +32,7 @@ export interface RuntimeEvolutionSkill {
   contentHash: string;
   generation: number;
   stage: "canary" | "production";
+  ownerLevel: EvolutionOwnerLevel;
 }
 
 export interface RuntimeEvolutionMemory {
@@ -42,6 +43,7 @@ export interface RuntimeEvolutionMemory {
   contentHash: string;
   generation: number;
   stage: "canary" | "production";
+  ownerLevel: EvolutionOwnerLevel;
   sourceWorkspaceId?: string;
   layer?: "workspace" | "organization";
 }
@@ -56,6 +58,7 @@ export interface RuntimeEvolutionExtension {
   contentHash: string;
   generation: number;
   stage: "canary" | "production";
+  ownerLevel: EvolutionOwnerLevel;
   manifest: PluginArtifactManifest;
 }
 
@@ -67,6 +70,7 @@ export interface RuntimeEvolutionPrompt {
   contentHash: string;
   generation: number;
   stage: "canary" | "production";
+  ownerLevel: EvolutionOwnerLevel;
 }
 
 export interface RuntimeEvolutionAgentProfile {
@@ -77,6 +81,7 @@ export interface RuntimeEvolutionAgentProfile {
   contentHash: string;
   generation: number;
   stage: "canary" | "production";
+  ownerLevel: EvolutionOwnerLevel;
 }
 
 export interface OrganizationMemorySource {
@@ -95,6 +100,17 @@ export interface RuntimeEvolutionProjection {
   canaryReleases: Array<{ target: string; releaseId: string; contentHash: string }>;
   canaryAssignments: Array<{ target: string; promotionId: string; releaseId: string; selected: boolean }>;
   organizationConflicts: string[];
+  resolvedReleases: RuntimeEvolutionResolvedRelease[];
+  snapshotHash: string;
+}
+export interface RuntimeEvolutionResolvedRelease {
+  assetKind: "skill" | "memory" | "plugin" | "harness" | "prompt" | "agent_profile";
+  target: string;
+  ownerLevel: EvolutionOwnerLevel;
+  releaseRef: { id: string; version: string; contentHash: string };
+  generation: number;
+  stage: "canary" | "production";
+  sourceWorkspaceId?: string;
 }
 export interface RuntimeEvolutionContext {
   assignmentKey: string;
@@ -167,9 +183,9 @@ async function evolutionSkillsForStage(
     const skillFile = safeResolve(workspaceRoot, path.join(".autoagent", "evolution", "artifacts", manifest.candidateHash, "SKILL.md"));
     const content = await readFile(skillFile, "utf8");
     if (hash(content) !== manifest.candidateHash) throw new Error(`${label} Skill release ${manifest.release.id} failed content verification`);
-    projected.push({ name: manifest.target, directory: path.dirname(skillFile), releaseId: manifest.release.id, releaseVersion: manifest.release.version, contentHash: manifest.candidateHash, generation: pointer.generation, stage });
+    projected.push({ name: manifest.target, directory: path.dirname(skillFile), releaseId: manifest.release.id, releaseVersion: manifest.release.version, contentHash: manifest.candidateHash, generation: pointer.generation, stage, ownerLevel: resolvedOwnerLevel(pointer.scope) });
   }
-  return projected.sort((left, right) => left.name.localeCompare(right.name));
+  return resolveEvolutionLayers(projected, (item) => item.name);
 }
 
 export async function productionEvolutionMemories(
@@ -230,9 +246,10 @@ async function evolutionExtensionsForStage(
       name: manifest.name, kind: manifest.kind, directory,
       entrypoint: safeResolve(directory, manifest.entrypoint), releaseId: release.release.id, releaseVersion: release.release.version,
       contentHash: release.candidateHash, generation: pointer.generation, stage, manifest,
+      ownerLevel: resolvedOwnerLevel(pointer.scope),
     });
   }
-  return projected.sort((left, right) => left.name.localeCompare(right.name));
+  return resolveEvolutionLayers(projected, (item) => `${item.kind}:${item.name}`);
 }
 
 async function evolutionMemoriesForStage(
@@ -269,10 +286,11 @@ async function evolutionMemoriesForStage(
     if (hash(content) !== manifest.candidateHash) throw new Error(`${label} Memory release ${manifest.release.id} failed content verification`);
     projected.push({
       target: manifest.target, content, releaseId: manifest.release.id, releaseVersion: manifest.release.version, contentHash: manifest.candidateHash, generation: pointer.generation, stage,
+      ownerLevel: resolvedOwnerLevel(pointer.scope, Boolean(organizationSource)),
       ...(organizationSource ? { sourceWorkspaceId: storageWorkspaceId, layer: "organization" as const } : {}),
     });
   }
-  return projected.sort((left, right) => left.target.localeCompare(right.target)).slice(0, 20);
+  return resolveEvolutionLayers(projected, (item) => item.target).slice(0, 20);
 }
 
 async function evolutionDeclarativeAssetsForStage(
@@ -298,7 +316,7 @@ async function evolutionDeclarativeAssetsForStage(
       || release.stage !== stage || !release.runtimeActive || !release.validationPassed || !["prompt", "agent_profile"].includes(release.candidateKind) || !sameScope(release.scope, pointer.scope)) continue;
     const content = await readFile(safeResolve(workspaceRoot, path.join(".autoagent", "evolution", release.artifactRef)), "utf8");
     if (hash(content) !== release.candidateHash) throw new Error(`${stage} ${release.candidateKind} release ${release.release.id} failed content verification`);
-    const common = { target: release.target, releaseId: release.release.id, releaseVersion: release.release.version, contentHash: release.candidateHash, generation: pointer.generation, stage };
+    const common = { target: release.target, releaseId: release.release.id, releaseVersion: release.release.version, contentHash: release.candidateHash, generation: pointer.generation, stage, ownerLevel: resolvedOwnerLevel(pointer.scope) };
     if (release.candidateKind === "prompt") {
       if (!release.validationChecks.some((check) => check.name === "prompt_safety" && check.passed)) throw new Error(`${stage} Prompt release ${release.release.id} has no safety validation`);
       prompts.push({ ...common, content });
@@ -322,7 +340,7 @@ async function evolutionDeclarativeAssetsForStage(
       } });
     }
   }
-  return { prompts: prompts.sort((a, b) => a.target.localeCompare(b.target)), agentProfiles: agentProfiles.sort((a, b) => a.target.localeCompare(b.target)) };
+  return { prompts: resolveEvolutionLayers(prompts, (item) => item.target), agentProfiles: resolveEvolutionLayers(agentProfiles, (item) => item.target) };
 }
 
 export async function evolutionAgentProfileForSession(
@@ -336,7 +354,7 @@ export async function evolutionAgentProfileForSession(
     evolutionDeclarativeAssetsForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context),
     evolutionDeclarativeAssetsForStage(workspaceRoot, workspaceId, profile, agent, "canary", context.assignmentKey, context),
   ]);
-  return overlayBy(production.agentProfiles, canary.agentProfiles, (item) => item.target).find((item) => item.target === profile.id);
+  return resolveEvolutionLayers([...production.agentProfiles, ...canary.agentProfiles], (item) => item.target).find((item) => item.target === profile.id);
 }
 
 export async function runtimeEvolutionProjection(
@@ -360,13 +378,21 @@ export async function runtimeEvolutionProjection(
     ))),
   ]);
   const { memories: organizationMemories, conflicts: organizationConflicts } = resolveOrganizationMemoryConflicts(organizationMemorySets.flat());
-  const productionMemories = overlayBy(organizationMemories, localProductionMemories, (item) => item.target);
+  const productionMemories = resolveEvolutionLayers([...organizationMemories, ...localProductionMemories], (item) => item.target);
   const canaryAssignments = await matchingCanaryAssignments(workspaceRoot, workspaceId, profile, agent, context);
-  const skills = overlayBy(productionSkills, canarySkills, (item) => item.name);
-  const memories = overlayBy(productionMemories, canaryMemories, (item) => item.target).slice(0, 20);
-  const extensions = overlayBy(productionExtensions, canaryExtensions, (item) => `${item.kind}:${item.name}`);
-  const prompts = overlayBy(productionDeclarative.prompts, canaryDeclarative.prompts, (item) => item.target);
-  const agentProfiles = overlayBy(productionDeclarative.agentProfiles, canaryDeclarative.agentProfiles, (item) => item.target);
+  const skills = resolveEvolutionLayers([...productionSkills, ...canarySkills], (item) => item.name);
+  const memories = resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target).slice(0, 20);
+  const extensions = resolveEvolutionLayers([...productionExtensions, ...canaryExtensions], (item) => `${item.kind}:${item.name}`);
+  const prompts = resolveEvolutionLayers([...productionDeclarative.prompts, ...canaryDeclarative.prompts], (item) => item.target);
+  const agentProfiles = resolveEvolutionLayers([...productionDeclarative.agentProfiles, ...canaryDeclarative.agentProfiles], (item) => item.target);
+  const resolvedReleases: RuntimeEvolutionResolvedRelease[] = [
+    ...skills.map((item) => resolvedRelease("skill", item.name, item)),
+    ...memories.map((item) => resolvedRelease("memory", item.target, item, item.sourceWorkspaceId)),
+    ...extensions.map((item) => resolvedRelease(item.kind, item.name, item)),
+    ...prompts.map((item) => resolvedRelease("prompt", item.target, item)),
+    ...agentProfiles.map((item) => resolvedRelease("agent_profile", item.target, item)),
+  ].sort((left, right) => `${left.assetKind}:${left.target}:${left.ownerLevel}`.localeCompare(`${right.assetKind}:${right.target}:${right.ownerLevel}`));
+  const snapshotHash = hash(canonical({ workspaceId, profileId: profile.id, resolvedReleases, organizationConflicts }));
   return {
     skills,
     memories,
@@ -375,15 +401,26 @@ export async function runtimeEvolutionProjection(
     prompts,
     agentProfiles,
     canaryReleases: [
-      ...canarySkills.map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
-      ...canaryMemories.map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
-      ...canaryExtensions.map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
-      ...canaryDeclarative.prompts.map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
-      ...canaryDeclarative.agentProfiles.map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...skills.filter((item) => item.stage === "canary").map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...memories.filter((item) => item.stage === "canary").map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...extensions.filter((item) => item.stage === "canary").map((item) => ({ target: item.name, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...prompts.filter((item) => item.stage === "canary").map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
+      ...agentProfiles.filter((item) => item.stage === "canary").map((item) => ({ target: item.target, releaseId: item.releaseId, contentHash: item.contentHash })),
     ].sort((left, right) => left.target.localeCompare(right.target)),
     canaryAssignments,
     organizationConflicts,
+    resolvedReleases,
+    snapshotHash,
   };
+}
+
+function resolvedRelease(
+  assetKind: RuntimeEvolutionResolvedRelease["assetKind"],
+  target: string,
+  item: { ownerLevel: EvolutionOwnerLevel; releaseId: string; releaseVersion: string; contentHash: string; generation: number; stage: "canary" | "production" },
+  sourceWorkspaceId?: string,
+): RuntimeEvolutionResolvedRelease {
+  return { assetKind, target, ownerLevel: item.ownerLevel, releaseRef: { id: item.releaseId, version: item.releaseVersion, contentHash: item.contentHash }, generation: item.generation, stage: item.stage, ...(sourceWorkspaceId ? { sourceWorkspaceId } : {}) };
 }
 
 async function matchingCanaryAssignments(
@@ -501,9 +538,26 @@ export function isCanaryAssignment(rollout: { percentage: number; salt: string }
   const bucket = Number.parseInt(hash(`${rollout.salt}\0${assignmentKey}`).slice(0, 8), 16) % 100;
   return bucket < rollout.percentage;
 }
-function overlayBy<T>(baseline: T[], canary: T[], key: (item: T) => string): T[] {
-  const values = new Map(baseline.map((item) => [key(item), item]));
-  for (const item of canary) values.set(key(item), item);
+function resolvedOwnerLevel(scope: EvolutionScope, legacyOrganization = false): EvolutionOwnerLevel {
+  return scope.ownerLevel ?? (legacyOrganization ? "company" : "project");
+}
+
+/** Resolve behavior defaults by scope first; Canary wins only inside the same scope layer. */
+export function resolveEvolutionLayers<T extends { ownerLevel: EvolutionOwnerLevel; stage: "canary" | "production"; generation: number; releaseId: string }>(
+  candidates: T[],
+  key: (item: T) => string,
+): T[] {
+  const precedence: Record<EvolutionOwnerLevel, number> = { company: 1, agent: 2, project: 3, agent_project: 4 };
+  const values = new Map<string, T>();
+  for (const candidate of candidates) {
+    const itemKey = key(candidate); const current = values.get(itemKey);
+    if (!current || precedence[candidate.ownerLevel] > precedence[current.ownerLevel]
+      || (candidate.ownerLevel === current.ownerLevel && candidate.stage === "canary" && current.stage === "production")
+      || (candidate.ownerLevel === current.ownerLevel && candidate.stage === current.stage && candidate.generation > current.generation)
+      || (candidate.ownerLevel === current.ownerLevel && candidate.stage === current.stage && candidate.generation === current.generation && candidate.releaseId.localeCompare(current.releaseId) > 0)) {
+      values.set(itemKey, candidate);
+    }
+  }
   return [...values.values()].sort((left, right) => key(left).localeCompare(key(right)));
 }
 function sameScope(left: ActiveReleasePointer["scope"], right: ActiveReleasePointer["scope"]): boolean {

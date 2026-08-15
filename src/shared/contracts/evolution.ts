@@ -731,6 +731,8 @@ export interface EvolutionInheritanceProof {
   activationId: string;
   assetKind: EvolutionArtifactKind;
   target: string;
+  /** Present on proofs emitted after layered scope resolution was introduced. */
+  ownerLevel?: EvolutionOwnerLevel;
   boundary: EvolutionActivationBoundary;
   releaseRef: VersionedEvolutionRef;
   desiredGeneration: number;

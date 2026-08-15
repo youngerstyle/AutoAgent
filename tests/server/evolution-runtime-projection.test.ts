@@ -51,7 +51,7 @@ describe("evolution production runtime projection", () => {
     expect(await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "other", tools: ["readFile"] })).toEqual([]);
     expect(await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "delivery-v1", tools: [] })).toEqual([]);
     const loaded = await productionEvolutionSkills(root, "workspace-a", profile(), agent(), { taskType: "delivery-v1", tools: ["readFile"] });
-    expect(loaded).toEqual([{ name: "evolved-review", directory: artifactDir, releaseId, releaseVersion: "1", contentHash, generation: 1, stage: "production" }]);
+    expect(loaded).toEqual([{ name: "evolved-review", directory: artifactDir, releaseId, releaseVersion: "1", contentHash, generation: 1, stage: "production", ownerLevel: "project" }]);
     const memoryContent = "# Scoped operational memory\n\nApply the evidence-backed browser initialization lesson only when the same cause is observed again.";
     const memoryHash = hash(memoryContent);
     const memoryReleaseId = "release-memory-a";
@@ -81,7 +81,7 @@ describe("evolution production runtime projection", () => {
       },
     });
     expect(await productionEvolutionMemories(root, "workspace-a", profile(), agent())).toEqual([
-      { target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId, releaseVersion: "1", contentHash: memoryHash, generation: 1, stage: "production" },
+      { target: "experience.tool.browser", content: memoryContent, releaseId: memoryReleaseId, releaseVersion: "1", contentHash: memoryHash, generation: 1, stage: "production", ownerLevel: "project" },
     ]);
     await new MemoryLifecycleStore("workspace-a", root).transition(
       "stale-memory", memoryReleaseId, "stale", "No recent successful use", { type: "system", id: "memory-lifecycle-maintainer/v1" },
@@ -137,6 +137,12 @@ describe("evolution production runtime projection", () => {
       soul: "Prefer the smallest evidence-backed change.", capabilities: ["delivery:implement"], defaultProvider: "anthropic", defaultModel: "claude-governed",
       defaultPolicy: expect.objectContaining({ canWriteWorkspace: false, enabledTools: ["listFiles", "readFile"] }),
     }) })]);
+    expect(projected.resolvedReleases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKind: "prompt", target: "evidence-discipline", ownerLevel: "project", stage: "production" }),
+      expect.objectContaining({ assetKind: "agent_profile", target: "profile-dev", ownerLevel: "project", stage: "production" }),
+    ]));
+    expect(projected.snapshotHash).toMatch(/^[a-f0-9]{64}$/);
+    expect((await runtimeEvolutionProjection(root, "workspace-a", profile(), agent(), { assignmentKey: "thread-a", tools: [] })).snapshotHash).toBe(projected.snapshotHash);
     const evolvedProfile = projected.agentProfiles[0]!.profile;
     expect(inheritEvolvedProfileDefaults(agent(), profile(), evolvedProfile)).toMatchObject({ provider: "anthropic", model: "claude-governed", policyOverride: { canWriteWorkspace: false } });
     expect(inheritEvolvedProfileDefaults({ ...agent(), provider: "openai", model: "explicit-model", policyOverride: { canReadWorkspace: true } }, profile(), evolvedProfile))
