@@ -1,7 +1,9 @@
 # AutoAgent Company Evolution（Evol）设计
 
 日期：2026-08-14
-状态：Corrected；Self-Mutation/Activation 语义由 `2026-08-14-self-mutation-activation-v1.md` 规范
+状态：Superseded。本文仅保留为历史记录，不再作为实现或验收依据；当前权威规范为 `2026-08-15-company-project-evolution-promotion-v1.md`。
+
+> 纠偏：Company Evol 不是软件源码交付，不依赖 GitHub/GitLab、CI、Kubernetes 或 Runtime revision。当前产品边界是私有部署内 Agent、项目与公司的 Practice，以及 Memory、Prompt、Skill、Workflow、Local Plugin Binding，在下一 turn/task/session 被实际继承。
 范围：建立可审计的可继承资产变异、验证、激活、观测与回滚闭环。
 
 ## 1. 结论
@@ -181,7 +183,7 @@ skill-package/
 2. 动态：在隔离 workspace 中执行脚本和 Eval Case；
 3. 行为：检查实际工具调用、文件访问、网络、成本和越权尝试。
 
-Memory、Skill、Agent Profile、Prompt 与 Workflow 都必须写入版本化 desired-state registry；Runtime 只在各自激活边界拉取 active release。源码候选必须保存 base commit、patch hash、目标分支、required checks 与 deployment attestation，不能直接覆写当前服务进程正在执行的文件来冒充生效。
+Memory、Skill、Agent Profile、Prompt 与 Workflow 都必须写入版本化 desired-state registry；Runtime 只在各自激活边界拉取 active release。AutoAgent 自身源码、代码仓库、构建与部署不属于 Evol 资产或完成条件。
 
 Plugin/Harness 使用独立规范定义的扩展宿主与能力代理。它可以作为 Evol 的一种候选资产，但“运行扩展”不是“发生进化”；只有其版本被持久激活并被后续 Runtime 继承，才构成一次进化结果。扩展沙箱不属于 Evol Control Plane 的必需依赖。
 

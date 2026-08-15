@@ -4,7 +4,7 @@
 
 依据：`docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`
 
-结论：**本地 Evol V1 完成。** Memory、Prompt、Skill 和 Local Plugin 均已有版本化 Candidate/Release、后续生命周期实际继承和 rollback 证据。软件交付已从 Evol 契约和运行链删除。
+结论：**Workspace 本地资产生命周期 V1 完成，但 Agent/Project/Company Evolution 未完成。** Memory、Prompt、Skill 和 Local Plugin 已有版本化 Candidate/Release、后续生命周期实际继承和 rollback 证据；尚未实现稳定 Company Agent identity、开放式 Practice、agent-project/agent/project scope 晋升、公司推广以及分层覆盖。新的完成定义以 `2026-08-15-company-project-evolution-promotion-v1.md` 为准。
 
 ## 审计口径
 
