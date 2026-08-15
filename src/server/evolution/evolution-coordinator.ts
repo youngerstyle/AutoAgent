@@ -19,6 +19,7 @@ import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js"
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { EvolutionSignalIngestor } from "./evolution-signal-ingestor.js";
+import { EvolutionReflectionWorker } from "./reflection-worker.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 
 export class EvolutionCoordinator {
@@ -36,6 +37,7 @@ export class EvolutionCoordinator {
       maintenanceIntervalMs?: number;
       evaluationLeaseMs?: number;
       maxEvaluationJobsPerWorkspace?: number;
+      maxReflectionSignalsPerWorkspace?: number;
       now?: () => Date;
       workerId?: string;
     } = {},
@@ -45,6 +47,7 @@ export class EvolutionCoordinator {
       running: false,
       evaluatorConfigured: Boolean(options.evaluatorProgramPath),
       workspacesScanned: 0,
+      reflectionSignalsProcessed: 0,
       evaluationJobsProcessed: 0,
     };
   }
@@ -81,6 +84,7 @@ export class EvolutionCoordinator {
     const startedAt = this.now().toISOString();
     this.statusValue = { ...this.statusValue, running: true, lastStartedAt: startedAt, lastError: undefined };
     let workspacesScanned = 0;
+    let reflectionSignalsProcessed = 0;
     let evaluationJobsProcessed = 0;
     const errors: string[] = [];
     for (const workspace of await this.workspaces.list()) {
@@ -89,6 +93,11 @@ export class EvolutionCoordinator {
         await this.runMaintenance(workspace);
       } catch (error) {
         errors.push(`${workspace.id}/maintenance: ${safeMessage(error)}`);
+      }
+      try {
+        reflectionSignalsProcessed += await this.runReflections(workspace);
+      } catch (error) {
+        errors.push(`${workspace.id}/reflection: ${safeMessage(error)}`);
       }
       try {
         evaluationJobsProcessed += await this.runEvaluations(workspace);
@@ -103,8 +112,18 @@ export class EvolutionCoordinator {
       lastCompletedAt: this.now().toISOString(),
       ...(errors.length ? { lastError: errors.join("; ").slice(0, 2_000) } : {}),
       workspacesScanned,
+      reflectionSignalsProcessed,
       evaluationJobsProcessed,
     };
+  }
+
+  private async runReflections(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const limit = this.options.maxReflectionSignalsPerWorkspace ?? 4;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Evolution reflection drain limit is invalid");
+    const worker = new EvolutionReflectionWorker(workspace.id, workspace.rootPath);
+    let processed = 0;
+    while (processed < limit && await worker.runNext(`${this.workerId}:reflection`)) processed += 1;
+    return processed;
   }
 
   private async runMaintenance(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<void> {

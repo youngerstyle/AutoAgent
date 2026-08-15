@@ -87,6 +87,32 @@ export interface EvolutionSignal {
   lastError?: { category: "transient" | "terminal"; message: string };
 }
 
+export interface EvolutionPracticeScope {
+  ownerLevel: "agent_project" | "agent" | "project" | "company";
+  workspaceId?: string;
+  profileId?: string;
+  roles?: string[];
+  taskTypes?: string[];
+}
+
+export interface EvolutionPracticeDraft {
+  draftId: string;
+  commandId: string;
+  signalId: string;
+  statement: string;
+  trigger: string;
+  procedure: string;
+  expectedOutcome: MetricExpectation[];
+  applicability: EvolutionPracticeScope;
+  contraindications: string[];
+  sourceEpisodeRefs: string[];
+  sourceRefs: EvolutionSourceRef[];
+  provenanceHash: string;
+  status: "draft" | "consolidated" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ExperienceEpisode {
   episodeId: string;
   workspaceId: string;
@@ -494,6 +520,7 @@ export interface EvolutionWorkerStatus {
   lastCompletedAt?: string;
   lastError?: string;
   workspacesScanned: number;
+  reflectionSignalsProcessed: number;
   evaluationJobsProcessed: number;
 }
 
