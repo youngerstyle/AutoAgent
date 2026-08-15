@@ -25,3 +25,24 @@ export function resolvePolicy(
     allowHostAccess: agent.policyOverride?.allowHostAccess ?? workspace.policyProfile === "development"
   };
 }
+
+/** Evolution may narrow an effective policy, but can never grant beyond the pre-evolution Agent/Project boundary. */
+export function intersectEffectivePolicies(base: EffectivePolicy, evolved: EffectivePolicy): EffectivePolicy {
+  const baseCommands = base.commandAllowlist?.filter(Boolean) ?? [];
+  const evolvedCommands = evolved.commandAllowlist?.filter(Boolean) ?? [];
+  const commandAllowlist = baseCommands.length && evolvedCommands.length
+    ? baseCommands.filter((item) => evolvedCommands.some((candidate) => candidate.toLowerCase() === item.toLowerCase()))
+    : baseCommands.length ? baseCommands : evolvedCommands.length ? evolvedCommands : undefined;
+  const commandIntersectionEmpty = Boolean(baseCommands.length && evolvedCommands.length && !commandAllowlist?.length);
+  return {
+    ...evolved,
+    profile: base.profile,
+    workspaceRoot: base.workspaceRoot,
+    canReadWorkspace: base.canReadWorkspace && evolved.canReadWorkspace,
+    canWriteWorkspace: base.canWriteWorkspace && evolved.canWriteWorkspace,
+    canExecuteCommands: base.canExecuteCommands && evolved.canExecuteCommands && !commandIntersectionEmpty,
+    allowHostAccess: Boolean(base.allowHostAccess && evolved.allowHostAccess),
+    enabledTools: (base.enabledTools ?? []).filter((tool) => (evolved.enabledTools ?? []).includes(tool)),
+    ...(commandAllowlist?.length ? { commandAllowlist } : { commandAllowlist: undefined }),
+  };
+}

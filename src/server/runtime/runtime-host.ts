@@ -32,7 +32,7 @@ import type { MissionTicketOutcome } from "../mission-process/ticket-agent-adapt
 import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../product/plan-template.js";
 import { createTeamBinding } from "../product/team-binding.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
-import { resolvePolicy } from "../policy/policy.js";
+import { intersectEffectivePolicies, resolvePolicy } from "../policy/policy.js";
 import { configuredToolsInclude, toolsForPolicy } from "../../shared/tool-catalog.js";
 import { TicketEngine } from "../tickets/ticket-engine.js";
 import { TicketStore } from "../tickets/ticket-store.js";
@@ -1779,7 +1779,7 @@ export class RuntimeHost {
       taskType,
       profile,
       agent,
-      policy: resolvePolicy(this.workspace, agent, profile),
+      policy: intersectEffectivePolicies(basePolicy, resolvePolicy(this.workspace, agent, profile)),
       provider,
       model,
       ...modelRuntime,

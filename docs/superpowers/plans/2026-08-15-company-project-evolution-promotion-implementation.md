@@ -113,7 +113,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 ## Milestone F：分层解析与管理面
 
 - [ ] 实现 built-in < company < agent < project < agent-project < invocation safety 的行为解析顺序。
-- [ ] 强制 policy 使用逐层取交集语义，任何下层资产不能放宽上层约束。
+- [x] 强制 policy 使用单调收窄交集语义：布尔权限取 AND、工具取交集、命令 allowlist 取交集且空交集关闭命令执行；任何 Agent/Profile Evol 都不能放宽原项目有效策略。
 - [ ] 新项目自动继承公司默认；现有项目按生命周期边界重载。
   - Memory/Prompt/Skill/Plugin/AgentProfile 使用 turn/session snapshot；Workflow 使用 task snapshot；Company Runtime Config 使用 process boot snapshot，均从各自共享层账本记录激活证明。
 - [ ] 项目 pin/override 与公司 rollback 相互独立。
