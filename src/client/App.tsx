@@ -2528,6 +2528,7 @@ function EvolutionHub(props: {
   const practices = props.overview?.practices ?? [];
   const practiceBindings = props.overview?.practiceBindings ?? [];
   const pluginAuthoringJobs = props.overview?.pluginAuthoringJobs ?? [];
+  const phaseJobs = props.overview?.phaseJobs ?? [];
   const scopePromotions = props.overview?.scopePromotions ?? [];
   const companyTrials = props.overview?.companyTrials ?? [];
   const companyTrialEvidence = props.overview?.companyTrialEvidence ?? [];
@@ -2580,6 +2581,7 @@ function EvolutionHub(props: {
                     <span className={`evolution-status ${practice.status}`}>{practice.status}</span>
                     <p>{practice.procedure}</p>
                     <code>{practice.practiceId} · bindings {bindings.map((binding) => `${binding.kind}:${binding.status}`).join(", ") || "none"}</code>
+                    <small>来源 {practice.applicability.workspaceId}/{practice.applicability.profileId} · Episodes {practice.sourceEpisodeRefs.join(", ")}</small>
                     {pluginAuthoringJobs.filter((job) => job.practiceId === practice.practiceId && job.practiceVersion === practice.version).map((job) => <small key={job.jobId}>Plugin authoring {job.status} · attempts {job.attempts}/{job.maxAttempts}{job.lastError ? ` · ${job.lastError}` : ""}</small>)}
                   </article>;
                 }) : <p className="evolution-empty">尚无经过 Dream consolidation 的 Practice。</p>}
@@ -2595,6 +2597,7 @@ function EvolutionHub(props: {
                     <span className={`evolution-status ${proposal.status}`}>{proposal.status}</span>
                     <p>Practice {proposal.practiceRef.id}@{proposal.practiceRef.version}{proposal.generalizationRisks.length ? ` · risks: ${proposal.generalizationRisks.join("; ")}` : ""}</p>
                     <code>{proposal.originReleaseRef.id}@{proposal.originReleaseRef.version}</code>
+                    <small>来源 {proposal.origin.workspaceId ?? "shared"}/{proposal.origin.profileId ?? "project"} · proofs {proposal.inheritanceProofRefs.join(", ")} · effects {proposal.effectWindowRefs.join(", ")}</small>
                     {proposal.companyReview ? <small>公司评审已通过：泛化、脱敏、范围、成本、风险 · {proposal.companyReview.reviewedBy.id} · {proposal.companyReview.reviewedAt}</small> : null}
                     <div className="memory-actions">
                       {proposal.status === "proposed" && proposal.targetScope.ownerLevel === "company" ? <CompanyReviewControl disabled={props.loading} onSubmit={(review) => props.onScopeTransition(proposal.proposalId, "reviewed", review)} /> : null}
@@ -2627,7 +2630,7 @@ function EvolutionHub(props: {
                   return <article key={activation.activationId}>
                     <div>
                       <strong>{activation.assetKind} · {activation.target}</strong>
-                      <small>{activation.activationKind === "rollback_restore" ? "rollback restore" : activation.stage} · generation {activation.desiredGeneration}</small>
+                      <small>{activation.scope.ownerLevel ?? "project"} · {activation.scope.profileId ?? activation.scope.workspaceId} · {activation.activationKind === "rollback_restore" ? "rollback restore" : activation.stage} · generation {activation.desiredGeneration}</small>
                     </div>
                     <span className={`evolution-status ${activation.status}`}>{activation.status}</span>
                     <p>
@@ -2639,6 +2642,17 @@ function EvolutionHub(props: {
                     {activation.healthTelemetryId ? <small>telemetry {activation.healthTelemetryId}</small> : null}
                   </article>;
                 }) : <p className="evolution-empty">尚无激活请求；Candidate 或 Promotion 不会被当成已生效。</p>}
+              </div>
+            </section>
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Recoverable workers</span><h3>Reflection / Dream 队列</h3></div></header>
+              <div className="evolution-list compact">
+                {phaseJobs.length ? phaseJobs.slice().reverse().map((job) => <article key={job.jobId}>
+                  <div><strong>{job.kind}</strong><small>P{job.priority} · {job.scheduleReason} · attempts {job.attempts}/{job.maxAttempts}</small></div>
+                  <span className={`evolution-status ${job.status}`}>{job.status}</span>
+                  <code>{job.sourceSignalId ?? job.sourceDraftRefs.join(", ")}</code>
+                  {job.lastError ? <small>{job.lastError.category}: {job.lastError.message}</small> : null}
+                </article>) : <p className="evolution-empty">当前没有 Reflection 或 Dream 后台任务。</p>}
               </div>
             </section>
             <section className="evolution-panel">

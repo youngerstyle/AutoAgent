@@ -299,8 +299,11 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   }));
   router.get("/activations", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
-    const store = new EvolutionActivationStore(workspace.rootPath);
-    res.json({ activations: await store.list(), proofs: await store.listProofs() });
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const roots = [workspace.rootPath, globalEvolutionLayerRoot(workspaces.homePath(), "company", identity.companyId),
+      ...[...new Set((await listWorkspaceAgents(workspace)).map((agent) => agent.profileId))].map((profileId) => globalEvolutionLayerRoot(workspaces.homePath(), "agent", profileId))];
+    const ledgers = roots.map((root) => new EvolutionActivationStore(root));
+    res.json({ activations: (await Promise.all(ledgers.map((store) => store.list()))).flat(), proofs: (await Promise.all(ledgers.map((store) => store.listProofs()))).flat() });
   }));
   router.post("/releases/:promotionId/rollback", asyncHandler(async (req, res) => {
     const record = await (await storeFor(String(req.params.workspaceId))).evaluations.rollback(

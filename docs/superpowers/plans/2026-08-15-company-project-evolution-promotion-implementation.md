@@ -85,8 +85,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 - [ ] 实现带耐久 cursor 的 ingestor，从终态、用户纠正、recovered failure、Practice feedback、context compaction 和 effect observation 幂等派生 EvolutionSignal。
 - [ ] 将当前固定轮询中混合的 extraction、consolidation、evaluation、promotion、telemetry reconciliation 拆成独立可恢复 worker。
 - [x] 实现 P0-P4 优先队列、单私有部署 company 边界、Workspace 轮转和同优先级 Agent least-recently-served 公平调度，并保留每 Workspace drain budget。
-- [ ] 支持 threshold、idle budget、可配置 maintenance window 与 manual trigger；不得把固定凌晨作为正确性依赖。
-  - 已完成高显著性即时 Reflection job、普通事件延迟 maintenance Reflection、跨 Episode threshold Dream、周期 maintenance Dream 与显式人工 Reflection/Dream trigger；仍需把真实 Runtime idle budget 和可配置 maintenance window 接入调度器。
+- [x] 支持 threshold、真实 Runtime idle budget、可配置 UTC maintenance window 与 manual trigger；高显著性即时进入 Reflection，普通事件延迟聚合，任何固定凌晨都不是正确性依赖。
 - [ ] 保证业务任务不等待 Evol，当前运行 snapshot 不被后台结果热修改。
 
 ## Milestone C：开放式 Practice
@@ -119,5 +118,6 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
   - Memory/Prompt/Skill/Plugin/AgentProfile 使用 turn/session snapshot；Workflow 使用 task snapshot；Company Runtime Config 使用 process boot snapshot，均从各自共享层账本记录激活证明。
 - [ ] 项目 pin/override 与公司 rollback 相互独立。
 - [ ] UI 展示完整实践发现、Agent/项目效果、scope 晋升、公司评审、trial、active 与 rollback lineage。
+  - 已展示 Practice 的 Workspace/profile/Episode 来源、结构化公司评审、trial、局部及 Company/Agent 共享层 activation/inheritance/rollback、独立 Reflection/Dream job 状态；仍需审计 project/agent pin 与 override 的控制面。
 
 退出标准：主规范第 12 节十五条完成定义全部有真实多 Agent、多 Workspace 与双私有实例端到端证据。

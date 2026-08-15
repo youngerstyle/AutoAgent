@@ -50,6 +50,9 @@ export class EvolutionCoordinator {
       maxEvaluationJobsPerWorkspace?: number;
       maxReflectionSignalsPerWorkspace?: number;
       dreamMinimumIndependentEpisodes?: number;
+      idleDreamDraftBudgetPerWorkspace?: number;
+      maintenanceWindowUtc?: { startHour: number; endHour: number };
+      isWorkspaceIdle?: (workspaceId: string) => boolean | Promise<boolean>;
       now?: () => Date;
       workerId?: string;
       pluginArtifactAuthor?: PluginArtifactAuthor;
@@ -184,13 +187,20 @@ export class EvolutionCoordinator {
     const drafts = new PracticeDraftStore(workspace.id, workspace.rootPath, () => this.now());
     const pending = (await drafts.list()).filter((draft) => draft.status === "draft");
     if (!pending.length) return 0;
+    const budget = this.options.idleDreamDraftBudgetPerWorkspace ?? 100;
+    if (!Number.isSafeInteger(budget) || budget < 1 || budget > 10_000) throw new Error("Evolution idle Dream draft budget is invalid");
     const phaseJobs = new EvolutionPhaseJobStore(workspace.id, workspace.rootPath, () => this.now());
     const maintenanceIntervalMs = this.options.maintenanceIntervalMs ?? 5 * 60_000;
     const bucket = Math.floor(this.now().getTime() / maintenanceIntervalMs);
-    const reason = new Set(pending.flatMap((draft) => draft.sourceEpisodeRefs)).size >= minimum ? "threshold" : "maintenance";
+    const thresholdReached = new Set(pending.flatMap((draft) => draft.sourceEpisodeRefs)).size >= minimum;
+    const idle = await (this.options.isWorkspaceIdle?.(workspace.id) ?? true);
+    const inMaintenanceWindow = maintenanceWindowAllows(this.now(), this.options.maintenanceWindowUtc);
+    const reason = thresholdReached ? "threshold" : idle ? "idle" : inMaintenanceWindow ? "maintenance" : undefined;
+    if (!reason) return 0;
+    const selectedDrafts = pending.slice(0, budget);
     await phaseJobs.enqueue({
-      commandId: `dream:${reason}:${reason === "threshold" ? pending.map((draft) => draft.draftId).sort().join(":") : bucket}`,
-      kind: "consolidation", priority: reason === "threshold" ? 2 : 4, sourceDraftRefs: pending.map((draft) => draft.draftId).sort(),
+      commandId: `dream:${reason}:${reason === "threshold" ? selectedDrafts.map((draft) => draft.draftId).sort().join(":") : bucket}`,
+      kind: "consolidation", priority: reason === "threshold" ? 2 : reason === "idle" ? 3 : 4, sourceDraftRefs: selectedDrafts.map((draft) => draft.draftId).sort(),
       scheduleReason: reason, availableAt: this.now().toISOString(),
     });
     const result = await new EvolutionDreamWorker(
@@ -390,4 +400,13 @@ function automationMatches(suite: EvolutionEvalSuite, candidate: EvolutionCandid
 
 function safeMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ");
+}
+
+function maintenanceWindowAllows(now: Date, window: { startHour: number; endHour: number } | undefined): boolean {
+  if (!window) return false;
+  if (![window.startHour, window.endHour].every((hour) => Number.isSafeInteger(hour) && hour >= 0 && hour <= 23) || window.startHour === window.endHour) {
+    throw new Error("Evolution maintenance UTC window is invalid");
+  }
+  const hour = now.getUTCHours();
+  return window.startHour < window.endHour ? hour >= window.startHour && hour < window.endHour : hour >= window.startHour || hour < window.endHour;
 }

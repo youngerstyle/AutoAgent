@@ -50,6 +50,11 @@ export class RuntimeHostRegistry {
       evaluatorProgramPath: options.evolutionEvaluatorProgramPath,
       intervalMs: options.evolutionWorkerIntervalMs,
       pluginArtifactAuthor: new ProviderPluginArtifactAuthor(providers),
+      isWorkspaceIdle: async (workspaceId) => {
+        const host = this.hosts.get(workspaceId);
+        if (!host) return true;
+        return !["running", "waiting"].includes((await host.snapshot()).status);
+      },
     });
   }
 

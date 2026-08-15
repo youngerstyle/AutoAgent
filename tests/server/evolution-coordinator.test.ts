@@ -12,6 +12,8 @@ import { EvaluationJobStore } from "../../src/server/evolution/evaluation-job-st
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
 import { EvolutionEvaluationStore } from "../../src/server/evolution/evaluation-store.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
+import { PracticeDraftStore } from "../../src/server/evolution/practice-draft-store.js";
+import { EvolutionPhaseJobStore } from "../../src/server/evolution/phase-job-store.js";
 
 describe("EvolutionCoordinator", () => {
   it("maintains idle workspaces and consumes server-configured sandbox evaluation jobs", async () => {
@@ -143,6 +145,23 @@ describe("EvolutionCoordinator", () => {
     expect((await evaluations.listPromotions()).find((item) => item.stage === "production")).toMatchObject({
       status: "active", candidateId: candidate.candidateId, approvedBy: { type: "system", id: "evolution-coordinator/v1" },
     });
+  });
+
+  it("defers sub-threshold Dream work while busy and admits it through a configured maintenance window", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-schedule-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-schedule-workspace-"));
+    const workspaces = new WorkspaceStore(home); const workspace = await workspaces.create({ name: "Busy workspace", rootPath: root, policyProfile: "development" });
+    const now = () => new Date("2026-08-14T03:00:00.000Z");
+    await new PracticeDraftStore(workspace.id, root, now).create({
+      commandId: "single-draft", signalId: "signal-a", statement: "Brief the authoritative document", trigger: "Multi-agent execution starts",
+      procedure: "Brief, acknowledge, then execute", expectedOutcome: [{ metric: "task_success_rate", direction: "increase", minimumDelta: 0.01 }],
+      observedComponents: ["workflow"], applicability: { ownerLevel: "agent_project", workspaceId: workspace.id, profileId: "profile-a" }, contraindications: [],
+      sourceEpisodeRefs: ["episode-a"], sourceRefs: [{ kind: "evidence", ref: "evidence-a", workspaceId: workspace.id, profileId: "profile-a" }],
+    });
+    await new EvolutionCoordinator(workspaces, { now, maintenanceIntervalMs: 10_000, isWorkspaceIdle: () => false }).runOnce();
+    expect(await new EvolutionPhaseJobStore(workspace.id, root, now).list()).toEqual([]);
+    await new EvolutionCoordinator(workspaces, { now, maintenanceIntervalMs: 10_000, isWorkspaceIdle: () => false, maintenanceWindowUtc: { startHour: 3, endHour: 4 } }).runOnce();
+    expect(await new EvolutionPhaseJobStore(workspace.id, root, now).list()).toEqual([expect.objectContaining({ kind: "consolidation", scheduleReason: "maintenance", status: "succeeded" })]);
   });
 });
 
