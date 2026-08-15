@@ -1,13 +1,11 @@
 import { readFile } from "node:fs/promises";
 import type { ExperienceEpisode, EvolutionSignalTrigger, ReleaseTelemetry } from "../../shared/contracts/evolution.js";
-import type { Workspace } from "../../shared/types.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { workspaceEvolutionSignalCursorFile, workspaceEvolutionTelemetryFile } from "../storage/paths.js";
-import { AgentStore } from "../agent-engine/agent-store.js";
-import { listWorkspaceAgents } from "../agents/roster.js";
 import { ExperienceStore } from "./experience-store.js";
 import { EvolutionSignalStore } from "./evolution-signal-store.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort } from "./observation-port.js";
 
 interface SignalCursor { lastEpisodeId?: string; lastTelemetryId?: string; agentThreadSequences?: Record<string, number> }
 
@@ -19,7 +17,7 @@ export class EvolutionSignalIngestor {
     private readonly signals = new EvolutionSignalStore(workspaceId, workspaceRoot),
     private readonly phaseJobs = new EvolutionPhaseJobStore(workspaceId, workspaceRoot),
     private readonly now: () => Date = () => new Date(),
-    private readonly workspace?: Workspace,
+    private readonly observations: EvolutionObservationPort = EMPTY_EVOLUTION_OBSERVATION_PORT,
   ) {}
 
   async ingest(limit = 100): Promise<{ inspectedEpisodes: number; enqueuedSignals: number; cursor?: string }> {
@@ -44,17 +42,13 @@ export class EvolutionSignalIngestor {
         sourceRefs: refs, salience: item.decision === "fail" ? 1 : 0.5, novelty: 0, occurredAt: item.endedAt });
       cursor.lastTelemetryId = item.telemetryId; enqueuedSignals += 1;
     }
-    if (this.workspace) {
+    {
       const sequences = { ...(cursor.agentThreadSequences ?? {}) };
-      for (const agent of await listWorkspaceAgents(this.workspace)) {
-        const aggregate = await new AgentStore(this.workspaceRoot, agent.id).read(); let maximum = sequences[agent.id] ?? 0;
-        for (const thread of aggregate.threads) for (const item of thread.items.filter((value) => value.kind === "compaction" && value.sequence > (sequences[agent.id] ?? 0)).sort((a, b) => a.sequence - b.sequence)) {
-          await this.enqueueWithReflection({ commandId: `compaction:${agent.id}:${thread.threadId}:${item.itemId}`, trigger: "context_compaction", priority: 4,
-            profileId: agent.profileId, sourceRefs: [{ kind: "trace", ref: `${thread.threadId}:${item.itemId}`, workspaceId: this.workspaceId, agentId: agent.id, profileId: agent.profileId }],
-            salience: 0.2, novelty: 0, occurredAt: item.createdAt });
-          maximum = Math.max(maximum, item.sequence); enqueuedSignals += 1;
-        }
-        sequences[agent.id] = maximum;
+      for (const item of await this.observations.collectCompactions(sequences)) {
+        await this.enqueueWithReflection({ commandId: `compaction:${item.agentId}:${item.threadId}:${item.itemId}`, trigger: "context_compaction", priority: 4,
+          profileId: item.profileId, sourceRefs: [{ kind: "trace", ref: `${item.threadId}:${item.itemId}`, workspaceId: this.workspaceId, agentId: item.agentId, profileId: item.profileId }],
+          salience: 0.2, novelty: 0, occurredAt: item.occurredAt });
+        sequences[item.agentId] = Math.max(sequences[item.agentId] ?? 0, item.sequence); enqueuedSignals += 1;
       }
       cursor.agentThreadSequences = sequences;
     }

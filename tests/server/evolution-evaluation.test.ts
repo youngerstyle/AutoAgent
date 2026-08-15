@@ -27,6 +27,7 @@ import { CanaryTelemetryReconciler } from "../../src/server/evolution/canary-tel
 import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
+import { PlatformEvolutionObservationAdapter } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
 import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
@@ -198,12 +199,12 @@ describe("evolution evaluation and promotion gate", () => {
     await ensureWorkspaceAgent(workspace, runtimeProfile(), "agent-dev");
     await recordCanaryCohorts(workspace, fixture.candidate, canary, true, "passing");
 
-    const result = await new CanaryTelemetryReconciler(workspace, fixedNow).reconcile();
+    const result = await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile();
     expect(result.recordedTelemetry).toEqual([
       expect.objectContaining({ releaseRef: canary.toRelease, sampleSize: 5, decision: "inconclusive", recorder: { type: "system", id: "evolution-canary-monitor/v1" } }),
     ]);
     expect((await fixture.evaluations.listPromotions()).find((item) => item.promotionId === canary.promotionId)?.status).toBe("active");
-    expect((await new CanaryTelemetryReconciler(workspace, fixedNow).reconcile()).recordedTelemetry[0]?.telemetryId)
+    expect((await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile()).recordedTelemetry[0]?.telemetryId)
       .toBe(result.recordedTelemetry[0]?.telemetryId);
   });
 
@@ -225,7 +226,7 @@ describe("evolution evaluation and promotion gate", () => {
     await ensureWorkspaceAgent(workspace, runtimeProfile(), "agent-dev");
     await recordCanaryCohorts(workspace, fixture.candidate, canary, false, "failing");
 
-    const result = await new CanaryTelemetryReconciler(workspace, fixedNow).reconcile();
+    const result = await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile();
 
     expect(result.recordedTelemetry[0]).toMatchObject({ decision: "fail", releaseRef: canary.toRelease });
     expect((await fixture.evaluations.listPromotions()).find((item) => item.promotionId === canary.promotionId))
@@ -295,7 +296,7 @@ describe("evolution evaluation and promotion gate", () => {
     const workspace: Workspace = { id: "workspace-a", name: "Prompt loop", rootPath: root, policyProfile: "development", createdAt: fixedNow().toISOString() };
     await ensureWorkspaceAgent(workspace, runtimeProfile(), "agent-dev");
     await recordCanaryCohorts(workspace, proposed, canary, false, "prompt-loop-failing");
-    const telemetry = await new CanaryTelemetryReconciler(workspace, fixedNow).reconcile();
+    const telemetry = await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile();
     expect(telemetry.recordedTelemetry[0]).toMatchObject({ decision: "fail", candidateId: proposed.candidateId });
     expect((await new EvolutionActivationStore(root, fixedNow).list()).find((item) => item.promotionId === canary.promotionId))
       .toMatchObject({ status: "rolled_back", health: "degraded", proofCount: expect.any(Number) });

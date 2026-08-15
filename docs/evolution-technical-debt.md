@@ -5,11 +5,11 @@
 ## TD-EVOL-ARCH-001：Evol 内核仍有平台 Store 依赖
 
 - 严重度：最高
-- 当前状态：迁移中
-- 已偿还：Experience/Memory 输入改为 `EvolutionObservationPort`；Candidate 验证改为 `EvolutionSourceVerificationPort`；Agent Loop 改为 `AgentEvolutionRuntimePort`；Mission Runtime 改为 `EvolutionPlatformPort`；平台知识集中到 `evolution-adapters`。
-- 剩余：Signal ingestion、Canary/Company Trial telemetry 仍直接读取 Agent 或 Trace Store。
-- 风险：Evol 尚不能作为完全独立 package 或进程替换。
-- 偿还路径：按 `2026-08-15-evolution-framework-boundary-v1.md` 引入剩余五类端口，并以“evolution 目录无三大框架 import”的架构测试作为退出门槛。
+- 当前状态：核心业务边界已偿还；物理打包待完成
+- 已偿还：Experience/Memory、Signal、Canary/Company Trial 输入统一改为 `EvolutionObservationPort`；Candidate 验证改为 `EvolutionSourceVerificationPort`；Agent Loop 改为 `AgentEvolutionRuntimePort`；Mission Runtime 改为 `EvolutionPlatformPort`；平台知识集中到 `evolution-adapters`。`evolution` 目录已由架构测试禁止导入三大框架实现。
+- 基础设施归属：Evidence Ledger 与 managed process tree 已提升为中立共享模块，旧 Agent Loop 路径仅保留兼容导出。
+- 剩余：Evol 仍与当前仓库共享 contracts、storage paths、Provider interfaces，尚未发布成独立 package 或独立进程。
+- 偿还路径：先提取 workspace-scoped storage/provider 端口与 package exports，再评估是否需要进程级部署；进程化不是本地下一 turn/session 生效语义的前提。
 
 ## TD-EVOL-MEM-001：Runtime 缺少任务正文相关度
 

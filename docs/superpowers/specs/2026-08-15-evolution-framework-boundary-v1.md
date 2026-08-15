@@ -2,7 +2,7 @@
 
 日期：2026-08-15
 
-状态：第一阶段已实现；剩余依赖按本文完成定义继续迁移
+状态：业务框架边界已实现；物理 package 拆分待后续推进
 
 ## 1. 定位
 
@@ -34,7 +34,7 @@ AgentEvolutionRuntimePort / EvolutionPlatformPort
 
 ## 3. 已落地边界
 
-- `EvolutionObservationPort`：Evol 接收 Episode facts 与 Memory usage observations；
+- `EvolutionObservationPort`：Evol 接收 Episode、Memory usage、压缩事件、灰度分配与运行用量等标准化观测；
 - `EvolutionSourceVerificationPort`：Candidate 只询问外部事实是否存在，不读取事实所有者的 Store；
 - `PlatformEvolutionObservationAdapter`：唯一负责组合 Ticket、Mission、Agent 与 Evidence 事实；
 - `AgentEvolutionRuntimePort`：Agent Loop 获取快照、扩展工具并记录继承；
@@ -43,16 +43,11 @@ AgentEvolutionRuntimePort / EvolutionPlatformPort
 - Runtime projection 数据契约移动到 shared contracts，不再由 Evol 实现文件拥有；
 - 架构测试阻止核心消费者重新 import Evol implementation。
 
-## 4. 尚未完成的内核纯化
+## 4. 当前边界与剩余工作
 
-以下依赖仍在 Evol 目录内，不能据此宣称整个第四框架已经完全物理解耦：
+`src/server/evolution` 已禁止导入 Ticket、Agent Loop、Mission Control 的实现。Signal、Canary 与 Company Trial 不再读取 Agent aggregate/trace；Evidence Ledger 与 managed process tree 已提升到中立共享目录；Plugin Host 使用 Evol 自有 capability broker 契约。
 
-- Canary 与 Company Trial reconciler 仍直接读取 Agent trace；
-- Signal ingestor 仍直接读取 Agent aggregate；
-- 多个评测组件仍从历史路径读取 Evidence Ledger；
-- Plugin Host 和进程管理实现仍引用 Agent Tool Runtime 类型。
-
-这些项目必须迁移为 Source Verification、Telemetry Observation、Signal Observation、Evidence Repository 与 Tool Host 端口。完成前，状态只能称为“第四框架边界已建立，迁移进行中”。
+尚未完成的是物理 package/进程拆分：contracts、storage paths 与 Provider interfaces 仍由单仓共享。它不影响本地下一 turn/session 加载的产品语义，但在宣称“可独立发布”前必须继续提取 package exports 与存储/Provider 端口。
 
 ## 5. 完成定义
 

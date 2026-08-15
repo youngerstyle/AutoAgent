@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import readline from "node:readline";
 import path from "node:path";
 import type { PluginGuardrailContribution } from "../../shared/contracts/evolution.js";
-import type { AgentToolExecutionContext, AgentToolRuntime } from "../agent-engine/tool-runtime.js";
 import type { RuntimeEvolutionExtension } from "./runtime-projection.js";
 import { configuredPluginSandboxProgram } from "./plugin-sandbox-config.js";
 
@@ -78,10 +77,19 @@ export interface PluginGuardResult {
   message?: string;
 }
 
+export interface EvolutionCapabilityExecutionContext {
+  agentId: string; threadId: string; goalId?: string; attemptId?: string; turnId: string; toolCallId: string;
+}
+
+/** Consumer-owned capability broker; Agent Loop may implement it structurally. */
+export interface EvolutionCapabilityBroker {
+  execute(call: { tool: "readFile"; path: string }, context: EvolutionCapabilityExecutionContext): Promise<{ ok: boolean; error?: unknown }>;
+}
+
 export class IsolatedPluginHost {
   constructor(
     private readonly extension: RuntimeEvolutionExtension,
-    private readonly tools: AgentToolRuntime,
+    private readonly tools: EvolutionCapabilityBroker,
     private readonly binding: PluginExecutionBinding,
   ) {}
 
@@ -174,7 +182,7 @@ export class IsolatedPluginHost {
     if (!requestedPath || !this.extension.manifest.permissions.workspaceRead.some((pattern) => matchesPattern(pattern, requestedPath))) throw new Error("Plugin workspace.read path is outside its manifest allowlist");
     const turnId = this.binding.turnId;
     if (!turnId) throw new Error("Plugin capability request has no active turn");
-    const context: AgentToolExecutionContext = {
+    const context: EvolutionCapabilityExecutionContext = {
       agentId: this.binding.agentId,
       threadId: this.binding.threadId,
       ...(this.binding.goalId ? { goalId: this.binding.goalId } : {}),

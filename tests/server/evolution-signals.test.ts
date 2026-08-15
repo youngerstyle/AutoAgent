@@ -9,6 +9,7 @@ import { ExperienceStore } from "../../src/server/evolution/experience-store.js"
 import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 import type { AuthoritativeEpisodeFacts } from "../../src/shared/contracts/evolution.js";
 import { workspaceEvolutionTelemetryFile } from "../../src/server/storage/paths.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT } from "../../src/server/evolution/observation-port.js";
 
 describe("EvolutionSignal queue", () => {
   it("is idempotent, prioritizes P0, and recovers transient work through a lease", async () => {
@@ -85,6 +86,19 @@ describe("EvolutionSignal queue", () => {
       expect.objectContaining({ trigger: "recovered_failure", priority: 2 }), expect.objectContaining({ trigger: "effect_observation", priority: 0 }),
     ]));
     expect(await ingestor.ingest()).toMatchObject({ inspectedEpisodes: 0, enqueuedSignals: 0 });
+  });
+
+  it("ingests normalized compaction observations without reading Agent Loop stores", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-compaction-signal-"));
+    const signals = new EvolutionSignalStore("workspace-a", root, fixedNow);
+    const observations = {
+      ...EMPTY_EVOLUTION_OBSERVATION_PORT,
+      collectCompactions: async (after: Record<string, number>) => after["agent-a"] ? [] : [{ agentId: "agent-a", profileId: "profile-a", threadId: "thread-a", itemId: "compact-a", sequence: 7, occurredAt: fixedNow().toISOString() }],
+    };
+    const ingestor = new EvolutionSignalIngestor("workspace-a", root, undefined, signals, undefined, fixedNow, observations);
+    expect(await ingestor.ingest()).toMatchObject({ inspectedEpisodes: 0, enqueuedSignals: 1 });
+    expect(await ingestor.ingest()).toMatchObject({ inspectedEpisodes: 0, enqueuedSignals: 0 });
+    expect(await signals.list()).toEqual([expect.objectContaining({ trigger: "context_compaction", profileId: "profile-a", priority: 4 })]);
   });
 });
 

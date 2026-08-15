@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { createId } from "../../shared/ids.js";
 import type { RecordReleaseTelemetryInput, ReleaseTelemetry } from "../../shared/contracts/evolution.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { HttpError } from "../errors.js";
 import { workspaceEvolutionTelemetryFile } from "../storage/paths.js";
 import type { EvolutionStore } from "./evolution-store.js";

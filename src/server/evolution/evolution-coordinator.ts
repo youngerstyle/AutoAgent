@@ -259,7 +259,7 @@ export class EvolutionCoordinator {
     const jobs = new ExtractionJobStore(workspace.id, workspace.rootPath, () => this.now());
     await jobs.enqueue(`evolution-coordinator:${workspace.id}:maintenance:${bucket}`);
     await new ExtractionRunner(workspace, this.options.observationPort?.(workspace) ?? EMPTY_EVOLUTION_OBSERVATION_PORT, jobs).runNext(`${this.workerId}:extraction`);
-    await new EvolutionSignalIngestor(workspace.id, workspace.rootPath, undefined, undefined, undefined, () => this.now(), workspace).ingest();
+    await new EvolutionSignalIngestor(workspace.id, workspace.rootPath, undefined, undefined, undefined, () => this.now(), this.options.observationPort?.(workspace)).ingest();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const candidates = this.candidateStore(workspace);
     const selectionEvaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
@@ -267,8 +267,8 @@ export class EvolutionCoordinator {
     await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, candidates, selectionTelemetry, () => this.now()).select(3);
     await this.prepareAutomatedEvaluations(workspace, candidates);
     await new MemoryLifecycleStore(workspace.id, workspace.rootPath, () => this.now()).maintain();
-    await new CanaryTelemetryReconciler(workspace, () => this.now()).reconcile();
-    await new CompanyTrialReconciler(this.workspaces.homePath(), workspace, () => this.now()).reconcile();
+    await new CanaryTelemetryReconciler(workspace, () => this.now(), this.options.observationPort?.(workspace)).reconcile();
+    await new CompanyTrialReconciler(this.workspaces.homePath(), workspace, () => this.now(), this.options.observationPort?.(workspace)).reconcile();
   }
 
   private async runEvaluations(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {

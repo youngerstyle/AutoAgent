@@ -15,6 +15,7 @@ import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js
 import { CompanyTrialEvidenceStore } from "../../src/server/evolution/company-trial-evidence-store.js";
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { CompanyTrialReconciler } from "../../src/server/evolution/company-trial-reconciler.js";
+import { PlatformEvolutionObservationAdapter } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
 import { CompanyIdentityStore } from "../../src/server/storage/company-identity-store.js";
 
 const passingCompanyReview = () => ({
@@ -74,7 +75,8 @@ describe("cross-project company trial", () => {
     }
     const evidenceStore = new CompanyTrialEvidenceStore(home, companyId, trials, proposals, now);
     await expect(evidenceStore.record({ commandId: "insufficient", trialId: trial.trialId, targetWorkspaceRoot: targetRoot, observations: observations.slice(0, 4), startedAt: "2026-08-15T05:00:00.000Z", endedAt: "2026-08-15T07:00:00.000Z" })).rejects.toMatchObject({ code: "INVALID_COMPANY_TRIAL_EVIDENCE" });
-    expect(await new CompanyTrialReconciler(home, { id: "workspace-b", name: "B", rootPath: targetRoot, policyProfile: "production", createdAt: now().toISOString() }, now).reconcile()).toEqual({ evidenceRecorded: 1 });
+    const targetWorkspace = { id: "workspace-b", name: "B", rootPath: targetRoot, policyProfile: "production" as const, createdAt: now().toISOString() };
+    expect(await new CompanyTrialReconciler(home, targetWorkspace, now, new PlatformEvolutionObservationAdapter(targetWorkspace)).reconcile()).toEqual({ evidenceRecorded: 1 });
     const evidence = (await evidenceStore.list(proposal.proposalId))[0]!;
     expect(evidence).toMatchObject({ decision: "pass", selectedSampleSize: 5, controlSampleSize: 5, trialReleaseRef: trial.trialReleaseRef });
     expect(await trials.get(trial.trialId)).toMatchObject({ status: "evidence_ready" });

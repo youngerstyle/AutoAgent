@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DISABLED_AGENT_EVOLUTION_RUNTIME } from "../../src/server/agent-engine/evolution-runtime-port.js";
@@ -16,14 +16,11 @@ describe("Evol framework boundaries", () => {
     }
   });
 
-  it("keeps core experience and Memory reconciliation independent of operational framework stores", async () => {
-    for (const relative of [
-      "src/server/evolution/experience-reconciler.ts",
-      "src/server/evolution/memory-usage-reconciler.ts",
-      "src/server/evolution/evolution-store.ts",
-    ]) {
-      const source = await readFile(path.resolve(relative), "utf8");
-      expect(source).not.toMatch(/agent-engine|mission-process|tickets\/|runtime-host-store|agents\/roster/);
+  it("keeps the entire Evol framework independent of operational framework implementations", async () => {
+    const directory = path.resolve("src/server/evolution");
+    for (const file of (await readdir(directory)).filter((item) => item.endsWith(".ts"))) {
+      const source = await readFile(path.join(directory, file), "utf8");
+      expect(source, file).not.toMatch(/from ["'][^"']*\/(?:agent-engine|mission-process|tickets|agents\/roster|runtime\/runtime-host-store)(?:\/|\.|["'])/);
     }
   });
 

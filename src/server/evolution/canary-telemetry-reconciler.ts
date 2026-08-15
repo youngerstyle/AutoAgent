@@ -3,14 +3,13 @@ import type {
   EvaluationObservation, ExperienceAttribution, ExperienceEpisode, ReleaseTelemetry,
 } from "../../shared/contracts/evolution.js";
 import type { Workspace } from "../../shared/types.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
-import { AgentTraceStore, type AgentTraceRecord } from "../agent-engine/trace-store.js";
-import { listWorkspaceAgents } from "../agents/roster.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { EvolutionStore } from "./evolution-store.js";
 import { EvolutionEvaluationStore } from "./evaluation-store.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { ExperienceStore } from "./experience-store.js";
 import { EvolutionActivationStore } from "./activation-store.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort } from "./observation-port.js";
 
 interface CanaryAssignment {
   target: string;
@@ -21,7 +20,11 @@ interface CanaryAssignment {
 interface GoalUsage { inputTokens: number; outputTokens: number; totalTokens: number }
 
 export class CanaryTelemetryReconciler {
-  constructor(private readonly workspace: Workspace, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly workspace: Workspace,
+    private readonly now: () => Date = () => new Date(),
+    private readonly observations: EvolutionObservationPort = EMPTY_EVOLUTION_OBSERVATION_PORT,
+  ) {}
 
   async reconcile(): Promise<{ recordedTelemetry: ReleaseTelemetry[] }> {
     const candidates = new EvolutionStore(this.workspace.id, this.workspace.rootPath, this.now);
@@ -89,38 +92,20 @@ export class CanaryTelemetryReconciler {
   private async traceIndex(): Promise<{ assignments: Map<string, CanaryAssignment[]>; usage: Map<string, GoalUsage> }> {
     const assignments = new Map<string, CanaryAssignment[]>();
     const usage = new Map<string, GoalUsage>();
-    for (const agent of await listWorkspaceAgents(this.workspace)) {
-      for (const trace of await new AgentTraceStore(this.workspace.rootPath, agent.id).list()) {
-        if (!trace.goalId) continue;
-        const key = `${agent.id}:${trace.goalId}`;
-        const tracedAssignments = traceAssignments(trace);
-        if (tracedAssignments.length) assignments.set(key, tracedAssignments);
-        const tracedUsage = traceUsage(trace);
-        if (tracedUsage) {
+    for (const trace of await this.observations.collectRuntimeTelemetry()) {
+        const key = `${trace.agentId}:${trace.goalId}`;
+        if (trace.assignments.length) assignments.set(key, trace.assignments);
+        if (trace.usage) {
           const current = usage.get(key) ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
           usage.set(key, {
-            inputTokens: current.inputTokens + tracedUsage.inputTokens,
-            outputTokens: current.outputTokens + tracedUsage.outputTokens,
-            totalTokens: current.totalTokens + tracedUsage.totalTokens,
+            inputTokens: current.inputTokens + trace.usage.inputTokens,
+            outputTokens: current.outputTokens + trace.usage.outputTokens,
+            totalTokens: current.totalTokens + trace.usage.totalTokens,
           });
         }
-      }
     }
     return { assignments, usage };
   }
-}
-
-function traceAssignments(trace: AgentTraceRecord): CanaryAssignment[] {
-  if (trace.kind !== "context" || !isRecord(trace.data) || !Array.isArray(trace.data.evolutionCanaryAssignments)) return [];
-  return trace.data.evolutionCanaryAssignments.filter((item): item is CanaryAssignment => isRecord(item)
-    && typeof item.target === "string" && typeof item.promotionId === "string" && typeof item.releaseId === "string" && typeof item.selected === "boolean");
-}
-
-function traceUsage(trace: AgentTraceRecord): GoalUsage | undefined {
-  if (trace.kind !== "provider_response" || !isRecord(trace.data)) return undefined;
-  const values = [trace.data.inputTokens, trace.data.outputTokens, trace.data.totalTokens];
-  if (!values.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return undefined;
-  return { inputTokens: values[0] as number, outputTokens: values[1] as number, totalTokens: values[2] as number };
 }
 
 function observation(episode: ExperienceEpisode, attributions: ExperienceAttribution[], usage: Map<string, GoalUsage>): EvaluationObservation {
@@ -149,4 +134,3 @@ function stableId(prefix: string, ...parts: string[]): string { return `${prefix
 function hash(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function later(...values: string[]): string { return values.reduce((left, right) => Date.parse(left) >= Date.parse(right) ? left : right); }
 function earlier(...values: string[]): string { return values.reduce((left, right) => Date.parse(left) <= Date.parse(right) ? left : right); }
-function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }

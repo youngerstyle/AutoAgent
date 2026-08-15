@@ -12,7 +12,7 @@ import type {
   RecordEvaluationInput,
 } from "../../shared/contracts/evolution.js";
 import { HttpError } from "../errors.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { workspaceEvolutionEvaluationsFile, workspaceEvolutionPromotionsFile } from "../storage/paths.js";
 import { EvolutionActivationStore } from "./activation-store.js";
 import type { EvolutionStore } from "./evolution-store.js";

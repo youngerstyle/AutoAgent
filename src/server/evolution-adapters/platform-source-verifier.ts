@@ -1,6 +1,6 @@
 import type { EvolutionSourceRef } from "../../shared/contracts/evolution.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import type { EvolutionSourceVerificationPort } from "../evolution/source-verification-port.js";
 import { MissionStore } from "../mission-process/mission-store.js";

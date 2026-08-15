@@ -3,7 +3,7 @@ import { EvolutionSignalStore } from "./evolution-signal-store.js";
 import { ExperienceStore } from "./experience-store.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import type { PracticeReflector } from "./practice-reflector.js";
 
 export class EvolutionReflectionWorker {

@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CompanyTrialObservation, EvaluationObservation, ExperienceAttribution, ExperienceEpisode } from "../../shared/contracts/evolution.js";
 import type { Workspace } from "../../shared/types.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
-import { AgentTraceStore, type AgentTraceRecord } from "../agent-engine/trace-store.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { CompanyIdentityStore } from "../storage/company-identity-store.js";
 import { EvolutionActivationStore } from "./activation-store.js";
 import { CompanyTrialEvidenceStore } from "./company-trial-evidence-store.js";
@@ -10,13 +9,19 @@ import { CompanyTrialStore } from "./company-trial-store.js";
 import { ExperienceStore } from "./experience-store.js";
 import { ScopePromotionStore } from "./scope-promotion-store.js";
 import { CompanyTrialReleaseRegistry } from "./company-trial-registry.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort, type EvolutionRuntimeTelemetryObservation } from "./observation-port.js";
 
-interface AssignmentTrace { trace: AgentTraceRecord; selected: boolean; releaseId: string }
+interface AssignmentTrace { trace: EvolutionRuntimeTelemetryObservation; selected: boolean; releaseId: string }
 interface GoalUsage { inputTokens: number; outputTokens: number; totalTokens: number }
 
 /** Converts completed target-project Episodes into authoritative selected/control trial evidence. */
 export class CompanyTrialReconciler {
-  constructor(private readonly homeDir: string, private readonly workspace: Workspace, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly homeDir: string,
+    private readonly workspace: Workspace,
+    private readonly now: () => Date = () => new Date(),
+    private readonly observations: EvolutionObservationPort = EMPTY_EVOLUTION_OBSERVATION_PORT,
+  ) {}
 
   async reconcile(): Promise<{ evidenceRecorded: number }> {
     const identity = await new CompanyIdentityStore(this.homeDir, this.now).getOrCreate();
@@ -28,7 +33,7 @@ export class CompanyTrialReconciler {
     const episodes = await experience.listEpisodes(); const attributions = await experience.listAttributions();
     let evidenceRecorded = 0;
     for (const trial of active) {
-      const { assignments, usage } = await traceIndex(this.workspace.rootPath, trial.target.agentId, trial.trialId);
+      const { assignments, usage } = await traceIndex(await this.observations.collectRuntimeTelemetry(trial.target.agentId), trial.trialId);
       const proofs = await new EvolutionActivationStore(this.workspace.rootPath).listProofs();
       const observations: CompanyTrialObservation[] = [];
       const usedEpisodes: ExperienceEpisode[] = [];
@@ -51,7 +56,7 @@ export class CompanyTrialReconciler {
       }
       const selected = observations.filter((item) => item.arm === "selected").length; const control = observations.length - selected;
       if (selected < trial.assignment.minimumSamplesPerArm || control < trial.assignment.minimumSamplesPerArm) continue;
-      const evidence = await new CompanyTrialEvidenceStore(this.homeDir, identity.companyId, trials, proposals, this.now).record({
+      const evidence = await new CompanyTrialEvidenceStore(this.homeDir, identity.companyId, trials, proposals, this.now, this.observations).record({
         commandId: `company-trial-reconcile:${trial.trialId}:${hash(observations.map((item) => item.observationId).sort().join("\0"))}`,
         trialId: trial.trialId, targetWorkspaceRoot: this.workspace.rootPath, observations,
         startedAt: usedEpisodes.reduce((value, episode) => earlier(value, episode.startedAt), usedEpisodes[0]!.startedAt),
@@ -64,17 +69,14 @@ export class CompanyTrialReconciler {
   }
 }
 
-async function traceIndex(root: string, agentId: string, trialId: string): Promise<{ assignments: Map<string, AssignmentTrace>; usage: Map<string, GoalUsage> }> {
+async function traceIndex(traces: EvolutionRuntimeTelemetryObservation[], trialId: string): Promise<{ assignments: Map<string, AssignmentTrace>; usage: Map<string, GoalUsage> }> {
   const assignments = new Map<string, AssignmentTrace>(); const usage = new Map<string, GoalUsage>();
-  for (const trace of await new AgentTraceStore(root, agentId).list()) {
-    if (!trace.goalId) continue;
-    if (trace.kind === "context" && isRecord(trace.data) && Array.isArray(trace.data.evolutionCanaryAssignments)) {
-      const item = trace.data.evolutionCanaryAssignments.find((value) => isRecord(value) && value.promotionId === trialId && typeof value.releaseId === "string" && typeof value.selected === "boolean");
-      if (isRecord(item)) assignments.set(trace.goalId, { trace, selected: item.selected as boolean, releaseId: item.releaseId as string });
-    }
-    if (trace.kind === "provider_response" && isRecord(trace.data) && [trace.data.inputTokens, trace.data.outputTokens, trace.data.totalTokens].every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) {
+  for (const trace of traces) {
+    const item = trace.assignments.find((value) => value.promotionId === trialId);
+    if (item) assignments.set(trace.goalId, { trace, selected: item.selected, releaseId: item.releaseId });
+    if (trace.usage) {
       const current = usage.get(trace.goalId) ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-      usage.set(trace.goalId, { inputTokens: current.inputTokens + Number(trace.data.inputTokens), outputTokens: current.outputTokens + Number(trace.data.outputTokens), totalTokens: current.totalTokens + Number(trace.data.totalTokens) });
+      usage.set(trace.goalId, { inputTokens: current.inputTokens + trace.usage.inputTokens, outputTokens: current.outputTokens + trace.usage.outputTokens, totalTokens: current.totalTokens + trace.usage.totalTokens });
     }
   }
   return { assignments, usage };
@@ -84,4 +86,3 @@ function stableId(prefix: string, ...parts: string[]): string { return `${prefix
 function hash(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function earlier(a: string, b: string): string { return Date.parse(a) <= Date.parse(b) ? a : b; }
 function later(a: string, b: string): string { return Date.parse(a) >= Date.parse(b) ? a : b; }
-function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }

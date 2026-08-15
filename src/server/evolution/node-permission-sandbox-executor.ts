@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { createId } from "../../shared/ids.js";
 import type { EvaluationObservation, EvolutionSourceRef } from "../../shared/contracts/evolution.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { HttpError } from "../errors.js";
-import { managedProcessDetached, terminateManagedProcessTree } from "../agent-engine/managed-process-tree.js";
+import { managedProcessDetached, terminateManagedProcessTree } from "../runtime/managed-process-tree.js";
 import type { EvaluationCaseExecutor } from "./evaluation-runner.js";
 import { redactEvolutionText } from "./secret-redactor.js";
 

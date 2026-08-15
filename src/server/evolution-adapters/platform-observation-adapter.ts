@@ -1,10 +1,10 @@
 import type { AuthoritativeEpisodeFacts, EvolutionSourceRef, ExperienceEpisode } from "../../shared/contracts/evolution.js";
 import type { Workspace } from "../../shared/types.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { listWorkspaceAgents } from "../agents/roster.js";
-import type { EvolutionEpisodeObservationBatch, EvolutionMemoryUsageObservation, EvolutionObservationPort } from "../evolution/observation-port.js";
+import type { EvolutionCompactionObservation, EvolutionEpisodeObservationBatch, EvolutionMemoryUsageObservation, EvolutionObservationPort, EvolutionRuntimeTelemetryObservation } from "../evolution/observation-port.js";
 import { MissionStore } from "../mission-process/mission-store.js";
 import { RuntimeHostStore } from "../runtime/runtime-host-store.js";
 import { TicketStore } from "../tickets/ticket-store.js";
@@ -77,6 +77,40 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
     }
     return observations;
   }
+
+  async collectCompactions(afterSequences: Record<string, number>): Promise<EvolutionCompactionObservation[]> {
+    const result: EvolutionCompactionObservation[] = [];
+    for (const agent of await listWorkspaceAgents(this.workspace)) {
+      const aggregate = await new AgentStore(this.workspace.rootPath, agent.id).read();
+      for (const thread of aggregate.threads) for (const item of thread.items) {
+        if (item.kind !== "compaction" || item.sequence <= (afterSequences[agent.id] ?? 0)) continue;
+        result.push({ agentId: agent.id, profileId: agent.profileId, threadId: thread.threadId, itemId: item.itemId, sequence: item.sequence, occurredAt: item.createdAt });
+      }
+    }
+    return result.sort((left, right) => left.sequence - right.sequence || left.occurredAt.localeCompare(right.occurredAt));
+  }
+
+  async collectRuntimeTelemetry(agentId?: string): Promise<EvolutionRuntimeTelemetryObservation[]> {
+    const agentIds = agentId ? [agentId] : (await listWorkspaceAgents(this.workspace)).map((agent) => agent.id);
+    const result: EvolutionRuntimeTelemetryObservation[] = [];
+    for (const currentAgentId of agentIds) for (const trace of await new AgentTraceStore(this.workspace.rootPath, currentAgentId).list()) {
+      if (!trace.goalId) continue;
+      const assignments = trace.kind === "context" && isRecord(trace.data) && Array.isArray(trace.data.evolutionCanaryAssignments)
+        ? trace.data.evolutionCanaryAssignments.filter(isRuntimeAssignment).map((item) => ({ target: typeof item.target === "string" ? item.target : "", promotionId: item.promotionId, releaseId: item.releaseId, selected: item.selected }))
+        : [];
+      const usage = trace.kind === "provider_response" && isRecord(trace.data) && [trace.data.inputTokens, trace.data.outputTokens, trace.data.totalTokens].every(isNonNegativeNumber)
+        ? { inputTokens: Number(trace.data.inputTokens), outputTokens: Number(trace.data.outputTokens), totalTokens: Number(trace.data.totalTokens) }
+        : undefined;
+      if (assignments.length || usage) result.push({ agentId: currentAgentId, traceId: trace.traceId, threadId: trace.threadId, turnId: trace.turnId, goalId: trace.goalId, assignments, ...(usage ? { usage } : {}) });
+    }
+    return result;
+  }
+
+  async verifyRuntimeAssignment(input: { agentId: string; traceId: string; promotionId: string; releaseId: string; selected: boolean }): Promise<boolean> {
+    const trace = (await new AgentTraceStore(this.workspace.rootPath, input.agentId).list()).find((item) => item.traceId === input.traceId);
+    if (!trace || trace.kind !== "context" || !isRecord(trace.data) || !Array.isArray(trace.data.evolutionCanaryAssignments)) return false;
+    return trace.data.evolutionCanaryAssignments.some((item) => isRuntimeAssignment(item) && item.promotionId === input.promotionId && item.releaseId === input.releaseId && item.selected === input.selected);
+  }
 }
 
 function refsFor(workspaceId: string, taskId: string, taskRunId: string, ticketId: string, link: { missionId: string; agentId: string; lastProposalId?: string; lastDecisionId?: string }, profileId: string, evidenceIds: string[]): EvolutionSourceRef[] {
@@ -108,5 +142,7 @@ async function failureFacts(workspace: Workspace, agentId: string, threadId: str
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
+function isRuntimeAssignment(value: unknown): value is { target?: string; promotionId: string; releaseId: string; selected: boolean } { return isRecord(value) && (value.target === undefined || typeof value.target === "string") && typeof value.promotionId === "string" && typeof value.releaseId === "string" && typeof value.selected === "boolean"; }
+function isNonNegativeNumber(value: unknown): boolean { return typeof value === "number" && Number.isFinite(value) && value >= 0; }
 function isTerminalTicketStatus(status: string): status is "completed" | "returned" | "failed" | "cancelled" { return ["completed", "returned", "failed", "cancelled"].includes(status); }
 function isTerminalGoalStatus(status: string): status is "completed" | "failed" | "cancelled" { return ["completed", "failed", "cancelled"].includes(status); }
