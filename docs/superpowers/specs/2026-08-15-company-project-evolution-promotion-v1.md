@@ -36,6 +36,10 @@ Observe work
 - Google SRE Canary：先对有限、限时的对象应用变化，与 control 比较后决定扩大或回滚。V1 借用的是渐进式验证原则，不引入软件部署系统。
 - OpenFeature Evaluation Context：全局上下文为低优先级，调用级上下文为高优先级，并支持 targeting。对应公司默认、Agent/项目覆盖以及按 identity/role/task type 匹配。
 - MLflow Registry aliases：不可变版本与可移动 alias 分离，切换 champion 不修改历史版本，后续消费者解析新 alias。对应 project/company active pointer 与 rollback。
+- Hermes Agent：在复杂任务成功、绕过错误/死路、用户纠正或发现非平凡流程后立即提出或修订 Skill。对应高显著性事件的快速反思，但不照搬“当场直接改 active Skill”。
+- Letta sleeptime：按 step count 或 context compaction 触发后台 reflection，并可选择 reminder 或 auto-launch。对应不阻塞前台的 checkpoint trigger。
+- ReasoningBank / Reflexion：在轨迹完成并得到结果反馈后抽取成功洞察或失败反思，再进入持续 consolidation。对应先保留 Episode，再形成可复用 Practice。
+- Generative Agents：累积近期事件的重要性达到阈值时才反思。对应 salience/novelty/重复度驱动，而不是每一轮都调用模型学习。
 
 参考：
 
@@ -45,10 +49,101 @@ Observe work
 - https://sre.google/workbook/canarying-releases/
 - https://openfeature.dev/specification/sections/evaluation-context/
 - https://mlflow.org/docs/latest/ml/model-registry/workflow
+- https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/skills.md
+- https://github.com/letta-ai/lettabot/blob/main/docs/configuration.md#sleeptime-background-reflection
+- https://research.google/blog/reasoningbank-enabling-agents-to-learn-from-experience/
+- https://arxiv.org/abs/2303.11366
+- https://hci.stanford.edu/publications/paper.php?id=482
 
-## 3. 三类对象必须分开
+## 3. 进化时机：事实捕获、反思、整合、决策、生效必须分开
 
-### 3.1 Practice
+Evol 不是一个“凌晨任务”，也不是在业务任务结束时直接改 active 资产。一次进化有五个不同时间：
+
+```text
+Capture authoritative fact
+-> Reflect on one salient Episode
+-> Consolidate across Episodes
+-> Evaluate / approve / promote
+-> Activate at the next lifecycle boundary
+```
+
+### 3.1 第一层：同步事实捕获
+
+以下事件发生时立即追加不可变 `EvolutionSignal` 和 Episode/source refs，但同步路径不得调用模型、生成 Skill 或改变 active release：
+
+- Ticket/Mission 进入权威终态；
+- 用户明确纠正 Agent；
+- Agent 经历错误或死路后找到可验证的工作路径；
+- 已有 Practice 被使用、拒绝、绕过或证明过时；
+- canary/control 产生新的效果事实；
+- turn context 即将 compaction；
+- 人工显式请求“记录这次经验”或“立即运行 Evol”。
+
+同步捕获必须轻量、幂等，即使后台 worker 停止也不能丢失。业务任务的响应不等待 Evol 完成。
+
+```ts
+interface EvolutionSignal {
+  signalId: string;
+  companyId: string;
+  workspaceId?: string;
+  agentIdentityId?: string;
+  trigger: "terminal_outcome" | "user_correction" | "recovered_failure" | "novel_success"
+    | "practice_feedback" | "context_compaction" | "effect_observation" | "manual";
+  sourceRefs: string[];
+  salience: number;
+  novelty: number;
+  occurredAt: string;
+}
+```
+
+### 3.2 第二层：事件驱动的快速反思
+
+复杂成功、用户纠正、解决过的失败、已有 Practice 失效等高显著性信号，在当前业务任务结束后立即进入异步 reflection queue。它可以形成 `PracticeDraft`、补充反例或建议修订，但不能跳过 consolidation/evaluation 直接覆盖 active release。
+
+普通成功只记 Episode，不逐条反思，避免把偶然步骤写成长期规则。`context_compaction` 是一个 checkpoint：它促使系统保存尚未归档的显著事实，但本身不证明发生了学习。
+
+### 3.3 第三层：阈值与空闲窗口驱动的 Dream consolidation
+
+Dream 的职责是跨 Episode 聚类、去重、寻找矛盾、归纳适用条件、选择最窄 scope，并决定 create/refine/merge/prune/no-op。它由以下任一条件触发：
+
+- 同一问题簇达到 company policy 规定的独立 Episode/Agent/Project 证据阈值；
+- 高显著性或高风险信号要求尽快整合；
+- Runtime 进入有资源预算的 idle window；
+- 到达公司配置的 maintenance window；
+- 管理员手动触发。
+
+“凌晨”只能是某家公司的可选 maintenance window。跨平台私有部署和 24 小时运行的 SaaS 不能假设存在统一夜间；系统正确性也不能依赖定时任务恰好运行。默认优先使用 durable queue + idle budget，定时窗口负责低优先级整理、衰减、冲突检测和摘要。
+
+### 3.4 第四层：评测、晋升与紧急回滚
+
+候选形成后，评测由独立 worker 持续消费，不等待下一个 Dream。scope 晋升由证据阈值和评审触发，不由时间触发。canary 出现不可接受回归时应立即进入 rollback 决策路径；紧急回滚不等待夜间整合。
+
+### 3.5 第五层：生命周期边界生效
+
+学习完成的时间不等于 Runtime 生效时间：
+
+- Memory、Prompt、Skill：批准后下一 turn 解析；
+- Workflow：批准后下一 task 解析；
+- Local Plugin：批准后下一 session 解析；
+- Company/Agent/Project pointer rollback：后续对应生命周期重新解析。
+
+当前正在执行的 turn/task/session 使用冻结 snapshot，不因后台 Dream 完成而被中途改变。
+
+### 3.6 调度优先级
+
+```text
+P0  canary regression / safety rollback
+P1  user correction / recovered failure / explicit manual Evol
+P2  terminal complex task / novelty threshold reached
+P3  repeated ordinary Episode cluster
+P4  scheduled hygiene / decay / merge / archive
+```
+
+队列必须持久化、幂等、可恢复、按 company/workspace/agent 做公平调度，并受并发、token、费用和最大运行时预算约束。任何触发都只决定“何时分析”，不预设“应该学到什么”。
+
+## 4. 三类对象必须分开
+
+### 4.1 Practice
 
 Practice 是从工作中学到的开放式做法，不等同于 Prompt、Skill 或 Workflow。
 
@@ -79,7 +174,7 @@ interface PracticeScope {
 
 `statement`、`trigger`、`procedure` 和适用范围由 Agent 从 Episode 中归纳，不来自有限枚举。系统不得因为某个预设模板存在，就反向把所有经验归入该模板。
 
-### 3.2 Binding
+### 4.2 Binding
 
 Binding 决定一条 Practice 如何影响 Runtime。执行接缝是有限的，但学习内容不是：
 
@@ -91,11 +186,11 @@ Binding 决定一条 Practice 如何影响 Runtime。执行接缝是有限的，
 
 一条 Practice 可以有多个 Binding；Binding 可以迭代而不篡改 Practice 的原始证据。
 
-### 3.3 Release
+### 4.3 Release
 
 Release 是 Practice + Binding 的不可变可执行版本。active pointer 只选择 Release，不指向草稿 Practice。
 
-## 4. Agent 身份不是 Profile 模板
+## 5. Agent 身份不是 Profile 模板
 
 系统必须区分：
 
@@ -134,7 +229,7 @@ interface WorkspaceAgentAssignment {
 
 个人长期成长归属于 `agentIdentityId`，不能归属于 Profile，也不能只归属于临时的 `workspaceAgentId`。项目内的个人经验归属于复合键 `(agentIdentityId, workspaceId)`；当它在该 Agent 的其他项目中验证有效后，通过 `agent_project -> agent` 晋升，之后由同一 Agent 的所有 assignments 继承。
 
-## 5. 四种进化作用域
+## 6. 四种进化作用域
 
 ```text
 Company
@@ -160,7 +255,7 @@ Company
 - 公司库保存经过推广的 Practice/Release 以及跨项目聚合证据。
 - 不同私有化部署之间没有发现、读取、推广或继承通道。
 
-## 6. 个人与项目进化
+## 7. 个人与项目进化
 
 Agent 可以从自己的重复 Episode 中提出任意 Practice hypothesis。系统先选择能解释证据的最窄 scope，默认从 `agent_project` 开始，不得因为一次个人成功直接改变整个项目或公司。
 
@@ -186,7 +281,7 @@ project       -> company    # 项目实践经跨项目验证后公司化
 
 每次扩大 scope 都必须创建新的 Promotion Proposal 和效果窗口；不得修改原 release 的 scope。
 
-## 7. 公司推广不是复制
+## 8. 公司推广不是复制
 
 项目效果好后，系统创建 `CompanyPromotionProposal`，不能直接写公司 active pointer：
 
@@ -213,7 +308,7 @@ interface CompanyPromotionProposal {
 4. 是否需要把项目特有信息脱敏或参数化；
 5. 公司推广后的风险、成本和回滚是什么。
 
-## 8. 公司试验与推广
+## 9. 公司试验与推广
 
 通过评审后先进入代表性项目 trial：
 
@@ -234,7 +329,7 @@ project_production
 
 个人 Practice 也可以作为公司推广来源，但 company trial 必须由其他 Agent 执行，避免把某个 Agent 的个人优势误判成可复用公司方法。
 
-## 9. 解析优先级
+## 10. 解析优先级
 
 Runtime 使用与 OpenFeature context merging 相似的确定性覆盖顺序：
 
@@ -249,7 +344,7 @@ built-in default
 
 这是行为默认值的优先级。公司和项目的强制 policy 不参与覆盖，而是逐层取交集；个人层永远不能放宽公司或项目 policy。每次运行必须留下最终解析出的 company/agent/project/agent-project release refs 和 snapshot hash。
 
-## 10. 示例：任务前文档宣讲
+## 11. 示例：任务前文档宣讲
 
 项目 A 的多次任务显示信息不同步导致返工。Agent 提出 Practice：
 
@@ -269,7 +364,7 @@ built-in default
 10. 新项目自动继承，已有项目在下一 task 生效；个人或项目仍可显式 override；
 11. 后续效果退化时公司 rollback，不删除 Agent A 和项目 A 的历史实验与证据。
 
-## 11. 完成定义
+## 12. 完成定义
 
 Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 
@@ -285,5 +380,8 @@ Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 10. company、agent、project、agent-project rollback 相互独立，并由后续运行留下新的 inheritance proof。
 11. 强制 policy 逐层取交集，任何个人成长都不能放宽公司/项目安全约束。
 12. UI 能展示 Practice 从具体 Agent 和项目、局部实验、scope 晋升、公司评审、company trial 到 company active 的完整 provenance。
+13. 事实捕获不阻塞业务任务且不依赖后台在线；快速反思、Dream consolidation、评测、晋升和生效分别有独立可恢复状态。
+14. 高显著性事件可快速进入 reflection，普通事件按阈值/idle/maintenance 聚合，任何公司都不依赖固定“凌晨”才能进化。
+15. 当前运行使用冻结 snapshot；后台完成的 release 只在声明的下一 turn/task/session 边界生效。
 
 在这些条件完成前，现有 Workspace 级资产生命周期只能称为底层能力，不能宣称 Agent/Project/Company Evolution 完成。
