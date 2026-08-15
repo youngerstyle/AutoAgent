@@ -33,7 +33,7 @@ describe("evolution extraction reliability", () => {
     const projected = projectExperience({
       commandId: "episode-a", workspaceId: "workspace-a", taskId: "task-a", taskRunId: "run-a",
       ticket: { ticketId: "ticket-a", attemptId: "attempt-a", status: "failed", startedAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:01:00.000Z" },
-      goal: { goalId: "goal-a", agentId: "agent-a", status: "failed" },
+      goal: { goalId: "goal-a", agentId: "agent-a", profileId: "profile-a", status: "failed" },
       sourceRefs: [{ kind: "ticket", ref: "ticket-a", workspaceId: "workspace-a" }],
       failures: [{ component: "provider", symptom: "api_key=sk-abcdefghijklmnop", cause: "Authorization: Bearer top-secret", sourceRefs: [{ kind: "trace", ref: "trace-a", workspaceId: "workspace-a" }] }],
     }, () => new Date("2026-08-14T00:02:00.000Z"));

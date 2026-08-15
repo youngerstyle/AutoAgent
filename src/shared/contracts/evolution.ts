@@ -30,6 +30,7 @@ export interface EvolutionSourceRef {
   taskId?: string;
   taskRunId?: string;
   agentId?: string;
+  profileId?: string;
 }
 
 export interface EvolutionScope {
@@ -69,6 +70,8 @@ export interface ExperienceEpisode {
   attemptId: string;
   goalId: string;
   agentId: string;
+  /** Stable company-level Agent identity captured before a Workspace instance can disappear. */
+  profileId: string;
   outcome: ExperienceOutcome;
   sourceRefs: EvolutionSourceRef[];
   startedAt: string;
@@ -133,6 +136,7 @@ export interface AuthoritativeEpisodeFacts {
   goal: {
     goalId: string;
     agentId: string;
+    profileId: string;
     status: "completed" | "failed" | "blocked" | "cancelled" | "active" | "paused" | "resolving";
   };
   sourceRefs: EvolutionSourceRef[];

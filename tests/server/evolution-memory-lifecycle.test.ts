@@ -61,7 +61,7 @@ describe("evolution Memory lifecycle", () => {
     const projected = projectExperience({
       commandId: "episode-a", workspaceId: workspace.id, taskId: "task-a", taskRunId: "run-a",
       ticket: { ticketId: "ticket-a", attemptId: "attempt-a", status: "completed", startedAt: "2026-01-02T00:00:00.000Z", updatedAt: "2026-01-02T00:05:00.000Z" },
-      goal: { goalId: goal.spec.id, agentId: agent.id, status: "completed" },
+      goal: { goalId: goal.spec.id, agentId: agent.id, profileId: agent.profileId, status: "completed" },
       sourceRefs: [{ kind: "ticket", ref: "ticket-a", workspaceId: workspace.id }],
     }, fixedNow);
     await new ExperienceStore(workspace.id, root).record("episode-a", projected);

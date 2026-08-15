@@ -46,8 +46,10 @@ export class ExperienceReconciler {
           const attempt = ticket.attempts.find((item) => item.attemptId === link.attemptId);
           const agent = agentAggregates.get(link.agentId);
           const goal = agent?.goals.find((item) => item.spec.id === link.agentGoalId);
-          if (!attempt || !goal || !isTerminalGoalStatus(goal.status)) { skippedTickets += 1; continue; }
-          const sourceRefs = refsFor(this.workspace.id, task.taskId, task.runId, ticket.ticketId, link, attempt.evidence?.map((item) => item.evidenceId) ?? []);
+          const profileId = mission.record.teamBinding.members.find((member) => member.agentId === link.agentId)?.profileId
+            ?? agents.find((item) => item.id === link.agentId)?.profileId;
+          if (!attempt || !goal || !profileId || !isTerminalGoalStatus(goal.status)) { skippedTickets += 1; continue; }
+          const sourceRefs = refsFor(this.workspace.id, task.taskId, task.runId, ticket.ticketId, link, profileId, attempt.evidence?.map((item) => item.evidenceId) ?? []);
           const failures = await failureFacts(this.workspace, link.agentId, link.agentThreadId, link.agentGoalId, link.attemptId);
           const facts: AuthoritativeEpisodeFacts = {
             commandId: `reconcile:${ticket.ticketId}:${attempt.attemptId}:${ticket.version}`,
@@ -61,7 +63,7 @@ export class ExperienceReconciler {
               startedAt: attempt.startedAt,
               updatedAt: attempt.endedAt ?? ticket.completion?.completedAt ?? link.updatedAt,
             },
-            goal: { goalId: goal.spec.id, agentId: link.agentId, status: goal.status },
+            goal: { goalId: goal.spec.id, agentId: link.agentId, profileId, status: goal.status },
             sourceRefs,
             ...(failures.length ? { failures } : {}),
           };
@@ -81,9 +83,10 @@ function refsFor(
   taskRunId: string,
   ticketId: string,
   link: { missionId: string; agentId: string; lastProposalId?: string; lastDecisionId?: string },
+  profileId: string,
   evidenceIds: string[],
 ): EvolutionSourceRef[] {
-  const base = { workspaceId, taskId, taskRunId, agentId: link.agentId };
+  const base = { workspaceId, taskId, taskRunId, agentId: link.agentId, profileId };
   return [
     { kind: "mission", ref: link.missionId, ...base },
     { kind: "ticket", ref: ticketId, ...base },

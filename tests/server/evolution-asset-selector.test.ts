@@ -59,7 +59,7 @@ async function recordWorkflowFailures(store: ExperienceStore, failedAttempt: Fai
     await store.record(`record-${suffix}`, projectExperience({
       commandId: `project-${suffix}`, workspaceId: "workspace-a", taskId: `task-${suffix}`, taskRunId: `run-${suffix}`,
       ticket: { ticketId: `ticket-${suffix}`, attemptId: `attempt-${suffix}`, status: "failed", startedAt: "2026-08-14T00:00:00.000Z", updatedAt: "2026-08-14T00:01:00.000Z" },
-      goal: { goalId: `goal-${suffix}`, agentId: "agent-dev", status: "failed" },
+      goal: { goalId: `goal-${suffix}`, agentId: "agent-dev", profileId: "profile-dev", status: "failed" },
       sourceRefs: [{ kind: "trace", ref: `trace-${suffix}`, workspaceId: "workspace-a" }],
       failures: [{
         component: "workflow", symptom: "The task repeatedly used the wrong dependency order",

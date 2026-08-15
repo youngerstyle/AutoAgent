@@ -28,6 +28,8 @@ export type { AgentPort, GoalResolutionPort } from "./agent-engine.js";
 
 export interface TeamBindingMember {
   agentId: string;
+  /** Stable company-level Agent identity. Optional only for legacy persisted Missions. */
+  profileId?: string;
   principalId: string;
   capabilities: string[];
   enabledTools: WorkspaceToolName[];

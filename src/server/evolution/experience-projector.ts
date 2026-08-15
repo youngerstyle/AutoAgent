@@ -34,6 +34,7 @@ export function projectExperience(
     attemptId: facts.ticket.attemptId,
     goalId: facts.goal.goalId,
     agentId: facts.goal.agentId,
+    profileId: facts.goal.profileId,
     outcome,
     sourceRefs,
     startedAt: facts.ticket.startedAt,
@@ -84,7 +85,7 @@ export function projectExperience(
 function validateFacts(facts: AuthoritativeEpisodeFacts): void {
   if (!facts || typeof facts !== "object" || !facts.commandId || !facts.workspaceId || !facts.taskId || !facts.taskRunId) throw invalid("Episode identity is incomplete");
   if (!facts.ticket?.ticketId || !facts.ticket.attemptId || !facts.ticket.startedAt || !facts.ticket.updatedAt) throw invalid("Ticket facts are incomplete");
-  if (!facts.goal?.goalId || !facts.goal.agentId) throw invalid("Goal facts are incomplete");
+  if (!facts.goal?.goalId || !facts.goal.agentId || !facts.goal.profileId) throw invalid("Goal facts are incomplete");
   if (!["completed", "returned", "failed", "dead_letter", "cancelled"].includes(facts.ticket.status)) throw invalid("Experience requires an authoritative terminal Ticket status");
   if (Date.parse(facts.ticket.startedAt) > Date.parse(facts.ticket.updatedAt)) throw invalid("Experience time range is invalid");
   for (const ref of [...facts.sourceRefs, ...(facts.failures ?? []).flatMap((failure) => failure.sourceRefs)]) {

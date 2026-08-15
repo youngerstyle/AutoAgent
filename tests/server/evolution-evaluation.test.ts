@@ -253,7 +253,7 @@ describe("evolution evaluation and promotion gate", () => {
       await experience.record(`prompt-source-${suffix}`, projectExperience({
         commandId: `prompt-project-${suffix}`, workspaceId: "workspace-a", taskId: `source-task-${suffix}`, taskRunId: `source-run-${suffix}`,
         ticket: { ticketId: `source-ticket-${suffix}`, attemptId: `source-attempt-${suffix}`, status: "failed", startedAt: `2026-08-14T00:0${suffix}:00.000Z`, updatedAt: `2026-08-14T00:0${suffix}:30.000Z` },
-        goal: { goalId: `source-goal-${suffix}`, agentId: "agent-dev", status: "failed" },
+        goal: { goalId: `source-goal-${suffix}`, agentId: "agent-dev", profileId: "profile-dev", status: "failed" },
         sourceRefs: [{ kind: "human_feedback", ref: "prompt-human-feedback", workspaceId: "workspace-a" }], failures: [failure],
       }, fixedNow));
     }
@@ -314,7 +314,7 @@ describe("evolution evaluation and promotion gate", () => {
       await experience.record(`skill-source-${suffix}`, projectExperience({
         commandId: `skill-project-${suffix}`, workspaceId: "workspace-a", taskId: `skill-task-${suffix}`, taskRunId: `skill-run-${suffix}`,
         ticket: { ticketId: `skill-ticket-${suffix}`, attemptId: `skill-attempt-${suffix}`, status: "failed", startedAt: `2026-08-14T00:0${suffix}:00.000Z`, updatedAt: `2026-08-14T00:0${suffix}:30.000Z` },
-        goal: { goalId: `skill-goal-${suffix}`, agentId: "agent-dev", status: "failed" },
+        goal: { goalId: `skill-goal-${suffix}`, agentId: "agent-dev", profileId: "profile-dev", status: "failed" },
         sourceRefs: failure.sourceRefs, failures: [failure],
       }, fixedNow));
     }
@@ -348,7 +348,7 @@ describe("evolution evaluation and promotion gate", () => {
       await experience.record(`memory-source-${suffix}`, projectExperience({
         commandId: `memory-project-${suffix}`, workspaceId: "workspace-a", taskId: `memory-task-${suffix}`, taskRunId: `memory-run-${suffix}`,
         ticket: { ticketId: `memory-ticket-${suffix}`, attemptId: `memory-attempt-${suffix}`, status: "failed", startedAt: `2026-08-14T00:0${suffix}:00.000Z`, updatedAt: `2026-08-14T00:0${suffix}:30.000Z` },
-        goal: { goalId: `memory-goal-${suffix}`, agentId: "agent-dev", status: "failed" },
+        goal: { goalId: `memory-goal-${suffix}`, agentId: "agent-dev", profileId: "profile-dev", status: "failed" },
         sourceRefs: failure.sourceRefs, failures: [failure],
       }, fixedNow));
     }
@@ -701,7 +701,7 @@ async function recordCanaryCohorts(
     await experience.record(`${prefix}-cohort-experience-${index}`, {
       episode: {
         episodeId, workspaceId: workspace.id, taskId: `${prefix}-task-${index}`, taskRunId: `${prefix}-run-${index}`,
-        ticketId: `${prefix}-ticket-${index}`, attemptId: `${prefix}-attempt-${index}`, goalId, agentId: "agent-dev",
+        ticketId: `${prefix}-ticket-${index}`, attemptId: `${prefix}-attempt-${index}`, goalId, agentId: "agent-dev", profileId: "profile-dev",
         outcome: (selected ? releaseSucceeds : !releaseSucceeds) ? "succeeded" : "failed",
         sourceRefs: [{ kind: "trace", ref: traceId, workspaceId: workspace.id, agentId: "agent-dev" }],
         startedAt: `2026-08-14T00:${String(minute).padStart(2, "0")}:00.000Z`,

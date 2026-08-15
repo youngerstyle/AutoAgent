@@ -295,6 +295,7 @@ function validateTeamBinding(value: unknown, missionId: string): asserts value i
     const capabilities = member.capabilities;
     const enabledTools = member.enabledTools;
     if (typeof member.agentId !== "string" || !member.agentId
+      || (member.profileId !== undefined && (typeof member.profileId !== "string" || !member.profileId))
       || typeof member.principalId !== "string" || !member.principalId
       || agentIds.has(member.agentId) || principalIds.has(member.principalId)
       || !Array.isArray(capabilities) || capabilities.some((item) => typeof item !== "string")

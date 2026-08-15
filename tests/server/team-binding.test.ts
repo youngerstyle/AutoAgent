@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createTeamBinding } from "../../src/server/product/team-binding.js";
 import type { AgentProfile, Workspace, WorkspaceAgent } from "../../src/shared/types.js";
@@ -6,6 +7,7 @@ describe("TeamBinding product adapter", () => {
   it("uses configured profile capabilities without inferring authority from role names", () => {
     const profile = makeProfile([]);
     const team = createTeamBinding(makeWorkspace(), [makeAgent()], [profile], "team-a");
+    expect(team.members[0]).toMatchObject({ agentId: "agent-a", profileId: "profile-a" });
 
     expect(team.members[0]?.capabilities).toEqual([]);
     expect(team.members[0]?.capabilities).not.toContain("delivery:implement");
@@ -16,6 +18,15 @@ describe("TeamBinding product adapter", () => {
     const second = createTeamBinding(makeWorkspace(), [makeAgent()], [makeProfile(["delivery:verify"])], "team-a");
 
     expect(first.contentHash).not.toBe(second.contentHash);
+  });
+
+  it("keeps the v1 authority hash compatible when adding the stable profile snapshot", () => {
+    const team = createTeamBinding(makeWorkspace(), [makeAgent()], [makeProfile(["delivery:implement"])], "team-a");
+    const legacyMembers = team.members.map(({ profileId: _profileId, ...member }) => member);
+    const legacyHash = createHash("sha256").update(JSON.stringify({ members: legacyMembers, deliveryPolicy: team.deliveryPolicy })).digest("base64url");
+
+    expect(team.contentHash).toBe(legacyHash);
+    expect(team.members[0]?.profileId).toBe("profile-a");
   });
 
   it("binds the exact tools enabled for each workspace Agent", () => {

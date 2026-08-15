@@ -15,7 +15,7 @@ describe("evolution experience pipeline", () => {
     const first = projectExperience(facts({ ticket: { status: "completed" } }), fixedNow);
     const second = projectExperience(facts({ ticket: { status: "completed" } }), fixedNow);
     expect(first).toEqual(second);
-    expect(first.episode).toMatchObject({ outcome: "succeeded", ticketId: "ticket-a", goalId: "goal-a" });
+    expect(first.episode).toMatchObject({ outcome: "succeeded", ticketId: "ticket-a", goalId: "goal-a", agentId: "agent-a", profileId: "profile-a" });
     expect(first.episode.sourceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "ticket", ref: "ticket-a" }),
       expect.objectContaining({ kind: "goal_decision", ref: "decision-a" }),
@@ -189,7 +189,7 @@ function facts(overrides: {
       updatedAt: "2026-08-14T00:05:00.000Z",
       ...overrides.ticket,
     },
-    goal: { goalId: "goal-a", agentId: "agent-a", status: "completed" },
+    goal: { goalId: "goal-a", agentId: "agent-a", profileId: "profile-a", status: "completed" },
     sourceRefs: overrides.sourceRefs ?? [{ kind: "goal_decision", ref: "decision-a", workspaceId: "workspace-a" }],
     failures: overrides.failures,
   };
