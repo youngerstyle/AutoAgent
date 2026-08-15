@@ -9,6 +9,7 @@
 - [ ] 在 `AUTOAGENT_HOME` 持久化稳定 `companyId`。
 - [ ] 建立稳定 `CompanyAgentIdentity`，从 `AgentProfile` 和 `WorkspaceAgentAssignment` 解耦。
 - [ ] 迁移现有 Workspace Agent 时保持身份映射可审计，不把共享 Profile 当成同一个 Agent。
+- [ ] 证明同一 `CompanyAgentIdentity` 的多个 Workspace assignments 共享 agent-level release，但不共享各自的 agent-project release。
 - [ ] 建立 Company Practice/Release/Promotion ledger。
 - [ ] 建立 Agent long-term Practice/Release ledger。
 - [ ] 保留 Workspace Episode 与项目 Release store。
