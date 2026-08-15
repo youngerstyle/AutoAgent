@@ -69,7 +69,7 @@ Capture authoritative fact
 
 ### 3.1 第一层：同步事实捕获
 
-以下事件发生时立即追加不可变 `EvolutionSignal` 和 Episode/source refs，但同步路径不得调用模型、生成 Skill 或改变 active release：
+以下事件发生时，业务系统先照常追加其不可变权威事实；同步路径不得调用模型、生成 Skill、双写 Evol 状态或改变 active release：
 
 - Ticket/Mission 进入权威终态；
 - 用户明确纠正 Agent；
@@ -79,14 +79,14 @@ Capture authoritative fact
 - turn context 即将 compaction；
 - 人工显式请求“记录这次经验”或“立即运行 Evol”。
 
-同步捕获必须轻量、幂等，即使后台 worker 停止也不能丢失。业务任务的响应不等待 Evol 完成。
+Ticket/Mission、Evidence Ledger、Agent Thread/Trace 和 release telemetry 是 capture source。Evol ingestor 使用耐久 cursor 从这些来源幂等派生 `EvolutionSignal` 和 Episode/source refs；即使后台 worker 停止，恢复后也能从权威来源补齐。业务任务的响应不等待 Evol，也不承担跨账本双写。
 
 ```ts
 interface EvolutionSignal {
   signalId: string;
   companyId: string;
   workspaceId?: string;
-  agentIdentityId?: string;
+  profileId?: string;
   trigger: "terminal_outcome" | "user_correction" | "recovered_failure" | "novel_success"
     | "practice_feedback" | "context_compaction" | "effect_observation" | "manual";
   sourceRefs: string[];
@@ -165,7 +165,7 @@ interface PracticeScope {
   companyId: string;
   ownerLevel: "agent_project" | "agent" | "project" | "company";
   projectIds?: string[];
-  agentIdentityIds?: string[];
+  profileIds?: string[];
   roles?: string[];
   taskTypes?: string[];
   predicates?: Record<string, string | number | boolean>;
@@ -190,44 +190,37 @@ Binding 决定一条 Practice 如何影响 Runtime。执行接缝是有限的，
 
 Release 是 Practice + Binding 的不可变可执行版本。active pointer 只选择 Release，不指向草稿 Practice。
 
-## 5. Agent 身份不是 Profile 模板
+## 5. AgentProfile 是稳定个人身份，WorkspaceAgent 是项目实例
 
-系统必须区分：
+当前产品中的 `AgentProfile` 已经是公司人才中心里长期存在的具体智能体员工：它包含名字、identity、soul、Agent.md、能力和默认 Skill，并被多个项目实例引用。V1 不再引入一套重复的 `CompanyAgentIdentity`。
 
-- `AgentProfile`：可复用的角色/基础能力模板，例如“开发”“测试”；
-- `CompanyAgentIdentity`：公司中持续存在、可以成长的具体 Agent，是个人长期能力的 owner；
-- `WorkspaceAgentAssignment`：同一个 Agent 在某个项目中的一次任职实例，是项目上下文的载体，不是新的个人身份。
+- `AgentProfile`：稳定的公司级个人 Agent，`profileId` 是个人长期成长的 owner；
+- `WorkspaceAgent`：该 Agent 在一个 Workspace/项目中的运行实例，通过 `profileId` 指向同一个人；
+- `roleInWorkspace` 和项目 override：该 Agent 在当前项目的任职与局部配置，不创建新身份。
 
 这里的共享规则是：
 
 | 资产归属 | 谁会继承 | 是否跨项目 |
 | --- | --- | --- |
-| Profile baseline | 所有引用该 Profile 的 Agent | 是，但它是配置的基础能力，不是任何 Agent 的个人成长 |
-| Company Agent (`agentIdentityId`) | 同一 Agent 的所有 Workspace assignments | 是 |
-| Agent × Project (`agentIdentityId + workspaceId`) | 同一 Agent 在该项目中的 assignment | 否 |
+| Agent (`profileId`) | 该 Agent 的所有 Workspace instances | 是 |
+| Agent × Project (`profileId + workspaceId`) | 该 Agent 在该项目中的 instance | 否 |
 | Project (`workspaceId`) | 该项目内所有匹配 Agent | 不适用 |
 | Company (`companyId`) | 公司内所有匹配 Agent/项目 | 是 |
 
-因此，同一个 `CompanyAgentIdentity` 参与多个项目时，其 agent-level Memory、Prompt、Skill 和成长历史必须共享给这些项目实例。不能自动共享的是尚未证明可泛化的 agent-project 资产。两个不同的 Agent 即使引用同一个 Profile，也只共享 Profile 明确定义的 baseline，不会因为模板相同而混合两人的个人证据和个人成长。
+因此，同一个 `profileId` 参与多个项目时，其 agent-level Memory、Prompt、Skill 和成长历史必须共享给这些项目实例。不能自动共享的是尚未证明可泛化的 agent-project 资产。两个不同 `profileId` 是两个不同 Agent，不混合个人证据和成长。
 
 ```ts
-interface CompanyAgentIdentity {
-  agentIdentityId: string;
-  companyId: string;
-  profileId: string;
-  status: "active" | "inactive";
-  createdAt: string;
-}
-
-interface WorkspaceAgentAssignment {
+interface WorkspaceAgent {
   workspaceAgentId: string;
   workspaceId: string;
-  agentIdentityId: string;
+  profileId: string;
   role: string;
 }
 ```
 
-个人长期成长归属于 `agentIdentityId`，不能归属于 Profile，也不能只归属于临时的 `workspaceAgentId`。项目内的个人经验归属于复合键 `(agentIdentityId, workspaceId)`；当它在该 Agent 的其他项目中验证有效后，通过 `agent_project -> agent` 晋升，之后由同一 Agent 的所有 assignments 继承。
+个人长期成长归属于 `profileId`，不能只归属于项目内的 `workspaceAgentId`。项目内的个人经验归属于复合键 `(profileId, workspaceId)`；当它在该 Agent 的其他项目中验证有效后，通过 `agent_project -> agent` 晋升，之后由同一 Agent 的所有 Workspace instances 继承。
+
+如果未来确实需要“多个不同 Agent 共享同一岗位模板”，应另建 `AgentArchetype` 并让多个 AgentProfile 引用它；这不是 Agent/Project/Company Evol V1 的前置条件。
 
 ## 6. 四种进化作用域
 
@@ -289,7 +282,7 @@ project       -> company    # 项目实践经跨项目验证后公司化
 interface CompanyPromotionProposal {
   proposalId: string;
   companyId: string;
-  origin: { ownerLevel: "agent_project" | "agent" | "project"; projectId?: string; agentIdentityId?: string };
+  origin: { ownerLevel: "agent_project" | "agent" | "project"; projectId?: string; profileId?: string };
   originReleaseRef: VersionedEvolutionRef;
   practiceRef: VersionedEvolutionRef;
   inheritanceProofRefs: string[];
@@ -369,7 +362,7 @@ built-in default
 Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 
 1. 同一私有部署具有稳定 company identity，两个部署之间的 Evol 数据完全隔离。
-2. Profile、Company Agent identity 和 Workspace assignment 被明确分离：同一 Agent 的所有 assignments 共享 agent-level 成长；不同 Agent 即使共享 Profile，也不会混合个人成长；agent-project 成长只留在对应项目实例。
+2. `AgentProfile/profileId` 被确认为稳定个人身份，`WorkspaceAgent` 被确认为项目实例：同一 profileId 的所有实例共享 agent-level 成长；agent-project 成长只留在对应项目实例。
 3. Agent 能从开放式 Episode 归纳 Practice，而不是只能选择预设规则。
 4. Practice 与其 Runtime Binding 分离并分别版本化。
 5. agent-project、agent、project Release 都能在正确生命周期边界实际继承、测量和回滚。
