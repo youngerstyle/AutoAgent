@@ -20,7 +20,7 @@ describe("shared Agent and Company evolution releases", () => {
     const contentHash = createHash("sha256").update(content).digest("hex");
     const originRelease = { id: "origin-release", version: "1", contentHash };
     await writeOriginRelease(workspaceRoot, originRelease, content);
-    const proposals = new ScopePromotionStore(home, "company-a", () => new Date("2026-08-15T06:00:00.000Z"));
+    const proposals = verifiedProposals(home, "company-a", () => new Date("2026-08-15T06:00:00.000Z"));
     const proposal = await proposals.propose({
       commandId: "share-agent", companyId: "company-a",
       origin: { ownerLevel: "agent_project", workspaceId: "workspace-a", profileId: "profile-a" },
@@ -69,7 +69,7 @@ describe("shared Agent and Company evolution releases", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-shared-reject-workspace-"));
     const contentHash = "a".repeat(64);
     await writeOriginRelease(workspaceRoot, { id: "origin-release", version: "1", contentHash }, "tampered content");
-    const proposals = new ScopePromotionStore(home, "company-a");
+    const proposals = verifiedProposals(home, "company-a");
     const proposal = await proposals.propose({
       commandId: "share-unapproved", companyId: "company-a", origin: { ownerLevel: "agent_project", workspaceId: "workspace-a", profileId: "profile-a" },
       targetScope: { ownerLevel: "agent", profileId: "profile-a" }, originReleaseRef: { id: "origin-release", version: "1", contentHash },
@@ -92,7 +92,7 @@ describe("shared Agent and Company evolution releases", () => {
     const contentHash = createHash("sha256").update(content).digest("hex");
     const originRelease = { id: "project-release", version: "1", contentHash };
     await writeOriginRelease(sourceRoot, originRelease, content, { workspaceId: "workspace-source", ownerLevel: "project" });
-    const proposals = new ScopePromotionStore(firstHome, firstCompany.companyId);
+    const proposals = verifiedProposals(firstHome, firstCompany.companyId);
     const proposal = await proposals.propose({
       commandId: "share-company", companyId: firstCompany.companyId,
       origin: { ownerLevel: "project", workspaceId: "workspace-source" }, targetScope: { ownerLevel: "company" },
@@ -133,3 +133,6 @@ async function writeOriginRelease(root: string, release: { id: string; version: 
 
 function profile(id: string): AgentProfile { return { id, name: id, role: "dev", capabilities: [], defaultProvider: "mock", defaultModel: "mock", defaultPolicy: {} }; }
 function agent(workspaceId: string, profileId: string): WorkspaceAgent { return { id: `${workspaceId}-${profileId}`, workspaceId, profileId, roleInWorkspace: "dev", agentDir: `agents/${profileId}`, status: "idle" }; }
+function verifiedProposals(home: string, companyId: string, now: () => Date = () => new Date()): ScopePromotionStore {
+  return new ScopePromotionStore(home, companyId, now, async (input) => ({ verifierId: "test-ledger-verifier", verifiedAt: now().toISOString(), originRootId: input.origin.workspaceId ?? `agent:${input.origin.profileId}`, inheritanceProofCount: input.inheritanceProofRefs.length, effectWindowCount: input.effectWindowRefs.length }));
+}

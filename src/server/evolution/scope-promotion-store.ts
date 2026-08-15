@@ -6,11 +6,13 @@ import { HttpError } from "../errors.js";
 import { globalCompanyEvolutionPromotionProposalsFile } from "../storage/paths.js";
 
 type ProposalInput = Pick<EvolutionScopePromotionProposal, "commandId" | "companyId" | "origin" | "targetScope" | "originReleaseRef" | "practiceRef" | "inheritanceProofRefs" | "effectWindowRefs" | "generalizationRisks">;
+export type ScopePromotionEvidenceVerification = NonNullable<EvolutionScopePromotionProposal["evidenceVerification"]>;
+export type ScopePromotionEvidenceVerifier = (input: ProposalInput) => Promise<ScopePromotionEvidenceVerification>;
 interface PromotionEvent { eventId: string; commandId: string; proposal: EvolutionScopePromotionProposal }
 const queues = new Map<string, Promise<void>>();
 
 export class ScopePromotionStore {
-  constructor(private readonly homeDir: string, private readonly companyId: string, private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly homeDir: string, private readonly companyId: string, private readonly now: () => Date = () => new Date(), private readonly evidenceVerifier?: ScopePromotionEvidenceVerifier) {}
 
   async propose(input: ProposalInput): Promise<EvolutionScopePromotionProposal> {
     const normalized = {
@@ -20,6 +22,7 @@ export class ScopePromotionStore {
       generalizationRisks: unique(Array.isArray(input.generalizationRisks) ? input.generalizationRisks : []),
     };
     validateProposal(normalized, this.companyId);
+    const evidenceVerification = this.evidenceVerifier ? await this.evidenceVerifier(normalized) : undefined;
     return this.exclusive(async () => {
       const events = await this.readEvents(); const fingerprint = canonical(normalized);
       const replay = events.find((event) => event.commandId === normalized.commandId);
@@ -30,6 +33,7 @@ export class ScopePromotionStore {
       const timestamp = this.now().toISOString();
       const proposal: EvolutionScopePromotionProposal = {
         ...normalized, proposalId: `scope_promotion_${hash(normalized.commandId).slice(0, 32)}`,
+        ...(evidenceVerification ? { evidenceVerification } : {}),
         status: "proposed", createdAt: timestamp, updatedAt: timestamp,
       };
       await this.append(normalized.commandId, proposal); return proposal;
@@ -46,6 +50,7 @@ export class ScopePromotionStore {
       }
       const current = (await this.project(events)).get(proposalId);
       if (!current) throw new HttpError(404, "Scope promotion proposal not found", "SCOPE_PROMOTION_NOT_FOUND");
+      if (["reviewed", "trial", "approved"].includes(targetStatus) && !current.evidenceVerification) throw conflict("Scope promotion evidence has not been verified against authoritative ledgers");
       if (!allowed(current.status, targetStatus, current.targetScope)) throw conflict(`Scope promotion cannot move from ${current.status} to ${targetStatus}`);
       if (["reviewed", "approved", "rejected"].includes(targetStatus) && reviewedBy.type !== "human") throw new HttpError(403, "Scope promotion review requires a human", "SCOPE_PROMOTION_HUMAN_REQUIRED");
       const next: EvolutionScopePromotionProposal = { ...current, status: targetStatus, reviewedBy: structuredClone(reviewedBy), updatedAt: this.now().toISOString() };

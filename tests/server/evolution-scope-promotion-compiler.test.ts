@@ -25,7 +25,7 @@ describe("project scope promotion compiler", () => {
       schemaVersion: 1, release, stage: "production", candidateId: origin.candidateId, candidateHash: origin.contentHash,
       scope: origin.scope, runtimeActive: true, validationPassed: true,
     }), "utf8");
-    const proposals = new ScopePromotionStore(home, "company-a");
+    const proposals = new ScopePromotionStore(home, "company-a", undefined, async (input) => ({ verifierId: "test-ledger-verifier", verifiedAt: new Date().toISOString(), originRootId: "workspace-a", inheritanceProofCount: input.inheritanceProofRefs.length, effectWindowCount: input.effectWindowRefs.length }));
     const proposal = await proposals.propose({
       commandId: "project-promotion", companyId: "company-a",
       origin: { ownerLevel: "agent_project", workspaceId: "workspace-a", profileId: "profile-a" }, targetScope: { ownerLevel: "project", workspaceId: "workspace-a" },

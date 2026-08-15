@@ -111,12 +111,10 @@ describe("workspace evolution candidate control plane", () => {
       originReleaseRef: { id: "release-a", version: "1", contentHash: "a".repeat(64) },
       practiceRef: { id: "practice-a", version: "1", contentHash: "b".repeat(64) },
       inheritanceProofRefs: ["proof-a"], effectWindowRefs: ["effect-a"], generalizationRisks: [],
-    }).expect(201);
-    expect(created.body.proposal).toMatchObject({ companyId: expect.stringMatching(/^company_/), status: "proposed", targetScope: { ownerLevel: "agent", profileId: "profile-a" } });
-    await request(app).post(`${base}/scope-promotions/${created.body.proposal.proposalId}/transition`).set("x-autoagent-principal-id", "owner-a").send({ commandId: "api-review", status: "reviewed" }).expect(200);
-    await request(app).post(`${base}/scope-promotions/${created.body.proposal.proposalId}/transition`).set("x-autoagent-principal-id", "owner-a").send({ commandId: "api-approve", status: "approved" }).expect(200);
+    }).expect(409);
+    expect(created.body).toMatchObject({ code: "INVALID_SCOPE_PROMOTION_EVIDENCE" });
     await request(app).get(`${base}/scope-promotions`).expect(200).expect(({ body }) => {
-      expect(body.proposals).toEqual([expect.objectContaining({ proposalId: created.body.proposal.proposalId, status: "approved" })]);
+      expect(body.proposals).toEqual([]);
     });
     await request(app).post(`${base}/memory-candidates/consolidate`).send({ minimumEpisodes: 2 }).expect(404);
   });

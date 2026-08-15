@@ -287,11 +287,20 @@ interface CompanyPromotionProposal {
   practiceRef: VersionedEvolutionRef;
   inheritanceProofRefs: string[];
   effectWindowRefs: string[];
+  evidenceVerification: {
+    verifierId: string;
+    verifiedAt: string;
+    originRootId: string;
+    inheritanceProofCount: number;
+    effectWindowCount: number;
+  };
   proposedCompanyScope: PracticeScope;
   generalizationRisks: string[];
   status: "proposed" | "reviewed" | "trial" | "approved" | "rejected";
 }
 ```
+
+`inheritanceProofRefs` 和 `effectWindowRefs` 不是调用方可自由填写的说明文字。创建提案时，服务端必须重新解析：来源必须仍是当前 active、validated、immutable 的 production Release；每个继承证明必须存在于 Activation Ledger、指向该 Release，并保留实际运行的 workspace/Agent/profile；每个效果窗口必须存在于 Telemetry Ledger、属于同一 Candidate 内容且结论为 pass。任何缺失、失败、串用其他 Release 或伪造的引用都拒绝创建提案。共享 Agent/Company Release 的激活证明写回其共享层账本，而不是错误写入当前项目账本。
 
 公司评审回答的不是“原项目有没有成功”，而是：
 

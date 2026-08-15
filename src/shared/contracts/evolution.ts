@@ -472,6 +472,13 @@ export interface EvolutionScopePromotionProposal {
   practiceRef: VersionedEvolutionRef;
   inheritanceProofRefs: string[];
   effectWindowRefs: string[];
+  evidenceVerification?: {
+    verifierId: string;
+    verifiedAt: string;
+    originRootId: string;
+    inheritanceProofCount: number;
+    effectWindowCount: number;
+  };
   generalizationRisks: string[];
   status: ScopePromotionStatus;
   reviewedBy?: EvolutionPrincipalRef;

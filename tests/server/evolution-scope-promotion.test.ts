@@ -10,7 +10,7 @@ describe("Evolution scope promotion", () => {
 
   it("promotes agent-project learning to the same stable Agent only through explicit human review", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-promotion-"));
-    const store = new ScopePromotionStore(home, "company-a", () => new Date("2026-08-15T05:00:00.000Z"));
+    const store = verifiedStore(home, () => new Date("2026-08-15T05:00:00.000Z"));
     const input = {
       commandId: "promote-agent-a", companyId: "company-a",
       origin: { ownerLevel: "agent_project" as const, workspaceId: "workspace-a", profileId: "profile-a" },
@@ -27,7 +27,7 @@ describe("Evolution scope promotion", () => {
 
   it("requires a reviewed cross-project trial before company approval", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-company-promotion-"));
-    const store = new ScopePromotionStore(home, "company-a");
+    const store = verifiedStore(home);
     const proposal = await store.propose({
       commandId: "promote-company-a", companyId: "company-a",
       origin: { ownerLevel: "project", workspaceId: "workspace-a" }, targetScope: { ownerLevel: "company" },
@@ -48,3 +48,7 @@ describe("Evolution scope promotion", () => {
     await expect(store.propose({ ...base, commandId: "foreign", companyId: "company-b", origin: { ownerLevel: "agent", profileId: "profile-a" }, targetScope: { ownerLevel: "company" }, generalizationRisks: ["risk"] })).rejects.toMatchObject({ code: "INVALID_SCOPE_PROMOTION" });
   });
 });
+
+function verifiedStore(home: string, now: () => Date = () => new Date()): ScopePromotionStore {
+  return new ScopePromotionStore(home, "company-a", now, async (input) => ({ verifierId: "test-ledger-verifier", verifiedAt: now().toISOString(), originRootId: input.origin.workspaceId ?? `agent:${input.origin.profileId}`, inheritanceProofCount: input.inheritanceProofRefs.length, effectWindowCount: input.effectWindowRefs.length }));
+}

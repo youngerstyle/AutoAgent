@@ -103,7 +103,7 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 ## Milestone E：公司推广
 
-- [ ] 支持 agent-project -> agent、agent-project -> project、agent/project -> company 的显式 Promotion Proposal。
+- [x] 支持 agent-project -> agent、agent-project -> project、agent/project -> company 的显式 Promotion Proposal，并用 active Release、Activation Proof、passing Telemetry 三类权威账本校验来源证据。
 - [ ] 公司评审 generalizability、脱敏、适用范围、成本和风险。
 - [ ] 在其他代表性项目运行 company trial。
 - [ ] 通过跨项目效果门禁后发布 company active release。

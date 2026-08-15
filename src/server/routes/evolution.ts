@@ -23,6 +23,7 @@ import { PracticeBindingStore } from "../evolution/practice-binding-store.js";
 import { CompanyIdentityStore } from "../storage/company-identity-store.js";
 import { ScopePromotionStore } from "../evolution/scope-promotion-store.js";
 import { SharedEvolutionReleaseRegistry } from "../evolution/shared-release-registry.js";
+import { ScopePromotionEvidenceService } from "../evolution/scope-promotion-evidence.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -132,9 +133,11 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const workspaceId = String(req.params.workspaceId);
     await workspaces.get(workspaceId);
     const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const registeredWorkspaces = (await workspaces.list()).map((item) => ({ id: item.id, rootPath: item.rootPath }));
     const targetScope = { ...(req.body?.targetScope ?? {}) };
     if (targetScope.ownerLevel === "project" || targetScope.ownerLevel === "agent_project") targetScope.workspaceId = workspaceId;
-    const proposal = await new ScopePromotionStore(workspaces.homePath(), identity.companyId).propose({
+    const evidence = new ScopePromotionEvidenceService(workspaces.homePath(), identity.companyId, registeredWorkspaces);
+    const proposal = await new ScopePromotionStore(workspaces.homePath(), identity.companyId, undefined, evidence.verifier()).propose({
       commandId: typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), companyId: identity.companyId,
       origin: req.body?.origin, targetScope, originReleaseRef: req.body?.originReleaseRef, practiceRef: req.body?.practiceRef,
       inheritanceProofRefs: req.body?.inheritanceProofRefs, effectWindowRefs: req.body?.effectWindowRefs, generalizationRisks: req.body?.generalizationRisks ?? [],
