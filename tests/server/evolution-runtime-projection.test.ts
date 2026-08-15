@@ -156,18 +156,18 @@ describe("evolution production runtime projection", () => {
     const first = await promptCandidate(root, 1, "Require observed evidence before making a release claim.");
     const firstPromotion = promptPromotion(first, 1);
     await registry.publish(firstPromotion, first);
-    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "turn-v1", runtimeSnapshotHash: "snapshot-v1" });
+    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "turn-v1", runtimeSnapshotHash: "1".repeat(64) });
 
     const second = await promptCandidate(root, 2, "Require only a model assertion before making a release claim.", firstPromotion.toRelease);
     const secondPromotion = promptPromotion(second, 2, firstPromotion.toRelease);
     await registry.publish(secondPromotion, second);
-    await activations.observe({ assetKind: "prompt", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "turn-v2", runtimeSnapshotHash: "snapshot-v2" });
+    await activations.observe({ assetKind: "prompt", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "turn-v2", runtimeSnapshotHash: "2".repeat(64) });
     await registry.rollback({ ...secondPromotion, status: "rolled_back", rolledBackAt: "2026-08-14T00:03:00.000Z" }, second);
 
     expect(await registry.current("production", second)).toMatchObject({ active: true, generation: 3, release: firstPromotion.toRelease, promotionId: firstPromotion.promotionId, previousRelease: secondPromotion.toRelease });
     const projected = await runtimeEvolutionProjection(root, "workspace-a", profile(), agent(), { assignmentKey: "rollback-turn", tools: [] });
     expect(projected.prompts).toEqual([expect.objectContaining({ content: "Require observed evidence before making a release claim.", releaseId: firstPromotion.toRelease.id, generation: 3 })]);
-    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "turn-restored", runtimeSnapshotHash: "snapshot-restored" });
+    await activations.observe({ assetKind: "prompt", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "turn-restored", runtimeSnapshotHash: "3".repeat(64) });
     expect(await activations.list()).toEqual([
       expect.objectContaining({ promotionId: firstPromotion.promotionId, status: "superseded" }),
       expect.objectContaining({ promotionId: secondPromotion.promotionId, status: "rolled_back" }),
@@ -184,13 +184,13 @@ describe("evolution production runtime projection", () => {
     const firstPromotion = memoryPromotion(first, 1);
     await registry.publish(firstPromotion, first);
     await lifecycle.register(firstPromotion, first);
-    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "memory-turn-v1", runtimeSnapshotHash: "memory-snapshot-v1" });
+    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "memory-turn-v1", runtimeSnapshotHash: "4".repeat(64) });
 
     const second = await memoryCandidate(root, 2, "Treat a candidate proposal as if it were already active.", firstPromotion.toRelease);
     const secondPromotion = memoryPromotion(second, 2, firstPromotion.toRelease);
     await registry.publish(secondPromotion, second);
     await lifecycle.register(secondPromotion, second);
-    await activations.observe({ assetKind: "memory", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "memory-turn-v2", runtimeSnapshotHash: "memory-snapshot-v2" });
+    await activations.observe({ assetKind: "memory", target: second.target, releaseRef: secondPromotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeKind: "turn", runtimeRef: "memory-turn-v2", runtimeSnapshotHash: "5".repeat(64) });
 
     const rolledBack = { ...secondPromotion, status: "rolled_back" as const, rolledBackAt: "2026-08-14T00:03:00.000Z" };
     await registry.rollback(rolledBack, second);
@@ -200,7 +200,7 @@ describe("evolution production runtime projection", () => {
     expect(await productionEvolutionMemories(root, "workspace-a", profile(), agent())).toEqual([
       expect.objectContaining({ content: "Require an actual Runtime inheritance trace before reporting activation.", releaseId: firstPromotion.toRelease.id, generation: 3 }),
     ]);
-    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "memory-turn-restored", runtimeSnapshotHash: "memory-snapshot-restored" });
+    await activations.observe({ assetKind: "memory", target: first.target, releaseRef: firstPromotion.toRelease, desiredGeneration: 3, actualGeneration: 3, runtimeKind: "turn", runtimeRef: "memory-turn-restored", runtimeSnapshotHash: "6".repeat(64) });
     expect((await activations.list()).find((item) => item.activationKind === "rollback_restore")).toMatchObject({ status: "activated", releaseRef: firstPromotion.toRelease, desiredGeneration: 3 });
     expect((await activations.listProofs()).at(-1)).toMatchObject({ assetKind: "memory", runtimeKind: "turn", runtimeRef: "memory-turn-restored", releaseRef: firstPromotion.toRelease });
   });

@@ -19,7 +19,7 @@ describe("Evol activation and inheritance ledger", () => {
     const observation = {
       assetKind: "prompt" as const, target: candidate.target, releaseRef: promotion.toRelease,
       desiredGeneration: 4, actualGeneration: 4, runtimeKind: "turn" as const, runtimeRef: "turn-after-promotion",
-      runtimeSnapshotHash: "runtime-snapshot-hash",
+      runtimeSnapshotHash: "a".repeat(64),
       traceRef: { kind: "trace" as const, ref: "trace-after-promotion", workspaceId: "workspace-a", agentId: "agent-a" },
     };
     const first = await store.observe(observation);
@@ -40,7 +40,7 @@ describe("Evol activation and inheritance ledger", () => {
     await store.observe({
       assetKind: "prompt", target: candidate.target, releaseRef: candidate.mutationSet!.baseRef,
       desiredGeneration: 5, actualGeneration: 5, runtimeKind: "turn", runtimeRef: "turn-after-rollback",
-      runtimeSnapshotHash: "restored-runtime-snapshot",
+      runtimeSnapshotHash: "b".repeat(64),
       traceRef: { kind: "trace", ref: "trace-after-rollback", workspaceId: "workspace-a", agentId: "agent-a" },
     });
     expect(await store.list()).toEqual([
@@ -48,6 +48,21 @@ describe("Evol activation and inheritance ledger", () => {
       expect.objectContaining({ activationKind: "rollback_restore", status: "activated", proofCount: 1, releaseRef: candidate.mutationSet!.baseRef }),
     ]);
     expect(await store.listProofs()).toHaveLength(2);
+  });
+
+  it("rejects stale generations and runtime kinds that do not satisfy the declared lifecycle boundary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-activation-boundary-"));
+    const store = new EvolutionActivationStore(root);
+    const candidate = { ...fixtureCandidate(), kind: "plugin" as const, riskLevel: "critical" as const, mutationSet: { ...fixtureCandidate().mutationSet!, assetKind: "plugin" as const, activationBoundary: "next_session" as const } };
+    const promotion = { ...fixturePromotion(), candidateId: candidate.candidateId };
+    await store.recordPointerChanged(promotion, candidate, 2);
+    const base = { assetKind: "plugin" as const, target: candidate.target, releaseRef: promotion.toRelease, desiredGeneration: 2, actualGeneration: 2, runtimeSnapshotHash: "c".repeat(64) };
+    await expect(store.observe({ ...base, runtimeKind: "turn", runtimeRef: "turn-a" })).rejects.toThrow("next_session activation cannot be proved by turn runtime");
+    await expect(store.observe({ ...base, actualGeneration: 1, runtimeKind: "session", runtimeRef: "session-stale" })).rejects.toThrow("generation does not match");
+    expect(await store.list()).toEqual([expect.objectContaining({ status: "waiting_for_activation", proofCount: 0 })]);
+    await expect(store.observe({ ...base, runtimeKind: "session", runtimeRef: "session-a", runtimeSnapshotHash: "not-a-hash" })).rejects.toThrow("snapshot hash is invalid");
+    expect(await store.observe({ ...base, runtimeKind: "session", runtimeRef: "session-a" })).toEqual(expect.objectContaining({ boundary: "next_session", runtimeKind: "session" }));
+    expect(await store.list()).toEqual([expect.objectContaining({ status: "activated", proofCount: 1 })]);
   });
 });
 

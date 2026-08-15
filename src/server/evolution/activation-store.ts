@@ -92,6 +92,9 @@ export class EvolutionActivationStore {
       && item.releaseRef.id === input.releaseRef.id && item.releaseRef.contentHash === input.releaseRef.contentHash
       && item.desiredGeneration === input.desiredGeneration);
     if (!activation) return undefined;
+    if (input.actualGeneration !== input.desiredGeneration) throw new Error("Evolution inheritance proof generation does not match the active pointer");
+    if (!runtimeSatisfiesBoundary(activation.boundary, input.runtimeKind)) throw new Error(`Evolution ${activation.boundary} activation cannot be proved by ${input.runtimeKind} runtime`);
+    if (!/^[a-f0-9]{64}$/.test(input.runtimeSnapshotHash)) throw new Error("Evolution inheritance proof snapshot hash is invalid");
     const proofId = stableId("inheritance", activation.activationId, input.runtimeKind, input.runtimeRef, input.runtimeSnapshotHash);
     const existing = state.proofs.get(proofId);
     if (existing) return structuredClone(existing);
@@ -228,6 +231,16 @@ export class EvolutionActivationStore {
     }
     return { activations, proofs, commands };
   }
+}
+
+function runtimeSatisfiesBoundary(boundary: EvolutionInheritanceProof["boundary"], runtimeKind: EvolutionInheritanceProof["runtimeKind"]): boolean {
+  const allowed: Record<EvolutionInheritanceProof["boundary"], EvolutionInheritanceProof["runtimeKind"][]> = {
+    next_turn: ["turn", "session", "task", "process", "deployment"],
+    next_session: ["session", "process", "deployment"],
+    next_task: ["task", "process", "deployment"],
+    next_restart: ["process", "deployment"],
+  };
+  return allowed[boundary].includes(runtimeKind);
 }
 
 async function readEvents(file: string): Promise<ActivationEvent[]> {
