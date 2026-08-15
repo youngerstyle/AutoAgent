@@ -10,6 +10,7 @@ import type { AgentProfile, WorkspaceAgent } from "../../src/shared/types.js";
 import type { EvolutionScope } from "../../src/shared/contracts/evolution.js";
 import { CompanyIdentityStore } from "../../src/server/storage/company-identity-store.js";
 import { resolveSharedEvolutionLayerSources } from "../../src/server/runtime/runtime-host-registry.js";
+import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 
 describe("shared Agent and Company evolution releases", () => {
   it("publishes an approved local release into the stable Agent layer idempotently", async () => {
@@ -40,15 +41,25 @@ describe("shared Agent and Company evolution releases", () => {
     expect(first.published).toBe(true);
     expect(replay.published).toBe(false);
     expect(replay.pointer).toEqual(first.pointer);
+    const sharedActivations = new EvolutionActivationStore(first.layerRoot, () => new Date("2026-08-15T06:02:00.000Z"));
+    const sharedActivation = (await sharedActivations.list())[0]!;
+    expect(sharedActivation).toMatchObject({ promotionId: proposal.proposalId, status: "waiting_for_activation", desiredGeneration: 1, scope: { ownerLevel: "agent", profileId: "profile-a" } });
     const otherWorkspace = await mkdtemp(path.join(os.tmpdir(), "autoagent-shared-target-"));
     const source = { layerRoot: first.layerRoot, ownerLevel: "agent" as const, ownerId: "profile-a", companyId: "company-a" };
     const inherited = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-a"), agent("workspace-b", "profile-a"), { assignmentKey: "turn-a", sharedReleaseSources: [source] });
     expect(inherited.memories).toEqual([expect.objectContaining({ content, ownerLevel: "agent", releaseId: first.manifest.release.id })]);
     expect(inherited.resolvedReleases).toEqual([expect.objectContaining({ assetKind: "memory", ownerLevel: "agent", target: "practice.memory.briefing" })]);
+    const proof = await sharedActivations.observe({
+      assetKind: "memory", target: "practice.memory.briefing", ownerLevel: "agent", releaseRef: first.manifest.release,
+      desiredGeneration: 1, actualGeneration: 1, runtimeKind: "turn", runtimeRef: "turn-a", runtimeSnapshotHash: inherited.snapshotHash,
+      traceRef: { kind: "trace", ref: "trace-a", workspaceId: "workspace-b", agentId: "workspace-b-profile-a", profileId: "profile-a" },
+    });
+    expect(proof).toMatchObject({ activationId: sharedActivation.activationId, traceRef: { workspaceId: "workspace-b", profileId: "profile-a" } });
     const peer = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-b"), agent("workspace-b", "profile-b"), { assignmentKey: "turn-peer", sharedReleaseSources: [source] });
     expect(peer.memories).toEqual([]);
     await expect(registry.rollback(proposal.proposalId, { type: "system", id: "worker" })).rejects.toMatchObject({ code: "EVOLUTION_APPROVAL_REQUIRED" });
     expect(await registry.rollback(proposal.proposalId, { type: "human", id: "owner" })).toMatchObject({ active: false, generation: 2, previousRelease: first.manifest.release });
+    expect((await sharedActivations.list())[0]).toMatchObject({ status: "rolled_back", proofCount: 1 });
     const afterRollback = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-a"), agent("workspace-b", "profile-a"), { assignmentKey: "turn-after-rollback", sharedReleaseSources: [source] });
     expect(afterRollback.memories).toEqual([]);
   });

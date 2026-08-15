@@ -60,6 +60,46 @@ export class EvolutionActivationStore {
     return structuredClone((await this.project()).activations.get(activation.activationId));
   }
 
+  /** Records a pointer owned by a shared Agent/Company layer without pretending it is a local Candidate promotion. */
+  async recordSharedPointer(input: {
+    promotionId: string;
+    candidateId: string;
+    assetKind: EvolutionActivationRecord["assetKind"];
+    target: string;
+    scope: EvolutionActivationRecord["scope"];
+    releaseRef: VersionedEvolutionRef;
+    desiredGeneration: number;
+    previousRelease?: VersionedEvolutionRef;
+  }): Promise<EvolutionActivationRecord> {
+    if (!input.promotionId || !input.candidateId || !input.target || !Number.isSafeInteger(input.desiredGeneration) || input.desiredGeneration < 1) throw new Error("Shared evolution activation input is invalid");
+    const commandId = `shared-pointer:${input.promotionId}:${input.desiredGeneration}`;
+    const state = await this.project();
+    const replay = state.commands.get(commandId);
+    if (replay?.type === "activation.pointer_changed") return structuredClone(replay.activation);
+    const timestamp = this.now().toISOString();
+    const activation: EvolutionActivationRecord = {
+      activationId: stableId("activation-shared", input.promotionId, input.releaseRef.contentHash, String(input.desiredGeneration)),
+      promotionId: input.promotionId,
+      activationKind: "release",
+      candidateId: input.candidateId,
+      assetKind: input.assetKind,
+      target: input.target,
+      stage: "production",
+      boundary: DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[input.assetKind],
+      desiredGeneration: input.desiredGeneration,
+      releaseRef: structuredClone(input.releaseRef),
+      ...(input.previousRelease ? { previousRelease: structuredClone(input.previousRelease) } : {}),
+      scope: structuredClone(input.scope),
+      status: "waiting_for_activation",
+      requestedAt: timestamp,
+      pointerChangedAt: timestamp,
+      proofCount: 0,
+    };
+    await this.append({ type: "activation.requested", commandId: `${commandId}:requested`, occurredAt: timestamp, activation: { ...activation, pointerChangedAt: undefined } });
+    await this.append({ type: "activation.pointer_changed", commandId, occurredAt: timestamp, activation });
+    return structuredClone((await this.project()).activations.get(activation.activationId)!);
+  }
+
   async recordRequested(record: PromotionRecord, candidate: EvolutionCandidate, desiredGeneration: number, previousRelease?: VersionedEvolutionRef): Promise<EvolutionActivationRecord | undefined> {
     if (record.stage === "shadow") return undefined;
     const state = await this.project();

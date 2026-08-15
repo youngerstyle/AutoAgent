@@ -7,6 +7,7 @@ import { readJson, writeJson } from "../storage/json.js";
 import { globalEvolutionLayerRoot, workspaceEvolutionActiveReleaseFile, workspaceEvolutionReleaseFile } from "../storage/paths.js";
 import { ScopePromotionStore } from "./scope-promotion-store.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
+import { EvolutionActivationStore } from "./activation-store.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -88,6 +89,18 @@ export class SharedEvolutionReleaseRegistry {
       active: true, updatedAt: this.now().toISOString(),
     };
     if (!alreadyCurrent) await writeJson(pointerFile, pointer);
+    if (pointer.release) {
+      await new EvolutionActivationStore(layerRoot, this.now).recordSharedPointer({
+        promotionId: proposal.proposalId,
+        candidateId: manifest.candidateId,
+        assetKind: manifest.candidateKind,
+        target: manifest.target,
+        scope,
+        releaseRef: pointer.release,
+        desiredGeneration: pointer.generation,
+        ...(pointer.previousRelease ? { previousRelease: pointer.previousRelease } : {}),
+      });
+    }
     if (manifest.candidateKind === "memory") {
       await new MemoryLifecycleStore(scope.workspaceId, layerRoot, this.now).registerRelease(
         `shared-register:${proposal.proposalId}`, release, manifest.target, scope, pointer.updatedAt,
@@ -118,6 +131,9 @@ export class SharedEvolutionReleaseRegistry {
       promotionId: restoreManifest?.promotionId, active: Boolean(restore), updatedAt: this.now().toISOString(),
     };
     await writeJson(pointerFile, pointer);
+    const activations = new EvolutionActivationStore(layerRoot, this.now);
+    await activations.recordPromotionRollback(proposalId, `shared-rollback:${proposalId}:${pointer.generation}`);
+    if (restore) await activations.recordRestoration(proposalId, restore, pointer.generation, `shared-restore:${proposalId}:${pointer.generation}`);
     if (manifest.candidateKind === "memory") {
       const lifecycle = new MemoryLifecycleStore(manifest.scope.workspaceId, layerRoot, this.now);
       await lifecycle.transition(`shared-rollback:${proposalId}:${pointer.generation}`, manifest.release.id, "archived", "Shared scope release rolled back", approvedBy);

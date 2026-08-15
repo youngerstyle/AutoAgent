@@ -785,40 +785,46 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
         evolutionSnapshotHash: evolutionProjection.snapshotHash,
       },
     });
-    const activationStore = new EvolutionActivationStore(this.workspaceRoot, this.now);
-    const traceRef = { kind: "trace" as const, ref: inheritanceTraceId, workspaceId: input.agent.workspaceId, agentId: input.agent.id };
+    const activationStoreFor = (ownerLevel: typeof evolutionProjection.resolvedReleases[number]["ownerLevel"]) => {
+      if (ownerLevel === "agent" || ownerLevel === "company") {
+        const source = sharedReleaseSources.find((item) => item.ownerLevel === ownerLevel);
+        if (source) return new EvolutionActivationStore(source.layerRoot, this.now);
+      }
+      return new EvolutionActivationStore(this.workspaceRoot, this.now);
+    };
+    const traceRef = { kind: "trace" as const, ref: inheritanceTraceId, workspaceId: input.agent.workspaceId, agentId: input.agent.id, profileId: input.agent.profileId };
     await Promise.all([
-      ...evolvedSkills.map((skill) => activationStore.observe({
+      ...evolvedSkills.map((skill) => activationStoreFor(skill.ownerLevel).observe({
         assetKind: "skill", target: skill.name,
         releaseRef: { id: skill.releaseId, version: skill.releaseVersion, contentHash: skill.contentHash },
         desiredGeneration: skill.generation, actualGeneration: skill.generation,
         ownerLevel: skill.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
-      ...evolvedMemories.filter((memory) => !memory.sourceWorkspaceId).map((memory) => activationStore.observe({
+      ...evolvedMemories.filter((memory) => !memory.sourceWorkspaceId).map((memory) => activationStoreFor(memory.ownerLevel).observe({
         assetKind: "memory", target: memory.target,
         releaseRef: { id: memory.releaseId, version: memory.releaseVersion, contentHash: memory.contentHash },
         desiredGeneration: memory.generation, actualGeneration: memory.generation,
         ownerLevel: memory.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
-      ...evolutionProjection.plugins.map((plugin) => activationStore.observe({
+      ...evolutionProjection.plugins.map((plugin) => activationStoreFor(plugin.ownerLevel).observe({
         assetKind: "plugin", target: plugin.name,
         releaseRef: { id: plugin.releaseId, version: plugin.releaseVersion, contentHash: plugin.contentHash },
         desiredGeneration: plugin.generation, actualGeneration: plugin.generation,
         ownerLevel: plugin.ownerLevel, runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
-      ...evolutionProjection.harnesses.map((harness) => activationStore.observe({
+      ...evolutionProjection.harnesses.map((harness) => activationStoreFor(harness.ownerLevel).observe({
         assetKind: "harness", target: harness.name,
         releaseRef: { id: harness.releaseId, version: harness.releaseVersion, contentHash: harness.contentHash },
         desiredGeneration: harness.generation, actualGeneration: harness.generation,
         ownerLevel: harness.ownerLevel, runtimeKind: "session", runtimeRef: session.sessionId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
-      ...evolutionProjection.prompts.map((prompt) => activationStore.observe({
+      ...evolutionProjection.prompts.map((prompt) => activationStoreFor(prompt.ownerLevel).observe({
         assetKind: "prompt", target: prompt.target,
         releaseRef: { id: prompt.releaseId, version: prompt.releaseVersion, contentHash: prompt.contentHash },
         desiredGeneration: prompt.generation, actualGeneration: prompt.generation,
         ownerLevel: prompt.ownerLevel, runtimeKind: "turn", runtimeRef: inheritanceTurnId, runtimeSnapshotHash: evolutionProjection.snapshotHash, traceRef,
       })),
-      ...evolutionProjection.agentProfiles.map((item) => activationStore.observe({
+      ...evolutionProjection.agentProfiles.map((item) => activationStoreFor(item.ownerLevel).observe({
         assetKind: "agent_profile", target: item.target,
         releaseRef: { id: item.releaseId, version: item.releaseVersion, contentHash: item.contentHash },
         desiredGeneration: item.generation, actualGeneration: item.generation,
