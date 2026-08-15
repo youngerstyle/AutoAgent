@@ -378,6 +378,7 @@ Agent/Project/Company Evol 只有在以下条件全部成立后完成：
 2. `AgentProfile/profileId` 被确认为稳定个人身份，`WorkspaceAgent` 被确认为项目实例：同一 profileId 的所有实例共享 agent-level 成长；agent-project 成长只留在对应项目实例。
 3. Agent 能从开放式 Episode 归纳 Practice，而不是只能选择预设规则。
 4. Practice 与其 Runtime Binding 分离并分别版本化。
+   - Practice 晋升到 Agent 或 Company 后，共享层必须保存其不可变 Practice 快照及 Promotion provenance；不能只保存一个指回源项目的脆弱引用。
 5. agent-project、agent、project Release 都能在正确生命周期边界实际继承、测量和回滚。
 6. scope 扩大只能通过新的 Promotion Proposal，原 release 不被原地改写。
 7. 有实际效果的个人或项目 Release 只能通过 CompanyPromotionProposal 进入公司评审。

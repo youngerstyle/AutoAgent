@@ -73,8 +73,8 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 - [ ] 明确复用现有全局 `AgentProfile/profileId` 作为稳定个人 Agent 身份，不建立第二套 identity store。
 - [ ] 保持现有 `WorkspaceAgent.profileId` 引用，并迁移/校验历史实例映射。
 - [ ] 证明同一 `profileId` 的多个 Workspace instances 共享 agent-level release，但不共享各自的 agent-project release。
-- [ ] 建立 Company Practice/Release/Promotion ledger。
-- [ ] 建立 Agent long-term Practice/Release ledger。
+- [x] 建立 Company Practice/Release/Promotion ledger；共享层保存不可变 Practice 快照、Promotion provenance、Release、active pointer 与 activation ledger。
+- [x] 建立 Agent long-term Practice/Release ledger；同一 profile 的共享层不依赖源 Workspace 继续存在。
 - [ ] 保留 Workspace Episode 与项目 Release store。
 - [ ] 证明两个私有部署之间完全隔离，同一公司多个 Workspace 可被公司控制面发现。
 

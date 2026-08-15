@@ -158,6 +158,16 @@ export interface EvolutionPractice {
   updatedAt: string;
 }
 
+export interface SharedEvolutionPracticeRecord {
+  recordId: string;
+  companyId: string;
+  proposalId: string;
+  practice: EvolutionPractice;
+  promotedScope: EvolutionPracticeScope;
+  origin: { ownerLevel: Exclude<EvolutionOwnerLevel, "company">; workspaceId?: string; profileId?: string };
+  publishedAt: string;
+}
+
 export interface ExperienceEpisode {
   episodeId: string;
   workspaceId: string;

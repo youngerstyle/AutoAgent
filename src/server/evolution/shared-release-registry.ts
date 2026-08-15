@@ -8,6 +8,7 @@ import { globalEvolutionLayerRoot, workspaceEvolutionActiveReleaseFile, workspac
 import { ScopePromotionStore } from "./scope-promotion-store.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import { EvolutionActivationStore } from "./activation-store.js";
+import { SharedPracticeRegistry } from "./shared-practice-registry.js";
 
 interface ReleaseManifest {
   schemaVersion: 1;
@@ -59,6 +60,7 @@ export class SharedEvolutionReleaseRegistry {
       ...(proposal.targetScope.taskTypes ? { taskTypes: proposal.targetScope.taskTypes } : {}),
     };
     const layerRoot = globalEvolutionLayerRoot(this.homeDir, ownerLevel, ownerId);
+    await new SharedPracticeRegistry(this.companyId, layerRoot, this.now).publish(proposal, sourceWorkspaceRoot);
     const sourceArtifacts = safeEvolutionPath(sourceWorkspaceRoot, path.join("artifacts", source!.candidateHash));
     const destinationArtifacts = safeEvolutionPath(layerRoot, path.join("artifacts", source!.candidateHash));
     await mkdir(path.dirname(destinationArtifacts), { recursive: true });

@@ -19,6 +19,7 @@ const passingCompanyReview = () => ({
 });
 import { resolveSharedEvolutionLayerSources } from "../../src/server/runtime/runtime-host-registry.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
+import { SharedPracticeRegistry } from "../../src/server/evolution/shared-practice-registry.js";
 
 describe("shared Agent and Company evolution releases", () => {
   it("publishes an approved local release into the stable Agent layer idempotently", async () => {
@@ -49,6 +50,9 @@ describe("shared Agent and Company evolution releases", () => {
     expect(first.published).toBe(true);
     expect(replay.published).toBe(false);
     expect(replay.pointer).toEqual(first.pointer);
+    expect(await new SharedPracticeRegistry("company-a", first.layerRoot).list()).toEqual([
+      expect.objectContaining({ proposalId: proposal.proposalId, promotedScope: { ownerLevel: "agent", profileId: "profile-a" }, practice: expect.objectContaining({ practiceId: "practice-a", provenanceHash: "b".repeat(64) }) }),
+    ]);
     const sharedActivations = new EvolutionActivationStore(first.layerRoot, () => new Date("2026-08-15T06:02:00.000Z"));
     const sharedActivation = (await sharedActivations.list())[0]!;
     expect(sharedActivation).toMatchObject({ promotionId: proposal.proposalId, status: "waiting_for_activation", desiredGeneration: 1, scope: { ownerLevel: "agent", profileId: "profile-a" } });
@@ -139,6 +143,16 @@ async function writeOriginRelease(root: string, release: { id: string; version: 
     candidateKind: "memory", target: "practice.memory.briefing", artifactRef, evaluationId: "evaluation-a", scope,
     promotionId: "promotion-a", runtimeActive: true, validationPassed: true, validationChecks: [{ name: "memory_safety", passed: true, message: "safe" }],
   }), "utf8");
+  const practiceEvents = [["practice-a", "b".repeat(64)], ["practice-company", "d".repeat(64)]].map(([practiceId, provenanceHash]) => ({
+    eventId: `event-${practiceId}`, commandId: `fixture-${practiceId}`, practice: {
+      practiceId, version: 1, statement: "Brief the authoritative document", trigger: "Collaborative execution begins", procedure: "Brief, acknowledge, then execute",
+      expectedOutcome: [{ metric: "task_success_rate", direction: "increase", minimumDelta: 0.01 }], observedComponents: ["workflow"], applicability: scope,
+      contraindications: [], sourceDraftRefs: ["draft-a", "draft-b"], sourceEpisodeRefs: ["episode-a", "episode-b"],
+      sourceRefs: [{ kind: "evidence", ref: "evidence-a", workspaceId: scope.workspaceId }], provenanceHash, status: "candidate",
+      createdAt: "2026-08-15T05:00:00.000Z", updatedAt: "2026-08-15T05:00:00.000Z",
+    },
+  }));
+  await writeFile(path.join(evolution, "practices.jsonl"), `${practiceEvents.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
 }
 
 function profile(id: string): AgentProfile { return { id, name: id, role: "dev", capabilities: [], defaultProvider: "mock", defaultModel: "mock", defaultPolicy: {} }; }

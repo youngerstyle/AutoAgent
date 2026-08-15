@@ -2529,6 +2529,7 @@ function EvolutionHub(props: {
   const practiceBindings = props.overview?.practiceBindings ?? [];
   const pluginAuthoringJobs = props.overview?.pluginAuthoringJobs ?? [];
   const phaseJobs = props.overview?.phaseJobs ?? [];
+  const sharedPractices = props.overview?.sharedPractices ?? [];
   const scopePromotions = props.overview?.scopePromotions ?? [];
   const companyTrials = props.overview?.companyTrials ?? [];
   const companyTrialEvidence = props.overview?.companyTrialEvidence ?? [];
@@ -2585,6 +2586,12 @@ function EvolutionHub(props: {
                     {pluginAuthoringJobs.filter((job) => job.practiceId === practice.practiceId && job.practiceVersion === practice.version).map((job) => <small key={job.jobId}>Plugin authoring {job.status} · attempts {job.attempts}/{job.maxAttempts}{job.lastError ? ` · ${job.lastError}` : ""}</small>)}
                   </article>;
                 }) : <p className="evolution-empty">尚无经过 Dream consolidation 的 Practice。</p>}
+                {sharedPractices.slice().reverse().map((record) => <article key={record.recordId}>
+                  <div><strong>{record.practice.statement}</strong><small>共享 {record.promotedScope.ownerLevel} · v{record.practice.version}</small></div>
+                  <span className="evolution-status released">released</span>
+                  <p>{record.practice.procedure}</p>
+                  <code>{record.proposalId} · origin {record.origin.workspaceId ?? record.origin.profileId}</code>
+                </article>)}
               </div>
             </section>
 

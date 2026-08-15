@@ -32,6 +32,7 @@ import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import { listWorkspaceAgents } from "../agents/roster.js";
 import { EvolutionSignalStore } from "../evolution/evolution-signal-store.js";
 import { EvolutionPhaseJobStore } from "../evolution/phase-job-store.js";
+import { SharedPracticeRegistry } from "../evolution/shared-practice-registry.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -127,11 +128,15 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   }));
   router.get("/practices", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const sharedRoots = [globalEvolutionLayerRoot(workspaces.homePath(), "company", identity.companyId),
+      ...[...new Set((await listWorkspaceAgents(workspace)).map((agent) => agent.profileId))].map((profileId) => globalEvolutionLayerRoot(workspaces.homePath(), "agent", profileId))];
     res.json({
       drafts: await new PracticeDraftStore(workspace.id, workspace.rootPath).list(),
       practices: await new PracticeStore(workspace.id, workspace.rootPath).list(),
       bindings: await new PracticeBindingStore(workspace.rootPath).list(),
       pluginAuthoringJobs: await new PluginAuthoringJobStore(workspace.rootPath).list(),
+      sharedPractices: (await Promise.all(sharedRoots.map((root) => new SharedPracticeRegistry(identity.companyId, root).list()))).flat(),
     });
   }));
   router.get("/phase-jobs", asyncHandler(async (req, res) => {

@@ -45,6 +45,10 @@ export function globalEvolutionLayerRoot(home: string, ownerLevel: "agent" | "co
   return path.join(globalCompanyEvolutionDir(home), "layers", ownerLevel, ownerId);
 }
 
+export function sharedEvolutionPracticesFile(layerRoot: string): string {
+  return path.join(workspaceAutoAgentDir(layerRoot), "evolution", "shared-practices.jsonl");
+}
+
 export function workspaceAutoAgentDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, ".autoagent");
 }
