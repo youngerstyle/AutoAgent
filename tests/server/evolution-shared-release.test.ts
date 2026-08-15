@@ -45,6 +45,10 @@ describe("shared Agent and Company evolution releases", () => {
     expect(inherited.resolvedReleases).toEqual([expect.objectContaining({ assetKind: "memory", ownerLevel: "agent", target: "practice.memory.briefing" })]);
     const peer = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-b"), agent("workspace-b", "profile-b"), { assignmentKey: "turn-peer", sharedReleaseSources: [source] });
     expect(peer.memories).toEqual([]);
+    await expect(registry.rollback(proposal.proposalId, { type: "system", id: "worker" })).rejects.toMatchObject({ code: "EVOLUTION_APPROVAL_REQUIRED" });
+    expect(await registry.rollback(proposal.proposalId, { type: "human", id: "owner" })).toMatchObject({ active: false, generation: 2, previousRelease: first.manifest.release });
+    const afterRollback = await runtimeEvolutionProjection(otherWorkspace, "workspace-b", profile("profile-a"), agent("workspace-b", "profile-a"), { assignmentKey: "turn-after-rollback", sharedReleaseSources: [source] });
+    expect(afterRollback.memories).toEqual([]);
   });
 
   it("refuses unapproved promotion and a source release whose immutable hash does not match", async () => {

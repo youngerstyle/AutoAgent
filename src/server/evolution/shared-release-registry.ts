@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionArtifactKind, EvolutionScope, EvolutionScopePromotionProposal, VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionArtifactKind, EvolutionPrincipalRef, EvolutionScope, EvolutionScopePromotionProposal, VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
 import { HttpError } from "../errors.js";
 import { readJson, writeJson } from "../storage/json.js";
 import { globalEvolutionLayerRoot, workspaceEvolutionActiveReleaseFile, workspaceEvolutionReleaseFile } from "../storage/paths.js";
@@ -72,7 +72,7 @@ export class SharedEvolutionReleaseRegistry {
       artifactManifestHash = hash(canonical(scannerManifest));
       await writeJson(manifestFile, scannerManifest);
     }
-    const release: VersionedEvolutionRef = { id: `shared_${hash(`${proposal.proposalId}:${proposal.originReleaseRef.id}`).slice(0, 32)}`, version: proposal.originReleaseRef.version, contentHash: source!.candidateHash };
+    const release: VersionedEvolutionRef = { id: sharedReleaseId(proposal), version: proposal.originReleaseRef.version, contentHash: source!.candidateHash };
     const manifest: ReleaseManifest = {
       ...structuredClone(source!), release, stage: "production", scope, promotionId: proposal.proposalId,
       runtimeActive: true, ...(artifactManifestHash ? { artifactManifestHash } : {}),
@@ -95,6 +95,36 @@ export class SharedEvolutionReleaseRegistry {
     }
     return { layerRoot, manifest, pointer };
   }
+
+  async rollback(proposalId: string, approvedBy: EvolutionPrincipalRef): Promise<ActiveReleasePointer> {
+    if (approvedBy.type !== "human" || !approvedBy.id) throw new HttpError(403, "Shared evolution rollback requires human approval", "EVOLUTION_APPROVAL_REQUIRED");
+    const proposal = await this.proposals.get(proposalId);
+    const ownerLevel = proposal.targetScope.ownerLevel as "agent" | "company";
+    if (!(["agent", "company"] as const).includes(ownerLevel)) throw new HttpError(400, "Scope promotion has no shared release", "INVALID_SHARED_RELEASE_SCOPE");
+    const ownerId = ownerLevel === "agent" ? proposal.targetScope.profileId! : this.companyId;
+    const layerRoot = globalEvolutionLayerRoot(this.homeDir, ownerLevel, ownerId);
+    const releaseId = sharedReleaseId(proposal);
+    const manifest = await readJson<ReleaseManifest | undefined>(workspaceEvolutionReleaseFile(layerRoot, releaseId), undefined);
+    if (!manifest || manifest.scopePromotionProposalId !== proposalId) throw new HttpError(404, "Shared evolution release not found", "SHARED_RELEASE_NOT_FOUND");
+    const pointerFile = workspaceEvolutionActiveReleaseFile(layerRoot, "production", hash(canonical({ target: manifest.target, scope: manifest.scope })));
+    const current = await readJson<ActiveReleasePointer | undefined>(pointerFile, undefined);
+    if (!current) throw new HttpError(404, "Shared evolution active pointer not found", "SHARED_RELEASE_NOT_FOUND");
+    if (current.promotionId !== proposalId || current.release?.id !== releaseId) return current;
+    const restore = current.previousRelease;
+    const restoreManifest = restore ? await readJson<ReleaseManifest | undefined>(workspaceEvolutionReleaseFile(layerRoot, restore.id), undefined) : undefined;
+    if (restore && (!restoreManifest || restoreManifest.release.contentHash !== restore.contentHash || canonical(restoreManifest.scope) !== canonical(manifest.scope))) throw new Error("Shared evolution rollback lineage is invalid");
+    const pointer: ActiveReleasePointer = {
+      ...current, generation: current.generation + 1, release: restore, previousRelease: current.release,
+      promotionId: restoreManifest?.promotionId, active: Boolean(restore), updatedAt: this.now().toISOString(),
+    };
+    await writeJson(pointerFile, pointer);
+    if (manifest.candidateKind === "memory") {
+      const lifecycle = new MemoryLifecycleStore(manifest.scope.workspaceId, layerRoot, this.now);
+      await lifecycle.transition(`shared-rollback:${proposalId}:${pointer.generation}`, manifest.release.id, "archived", "Shared scope release rolled back", approvedBy);
+      if (restore) await lifecycle.transition(`shared-restore:${proposalId}:${pointer.generation}`, restore.id, "active", "Previous shared scope release restored", approvedBy);
+    }
+    return pointer;
+  }
 }
 
 function verifySource(source: ReleaseManifest | undefined, proposal: EvolutionScopePromotionProposal): asserts source is ReleaseManifest {
@@ -113,5 +143,6 @@ function safeEvolutionPath(root: string, relative: string): string {
   if (resolved !== evolutionRoot && !resolved.startsWith(`${evolutionRoot}${path.sep}`)) throw new Error("Shared release path escaped its evolution root");
   return resolved;
 }
+function sharedReleaseId(proposal: EvolutionScopePromotionProposal): string { return `shared_${hash(`${proposal.proposalId}:${proposal.originReleaseRef.id}`).slice(0, 32)}`; }
 function hash(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`; if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`; return JSON.stringify(value); }
