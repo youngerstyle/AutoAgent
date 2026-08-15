@@ -18,6 +18,7 @@ import { ensureProjectOwner, migrateAndValidateWorkspaceAgentProfiles } from "..
 import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
 import { PlatformEvolutionObservationAdapter } from "../evolution-adapters/platform-observation-adapter.js";
 import { EvolutionPlatformRuntimeAdapter } from "../evolution-adapters/platform-runtime-adapter.js";
+import { PlatformEvolutionSourceVerifier } from "../evolution-adapters/platform-source-verifier.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
 import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type RuntimeEvolutionConfig } from "../evolution/runtime-config-projection.js";
@@ -51,6 +52,7 @@ export class RuntimeHostRegistry {
     this.executionGate = new RuntimeExecutionGate(executionConcurrency);
     this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
       observationPort: (workspace) => new PlatformEvolutionObservationAdapter(workspace),
+      sourceVerificationPort: (workspace) => new PlatformEvolutionSourceVerifier(workspace.id, workspace.rootPath),
       evaluatorProgramPath: options.evolutionEvaluatorProgramPath,
       intervalMs: options.evolutionWorkerIntervalMs,
       pluginArtifactAuthor: new ProviderPluginArtifactAuthor(providers),

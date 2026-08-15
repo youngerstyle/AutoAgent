@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { ScopePromotionCandidateCompiler } from "../../src/server/evolution/scope-promotion-compiler.js";
 import { ScopePromotionStore } from "../../src/server/evolution/scope-promotion-store.js";
 
@@ -10,7 +11,7 @@ describe("project scope promotion compiler", () => {
   it("creates a new project Candidate without mutating or bypassing the origin Release", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-project-promotion-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-project-promotion-root-"));
-    const candidates = new EvolutionStore("workspace-a", root, () => new Date("2026-08-15T07:00:00.000Z"));
+    const candidates = platformEvolutionStore("workspace-a", root, () => new Date("2026-08-15T07:00:00.000Z"));
     const origin = await candidates.create({
       commandId: "origin-candidate", kind: "memory", target: "practice.memory.briefing", title: "Brief collaborators",
       rationale: "Two independent episodes support the local practice.", hypothesis: "Briefing collaborators improves task success without safety regression.",

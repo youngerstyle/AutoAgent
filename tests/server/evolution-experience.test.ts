@@ -6,6 +6,7 @@ import type { AuthoritativeEpisodeFacts } from "../../src/shared/contracts/evolu
 import { projectExperience } from "../../src/server/evolution/experience-projector.js";
 import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
 import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
 import { SkillConsolidator } from "../../src/server/evolution/skill-consolidator.js";
@@ -92,7 +93,7 @@ describe("evolution experience pipeline", () => {
     };
     await experience.record("episode-a", projectExperience(firstFacts, fixedNow));
     await experience.record("episode-b", projectExperience(secondFacts, fixedNow));
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const consolidator = new MemoryConsolidator("workspace-a", experience, candidates);
     const result = await consolidator.consolidate(2);
     expect(result).toMatchObject({ inspectedAttributions: 2, eligibleClusters: 1, conflictedClusters: 0 });
@@ -120,7 +121,7 @@ describe("evolution experience pipeline", () => {
     await experience.record("conflict-a", first);
     await experience.record("conflict-b", second);
     const result = await new MemoryConsolidator(
-      "workspace-a", experience, new EvolutionStore("workspace-a", root, fixedNow),
+      "workspace-a", experience, platformEvolutionStore("workspace-a", root, fixedNow),
     ).consolidate(2);
     expect(result).toMatchObject({ eligibleClusters: 0, conflictedClusters: 1, candidates: [] });
   });
@@ -140,7 +141,7 @@ describe("evolution experience pipeline", () => {
     second.goal = { ...second.goal, goalId: "goal-b" };
     await experience.record("prompt-a", projectExperience(first, fixedNow));
     await experience.record("prompt-b", projectExperience(second, fixedNow));
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     expect((await new MemoryConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates).toEqual([]);
     const result = await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2);
     expect(result.candidates).toEqual([expect.objectContaining({ kind: "prompt", riskLevel: "high", proposedBy: { type: "system", id: "prompt-consolidator/v1" }, mutationSet: expect.objectContaining({ activationBoundary: "next_turn" }) })]);
@@ -163,7 +164,7 @@ describe("evolution experience pipeline", () => {
     second.goal = { ...second.goal, goalId: "goal-b" };
     await experience.record("skill-a", projectExperience(first, fixedNow));
     await experience.record("skill-b", projectExperience(second, fixedNow));
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     expect((await new MemoryConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates).toEqual([]);
     const result = await new SkillConsolidator("workspace-a", experience, candidates).consolidate(2);
     expect(result.candidates).toEqual([expect.objectContaining({ kind: "skill", riskLevel: "medium", proposedBy: { type: "system", id: "skill-consolidator/v1" }, mutationSet: expect.objectContaining({ activationBoundary: "next_turn" }) })]);

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { PracticeBindingCompiler } from "../../src/server/evolution/practice-binding-compiler.js";
 import { PracticeBindingStore } from "../../src/server/evolution/practice-binding-store.js";
 import { PracticeStore } from "../../src/server/evolution/practice-store.js";
@@ -17,7 +18,7 @@ describe("Practice asset bindings", () => {
     const memoryPractice = await practices.createCandidate(practiceInput("memory-practice", ["memory"]));
     const workflowPractice = await practices.createCandidate(practiceInput("workflow-practice", ["workflow"]));
     const bindings = new PracticeBindingStore(root, now);
-    const candidates = new EvolutionStore("workspace-a", root, now);
+    const candidates = platformEvolutionStore("workspace-a", root, now);
     const compiler = new PracticeBindingCompiler("workspace-a", practices, bindings, candidates);
 
     const result = await compiler.compile();

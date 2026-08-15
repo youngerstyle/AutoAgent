@@ -7,6 +7,7 @@ import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 import { EvolutionCoordinator } from "../../src/server/evolution/evolution-coordinator.js";
 import { ExtractionJobStore } from "../../src/server/evolution/extraction-job-store.js";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { PlatformEvolutionSourceVerifier, platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { EvolutionEvalSuiteStore } from "../../src/server/evolution/eval-suite-store.js";
 import { EvaluationJobStore } from "../../src/server/evolution/evaluation-job-store.js";
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
@@ -22,7 +23,7 @@ describe("EvolutionCoordinator", () => {
     const workspaces = new WorkspaceStore(home);
     const workspace = await workspaces.create({ name: "Idle workspace", rootPath: root, policyProfile: "development" });
     const now = () => new Date("2026-08-14T03:00:00.000Z");
-    const candidates = new EvolutionStore(workspace.id, root, now);
+    const candidates = platformEvolutionStore(workspace.id, root, now);
     await new EvidenceLedger(root).append({
       evidenceId: "source-evidence", agentId: "proposer", threadId: "source-thread", goalId: "source-goal", turnId: "source-turn",
       toolCallId: "source-call", toolName: "fixture", kind: "tool", capture: { status: "recorded" },
@@ -62,6 +63,7 @@ describe("EvolutionCoordinator", () => {
     const evaluationJobs = new EvaluationJobStore(workspace.id, root, now);
     const program = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "evolution-eval-worker.mjs");
     const coordinator = new EvolutionCoordinator(workspaces, {
+      sourceVerificationPort: (item) => new PlatformEvolutionSourceVerifier(item.id, item.rootPath),
       evaluatorProgramPath: program, now, maintenanceIntervalMs: 10_000, workerId: "coordinator-test",
     });
 
@@ -103,7 +105,7 @@ describe("EvolutionCoordinator", () => {
     const ledger = new EvidenceLedger(root);
     await appendEvidence(ledger, "memory-source", root);
     await appendEvidence(ledger, "memory-eval-input", root);
-    const candidates = new EvolutionStore(workspace.id, root, now);
+    const candidates = platformEvolutionStore(workspace.id, root, now);
     const candidate = await candidates.create({
       commandId: "automatic-memory", kind: "memory", target: "experience.release.verification", title: "Verify release evidence",
       rationale: "Repeated releases omitted immutable evidence verification.", hypothesis: "The scoped lesson improves task success without safety regression.",
@@ -127,7 +129,10 @@ describe("EvolutionCoordinator", () => {
       },
     });
     const program = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "evolution-eval-worker.mjs");
-    const coordinator = new EvolutionCoordinator(workspaces, { evaluatorProgramPath: program, now, maintenanceIntervalMs: 10_000, workerId: "memory-test" });
+    const coordinator = new EvolutionCoordinator(workspaces, {
+      evaluatorProgramPath: program, now, maintenanceIntervalMs: 10_000, workerId: "memory-test",
+      sourceVerificationPort: (item) => new PlatformEvolutionSourceVerifier(item.id, item.rootPath),
+    });
     await coordinator.runOnce();
     const evaluations = new EvolutionEvaluationStore(workspace.id, root, candidates, now);
     const canary = (await evaluations.listPromotions()).find((item) => item.stage === "canary")!;

@@ -6,8 +6,8 @@
 
 - 严重度：最高
 - 当前状态：迁移中
-- 已偿还：Experience/Memory 输入改为 `EvolutionObservationPort`；Agent Loop 改为 `AgentEvolutionRuntimePort`；Mission Runtime 改为 `EvolutionPlatformPort`；平台知识集中到 `evolution-adapters`。
-- 剩余：Candidate source verification、Signal ingestion、Canary/Company Trial telemetry 仍直接读取 Agent、Ticket、Mission 或 Trace Store。
+- 已偿还：Experience/Memory 输入改为 `EvolutionObservationPort`；Candidate 验证改为 `EvolutionSourceVerificationPort`；Agent Loop 改为 `AgentEvolutionRuntimePort`；Mission Runtime 改为 `EvolutionPlatformPort`；平台知识集中到 `evolution-adapters`。
+- 剩余：Signal ingestion、Canary/Company Trial telemetry 仍直接读取 Agent 或 Trace Store。
 - 风险：Evol 尚不能作为完全独立 package 或进程替换。
 - 偿还路径：按 `2026-08-15-evolution-framework-boundary-v1.md` 引入剩余五类端口，并以“evolution 目录无三大框架 import”的架构测试作为退出门槛。
 

@@ -6,12 +6,13 @@ import type { EvaluationCaseResult, RecordEvaluationInput } from "../../src/shar
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
 import { EvolutionEvaluationStore } from "../../src/server/evolution/evaluation-store.js";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { workspaceEvolutionPluginBundleDirectory } from "../../src/server/storage/paths.js";
 
 describe("Plugin/Harness evolution supply chain", () => {
   it("validates and immutably materializes a namespaced executable Plugin bundle", async () => {
     const root = await workspace();
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await candidates.create(candidateInput(validBundle()));
     const validated = await candidates.validate({ commandId: "validate-plugin", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
 
@@ -23,7 +24,7 @@ describe("Plugin/Harness evolution supply chain", () => {
 
   it("blocks network/process code, unsafe paths, and non-critical extensions", async () => {
     const root = await workspace();
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     await expect(candidates.create({ ...candidateInput(validBundle()), commandId: "wrong-risk", riskLevel: "high" }))
       .rejects.toThrow("critical risk");
     const unsafe = JSON.stringify({
@@ -39,7 +40,7 @@ describe("Plugin/Harness evolution supply chain", () => {
 
   it("accepts a bounded Python entrypoint and rejects non-allowlisted Python imports", async () => {
     const root = await workspace();
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const pythonBundle = JSON.stringify({
       ...JSON.parse(validBundle()),
       manifest: { ...JSON.parse(validBundle()).manifest, entrypoint: "index.py" },
@@ -62,7 +63,7 @@ describe("Plugin/Harness evolution supply chain", () => {
     const previousSandbox = process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     delete process.env.AUTOAGENT_EVOLUTION_PLUGIN_SANDBOX_PROGRAM;
     const root = await workspace();
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await candidates.create(candidateInput(validBundle()));
     const validated = await candidates.validate({ commandId: "validate-plugin", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
     const suiteRef = { id: "plugin-suite", version: "1", contentHash: "suite-hash" };

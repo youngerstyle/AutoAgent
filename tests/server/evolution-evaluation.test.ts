@@ -27,6 +27,7 @@ import { CanaryTelemetryReconciler } from "../../src/server/evolution/canary-tel
 import { ensureWorkspaceAgent } from "../../src/server/agents/roster.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { PromptConsolidator } from "../../src/server/evolution/prompt-consolidator.js";
 import { MemoryConsolidator } from "../../src/server/evolution/memory-consolidator.js";
 import { SkillConsolidator } from "../../src/server/evolution/skill-consolidator.js";
@@ -258,7 +259,7 @@ describe("evolution evaluation and promotion gate", () => {
         sourceRefs: [{ kind: "human_feedback", ref: "prompt-human-feedback", workspaceId: "workspace-a" }], failures: [failure],
       }, fixedNow));
     }
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = (await new PromptConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!;
     expect(proposed).toMatchObject({ kind: "prompt", proposedBy: { type: "system", id: "prompt-consolidator/v1" } });
     const validated = await candidates.validate({ commandId: "validate-prompt-loop", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
@@ -319,7 +320,7 @@ describe("evolution evaluation and promotion gate", () => {
         sourceRefs: failure.sourceRefs, failures: [failure],
       }, fixedNow));
     }
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const candidate = (await new SkillConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!;
     expect(candidate).toMatchObject({ kind: "skill", proposedBy: { type: "system", id: "skill-consolidator/v1" } });
     const lifecycle = await promoteLocalAssetToProduction(root, candidates, candidate, "skill-loop");
@@ -357,7 +358,7 @@ describe("evolution evaluation and promotion gate", () => {
     const episodeIds = [...new Set(attributions.map((item) => item.episodeId))].sort();
     const clusterHash = createHash("sha256").update(JSON.stringify({ component: "memory", cause: failure.cause.toLowerCase(), episodeIds })).digest("hex");
     const target = `experience.memory.${clusterHash.slice(0, 12)}`;
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const baseline = await candidates.create({
       commandId: "memory-baseline", kind: "memory", target, title: "Previous scoped retry lesson",
       rationale: "Keep the last known-good scoped lesson available for rollback.", hypothesis: "The scoped lesson prevents repeated diagnosis.",
@@ -516,7 +517,7 @@ async function setup() {
     observation: { status: "observed", result: { sample: index } }, workspaceRoot: root,
     createdAt: `2026-08-14T00:0${index}:00.000Z`, input: { sample: index },
   });
-  const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+  const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
   const proposed = await candidates.create({
     commandId: "candidate-a",
     kind: "skill",

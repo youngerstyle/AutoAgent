@@ -13,6 +13,7 @@ import { ExperienceStore } from "./experience-store.js";
 import { EvolutionAssetSelector } from "./asset-selector.js";
 import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort } from "./observation-port.js";
+import { REJECTING_EVOLUTION_SOURCE_VERIFIER, type EvolutionSourceVerificationPort } from "./source-verification-port.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
 import { CompanyTrialReconciler } from "./company-trial-reconciler.js";
@@ -60,6 +61,7 @@ export class EvolutionCoordinator {
       workerId?: string;
       pluginArtifactAuthor?: PluginArtifactAuthor;
       observationPort?: (workspace: Awaited<ReturnType<WorkspaceStore["get"]>>) => EvolutionObservationPort;
+      sourceVerificationPort?: (workspace: Awaited<ReturnType<WorkspaceStore["get"]>>) => EvolutionSourceVerificationPort;
     } = {},
   ) {
     this.workerId = options.workerId ?? `evolution-coordinator:${os.hostname()}:${process.pid}`;
@@ -220,9 +222,9 @@ export class EvolutionCoordinator {
       workspace.id,
       new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
       new PracticeBindingStore(workspace.rootPath, () => this.now()),
-      new EvolutionStore(workspace.id, workspace.rootPath, () => this.now()),
+      this.candidateStore(workspace),
     ).compile();
-    if (this.options.pluginArtifactAuthor) await new PluginAuthoringWorker(workspace.id, workspace.rootPath, this.options.pluginArtifactAuthor, () => this.now()).run();
+    if (this.options.pluginArtifactAuthor) await new PluginAuthoringWorker(workspace.id, workspace.rootPath, this.options.pluginArtifactAuthor, () => this.now(), this.candidateStore(workspace)).run();
     return result.bindingsProposed;
   }
 
@@ -233,7 +235,7 @@ export class EvolutionCoordinator {
 
   private async runProjectScopePromotions(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
     const { proposals } = await this.promotionContext();
-    return (await new ScopePromotionCandidateCompiler(workspace.id, workspace.rootPath, proposals, new EvolutionStore(workspace.id, workspace.rootPath, () => this.now())).compileApprovedProjectPromotions()).candidatesCreated.length;
+    return (await new ScopePromotionCandidateCompiler(workspace.id, workspace.rootPath, proposals, this.candidateStore(workspace)).compileApprovedProjectPromotions()).candidatesCreated.length;
   }
 
   private async runSharedScopePromotions(): Promise<number> {
@@ -259,7 +261,7 @@ export class EvolutionCoordinator {
     await new ExtractionRunner(workspace, this.options.observationPort?.(workspace) ?? EMPTY_EVOLUTION_OBSERVATION_PORT, jobs).runNext(`${this.workerId}:extraction`);
     await new EvolutionSignalIngestor(workspace.id, workspace.rootPath, undefined, undefined, undefined, () => this.now(), workspace).ingest();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
+    const candidates = this.candidateStore(workspace);
     const selectionEvaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
     const selectionTelemetry = new EvolutionTelemetryStore(workspace.id, workspace.rootPath, candidates, selectionEvaluations, () => this.now());
     await new EvolutionAssetSelector(workspace.id, workspace.rootPath, experience, candidates, selectionTelemetry, () => this.now()).select(3);
@@ -272,7 +274,7 @@ export class EvolutionCoordinator {
   private async runEvaluations(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
     const programPath = this.options.evaluatorProgramPath;
     if (!programPath) return 0;
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
+    const candidates = this.candidateStore(workspace);
     const evaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
     const suites = new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath, () => this.now());
     const jobs = new EvaluationJobStore(workspace.id, workspace.rootPath, () => this.now());
@@ -295,7 +297,7 @@ export class EvolutionCoordinator {
   }
 
   private async runPromotions(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
+    const candidates = this.candidateStore(workspace);
     return this.advanceAutomatedPromotions(
       workspace,
       candidates,
@@ -392,6 +394,13 @@ export class EvolutionCoordinator {
   private recordUnhandled(error: unknown): void {
     this.statusValue = { ...this.statusValue, running: false, lastError: safeMessage(error).slice(0, 2_000) };
     console.error("Evolution coordinator pass failed", error);
+  }
+
+  private candidateStore(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): EvolutionStore {
+    return new EvolutionStore(
+      workspace.id, workspace.rootPath, () => this.now(), {},
+      this.options.sourceVerificationPort?.(workspace) ?? REJECTING_EVOLUTION_SOURCE_VERIFIER,
+    );
   }
 
   private now(): Date { return (this.options.now ?? (() => new Date()))(); }

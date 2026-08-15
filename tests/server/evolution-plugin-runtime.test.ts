@@ -16,6 +16,7 @@ import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
 import { pluginToolName } from "../../src/server/evolution/plugin-host.js";
 import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { productionEvolutionExtensions } from "../../src/server/evolution/runtime-projection.js";
 import { EvolutionActivationStore } from "../../src/server/evolution/activation-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
@@ -28,7 +29,7 @@ describe("Plugin Evolution in a real Pi session", () => {
     await mkdir(path.join(root, "docs"), { recursive: true });
     await writeFile(path.join(root, "docs", "release.md"), "verified release evidence", "utf8");
     await appendEvidence(root);
-    const candidates = new EvolutionStore("workspace-a", root, fixedNow);
+    const candidates = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await candidates.create({
       commandId: "plugin-runtime-candidate", kind: "plugin", target: "release_review", title: "Release review plugin",
       rationale: "Repeated release reviews need deterministic evidence extraction.",

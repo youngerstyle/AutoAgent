@@ -22,10 +22,16 @@ export class ProviderPluginArtifactAuthor implements PluginArtifactAuthor {
 
 /** Authors code only as an immutable critical-risk Candidate; it never activates or executes the generated Plugin. */
 export class PluginAuthoringWorker {
-  constructor(private readonly workspaceId: string, private readonly workspaceRoot: string, private readonly author: PluginArtifactAuthor, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly workspaceId: string,
+    private readonly workspaceRoot: string,
+    private readonly author: PluginArtifactAuthor,
+    private readonly now: () => Date = () => new Date(),
+    private readonly candidates = new EvolutionStore(workspaceId, workspaceRoot, now),
+  ) {}
   async run(): Promise<{ jobsInspected: number; candidatesCreated: number }> {
     const bindings = new PracticeBindingStore(this.workspaceRoot, this.now); const practices = new PracticeStore(this.workspaceId, this.workspaceRoot, this.now);
-    const candidates = new EvolutionStore(this.workspaceId, this.workspaceRoot, this.now); const jobs = new PluginAuthoringJobStore(this.workspaceRoot, this.now);
+    const candidates = this.candidates; const jobs = new PluginAuthoringJobStore(this.workspaceRoot, this.now);
     const pending = (await bindings.list()).filter((item) => item.kind === "plugin" && item.status === "proposed");
     for (const binding of pending) await jobs.enqueue(`plugin-authoring:${binding.bindingId}`, binding.bindingId, binding.practiceRef.id, Number(binding.practiceRef.version));
     if (!await this.author.available()) return { jobsInspected: pending.length, candidatesCreated: 0 };

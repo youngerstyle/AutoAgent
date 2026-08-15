@@ -14,6 +14,7 @@ import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { resolveOrganizationMemoryConflicts, runtimeEvolutionProjection } from "../../src/server/evolution/runtime-projection.js";
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
 import { EvolutionAgentRuntimeAdapter } from "../../src/server/evolution-adapters/agent-runtime-adapter.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { resolveOrganizationMemorySources } from "../../src/server/runtime/runtime-host-registry.js";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 import { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
@@ -39,7 +40,7 @@ describe("organization Memory governance", () => {
     const now = () => new Date("2026-08-14T06:00:00.000Z");
     const ledger = new EvidenceLedger(sourceRoot);
     await appendEvidence(ledger, "org-source-evidence", source.id, sourceRoot);
-    const candidates = new EvolutionStore(source.id, sourceRoot, now, {
+    const candidates = platformEvolutionStore(source.id, sourceRoot, now, {
       organizationId: "org-a", organizationWorkspaceIds: [source.id, target.id],
     });
     const proposed = await candidates.create({

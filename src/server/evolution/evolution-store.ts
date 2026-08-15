@@ -26,13 +26,9 @@ import { writeJson } from "../storage/json.js";
 import { workspaceEvolutionArtifactFile, workspaceEvolutionArtifactManifestFile, workspaceEvolutionLedgerFile, workspaceEvolutionSkillEntrypointFile } from "../storage/paths.js";
 import { scanSkillArtifact } from "./skill-scanner.js";
 import { materializePluginBundle, parseAndScanPluginBundle, type ParsedPluginBundle } from "./plugin-scanner.js";
-import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
-import { AgentTraceStore } from "../agent-engine/trace-store.js";
-import { AgentStore } from "../agent-engine/agent-store.js";
-import { MissionStore } from "../mission-process/mission-store.js";
-import { TicketStore } from "../tickets/ticket-store.js";
 import { EvolutionReleaseRegistry } from "./release-registry.js";
 import { PracticeStore } from "./practice-store.js";
+import { REJECTING_EVOLUTION_SOURCE_VERIFIER, type EvolutionSourceVerificationPort } from "./source-verification-port.js";
 
 const ledgerQueues = new Map<string, Promise<void>>();
 
@@ -47,6 +43,7 @@ export class EvolutionStore {
     private readonly workspaceRoot: string,
     private readonly now: () => Date = () => new Date(),
     private readonly scopeAuthority: EvolutionScopeAuthority = {},
+    private readonly sourceVerifier: EvolutionSourceVerificationPort = REJECTING_EVOLUTION_SOURCE_VERIFIER,
   ) {}
 
   async list(): Promise<EvolutionCandidate[]> {
@@ -287,25 +284,7 @@ export class EvolutionStore {
   }
 
   private async verifySourceRef(ref: EvolutionSourceRef): Promise<boolean> {
-    if (ref.workspaceId !== this.workspaceId) return false;
-    if (ref.kind === "evidence" || ref.kind === "human_feedback") return Boolean(await new EvidenceLedger(this.workspaceRoot).get(ref.ref));
-    if (ref.kind === "trace") {
-      return Boolean(ref.agentId && (await new AgentTraceStore(this.workspaceRoot, ref.agentId).list()).some((trace) => trace.traceId === ref.ref));
-    }
-    if (ref.kind === "goal_proposal" || ref.kind === "goal_decision") {
-      if (!ref.agentId) return false;
-      const aggregate = await new AgentStore(this.workspaceRoot, ref.agentId).read();
-      return ref.kind === "goal_proposal"
-        ? aggregate.proposals.some((proposal) => proposal.proposalId === ref.ref)
-        : aggregate.decisions.some((decision) => decision.decisionId === ref.ref);
-    }
-    if (ref.kind === "mission") return Boolean(await new MissionStore(this.workspaceRoot, ref.ref).read());
-    if (ref.kind === "ticket") {
-      if (!ref.taskId || !ref.taskRunId) return false;
-      const tickets = new TicketStore(this.workspaceRoot, ref.taskId, ref.taskRunId);
-      for (const planId of await tickets.listPlanIds()) if ((await tickets.read(planId))?.tickets.some((ticket) => ticket.ticketId === ref.ref)) return true;
-    }
-    return false;
+    return this.sourceVerifier.verify(ref);
   }
 }
 

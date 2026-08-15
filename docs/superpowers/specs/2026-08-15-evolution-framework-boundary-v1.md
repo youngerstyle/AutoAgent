@@ -35,6 +35,7 @@ AgentEvolutionRuntimePort / EvolutionPlatformPort
 ## 3. 已落地边界
 
 - `EvolutionObservationPort`：Evol 接收 Episode facts 与 Memory usage observations；
+- `EvolutionSourceVerificationPort`：Candidate 只询问外部事实是否存在，不读取事实所有者的 Store；
 - `PlatformEvolutionObservationAdapter`：唯一负责组合 Ticket、Mission、Agent 与 Evidence 事实；
 - `AgentEvolutionRuntimePort`：Agent Loop 获取快照、扩展工具并记录继承；
 - `EvolutionPlatformPort`：Mission Runtime 获取 Workflow 与 Agent Profile；
@@ -46,7 +47,6 @@ AgentEvolutionRuntimePort / EvolutionPlatformPort
 
 以下依赖仍在 Evol 目录内，不能据此宣称整个第四框架已经完全物理解耦：
 
-- Candidate sourceRef 验证仍直接解析 Agent/Ticket/Mission 具体存储；
 - Canary 与 Company Trial reconciler 仍直接读取 Agent trace；
 - Signal ingestor 仍直接读取 Agent aggregate；
 - 多个评测组件仍从历史路径读取 Evidence Ledger；

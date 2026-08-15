@@ -13,6 +13,7 @@ import { EvolutionTelemetryStore } from "../evolution/telemetry-store.js";
 import { MemoryLifecycleStore } from "../evolution/memory-lifecycle-store.js";
 import { MemoryUsageReconciler } from "../evolution/memory-usage-reconciler.js";
 import { PlatformEvolutionObservationAdapter } from "../evolution-adapters/platform-observation-adapter.js";
+import { PlatformEvolutionSourceVerifier } from "../evolution-adapters/platform-source-verifier.js";
 import { asyncHandler, HttpError } from "../errors.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
@@ -46,7 +47,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath, undefined, {
       organizationId: workspace.organization?.id,
       organizationWorkspaceIds,
-    });
+    }, new PlatformEvolutionSourceVerifier(workspace.id, workspace.rootPath));
     return { candidates, evaluations: new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates), suites: new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath) };
   };
 

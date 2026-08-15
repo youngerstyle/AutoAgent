@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import { scanSkillArtifact } from "../../src/server/evolution/skill-scanner.js";
 import { EvidenceLedger } from "../../src/server/agent-engine/evidence-ledger.js";
 
@@ -19,7 +20,7 @@ describe("evolution static Skill scanner", () => {
   it("persists a versioned manifest and rejects a candidate when the scan blocks", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-skill-scan-"));
     await appendEvidence(root);
-    const store = new EvolutionStore("workspace-a", root, fixedNow);
+    const store = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await store.create({
       commandId: "unsafe-candidate", kind: "skill", target: "unsafe-skill", title: "Unsafe fixture",
       rationale: "A deliberately unsafe artifact verifies that the static scanner fails closed.",
@@ -39,7 +40,7 @@ describe("evolution static Skill scanner", () => {
   it("allows declared executable capabilities only with a high risk classification", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-skill-declared-"));
     await appendEvidence(root);
-    const store = new EvolutionStore("workspace-a", root, fixedNow);
+    const store = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await store.create({
       commandId: "declared-candidate", kind: "skill", target: "declared-shell", title: "Declared shell fixture",
       rationale: "The candidate explicitly declares the shell capability required by its bounded implementation.",
@@ -55,7 +56,7 @@ describe("evolution static Skill scanner", () => {
 
   it("rejects syntactically valid but nonexistent source references", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-skill-missing-source-"));
-    const store = new EvolutionStore("workspace-a", root, fixedNow);
+    const store = platformEvolutionStore("workspace-a", root, fixedNow);
     const proposed = await store.create({
       commandId: "missing-source", kind: "skill", target: "missing-source", title: "Missing source",
       rationale: "This candidate verifies source provenance validation.", hypothesis: "A nonexistent source must prevent evaluation readiness.",

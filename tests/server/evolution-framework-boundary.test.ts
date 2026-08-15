@@ -20,6 +20,7 @@ describe("Evol framework boundaries", () => {
     for (const relative of [
       "src/server/evolution/experience-reconciler.ts",
       "src/server/evolution/memory-usage-reconciler.ts",
+      "src/server/evolution/evolution-store.ts",
     ]) {
       const source = await readFile(path.resolve(relative), "utf8");
       expect(source).not.toMatch(/agent-engine|mission-process|tickets\/|runtime-host-store|agents\/roster/);
