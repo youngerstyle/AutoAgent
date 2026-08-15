@@ -42,6 +42,15 @@ export class ExperienceStore {
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.episodeId.localeCompare(right.episodeId));
   }
 
+  async readEpisodePage(afterEpisodeId?: string, limit = 100): Promise<{ episodes: ExperienceEpisode[]; nextCursor?: string }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new HttpError(400, "Experience page limit is invalid", "INVALID_EXPERIENCE_PAGE");
+    const stored = await readJsonLines<StoredEpisode>(workspaceEvolutionEpisodesFile(this.workspaceRoot));
+    const start = afterEpisodeId ? stored.findIndex((item) => item.episode.episodeId === afterEpisodeId) + 1 : 0;
+    const safeStart = afterEpisodeId && start === 0 ? 0 : start;
+    const episodes = stored.slice(safeStart, safeStart + limit).map((item) => structuredClone(item.episode));
+    return { episodes, ...(episodes.length ? { nextCursor: episodes.at(-1)!.episodeId } : {}) };
+  }
+
   async listAttributions(): Promise<ExperienceAttribution[]> {
     return (await readJsonLines<ExperienceAttribution>(workspaceEvolutionAttributionsFile(this.workspaceRoot)))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.attributionId.localeCompare(right.attributionId));

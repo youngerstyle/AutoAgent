@@ -61,6 +61,32 @@ export interface EvolutionPrincipalRef {
 
 export type ExperienceOutcome = "succeeded" | "returned" | "failed" | "blocked" | "cancelled";
 
+export type EvolutionSignalTrigger = "terminal_outcome" | "user_correction" | "recovered_failure" | "novel_success"
+  | "practice_feedback" | "context_compaction" | "effect_observation" | "manual";
+export type EvolutionSignalStatus = "pending" | "running" | "retry_wait" | "succeeded" | "dead_letter";
+
+export interface EvolutionSignal {
+  signalId: string;
+  commandId: string;
+  workspaceId: string;
+  profileId?: string;
+  episodeId?: string;
+  trigger: EvolutionSignalTrigger;
+  priority: 0 | 1 | 2 | 3 | 4;
+  sourceRefs: EvolutionSourceRef[];
+  salience: number;
+  novelty: number;
+  status: EvolutionSignalStatus;
+  attempts: number;
+  maxAttempts: number;
+  occurredAt: string;
+  createdAt: string;
+  updatedAt: string;
+  nextAttemptAt?: string;
+  lease?: { token: string; workerId: string; heartbeatAt: string; expiresAt: string };
+  lastError?: { category: "transient" | "terminal"; message: string };
+}
+
 export interface ExperienceEpisode {
   episodeId: string;
   workspaceId: string;

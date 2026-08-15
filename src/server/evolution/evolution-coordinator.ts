@@ -18,6 +18,7 @@ import { MemoryLifecycleStore } from "./memory-lifecycle-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { CanaryTelemetryReconciler } from "./canary-telemetry-reconciler.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
+import { EvolutionSignalIngestor } from "./evolution-signal-ingestor.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 
 export class EvolutionCoordinator {
@@ -113,6 +114,7 @@ export class EvolutionCoordinator {
     const jobs = new ExtractionJobStore(workspace.id, workspace.rootPath, () => this.now());
     await jobs.enqueue(`evolution-coordinator:${workspace.id}:maintenance:${bucket}`);
     await new ExtractionRunner(workspace, jobs).runNext(`${this.workerId}:extraction`);
+    await new EvolutionSignalIngestor(workspace.id, workspace.rootPath).ingest();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
     await new MemoryConsolidator(workspace.id, experience, candidates).consolidate(2);

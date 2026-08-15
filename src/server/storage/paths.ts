@@ -53,6 +53,18 @@ export function workspaceEvolutionAttributionsFile(workspaceRoot: string): strin
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "attributions.jsonl");
 }
 
+export function workspaceEvolutionSignalsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "signals.jsonl");
+}
+
+export function workspaceEvolutionSignalCursorFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "signal-cursor.json");
+}
+
+export function workspaceEvolutionSignalLeaseFile(workspaceRoot: string, signalId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "leases", "signals", `${signalId}.json`);
+}
+
 export function workspaceEvolutionAssetSelectionsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "asset-selections.jsonl");
 }
