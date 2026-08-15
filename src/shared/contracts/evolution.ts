@@ -560,6 +560,7 @@ export interface EvolutionWorkerStatus {
   dreamPracticesProduced: number;
   practiceBindingsCreated: number;
   evaluationJobsProcessed: number;
+  promotionTransitionsProcessed: number;
 }
 
 export interface RecordEvaluationInput {

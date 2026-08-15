@@ -14,7 +14,7 @@ describe("health", () => {
       ready: false,
       name: "AutoAgent",
       runtimeHosts: { status: "not_started" },
-      evolution: { running: false, evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, evaluationJobsProcessed: 0 },
+      evolution: { running: false, evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, evaluationJobsProcessed: 0, promotionTransitionsProcessed: 0 },
     });
   });
 

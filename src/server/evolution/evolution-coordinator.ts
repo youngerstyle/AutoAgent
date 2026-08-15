@@ -53,6 +53,7 @@ export class EvolutionCoordinator {
       dreamPracticesProduced: 0,
       practiceBindingsCreated: 0,
       evaluationJobsProcessed: 0,
+      promotionTransitionsProcessed: 0,
     };
   }
 
@@ -92,6 +93,7 @@ export class EvolutionCoordinator {
     let dreamPracticesProduced = 0;
     let practiceBindingsCreated = 0;
     let evaluationJobsProcessed = 0;
+    let promotionTransitionsProcessed = 0;
     const errors: string[] = [];
     for (const workspace of await this.workspaces.list()) {
       workspacesScanned += 1;
@@ -120,6 +122,11 @@ export class EvolutionCoordinator {
       } catch (error) {
         errors.push(`${workspace.id}/evaluation: ${safeMessage(error)}`);
       }
+      try {
+        promotionTransitionsProcessed += await this.runPromotions(workspace);
+      } catch (error) {
+        errors.push(`${workspace.id}/promotion: ${safeMessage(error)}`);
+      }
     }
     this.statusValue = {
       running: false,
@@ -132,6 +139,7 @@ export class EvolutionCoordinator {
       dreamPracticesProduced,
       practiceBindingsCreated,
       evaluationJobsProcessed,
+      promotionTransitionsProcessed,
     };
   }
 
@@ -203,8 +211,17 @@ export class EvolutionCoordinator {
       if (!job) break;
       processed += 1;
     }
-    await this.advanceAutomatedPromotions(workspace, candidates, evaluations, suites);
     return processed;
+  }
+
+  private async runPromotions(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const candidates = new EvolutionStore(workspace.id, workspace.rootPath, () => this.now());
+    return this.advanceAutomatedPromotions(
+      workspace,
+      candidates,
+      new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now()),
+      new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath, () => this.now()),
+    );
   }
 
   private async prepareAutomatedEvaluations(
@@ -249,26 +266,33 @@ export class EvolutionCoordinator {
     candidates: EvolutionStore,
     evaluations: EvolutionEvaluationStore,
     suites: EvolutionEvalSuiteStore,
-  ): Promise<void> {
+  ): Promise<number> {
+    let transitions = 0;
     for (const evaluation of (await evaluations.listEvaluations()).filter((item) => item.decision === "pass")) {
       const suite = await suites.get(evaluation.suiteRef);
       if (!suite.automation) continue;
       const candidate = await candidates.get(evaluation.candidateId);
       let promotions = await evaluations.listPromotions();
       let shadow = promotions.find((item) => item.status === "active" && item.stage === "shadow" && item.candidateId === candidate.candidateId && item.toRelease.contentHash === candidate.contentHash);
-      shadow ??= await evaluations.promote({
-        commandId: `automatic-shadow:${evaluation.evaluationId}`,
-        candidateId: candidate.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: candidate.contentHash,
-        stage: "shadow", approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: suite.automation.policyRef,
-      });
+      if (!shadow) {
+        shadow = await evaluations.promote({
+          commandId: `automatic-shadow:${evaluation.evaluationId}`,
+          candidateId: candidate.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: candidate.contentHash,
+          stage: "shadow", approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: suite.automation.policyRef,
+        });
+        transitions += 1;
+      }
       if (!(candidate.kind === "memory" && candidate.riskLevel === "low" && suite.automation.autoPromoteLowRiskMemory)) continue;
       promotions = await evaluations.listPromotions();
       let canary = promotions.find((item) => item.status === "active" && item.stage === "canary" && item.candidateId === candidate.candidateId && item.toRelease.contentHash === candidate.contentHash);
-      canary ??= await evaluations.promote({
-        commandId: `automatic-canary:${evaluation.evaluationId}`,
-        candidateId: candidate.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: candidate.contentHash,
-        stage: "canary", fromPromotionId: shadow.promotionId, approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: suite.automation.policyRef,
-      });
+      if (!canary) {
+        canary = await evaluations.promote({
+          commandId: `automatic-canary:${evaluation.evaluationId}`,
+          candidateId: candidate.candidateId, evaluationId: evaluation.evaluationId, expectedContentHash: candidate.contentHash,
+          stage: "canary", fromPromotionId: shadow.promotionId, approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: suite.automation.policyRef,
+        });
+        transitions += 1;
+      }
       const telemetry = (await new EvolutionTelemetryStore(workspace.id, workspace.rootPath, candidates, evaluations, () => this.now()).list(candidate.candidateId))
         .find((item) => item.decision === "pass" && item.releaseRef.id === canary.toRelease.id && item.candidateHash === candidate.contentHash);
       if (!telemetry) continue;
@@ -280,7 +304,9 @@ export class EvolutionCoordinator {
         stage: "production", fromPromotionId: canary.promotionId, telemetryId: telemetry.telemetryId,
         approvedBy: { type: "system", id: "evolution-coordinator/v1" }, policyRef: suite.automation.policyRef,
       });
+      transitions += 1;
     }
+    return transitions;
   }
 
   private recordUnhandled(error: unknown): void {
