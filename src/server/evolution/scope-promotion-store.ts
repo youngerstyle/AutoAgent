@@ -74,7 +74,7 @@ function allowed(current: ScopePromotionStatus, next: ScopePromotionStatus, targ
   return current === "trial" && next === "approved" && target.ownerLevel === "company";
 }
 function proposalInput(value: EvolutionScopePromotionProposal): ProposalInput { const { commandId, companyId, origin, targetScope, originReleaseRef, practiceRef, inheritanceProofRefs, effectWindowRefs, generalizationRisks } = value; return { commandId, companyId, origin, targetScope, originReleaseRef, practiceRef, inheritanceProofRefs, effectWindowRefs, generalizationRisks }; }
-function validRef(value: VersionedEvolutionRef): boolean { return Boolean(value?.id && value.version && value.contentHash); }
+function validRef(value: VersionedEvolutionRef): boolean { return Boolean(value?.id && value.version && /^[a-f0-9]{64}$/.test(value.contentHash)); }
 function unique(values: string[]): string[] { return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort(); }
 function invalid(message: string): HttpError { return new HttpError(400, message, "INVALID_SCOPE_PROMOTION"); }
 function conflict(message: string): HttpError { return new HttpError(409, message, "SCOPE_PROMOTION_CONFLICT"); }

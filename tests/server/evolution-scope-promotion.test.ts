@@ -5,8 +5,8 @@ import { describe, expect, it } from "vitest";
 import { ScopePromotionStore } from "../../src/server/evolution/scope-promotion-store.js";
 
 describe("Evolution scope promotion", () => {
-  const releaseRef = { id: "release-a", version: "1", contentHash: "release-hash" };
-  const practiceRef = { id: "practice-a", version: "1", contentHash: "practice-hash" };
+  const releaseRef = { id: "release-a", version: "1", contentHash: "a".repeat(64) };
+  const practiceRef = { id: "practice-a", version: "1", contentHash: "b".repeat(64) };
 
   it("promotes agent-project learning to the same stable Agent only through explicit human review", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-promotion-"));
