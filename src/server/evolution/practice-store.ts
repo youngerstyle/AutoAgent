@@ -47,6 +47,31 @@ export class PracticeStore {
     });
   }
 
+  async reviseCandidate(input: PracticeInput & { practiceId: string; baseVersion: number; revisionReason: string }): Promise<EvolutionPractice> {
+    validate(input, this.workspaceId);
+    if (!input.practiceId.trim() || !Number.isSafeInteger(input.baseVersion) || input.baseVersion < 1 || !input.revisionReason.trim()) throw new HttpError(400, "Practice revision is invalid", "INVALID_PRACTICE_REVISION");
+    return this.exclusive(async () => {
+      const events = await this.readEvents(); const replay = events.find((event) => event.commandId === input.commandId);
+      const fingerprint = hash(canonical(input));
+      if (replay) { if (replay.practice.provenanceHash !== fingerprint) throw new HttpError(409, "Practice revision command conflict", "PRACTICE_CONFLICT"); return replay.practice; }
+      const versions = events.map((event) => event.practice).filter((practice) => practice.practiceId === input.practiceId).sort((a, b) => b.version - a.version);
+      const base = versions[0];
+      if (!base || base.version !== input.baseVersion) throw new HttpError(409, "Practice revision base is stale", "PRACTICE_CONFLICT");
+      if (canonical(base.applicability) !== canonical(input.applicability)) throw new HttpError(409, "Practice revision cannot widen or change scope", "PRACTICE_SCOPE_PROMOTION_REQUIRED");
+      if (!input.sourceEpisodeRefs.some((episodeId) => !base.sourceEpisodeRefs.includes(episodeId))) throw new HttpError(409, "Practice revision requires new independent Episode evidence", "PRACTICE_REVISION_EVIDENCE_REQUIRED");
+      const timestamp = this.now().toISOString(); const practice: EvolutionPractice = {
+        statement: input.statement, trigger: input.trigger, procedure: input.procedure, expectedOutcome: structuredClone(input.expectedOutcome),
+        observedComponents: [...new Set(input.observedComponents)].sort(), applicability: structuredClone(input.applicability), contraindications: [...new Set(input.contraindications)].sort(),
+        sourceDraftRefs: [...new Set(input.sourceDraftRefs)].sort(), sourceEpisodeRefs: [...new Set(input.sourceEpisodeRefs)].sort(), sourceRefs: uniqueRefs(input.sourceRefs),
+        practiceId: base.practiceId, version: base.version + 1, provenanceHash: fingerprint, status: "candidate",
+        previousRevision: { id: base.practiceId, version: String(base.version), contentHash: base.provenanceHash }, revisionReason: input.revisionReason.trim(), createdAt: timestamp, updatedAt: timestamp,
+      };
+      const file = workspaceEvolutionPracticesFile(this.workspaceRoot); await mkdir(path.dirname(file), { recursive: true });
+      await appendFile(file, `${JSON.stringify({ eventId: randomUUID(), commandId: input.commandId, practice })}\n`, { encoding: "utf8", mode: 0o600, flush: true });
+      return practice;
+    });
+  }
+
   async list(): Promise<EvolutionPractice[]> {
     const projected = new Map<string, EvolutionPractice>();
     for (const event of await this.readEvents()) projected.set(`${event.practice.practiceId}:${event.practice.version}`, event.practice);

@@ -154,6 +154,8 @@ export interface EvolutionPractice {
   sourceRefs: EvolutionSourceRef[];
   provenanceHash: string;
   status: "candidate" | "released" | "retired" | "rejected";
+  previousRevision?: VersionedEvolutionRef;
+  revisionReason?: string;
   createdAt: string;
   updatedAt: string;
 }

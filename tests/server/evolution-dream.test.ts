@@ -30,6 +30,13 @@ describe("Evolution Dream consolidation", () => {
     expect((await drafts.list()).map((draft) => draft.status)).toEqual(["consolidated", "consolidated"]);
     expect(await worker.run(2)).toEqual({ draftsInspected: 0, clustersEligible: 0, clustersConflicted: 0, practicesProduced: 0 });
     expect(await practices.list()).toHaveLength(1);
+    await drafts.create(draftInput("command-c", "signal-c", "episode-c", "evidence-c"));
+    await drafts.create(draftInput("command-d", "signal-d", "episode-d", "evidence-d"));
+    expect(await worker.run(2)).toMatchObject({ practicesProduced: 1 });
+    const revisions = await practices.list(); const revision = revisions.find((practice) => practice.version === 2)!;
+    expect(revisions).toHaveLength(2);
+    expect(revision).toMatchObject({ practiceId: values[0]!.practiceId, previousRevision: { id: values[0]!.practiceId, version: "1", contentHash: values[0]!.provenanceHash },
+      sourceEpisodeRefs: ["episode-a", "episode-b", "episode-c", "episode-d"] });
   });
 
   it("keeps counter-evidenced clusters unresolved instead of turning them into learned truth", async () => {

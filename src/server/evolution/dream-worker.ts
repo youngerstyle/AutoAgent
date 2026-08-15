@@ -34,6 +34,7 @@ export class EvolutionDreamWorker {
       const key = clusterKey(draft); const values = clusters.get(key) ?? []; values.push(draft); clusters.set(key, values);
     }
     let eligible = 0; let conflicted = 0; let produced = 0;
+    const existingPractices = await this.practices.list();
     for (const cluster of clusters.values()) {
       const episodeRefs = unique(cluster.flatMap((draft) => draft.sourceEpisodeRefs));
       if (episodeRefs.length < minimumIndependentEpisodes) continue;
@@ -41,7 +42,8 @@ export class EvolutionDreamWorker {
       eligible += 1;
       const ordered = [...cluster].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.draftId.localeCompare(b.draftId));
       const exemplar = ordered[0]!;
-      await this.practices.createCandidate({
+      const prior = existingPractices.filter((practice) => clusterKeyForPractice(practice) === clusterKey(exemplar)).sort((a, b) => b.version - a.version)[0];
+      const practiceInput = {
         commandId: `dream:${this.workspaceId}:${ordered.map((draft) => draft.draftId).sort().join(":")}`,
         statement: exemplar.statement,
         trigger: exemplar.trigger,
@@ -53,13 +55,20 @@ export class EvolutionDreamWorker {
         sourceDraftRefs: ordered.map((draft) => draft.draftId),
         sourceEpisodeRefs: episodeRefs,
         sourceRefs: uniqueByJson(ordered.flatMap((draft) => draft.sourceRefs)),
+      };
+      if (prior) await this.practices.reviseCandidate({ ...practiceInput, commandId: `dream-revision:${prior.practiceId}:${ordered.map((draft) => draft.draftId).sort().join(":")}`,
+        practiceId: prior.practiceId, baseVersion: prior.version, revisionReason: "New independent Episode evidence confirmed the existing Practice",
+        sourceDraftRefs: unique([...prior.sourceDraftRefs, ...practiceInput.sourceDraftRefs]), sourceEpisodeRefs: unique([...prior.sourceEpisodeRefs, ...practiceInput.sourceEpisodeRefs]),
+        sourceRefs: uniqueByJson([...prior.sourceRefs, ...practiceInput.sourceRefs]), observedComponents: unique([...prior.observedComponents, ...practiceInput.observedComponents]),
       });
+      else await this.practices.createCandidate(practiceInput);
       await this.drafts.markConsolidated(ordered.map((draft) => draft.draftId));
       produced += 1;
     }
     return { draftsInspected: pending.length, clustersEligible: eligible, clustersConflicted: conflicted, practicesProduced: produced };
   }
 }
+function clusterKeyForPractice(practice: { applicability: EvolutionPracticeDraft["applicability"]; statement: string; trigger: string }): string { return [practice.applicability.ownerLevel, practice.applicability.workspaceId ?? "", practice.applicability.profileId ?? "", normalize(practice.statement), normalize(practice.trigger)].join("\u001f"); }
 
 function clusterKey(draft: EvolutionPracticeDraft): string {
   const scope = draft.applicability;
