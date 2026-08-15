@@ -15,7 +15,6 @@ import {
   type SkillScanReport,
   type PluginArtifactManifest,
   type PluginScanReport,
-  type EvolutionSourcePatchArtifact,
   type EvolutionRuntimeConfigArtifact,
   type EvolutionAgentProfileArtifact,
   type ValidateEvolutionCandidateInput,
@@ -101,15 +100,12 @@ export class EvolutionStore {
       status: "proposed", proposedBy: input.proposedBy, createdAt: timestamp, updatedAt: timestamp,
     };
     const current = await new EvolutionReleaseRegistry(this.workspaceRoot, this.now).current("production", candidate);
-    const sourcePatch = candidate.kind === "source_patch" ? parseSourcePatchArtifact(input.artifactContent) : undefined;
-    const baseRef = sourcePatch
-      ? { id: `scm:${sourcePatch.repositoryId}`, version: sourcePatch.baseCommit, contentHash: hash(sourcePatch.baseCommit) }
-      : current?.active && current.release ? current.release : genesisRef(candidate);
+    const baseRef = current?.active && current.release ? current.release : genesisRef(candidate);
     if (input.baseVersion && ![baseRef.id, baseRef.version].includes(input.baseVersion)) throw conflict(`Evolution baseVersion does not match active base ${baseRef.version}`);
     candidate.mutationSet = {
       assetKind: candidate.kind, target: candidate.target, baseRef: structuredClone(baseRef),
       candidateRef: { id: candidate.candidateId, version: String(candidate.revision), contentHash: candidate.contentHash },
-      representation: candidate.kind === "source_patch" ? "unified_diff" : "full",
+      representation: "full",
       activationBoundary: DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind],
       compatibility: { runtime: "autoagent", mutationContract: "1" }, rollbackRef: structuredClone(baseRef),
     };
@@ -316,7 +312,7 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
     input[field] = input[field].trim() as never;
   }
   if (!EVOLUTION_ARTIFACT_KINDS.includes(input.kind)) throw invalid("Unknown evolution artifact kind");
-  if (!["skill", "memory", "prompt", "agent_profile", "workflow", "runtime_config", "source_patch", "plugin", "harness"].includes(input.kind)) throw invalid("This evolution asset kind is not implemented yet");
+  if (!["skill", "memory", "prompt", "agent_profile", "workflow", "runtime_config", "plugin", "harness"].includes(input.kind)) throw invalid("This evolution asset kind is not implemented yet");
   if (!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(input.target)) throw invalid("Evolution target is invalid");
   if (input.artifactContent.length > (input.kind === "plugin" || input.kind === "harness" ? 750_000 : 200_000)) throw invalid("Evolution artifact is too large");
   if (!Array.isArray(input.sourceRefs) || input.sourceRefs.length === 0) throw invalid("At least one sourceRef is required");
@@ -343,7 +339,6 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
   }
   if (!["low", "medium", "high", "critical"].includes(input.riskLevel)) throw invalid("Evolution risk level is invalid");
   if ((input.kind === "plugin" || input.kind === "harness") && input.riskLevel !== "critical") throw invalid("Plugin and harness candidates must be critical risk");
-  if (input.kind === "source_patch" && input.riskLevel !== "critical") throw invalid("Source Patch candidates must be critical risk");
   if ((input.kind === "prompt" || input.kind === "agent_profile" || input.kind === "workflow" || input.kind === "runtime_config") && !["high", "critical"].includes(input.riskLevel)) throw invalid("Prompt, Agent Profile, Workflow, and Runtime Config candidates must be high or critical risk");
   if (!input.proposedBy || !["agent", "human", "system"].includes(input.proposedBy.type) || typeof input.proposedBy.id !== "string" || !input.proposedBy.id) throw invalid("Evolution proposer is invalid");
   return input;
@@ -392,14 +387,6 @@ function validateCandidate(
     return [...common,
       { name: "workflow_contract", passed: Boolean(workflow && workflow.templateId === candidate.target), message: "Workflow artifact has schemaVersion 1 and matches the target template" },
       { name: "workflow_graph", passed: Boolean(workflow && Array.isArray(workflow.initialChange?.additions) && workflow.initialChange.additions.length > 0 && Array.isArray(workflow.initialChange?.requiredTerminalRefs) && workflow.initialChange.requiredTerminalRefs.length > 0), message: "Workflow declares initial tickets and at least one terminal reference" },
-    ];
-  }
-  if (candidate.kind === "source_patch") {
-    const patch = parseSourcePatchArtifact(content);
-    return [...common,
-      { name: "source_patch_contract", passed: Boolean(patch), message: "Source Patch declares repository, exact base commit, bounded paths, required checks, and unified diff" },
-      { name: "source_patch_scope", passed: Boolean(patch && patch.files.every(safeSourcePatchPath)), message: "Source Patch files remain inside the allowed repository scope" },
-      { name: "source_patch_sensitive_roots", passed: Boolean(patch && patch.files.every((file) => !/^(?:\.git|\.autoagent|node_modules|dist)(?:\/|$)/.test(file))), message: "Source Patch does not modify runtime state, SCM metadata, dependencies, or build output" },
     ];
   }
   if (candidate.kind === "runtime_config") {
@@ -484,24 +471,6 @@ function parseWorkflowArtifact(content: string): { templateId: string; initialCh
   if (!value.plannerAssignment || typeof value.plannerAssignment !== "object" || !value.amendmentTemplate || typeof value.amendmentTemplate !== "object" || !value.initialChange || typeof value.initialChange !== "object") return undefined;
   return value as unknown as { templateId: string; initialChange: { additions?: unknown[]; requiredTerminalRefs?: unknown[] } };
 }
-function parseSourcePatchArtifact(content: string): EvolutionSourcePatchArtifact | undefined {
-  let value: EvolutionSourcePatchArtifact;
-  try { value = JSON.parse(content) as EvolutionSourcePatchArtifact; } catch { return undefined; }
-  if (value?.schemaVersion !== 1 || !/^[a-z0-9][a-z0-9._/-]{0,199}$/i.test(value.repositoryId) || !/^[a-f0-9]{40,64}$/i.test(value.baseCommit)
-    || !/^[a-z0-9][a-z0-9._/-]{0,199}$/i.test(value.targetBranch) || !Array.isArray(value.files) || !value.files.length || value.files.length > 128
-    || value.files.some((file) => !safeSourcePatchPath(file)) || !Array.isArray(value.requiredChecks) || !value.requiredChecks.length || value.requiredChecks.length > 32
-    || value.requiredChecks.some((name) => typeof name !== "string" || !name.trim()) || typeof value.patch !== "string" || value.patch.length > 500_000
-    || !value.patch.startsWith("diff --git ") || /GIT binary patch|Binary files .* differ/.test(value.patch)) return undefined;
-  const declared = new Set(value.files);
-  const patched = new Set<string>();
-  for (const match of value.patch.matchAll(/^diff --git a\/(.+) b\/(.+)$/gm)) {
-    if (match[1] !== match[2] || !declared.has(match[1]!)) return undefined;
-    patched.add(match[1]!);
-  }
-  if (patched.size !== declared.size || [...declared].some((file) => !patched.has(file))) return undefined;
-  return value;
-}
-
 function parseRuntimeConfigArtifact(content: string): EvolutionRuntimeConfigArtifact | undefined {
   let value: unknown;
   try { value = JSON.parse(content) as unknown; } catch { return undefined; }
@@ -527,11 +496,6 @@ function validRuntimeConfigBounds(value: EvolutionRuntimeConfigArtifact): boolea
     || !inRange(settings.staffingProviderRetryMaxMs, 100, 900_000)) return false;
   if (settings.providerRetryBaseMs !== undefined && settings.providerRetryMaxMs !== undefined && settings.providerRetryMaxMs < settings.providerRetryBaseMs) return false;
   return !(settings.staffingProviderRetryBaseMs !== undefined && settings.staffingProviderRetryMaxMs !== undefined && settings.staffingProviderRetryMaxMs < settings.staffingProviderRetryBaseMs);
-}
-function safeSourcePatchPath(value: string): boolean {
-  if (!value || value.includes("\\") || value.includes("\0") || path.posix.isAbsolute(value)) return false;
-  const normalized = path.posix.normalize(value);
-  return normalized === value && normalized !== ".." && !normalized.startsWith("../");
 }
 function genesisRef(candidate: Pick<EvolutionCandidate, "kind" | "target" | "scope">): VersionedEvolutionRef {
   return { id: `genesis:${hash(canonical({ kind: candidate.kind, target: candidate.target, scope: candidate.scope })).slice(0, 24)}`, version: "0", contentHash: hash("") };

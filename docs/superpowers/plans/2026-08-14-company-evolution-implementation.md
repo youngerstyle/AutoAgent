@@ -9,7 +9,7 @@
 - Milestone C：已完成；包括内容寻址且版本不可变的 EvalSuite、historical/sealed-holdout 分区、Node Permission Model 真实隔离进程、静态 Skill Scanner/manifest、evaluation job lease/recovery、Evidence Ledger 校验、确定性 metric gate，以及由 lineage、独立审批和 canary telemetry 驱动的 shadow→canary→production/rollback。成本与延迟为不可省略的强制门禁；observation 同时支持 token、返工、重复工具调用、人工介入、证据完整度和仅从 sealed holdout 计算的泛化成功率。
 - Milestone D：实现完成，自动化与代码级验收通过；已建立带 generation 的 canary/production active pointer、治理 API 与 Evol 管理页。Pi Runtime 对 production 执行严格 scope/manifest/scanner/content hash/lifecycle 校验，并对 active canary 按稳定 assignment key 做 1–25% 小流量分桶；role、provider、model、task type 与 tool scope 不匹配时 fail closed。Agent context trace 记录 selected/control cohort 和 provider token usage，Coordinator 从真实终态 Episode 自动构造 canary telemetry，门槛失败时以系统身份自动回滚 canary；未知美元成本记为 inconclusive，不伪造零成本。Production 晋升会以 append-only `superseded` 事件关闭同源 canary 的账本状态。Organization trust model、跨 Workspace Production Memory 投影、撤销会话重建与冲突隔离已通过端到端验证。独立 Evolution Coordinator 随服务恢复启动，即使没有活跃 RuntimeHost 也会执行经验对账、Memory 维护，并在服务器配置受信 evaluator 后消费持久化评测队列。带 automation selector 的 Suite 会驱动确定性 validation、Suite 绑定、持久化评测和分级晋升；只有低风险 Memory 可在独立评测与实测 telemetry 全部通过后自动到 production，Skill 自动流程止于 shadow。真实 Pi Agent 会话已验证 production Skill 加载与 rollback 后移除。管理页已通过类型检查与生产构建；浏览器视觉验收因当前浏览器插件初始化错误尚未执行，单独列为人工验收项，不计作已通过。
 - Local Plugin：Bundle/scanner/Host/runtime mount 原型已存在；现按第四类本地 Evol 资产重新验收。默认必须由内置跨平台子进程 Host 运行，不要求 WSL、PowerShell 或外部 Sandbox Provider。
-- Milestone E–H：按 `2026-08-14-self-mutation-activation-v1.md` 收口 Memory、Prompt、Skill、Local Plugin 的 next-turn/next-session 激活、inheritance proof 与 rollback。Source Patch、SCM/CI/Kubernetes/应用部署不再是关闭条件。
+- Milestone E–H：按 `2026-08-14-self-mutation-activation-v1.md` 收口 Memory、Prompt、Skill、Local Plugin 的 next-turn/next-session 激活、inheritance proof 与 rollback。软件交付不属于该控制面。
 
 ## Milestone A：Candidate Control Plane
 
@@ -77,4 +77,4 @@
 2. Bundle scanner、独立评测、human approval 和 capability broker 仍然是强制门禁。
 3. 外部 container/WSL/gVisor/Firecracker 仅作为不受信多租户部署的可选执行 adapter。
 
-退出标准：无 WSL、PowerShell、SCM、CI 或 Kubernetes 的本地环境可以完成 Plugin 下一 session 加载、调用与 rollback。
+退出标准：默认本地环境可以完成 Plugin 下一 session 加载、调用与 rollback，不要求外部执行环境。

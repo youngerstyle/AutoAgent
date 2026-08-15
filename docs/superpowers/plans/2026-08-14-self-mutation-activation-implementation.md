@@ -17,7 +17,7 @@ V1 只交付四类本地、版本化资产：
 
 模型 Provider 保留现有配置与选择机制。它是模型调用依赖，不是本地 Evol 的“交付 Provider”，也不改变上述四类资产的生效边界。
 
-Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernetes 和 Runtime deployment report 不属于本计划。仓库中已有的相关 adapter 只能作为可选团队/SaaS 软件交付实验存在，不参与 Evol 状态、健康判断或完成验收。
+AutoAgent 自身源码和软件交付不属于本计划，也不进入 Evol 的类型、状态、API、UI 或完成验收。
 
 ## 2. 核心不变量
 
@@ -34,7 +34,7 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 - [x] 定义 Candidate、Release、active pointer、generation、ActivationRecord 和 InheritanceProof。
 - [x] 将 promotion 与 activation 分离。
 - [x] rollback 生成新的 restoration generation。
-- [x] 审计所有 API/UI，确保可选 Source Patch delivery 状态不影响本地 Evol 健康。
+- [x] 删除软件交付 API/UI 与启动配置，确保它不进入本地 Evol 判断。
 
 退出标准：任意资产都不能仅凭 Candidate 或 promotion 被展示为已生效。
 
@@ -81,20 +81,19 @@ Source Patch、自身源码改写、GitHub/GitLab、PR、CI、镜像、Kubernete
 ## 8. Milestone F：管理面与完成审计
 
 - [x] 展示 Candidate、approved、waiting、activated、degraded、rolled back 与 actual proof。
-- [x] 删除“未配置源码交付 Provider = Evol 失败”的状态表达。
+- [x] 删除软件交付配置和状态表达。
 - [x] 首页只围绕四类本地资产展示 active revision、边界、实际继承和回滚状态。
-- [x] 运行四条端到端链、全量测试、类型检查、生产构建和文档一致性审计（96 files / 721 tests）。
+- [x] 运行四条端到端链、全量测试、类型检查、生产构建和文档一致性审计（93 files / 714 tests）。
 
-退出标准：完成审计逐项对应主规范第 11 节八条要求；不得以 Source Patch、托管部署或测试替身补足本地资产证据。
+退出标准：完成审计逐项对应主规范第 11 节八条要求；只能用本地资产的实际生命周期事实补足证据。
 
 ## 9. 非阻塞扩展
 
 以下代码或设计可以保留，但必须明确标记为 V1 之外的可选 adapter：
 
-- 远端 SCM/CI/CD Provider Gateway；
-- Source Patch 与应用部署；
+- AutoAgent 自身源码与软件交付；
 - WSL、bubblewrap、container、gVisor、Firecracker 等外部隔离器；
 - Agent Profile、Workflow、Runtime Config 等扩展资产边界；
 - 模型权重训练和当前进程热替换。
 
-它们未配置、未部署或未验收时，不得阻塞本地 Memory/Prompt/Skill/Plugin Evol，也不得让 Evol UI 显示失败。
+这些能力不属于本地 Memory/Prompt/Skill/Plugin Evol。

@@ -43,9 +43,7 @@ export class EvolutionReleaseRegistry {
       validationPassed: candidate.validation?.passed === true, validationChecks: structuredClone(candidate.validation?.checks ?? []),
     };
     await writeJson(workspaceEvolutionReleaseFile(this.workspaceRoot, record.toRelease.id), manifest);
-    // Source code is activated by the external SCM/build/deployment control
-    // plane. A local release pointer must never claim that a patch is live.
-    if (record.stage === "shadow" || candidate.kind === "source_patch") return;
+    if (record.stage === "shadow") return;
     const current = await this.current(record.stage, candidate);
     const alreadyProjected = current?.active && current.promotionId === record.promotionId && current.release?.id === record.toRelease.id;
     if (!alreadyProjected) {

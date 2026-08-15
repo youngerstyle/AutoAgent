@@ -7,7 +7,7 @@
 
 本规范定义 Local Plugin 如何作为版本化 Evol 资产被扫描、评测、批准，并在下一 session 装载。一次性运行脚本不构成进化；只有 Bundle 被写入本地 release store、active pointer 改变、下一 session 实际挂载并留下 inheritance proof，才构成 Plugin 进化结果。
 
-默认实现必须在 Windows、macOS 和 Linux 上直接使用 AutoAgent 内置的本地子进程 Host，不要求 WSL、PowerShell、Docker、Kubernetes 或外部 Sandbox Provider。多租户 SaaS 若要运行不受信代码，可以额外接入 container、gVisor、Firecracker 等隔离器；这是部署加固，不是 Local Plugin 的定义、加载边界或完成前提。
+默认实现必须在 Windows、macOS 和 Linux 上直接使用 AutoAgent 内置的本地子进程 Host，不要求外部执行环境。更强的进程隔离可以作为部署加固，但不是 Local Plugin 的定义、加载边界或完成前提。
 
 首个可生产版本支持两种贡献：
 

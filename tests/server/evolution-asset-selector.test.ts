@@ -40,13 +40,13 @@ describe("higher-risk evolution asset selection", () => {
   it("rejects a failed release that is not less invasive than the selected asset", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-asset-rank-"));
     const experience = new ExperienceStore("workspace-a", root);
-    const releaseRef = { id: "release-source", version: "1", contentHash: "source-hash" };
-    const failedAttempt: FailedEvolutionAttemptRef = { telemetryId: "telemetry-source", candidateId: "candidate-source", releaseRef };
+    const releaseRef = { id: "release-plugin", version: "1", contentHash: "plugin-hash" };
+    const failedAttempt: FailedEvolutionAttemptRef = { telemetryId: "telemetry-plugin", candidateId: "candidate-plugin", releaseRef };
     await recordWorkflowFailures(experience, failedAttempt, "same-rank");
     const selector = new EvolutionAssetSelector(
       "workspace-a", root, experience,
-      { get: async () => ({ candidateId: "candidate-source", kind: "source_patch" } as EvolutionCandidate) },
-      { get: async () => ({ telemetryId: "telemetry-source", candidateId: "candidate-source", releaseRef, decision: "fail" } as ReleaseTelemetry) },
+      { get: async () => ({ candidateId: "candidate-plugin", kind: "plugin" } as EvolutionCandidate) },
+      { get: async () => ({ telemetryId: "telemetry-plugin", candidateId: "candidate-plugin", releaseRef, decision: "fail" } as ReleaseTelemetry) },
       fixedNow,
     );
     expect((await selector.select(3)).selections[0]).toMatchObject({ status: "insufficient_evidence", verifiedFailedAttempts: [] });

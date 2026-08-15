@@ -12,7 +12,7 @@ interface ReleaseManifest {
   stage: "canary" | "production";
   candidateId: string;
   candidateHash: string;
-  candidateKind: "skill" | "memory" | "agent_profile" | "prompt" | "workflow" | "runtime_config" | "source_patch" | "plugin" | "harness";
+  candidateKind: "skill" | "memory" | "agent_profile" | "prompt" | "workflow" | "runtime_config" | "plugin" | "harness";
   target: string;
   artifactRef: string;
   artifactManifestRef?: string;

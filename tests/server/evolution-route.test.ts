@@ -24,15 +24,12 @@ describe("workspace evolution candidate control plane", () => {
     homeDir = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-home-"));
     workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-workspace-"));
     process.env.AUTOAGENT_HOME = homeDir;
-    delete process.env.AUTOAGENT_EVOLUTION_DELIVERY_BASE_URL;
-    delete process.env.AUTOAGENT_EVOLUTION_DELIVERY_TOKEN;
   });
 
   it("persists and validates an evidence-backed candidate without changing the active runtime", async () => {
     const { app, base } = await fixture();
     const worker = await request(app).get(`${base}/worker`).expect(200);
     expect(worker.body.worker).toMatchObject({ running: false, evaluatorConfigured: false });
-    expect(worker.body.worker).not.toHaveProperty("deliveryProviderConfigured");
     expect(worker.body.worker).not.toHaveProperty("pluginSandboxConfigured");
     const input = candidateInput("candidate-create-a");
     const created = await request(app).post(`${base}/candidates`).send(input).expect(201);
@@ -65,14 +62,6 @@ describe("workspace evolution candidate control plane", () => {
     await expect(access(activeSkill)).rejects.toMatchObject({ code: "ENOENT" });
     const ledger = await readFile(path.join(workspaceRoot, ".autoagent", "evolution", "ledger.jsonl"), "utf8");
     expect(ledger.trim().split(/\r?\n/)).toHaveLength(2);
-  });
-
-  it("fails closed instead of pretending to deliver Source Patch without a production provider", async () => {
-    const { app, base } = await fixture();
-    await request(app).post(`${base}/candidates/not-created/source-delivery`).send({ promotionId: "missing" }).expect(503)
-      .expect(({ body }) => expect(body.code).toBe("EVOLUTION_DELIVERY_NOT_CONFIGURED"));
-    await request(app).post(`${base}/source-deliveries/missing/rollback`).send({}).expect(503)
-      .expect(({ body }) => expect(body.code).toBe("EVOLUTION_DELIVERY_NOT_CONFIGURED"));
   });
 
   it("requires evidence, metrics, workspace scope, and immutable command content", async () => {

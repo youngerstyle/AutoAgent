@@ -97,10 +97,6 @@ export function workspaceEvolutionActivationLedgerFile(workspaceRoot: string): s
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "activations.jsonl");
 }
 
-export function workspaceEvolutionSourceDeliveryLedgerFile(workspaceRoot: string): string {
-  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "source-deliveries.jsonl");
-}
-
 export function workspaceEvolutionTelemetryFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "telemetry.jsonl");
 }

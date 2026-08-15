@@ -47,5 +47,5 @@
 
 - [x] 无外部 Launcher 的 Local Plugin 端到端测试通过。
 - [x] rollback 的新 session 证据通过。
-- [x] 全量测试、类型检查与生产构建通过（96 files / 721 tests）。
-- [x] 主 Evol 完成审计引用实际测试输出，不引用 SCM/CI/Kubernetes/Source Patch 作为 Plugin 证据。
+- [x] 全量测试、类型检查与生产构建通过（93 files / 714 tests）。
+- [x] 主 Evol 完成审计只引用本地 Plugin 的实际生命周期证据。

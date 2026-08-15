@@ -21,7 +21,6 @@ import { RuntimeRestorationController, type RuntimeHostRestorationState } from "
 import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import { createMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "./tickets/plan-policy-config.js";
 import { asyncHandler } from "./errors.js";
-import { configuredHttpEvolutionDeliveryProviders } from "./evolution/http-delivery-providers.js";
 
 function hasClientEntry(dir: string) {
   return existsSync(path.join(dir, "index.html"));
@@ -49,7 +48,6 @@ export function createApp(config: AppConfig = loadConfig()) {
     env: process.env
   });
   const policyStore = new PlanPolicyStore(config.autoAgentHome);
-  const evolutionDeliveryProviders = configuredHttpEvolutionDeliveryProviders();
   const policyRef = createMinimalTeamPlanPolicy(DEFAULT_MINIMAL_TEAM_POLICY_CONFIG).ref;
   const mission = new RuntimeHostRegistry(
     workspaceStore,
@@ -94,7 +92,7 @@ export function createApp(config: AppConfig = loadConfig()) {
     (workspaceId, options) => mission.removeWorkspace(workspaceId, options),
   ));
   app.use("/api/workspaces/:workspaceId/attachments", createAttachmentRouter(workspaceStore));
-  app.use("/api/workspaces/:workspaceId/evolution", createEvolutionRouter(workspaceStore, () => mission.evolutionStatus(), evolutionDeliveryProviders));
+  app.use("/api/workspaces/:workspaceId/evolution", createEvolutionRouter(workspaceStore, () => mission.evolutionStatus()));
   app.use("/api/workspaces/:workspaceId/agents", createAgentRouter(workspaceStore, profileStore));
   app.use("/api/workspaces/:workspaceId/events", createEventRouter(
     ledger,

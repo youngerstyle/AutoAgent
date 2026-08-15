@@ -17,7 +17,7 @@ AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket
 1. `memory`：从多个 Episode 提炼的、带适用范围和来源引用的经验；
 2. `skill`：版本化 Skill 包，包含 `SKILL.md` 以及可选 references/scripts/templates。
 
-下一阶段把 `agent_profile`、`prompt`、`workflow`、`runtime_config` 和 `source_patch` 纳入同一候选协议，并分别在 next session、next turn、next task、next restart 和 next deployment 生效。`plugin` 与 `harness` 是可被治理的扩展资产，但它们的执行宿主属于独立基础设施；是否支持插件不能作为 Evol 是否完成的判据。
+扩展资产 `agent_profile`、`workflow` 和 `runtime_config` 可以复用同一候选协议；本地 Evol V1 的关闭范围仍是 Memory、Prompt、Skill 和 Local Plugin。
 
 ## 2. 设计来源
 
@@ -28,7 +28,6 @@ AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket
 - Qwen Code：`/learn`、项目/个人/扩展 Skill 分层、成功使用记录、stale/archive/pin 生命周期；
 - QwenPaw：持久 Skill Pool、Workspace runtime copy、跨会话文件 Memory 与自动加载；
 - OpenGitOps：desired state 必须声明式、版本化不可变、由运行时自动拉取并持续对账；
-- Git protected branches/status checks：源码变更绑定 commit，经独立检查和审查后才能合并；
 - Reflexion / ExpeL / Voyager：从外部反馈形成 episodic insight、跨任务经验归纳、环境反馈与自验证后进入 Skill Library；
 - Agent Lightning / DSPy：trajectory/span 观测、credit assignment、优化资源与执行框架解耦、基于冻结数据集和指标比较候选。
 
@@ -37,7 +36,7 @@ AutoAgent 已有 Agent Trace、Evidence Ledger、Goal Proposal/Decision、Ticket
 V1 明确不做：
 
 - 不训练或微调基础模型权重；
-- 不允许 Agent 绕过凭据、审计、权限、审批和 Evol Gate；Evol Gate 自身的源码变化只能走最高风险 `source_patch` 流程，V1 默认禁止自动批准；
+- 不允许 Agent 绕过凭据、审计、权限、审批和 Evol Gate；AutoAgent 自身源码不属于 Evol 资产；
 - 不把普通聊天中的“我觉得更好了”视为评测；
 - 不因一次失败立即形成全局 Memory 或生产 Skill；
 - 不在没有基线对照和回归证据时自动启用候选；
@@ -88,7 +87,7 @@ Insight 默认进入候选区。只有证据充分、无冲突且 scope 明确�
 
 对某个版本化产物的不可变候选修改。候选创建后内容由 `contentHash` 固定；修改必须创建新 revision。
 
-候选类型：`memory | skill | agent_profile | prompt | workflow | runtime_config | source_patch | plugin | harness`。
+候选类型：`memory | skill | agent_profile | prompt | workflow | runtime_config | plugin | harness`。
 
 每个候选必须包含：
 
@@ -255,7 +254,6 @@ Eval Suite 可以声明受治理的 automation selector（artifact kind、target
 | executable Skill | high | 需要安全扫描、隔离评测、QA 批准 |
 | prompt/workflow/agent_profile | high | 需要完整回归、显式激活边界和 canary |
 | runtime_config | high/critical | 只允许非凭据配置；next restart 生效，安全根配置禁止自动批准 |
-| source_patch | critical | 只生成 branch/patch；required checks、独立审查、合并与部署缺一不可 |
 | plugin/harness | critical | 禁止自动晋升；canary/production 必须 human 批准并在隔离 Host 运行 |
 | policy | critical | 禁止自动晋升 |
 
@@ -271,7 +269,7 @@ Eval Suite 可以声明受治理的 automation selector（artifact kind、target
 ## 10. 数据契约
 
 ```ts
-type EvolutionArtifactKind = "memory" | "skill" | "agent_profile" | "prompt" | "workflow" | "runtime_config" | "source_patch" | "plugin" | "harness";
+type EvolutionArtifactKind = "memory" | "skill" | "agent_profile" | "prompt" | "workflow" | "runtime_config" | "plugin" | "harness";
 
 interface EvolutionSourceRef {
   kind: "trace" | "evidence" | "goal_proposal" | "goal_decision" | "ticket" | "mission" | "human_feedback";
@@ -508,4 +506,4 @@ Company Evolution 只有同时满足以下条件才能称为完成：
 - Local Plugin 只有在下一 session 实际挂载对应 Bundle/tool surface 后才算 activated；
 - 临时执行脚本、创建 Candidate 或通过离线评测本身都不算进化完成。
 
-Source Patch、远端 SCM/CI/CD 和应用部署属于可选团队/SaaS 软件交付项目，不是本地 Company Evolution V1 的完成或失败条件。OpenAI、Anthropic、Mock 等模型 Provider 仍由现有模型服务配置管理，不与“交付 Provider”混为一谈。
+软件源码交付不属于 Company Evolution 契约。OpenAI、Anthropic、Mock 等模型 Provider 仍由现有模型服务配置管理。

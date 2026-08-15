@@ -72,7 +72,7 @@ Evol 从真实运行事实中发现能力缺口，产生并评测四类本地版
 
 临时执行脚本、只写 Candidate 文件或只通过离线评测都不算进化。Local Plugin 必须保存为不可变 Bundle，经过扫描、独立评测和批准，再由内置跨平台子进程 Host 在下一 session 挂载；默认不依赖 WSL、PowerShell、Docker 或外部 Sandbox Provider。
 
-OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent 配置选择，不因 Evol 设计而移除。远端 SCM/CI/CD、Source Patch 和应用部署仅是另行启用的团队/SaaS 软件交付 adapter；未配置它们不影响本地 Evol 的生成、激活、回滚或健康状态。
+OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent 配置选择，不因 Evol 设计而移除。软件源码交付不属于 Evol，也不进入其配置、状态或判断链。
 
 完整语义见 `docs/superpowers/specs/2026-08-14-self-mutation-activation-v1.md`。
 

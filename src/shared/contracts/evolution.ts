@@ -1,7 +1,7 @@
-export const EVOLUTION_ARTIFACT_KINDS = ["memory", "skill", "agent_profile", "prompt", "workflow", "runtime_config", "source_patch", "plugin", "harness"] as const;
+export const EVOLUTION_ARTIFACT_KINDS = ["memory", "skill", "agent_profile", "prompt", "workflow", "runtime_config", "plugin", "harness"] as const;
 export type EvolutionArtifactKind = typeof EVOLUTION_ARTIFACT_KINDS[number];
 
-export const EVOLUTION_ACTIVATION_BOUNDARIES = ["next_turn", "next_session", "next_task", "next_restart", "next_deployment"] as const;
+export const EVOLUTION_ACTIVATION_BOUNDARIES = ["next_turn", "next_session", "next_task", "next_restart"] as const;
 export type EvolutionActivationBoundary = typeof EVOLUTION_ACTIVATION_BOUNDARIES[number];
 
 export const DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY: Record<EvolutionArtifactKind, EvolutionActivationBoundary> = {
@@ -13,7 +13,6 @@ export const DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY: Record<EvolutionArtifactKind
   harness: "next_session",
   workflow: "next_task",
   runtime_config: "next_restart",
-  source_patch: "next_deployment",
 };
 
 export const EVOLUTION_SOURCE_KINDS = [
@@ -77,7 +76,7 @@ export interface ExperienceEpisode {
   contentHash: string;
 }
 
-export type AttributionComponent = "memory" | "prompt" | "skill" | "agent_profile" | "workflow" | "runtime_config" | "source_patch" | "tool" | "provider" | "plan" | "policy" | "environment" | "unknown";
+export type AttributionComponent = "memory" | "prompt" | "skill" | "agent_profile" | "workflow" | "runtime_config" | "tool" | "provider" | "plan" | "policy" | "environment" | "unknown";
 
 export interface FailedEvolutionAttemptRef {
   telemetryId: string;
@@ -149,7 +148,7 @@ export interface AuthoritativeEpisodeFacts {
 export interface EvolutionAssetSelectionRecord {
   selectionId: string;
   workspaceId: string;
-  selectedKind: "agent_profile" | "workflow" | "runtime_config" | "source_patch";
+  selectedKind: "agent_profile" | "workflow" | "runtime_config";
   status: "eligible_for_authoring" | "insufficient_evidence";
   episodeIds: string[];
   attributionIds: string[];
@@ -308,20 +307,10 @@ export interface EvolutionMutationSet {
   target: string;
   baseRef: VersionedEvolutionRef;
   candidateRef: VersionedEvolutionRef;
-  representation: "full" | "json_patch" | "unified_diff";
+  representation: "full" | "json_patch";
   activationBoundary: EvolutionActivationBoundary;
   compatibility: Record<string, string>;
   rollbackRef: VersionedEvolutionRef;
-}
-
-export interface EvolutionSourcePatchArtifact {
-  schemaVersion: 1;
-  repositoryId: string;
-  baseCommit: string;
-  targetBranch: string;
-  files: string[];
-  patch: string;
-  requiredChecks: string[];
 }
 
 /**
@@ -360,47 +349,6 @@ export interface EvolutionAgentProfileArtifact {
     allowHostAccess?: boolean;
     commandAllowlist?: string[];
   };
-}
-
-export interface EvolutionProviderAttestation {
-  provider: string;
-  subject: string;
-  revision: string;
-  status: "pending" | "passed" | "failed";
-  observedAt: string;
-  evidenceRef: string;
-}
-
-export interface ScmPreparedChange {
-  provider: string;
-  repositoryId: string;
-  baseCommit: string;
-  changeRef: string;
-  candidateCommit: string;
-  webUrl?: string;
-}
-
-export type SourcePatchDeliveryStatus =
-  | "requested" | "prepared" | "checks_passed" | "reviewed" | "merged" | "built"
-  | "canary_deployed" | "production_deployed" | "verified" | "failed" | "rolled_back";
-
-export interface SourcePatchDeliveryRecord {
-  deliveryId: string;
-  commandId: string;
-  candidateId: string;
-  promotionId: string;
-  desiredGeneration?: number;
-  status: SourcePatchDeliveryStatus;
-  lastSuccessfulStatus?: Exclude<SourcePatchDeliveryStatus, "failed">;
-  preparedChange?: ScmPreparedChange;
-  sourceCommit?: string;
-  buildArtifactRef?: VersionedEvolutionRef;
-  deploymentRef?: VersionedEvolutionRef;
-  previousDeployment?: VersionedEvolutionRef;
-  attestations: EvolutionProviderAttestation[];
-  createdAt: string;
-  updatedAt: string;
-  error?: string;
 }
 
 export interface CreateEvolutionCandidateInput {

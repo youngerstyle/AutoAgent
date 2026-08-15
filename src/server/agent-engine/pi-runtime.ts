@@ -983,7 +983,7 @@ function proposeEvolutionCandidateTool(workspaceRoot: string, workspaceId: strin
     label: "提出公司进化候选",
     description: "基于当前 Goal 中可引用的真实 Trace、Evidence、Ticket 或人工反馈，提出一个待独立评测的 Skill、Prompt、Agent Profile 或可选扩展候选。此工具只保存版本化变更，不代表验证、批准或后续 Runtime 已继承。",
     parameters: Type.Object({
-      kind: Type.Optional(Type.Union([Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("agent_profile"), Type.Literal("workflow"), Type.Literal("source_patch"), Type.Literal("plugin"), Type.Literal("harness")])),
+      kind: Type.Optional(Type.Union([Type.Literal("skill"), Type.Literal("prompt"), Type.Literal("agent_profile"), Type.Literal("workflow"), Type.Literal("plugin"), Type.Literal("harness")])),
       target: Type.String({ description: "候选名称，例如 incident-retrospective" }),
       title: Type.String(),
       rationale: Type.String({ description: "从引用事实中观察到的重复失败、低效或能力缺口" }),

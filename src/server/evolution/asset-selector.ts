@@ -12,10 +12,10 @@ import type { EvolutionStore } from "./evolution-store.js";
 import type { ExperienceStore } from "./experience-store.js";
 import type { EvolutionTelemetryStore } from "./telemetry-store.js";
 
-const HIGHER_ASSETS = new Set<EvolutionArtifactKind>(["agent_profile", "workflow", "runtime_config", "source_patch"]);
+const HIGHER_ASSETS = new Set<EvolutionArtifactKind>(["agent_profile", "workflow", "runtime_config"]);
 const ASSET_RANK: Record<EvolutionArtifactKind, number> = {
   memory: 0, prompt: 1, skill: 1, agent_profile: 2, workflow: 2,
-  runtime_config: 3, source_patch: 4, plugin: 4, harness: 4,
+  runtime_config: 3, plugin: 4, harness: 4,
 };
 const queues = new Map<string, Promise<void>>();
 

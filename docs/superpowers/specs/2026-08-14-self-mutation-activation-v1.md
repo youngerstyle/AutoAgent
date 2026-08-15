@@ -4,7 +4,7 @@
 
 状态：Accepted for implementation
 
-取代：把自进化错误扩张为源码交付、远端 CI/CD 或托管部署的设计
+取代：把自进化错误扩张为软件源码交付的设计
 
 ## 1. 定义
 
@@ -36,17 +36,9 @@ V1 的核心资产只有：
 
 ## 2. V1 不是什么
 
-以下能力都不是本地 Evol 的前提：
+V1 不修改或发布 AutoAgent 自身源码，也不包含任何软件交付控制面。这类能力已从 Evol 的资产类型、服务启动、API、Agent 工具和 UI 中移除，不参与任何状态或完成判断。
 
-- GitHub/GitLab 身份；
-- PR、远端 CI、镜像构建；
-- Kubernetes、托管部署或 Runtime deployment report；
-- WSL、PowerShell、bubblewrap、Docker；
-- 修改 AutoAgent 自身源码。
-
-远端 SCM/CD 可以作为团队版或 SaaS 的可选软件交付能力，但不得出现在本地自进化完成定义中，也不得让管理页在未配置时显示 Evol 失败。
-
-这里移除的是错误引入的“交付 Provider”依赖，不是模型 Provider。OpenAI、Anthropic、Mock 等模型 Provider 仍由现有模型服务配置和 Agent Profile 选择；Evol 可以在调用模型时沿用它们，但不得把“换模型 Provider”偷换成 Memory/Prompt/Skill/Plugin 自进化，也不得要求配置某个模型 Provider 才能加载本地进化资产。
+模型 Provider 是另一回事。OpenAI、Anthropic、Mock 等 Provider 仍由现有模型服务配置和 Agent Profile 选择；Evol 可以沿用它们调用模型，但模型 Provider 不属于进化资产，也不决定本地资产能否加载。
 
 ## 3. 行业依据
 
@@ -196,6 +188,6 @@ Memory -> Prompt/Skill -> Local Plugin
 5. Plugin rollback 后，同一 Thread 的下一 session 不再看到坏工具，或恢复 previous known-good Plugin revision。
 6. 当前 turn/session 不被中途修改；每次边界切换都有 inheritance proof。
 7. Evol UI 能区分 Candidate、approved、waiting、activated、degraded、rolled back，并展示实际 turn/session proof。
-8. 整个闭环不要求 GitHub、CI、Kubernetes、WSL、PowerShell 或外部 deployment Provider。
+8. 整个闭环只有本地资产依赖，不读取任何软件交付配置或状态。
 
-Source Patch、远端 SCM/CD 和应用部署另立项目，不计入本地 Evol V1 完成或失败。
+软件源码交付不属于本地 Evol V1 契约。
