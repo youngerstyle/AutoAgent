@@ -3,6 +3,8 @@ import { EvolutionSignalStore } from "./evolution-signal-store.js";
 import { ExperienceStore } from "./experience-store.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
+import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import type { PracticeReflector } from "./practice-reflector.js";
 
 export class EvolutionReflectionWorker {
   constructor(
@@ -13,6 +15,7 @@ export class EvolutionReflectionWorker {
     private readonly drafts = new PracticeDraftStore(workspaceId, workspaceRoot),
     private readonly jobs = new EvolutionPhaseJobStore(workspaceId, workspaceRoot),
     private readonly now: () => Date = () => new Date(),
+    private readonly reflector?: PracticeReflector,
   ) {}
 
   async runNext(workerId: string): Promise<{ signalId: string; drafts: EvolutionPracticeDraft[] } | undefined> {
@@ -37,6 +40,16 @@ export class EvolutionReflectionWorker {
       const attributions = signal.episodeId ? (await this.experience.listAttributions()).filter((item) => item.episodeId === signal.episodeId && item.component !== "unknown" && item.confidence >= 0.8) : [];
       const created: EvolutionPracticeDraft[] = [];
       for (const attribution of attributions) created.push(await this.drafts.create(draftFrom(signal.signalId, episode!.profileId, episode!.episodeId, attribution)));
+      if (episode && !attributions.length && this.reflector && await this.reflector.available()) {
+        const ledger = new EvidenceLedger(this.workspaceRoot); const sourceFacts = [];
+        for (const ref of episode.sourceRefs.filter((item) => item.kind === "evidence" || item.kind === "human_feedback")) { const fact = await ledger.get(ref.ref); if (fact) sourceFacts.push(fact); }
+        const hypotheses = await this.reflector.reflect(episode, sourceFacts);
+        for (const [index, hypothesis] of hypotheses.entries()) created.push(await this.drafts.create({
+          commandId: `provider-reflection:${signal.signalId}:${index}`, signalId: signal.signalId, ...hypothesis,
+          applicability: { ownerLevel: "agent_project", workspaceId: this.workspaceId, profileId: episode.profileId },
+          sourceEpisodeRefs: [episode.episodeId], sourceRefs: structuredClone(episode.sourceRefs),
+        }));
+      }
       await this.signals.succeed(signal.signalId, signal.lease!.token);
       await this.jobs.succeed(job.jobId, job.lease!.token);
       return { signalId: signal.signalId, drafts: created };

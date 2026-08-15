@@ -31,6 +31,7 @@ import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
 import { PluginAuthoringWorker, type PluginArtifactAuthor } from "./plugin-authoring-worker.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
+import type { PracticeReflector } from "./practice-reflector.js";
 
 export class EvolutionCoordinator {
   private timer?: ReturnType<typeof setInterval>;
@@ -53,6 +54,7 @@ export class EvolutionCoordinator {
       idleDreamDraftBudgetPerWorkspace?: number;
       maintenanceWindowUtc?: { startHour: number; endHour: number };
       isWorkspaceIdle?: (workspaceId: string) => boolean | Promise<boolean>;
+      practiceReflector?: PracticeReflector;
       now?: () => Date;
       workerId?: string;
       pluginArtifactAuthor?: PluginArtifactAuthor;
@@ -176,7 +178,7 @@ export class EvolutionCoordinator {
   private async runReflections(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
     const limit = this.options.maxReflectionSignalsPerWorkspace ?? 4;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Evolution reflection drain limit is invalid");
-    const worker = new EvolutionReflectionWorker(workspace.id, workspace.rootPath);
+    const worker = new EvolutionReflectionWorker(workspace.id, workspace.rootPath, undefined, undefined, undefined, undefined, () => this.now(), this.options.practiceReflector);
     let processed = 0;
     while (processed < limit && await worker.runNext(`${this.workerId}:reflection`)) processed += 1;
     return processed;
