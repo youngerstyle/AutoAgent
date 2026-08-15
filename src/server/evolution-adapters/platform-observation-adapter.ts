@@ -4,7 +4,8 @@ import { AgentStore } from "../agent-engine/agent-store.js";
 import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { listWorkspaceAgents } from "../agents/roster.js";
-import type { EvolutionCompactionObservation, EvolutionEpisodeObservationBatch, EvolutionMemoryUsageObservation, EvolutionObservationPort, EvolutionRuntimeTelemetryObservation } from "../evolution/observation-port.js";
+import type { EvolutionCompactionObservation, EvolutionEpisodeObservationBatch, EvolutionMemoryUsageObservation, EvolutionObservationPort, EvolutionReflectionFact, EvolutionRuntimeTelemetryObservation } from "../evolution/observation-port.js";
+import { redactEvolutionText } from "../evolution/secret-redactor.js";
 import { MissionStore } from "../mission-process/mission-store.js";
 import { RuntimeHostStore } from "../runtime/runtime-host-store.js";
 import { TicketStore } from "../tickets/ticket-store.js";
@@ -52,6 +53,76 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
       }
     }
     return { inspectedWorkItems, skippedWorkItems, facts };
+  }
+
+  async collectReflectionFacts(episode: ExperienceEpisode): Promise<EvolutionReflectionFact[]> {
+    if (episode.workspaceId !== this.workspace.id) return [];
+    const aggregate = await new AgentStore(this.workspace.rootPath, episode.agentId).read();
+    const goal = aggregate.goals.find((item) => item.spec.id === episode.goalId);
+    const ticketRef = episode.sourceRefs.find((item) => item.kind === "ticket")
+      ?? { kind: "ticket" as const, ref: episode.ticketId, workspaceId: this.workspace.id, taskId: episode.taskId, taskRunId: episode.taskRunId, agentId: episode.agentId, profileId: episode.profileId };
+    const facts: EvolutionReflectionFact[] = [];
+    if (goal) facts.push({
+      kind: "goal", actor: "system", occurredAt: goal.spec.createdAt,
+      summary: bounded(`Goal: ${goal.spec.objective}. Success criteria: ${goal.spec.successCriteria.join("; ")}`),
+      sourceRef: structuredClone(ticketRef),
+    });
+
+    const thread = aggregate.threads.find((item) => item.threadId === goal?.spec.threadId);
+    const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    let humanInterventions = 0;
+    for (const item of thread?.items ?? []) {
+      if (item.kind !== "message" || item.createdAt < episode.startedAt || item.createdAt > episode.endedAt) continue;
+      const payload = payloads.get(item.payloadRef);
+      if (!isRecord(payload) || payload.goalId !== episode.goalId || typeof payload.content !== "string" || typeof payload.senderPrincipalId !== "string") continue;
+      const isHuman = payload.senderPrincipalId === "human";
+      if (!isHuman) continue; // Mission instructions are already represented by the bounded Goal fact.
+      humanInterventions += 1;
+      facts.push({
+        kind: "human_intervention", actor: "human", occurredAt: item.createdAt,
+        summary: bounded(payload.content),
+        sourceRef: {
+          kind: "human_feedback", ref: typeof payload.messageId === "string" ? payload.messageId : item.itemId,
+          workspaceId: this.workspace.id, taskId: episode.taskId, taskRunId: episode.taskRunId,
+          agentId: episode.agentId, profileId: episode.profileId,
+        },
+      });
+    }
+
+    const traces = (await new AgentTraceStore(this.workspace.rootPath, episode.agentId).list(goal?.spec.threadId))
+      .filter((trace) => trace.goalId === episode.goalId && trace.createdAt >= episode.startedAt && trace.createdAt <= episode.endedAt);
+    const errors = traces.filter((trace) => trace.kind === "error");
+    for (const trace of errors.slice(0, 12)) {
+      const data = isRecord(trace.data) ? trace.data : {};
+      const label = [data.status, data.reason, data.message].filter((value) => typeof value === "string" && value.trim()).join(": ");
+      facts.push({
+        kind: "error", actor: "system", occurredAt: trace.createdAt,
+        summary: bounded(label || "Agent execution emitted an error"),
+        sourceRef: { kind: "trace", ref: trace.traceId, workspaceId: this.workspace.id, taskId: episode.taskId, taskRunId: episode.taskRunId, agentId: episode.agentId, profileId: episode.profileId },
+      });
+    }
+
+    const evidenceLedger = new EvidenceLedger(this.workspace.rootPath);
+    for (const ref of episode.sourceRefs.filter((item) => item.kind === "evidence").slice(0, 12)) {
+      const evidence = await evidenceLedger.get(ref.ref);
+      if (!evidence) continue;
+      const error = evidence.capture.error?.message ? `; error: ${evidence.capture.error.message}` : "";
+      facts.push({ kind: "evidence", actor: "agent", occurredAt: evidence.createdAt,
+        summary: bounded(`${evidence.toolName}: ${evidence.capture.status}${error}`), sourceRef: structuredClone(ref) });
+    }
+
+    facts.push({
+      kind: "execution_pattern", actor: "system", occurredAt: episode.endedAt,
+      summary: `Observed ${traces.filter((item) => item.kind === "context").length} turn contexts, ${traces.filter((item) => item.kind === "tool").length} tool traces, ${errors.length} errors, and ${humanInterventions} human interventions during this Episode.`,
+      sourceRef: structuredClone(ticketRef),
+    });
+    facts.push({
+      kind: "outcome", actor: "system", occurredAt: episode.endedAt,
+      summary: `Ticket and Agent Goal reached terminal outcome: ${episode.outcome}.`, sourceRef: structuredClone(ticketRef),
+    });
+    return facts
+      .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt) || left.kind.localeCompare(right.kind))
+      .slice(0, 32);
   }
 
   async collectMemoryUsage(episodes: ExperienceEpisode[]): Promise<EvolutionMemoryUsageObservation[]> {
@@ -142,6 +213,10 @@ async function failureFacts(workspace: Workspace, agentId: string, threadId: str
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value && typeof value === "object" && !Array.isArray(value)); }
+function bounded(value: string, limit = 2_000): string {
+  const redacted = redactEvolutionText(value).value.replace(/\s+/g, " ").trim();
+  return redacted.length <= limit ? redacted : `${redacted.slice(0, limit - 1)}…`;
+}
 function isRuntimeAssignment(value: unknown): value is { target?: string; promotionId: string; releaseId: string; selected: boolean } { return isRecord(value) && (value.target === undefined || typeof value.target === "string") && typeof value.promotionId === "string" && typeof value.releaseId === "string" && typeof value.selected === "boolean"; }
 function isNonNegativeNumber(value: unknown): boolean { return typeof value === "number" && Number.isFinite(value) && value >= 0; }
 function isTerminalTicketStatus(status: string): status is "completed" | "returned" | "failed" | "cancelled" { return ["completed", "returned", "failed", "cancelled"].includes(status); }

@@ -2525,6 +2525,7 @@ function EvolutionHub(props: {
   const memories = props.overview?.memories ?? [];
   const activations = props.overview?.activations ?? [];
   const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
+  const practiceDrafts = props.overview?.practiceDrafts ?? [];
   const practices = props.overview?.practices ?? [];
   const practiceBindings = props.overview?.practiceBindings ?? [];
   const pluginAuthoringJobs = props.overview?.pluginAuthoringJobs ?? [];
@@ -2568,13 +2569,21 @@ function EvolutionHub(props: {
             <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
             <div><span>已继承生产版本</span><strong>{activeProduction}</strong><small>{localActivations.filter((item) => item.status === "waiting_for_activation").length} 个等待下一 turn/session</small></div>
             <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
-            <div><span>实践与范围晋升</span><strong>{practices.length}</strong><small>{scopePromotions.filter((item) => !["approved", "rejected"].includes(item.status)).length} 个待治理提案</small></div>
+            <div><span>实践与范围晋升</span><strong>{practices.length}</strong><small>{practiceDrafts.filter((item) => item.status === "draft").length} 条反思草稿 · {scopePromotions.filter((item) => !["approved", "rejected"].includes(item.status)).length} 个待治理提案</small></div>
           </section>
 
           <div className="evolution-grid">
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Practice lineage</span><h3>实践与资产绑定</h3></div></header>
               <div className="evolution-list compact">
+                {practiceDrafts.length ? practiceDrafts.slice().reverse().map((draft) => <article key={draft.draftId}>
+                  <div><strong>{draft.statement}</strong><small>反思草稿 · {draft.applicability.ownerLevel} · {draft.sourceEpisodeRefs.length} Episode</small></div>
+                  <span className={`evolution-status ${draft.status}`}>{draft.status}</span>
+                  <p><b>触发：</b>{draft.trigger}</p>
+                  <p><b>做法：</b>{draft.procedure}</p>
+                  <code>{draft.draftId} · components {(draft.observedComponents ?? []).join(", ") || "unspecified"}</code>
+                  <small>尚未生效；需独立 Episode 复现、Dream consolidation、评测与晋升。</small>
+                </article>) : <p className="evolution-empty">尚无 Reflection 产出的实践草稿。</p>}
                 {practices.length ? practices.slice().reverse().map((practice) => {
                   const bindings = practiceBindings.filter((binding) => binding.practiceRef.id === practice.practiceId && binding.practiceRef.version === String(practice.version));
                   return <article key={`${practice.practiceId}:${practice.version}`}>

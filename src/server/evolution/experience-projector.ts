@@ -47,7 +47,19 @@ export function projectExperience(
     contentHash,
   };
   const timestamp = now().toISOString();
-  const attributions = (facts.failures ?? []).map((failure, index): ExperienceAttribution => {
+  const failureGroups = new Map<string, NonNullable<AuthoritativeEpisodeFacts["failures"]>[number]>();
+  for (const failure of facts.failures ?? []) {
+    const key = `${failure.component}\0${failure.symptom.trim()}\0${failure.cause.trim()}`;
+    const existing = failureGroups.get(key);
+    failureGroups.set(key, existing ? {
+      ...existing,
+      sourceRefs: uniqueRefs([...existing.sourceRefs, ...failure.sourceRefs]),
+      failedEvolutionAttempts: [...new Map([...(existing.failedEvolutionAttempts ?? []), ...(failure.failedEvolutionAttempts ?? [])]
+        .map((attempt) => [JSON.stringify(attempt), structuredClone(attempt)])).values()],
+    } : failure);
+  }
+  const distinctFailures = [...failureGroups.values()];
+  const attributions = distinctFailures.map((failure, index): ExperienceAttribution => {
     const symptom = redactEvolutionText(failure.symptom);
     const cause = redactEvolutionText(failure.cause);
     const redactionCount = symptom.count + cause.count;

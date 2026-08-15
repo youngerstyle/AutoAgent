@@ -12,7 +12,13 @@ export class PlatformEvolutionSourceVerifier implements EvolutionSourceVerificat
 
   async verify(ref: EvolutionSourceRef): Promise<boolean> {
     if (ref.workspaceId !== this.workspaceId) return false;
-    if (ref.kind === "evidence" || ref.kind === "human_feedback") return Boolean(await new EvidenceLedger(this.workspaceRoot).get(ref.ref));
+    if (ref.kind === "evidence") return Boolean(await new EvidenceLedger(this.workspaceRoot).get(ref.ref));
+    if (ref.kind === "human_feedback") {
+      if (await new EvidenceLedger(this.workspaceRoot).get(ref.ref)) return true;
+      if (!ref.agentId) return false;
+      const aggregate = await new AgentStore(this.workspaceRoot, ref.agentId).read();
+      return aggregate.payloads.some((item) => isHumanMessage(item.value, ref.ref));
+    }
     if (ref.kind === "trace") return Boolean(ref.agentId && (await new AgentTraceStore(this.workspaceRoot, ref.agentId).list()).some((trace) => trace.traceId === ref.ref));
     if (ref.kind === "goal_proposal" || ref.kind === "goal_decision") {
       if (!ref.agentId) return false;
@@ -27,6 +33,12 @@ export class PlatformEvolutionSourceVerifier implements EvolutionSourceVerificat
     }
     return false;
   }
+}
+
+function isHumanMessage(value: unknown, messageId: string): boolean {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && (value as Record<string, unknown>).senderPrincipalId === "human"
+    && (value as Record<string, unknown>).messageId === messageId);
 }
 
 export function platformEvolutionStore(

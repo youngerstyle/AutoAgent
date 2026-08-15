@@ -39,3 +39,15 @@
 - 重复/包含/冲突 Memory 的合并建议和证据迁移；
 - 按 Company 配置半衰期、stale/archive 窗口和注入预算；
 - 管理页展示评分拆解、未入选原因、生命周期时间线与恢复入口。
+
+## Reflection 因果验证 V2
+
+状态：待实现
+
+- 对人工干预、自动恢复动作和最终结果建立显式 effect window；
+- 从相似任务中构造未采用该 Practice 的本地 control，不跨 Company 取样；
+- 标记 Provider 自然恢复、环境变化、人工补充输入等混杂因素；
+- 为 PracticeDraft 增加因果置信度、支持证据和反证据，不让模型文字替代测量；
+- 提供 draft reject/supersede 与同义合并，清理历史低质量草稿但保留审计事件。
+
+退出标准：单 Episode 只能产生候选假设；只有独立复现和效果证据达到门禁后才能进入 Practice/Candidate，且所有结论可回查到本地 Episode、Trace、人工消息和 Evidence。

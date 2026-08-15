@@ -182,7 +182,8 @@ export class EvolutionCoordinator {
   private async runReflections(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
     const limit = this.options.maxReflectionSignalsPerWorkspace ?? 4;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Evolution reflection drain limit is invalid");
-    const worker = new EvolutionReflectionWorker(workspace.id, workspace.rootPath, undefined, undefined, undefined, undefined, () => this.now(), this.options.practiceReflector);
+    const observations = this.options.observationPort?.(workspace) ?? EMPTY_EVOLUTION_OBSERVATION_PORT;
+    const worker = new EvolutionReflectionWorker(workspace.id, workspace.rootPath, undefined, undefined, undefined, undefined, () => this.now(), this.options.practiceReflector, observations);
     let processed = 0;
     while (processed < limit && await worker.runNext(`${this.workerId}:reflection`)) processed += 1;
     return processed;

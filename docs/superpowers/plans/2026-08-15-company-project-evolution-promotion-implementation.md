@@ -92,6 +92,10 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
 
 - [x] 定义 Practice、不可变 PracticeRevision、Binding 和 provenance contracts；新证据产生同一 practiceId 的下一版本，不能原地改写或借 revision 扩 scope。
 - [x] 从 Episode/Attribution 归纳开放式 hypothesis、trigger、procedure、scope 和 contraindications；成功 Episode 可由配置的真实 Provider 从权威事实开放归纳，不使用规则目录。
+- [x] Reflection 不再只接收 Episode 终态元数据。平台 Adapter 将 Goal、执行错误、人工干预、Evidence、执行模式和最终结果转换为 Evol 自有、脱敏、有时间顺序的 `EvolutionReflectionFact`；Evol 内核不反向读取 Ticket、Agent Loop 或 Mission Store。
+- [x] 成功 Episode 中出现“错误/停滞 → 人工干预 → 成功”时，结构化错误归因与 Provider 过程反思并行评估；过程证据优先形成具体恢复 PracticeDraft，避免把每次瞬时错误机械改写成泛化规则。
+- [x] Provider 反思输出执行严格字段校验，并允许一次带验证原因的结构修复；连续不合格仍进入 durable retry/dead-letter，不伪造草稿。
+- [x] 同一 Episode 的同类 Attribution 在投影和 Reflection 阶段去重；Reflection Fact 与人工消息引用进入草稿 provenance，后续 Candidate 验证可回查原始消息。
 - [x] 禁止无来源、单次偶然或预设模板反向归因生成 Practice；Dream 至少要求两个独立 Episode，Provider 证据不足必须返回空数组。
 
 ## Milestone D：个人与项目实验
@@ -118,5 +122,6 @@ release created mid-turn ----------> current snapshot unchanged; next boundary r
   - Memory/Prompt/Skill/Plugin/AgentProfile 使用 turn/session snapshot；Workflow 使用 task snapshot；Company Runtime Config 使用 process boot snapshot，均从各自共享层账本记录激活证明。
 - [x] 项目 Memory pin 与所有项目/agent-project active override 均位于本地层，层级优先于 Company；Company rollback 只修改 Company 共享层 pointer，互不改写。
 - [x] UI 展示 Practice 的 Workspace/profile/Episode 来源与 revision、Binding/authoring、Agent/项目效果 refs、scope 晋升、结构化公司评审、trial、Company/Agent/local active、inheritance 与 rollback lineage，以及 Reflection/Dream 可恢复状态。
+- [x] UI 直接展示尚未生效的 PracticeDraft、触发条件、具体做法、组件归因和 Episode 数量，并明确区分“已总结”与“已晋升生效”。
 
 退出标准：主规范第 12 节十五条完成定义全部有真实多 Agent、多 Workspace 与双私有实例端到端证据。

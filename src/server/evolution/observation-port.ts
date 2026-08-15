@@ -33,12 +33,35 @@ export interface EvolutionRuntimeTelemetryObservation {
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
+export type EvolutionReflectionFactKind =
+  | "goal"
+  | "instruction"
+  | "human_intervention"
+  | "execution_pattern"
+  | "error"
+  | "evidence"
+  | "outcome";
+
+/**
+ * A bounded, redacted, chronological fact that Evol may give to a reflector.
+ * Operational frameworks are translated into this contract by an adapter; the
+ * reflection worker never reads Ticket, Mission, or Agent Loop stores itself.
+ */
+export interface EvolutionReflectionFact {
+  kind: EvolutionReflectionFactKind;
+  summary: string;
+  occurredAt: string;
+  sourceRef: EvolutionSourceRef;
+  actor?: "human" | "agent" | "system";
+}
+
 /**
  * Anti-corruption boundary between Evol and operational frameworks. Evol owns
  * these normalized observations and never reads Ticket, Mission, or Agent stores.
  */
 export interface EvolutionObservationPort {
   collectEpisodeFacts(): Promise<EvolutionEpisodeObservationBatch>;
+  collectReflectionFacts(episode: ExperienceEpisode): Promise<EvolutionReflectionFact[]>;
   collectMemoryUsage(episodes: ExperienceEpisode[]): Promise<EvolutionMemoryUsageObservation[]>;
   collectCompactions(afterSequences: Record<string, number>): Promise<EvolutionCompactionObservation[]>;
   collectRuntimeTelemetry(agentId?: string): Promise<EvolutionRuntimeTelemetryObservation[]>;
@@ -47,6 +70,7 @@ export interface EvolutionObservationPort {
 
 export const EMPTY_EVOLUTION_OBSERVATION_PORT: EvolutionObservationPort = {
   async collectEpisodeFacts() { return { inspectedWorkItems: 0, skippedWorkItems: 0, facts: [] }; },
+  async collectReflectionFacts() { return []; },
   async collectMemoryUsage() { return []; },
   async collectCompactions() { return []; },
   async collectRuntimeTelemetry() { return []; },

@@ -3,8 +3,8 @@ import { EvolutionSignalStore } from "./evolution-signal-store.js";
 import { ExperienceStore } from "./experience-store.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
-import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import type { PracticeReflector } from "./practice-reflector.js";
+import { EMPTY_EVOLUTION_OBSERVATION_PORT, type EvolutionObservationPort } from "./observation-port.js";
 
 export class EvolutionReflectionWorker {
   constructor(
@@ -16,6 +16,7 @@ export class EvolutionReflectionWorker {
     private readonly jobs = new EvolutionPhaseJobStore(workspaceId, workspaceRoot),
     private readonly now: () => Date = () => new Date(),
     private readonly reflector?: PracticeReflector,
+    private readonly observations: EvolutionObservationPort = EMPTY_EVOLUTION_OBSERVATION_PORT,
   ) {}
 
   async runNext(workerId: string): Promise<{ signalId: string; drafts: EvolutionPracticeDraft[] } | undefined> {
@@ -39,16 +40,28 @@ export class EvolutionReflectionWorker {
       if (!episode && signal.episodeId) throw new Error(`Evolution signal episode is missing: ${signal.episodeId}`);
       const attributions = signal.episodeId ? (await this.experience.listAttributions()).filter((item) => item.episodeId === signal.episodeId && item.component !== "unknown" && item.confidence >= 0.8) : [];
       const created: EvolutionPracticeDraft[] = [];
-      for (const attribution of attributions) created.push(await this.drafts.create(draftFrom(signal.signalId, episode!.profileId, episode!.episodeId, attribution)));
-      if (episode && !attributions.length && this.reflector && await this.reflector.available()) {
-        const ledger = new EvidenceLedger(this.workspaceRoot); const sourceFacts = [];
-        for (const ref of episode.sourceRefs.filter((item) => item.kind === "evidence" || item.kind === "human_feedback")) { const fact = await ledger.get(ref.ref); if (fact) sourceFacts.push(fact); }
-        const hypotheses = await this.reflector.reflect(episode, sourceFacts);
-        for (const [index, hypothesis] of hypotheses.entries()) created.push(await this.drafts.create({
-          commandId: `provider-reflection:${signal.signalId}:${index}`, signalId: signal.signalId, ...hypothesis,
-          applicability: { ownerLevel: "agent_project", workspaceId: this.workspaceId, profileId: episode.profileId },
-          sourceEpisodeRefs: [episode.episodeId], sourceRefs: structuredClone(episode.sourceRefs),
-        }));
+      const uniqueAttributions = new Map(attributions.map((item) => [`${item.component}\0${item.symptom}\0${item.cause}`, item]));
+      const reflector = this.reflector;
+      const canReflect = Boolean(episode && reflector && await reflector.available());
+      const sourceFacts = canReflect ? await this.observations.collectReflectionFacts(episode!) : [];
+      const processEvidence = sourceFacts.some((fact) => fact.kind === "human_intervention")
+        || ["user_correction", "recovered_failure", "manual"].includes(signal.trigger);
+      // Successful recoveries need chronological semantic reflection. Turning
+      // every transient error into a generic draft loses the intervention that
+      // changed the run and floods Dream with low-value duplicates.
+      if (episode?.outcome !== "succeeded" || !processEvidence) {
+        for (const attribution of uniqueAttributions.values()) created.push(await this.drafts.create(draftFrom(signal.signalId, episode!.profileId, episode!.episodeId, attribution)));
+      }
+      if (episode && canReflect) {
+        if (!attributions.length || processEvidence) {
+          const hypotheses = await reflector!.reflect(episode, sourceFacts);
+          const sourceRefs = uniqueRefs([...episode.sourceRefs, ...sourceFacts.map((fact) => fact.sourceRef)]);
+          for (const [index, hypothesis] of hypotheses.entries()) created.push(await this.drafts.create({
+            commandId: `provider-reflection:${signal.signalId}:${index}`, signalId: signal.signalId, ...hypothesis,
+            applicability: { ownerLevel: "agent_project", workspaceId: this.workspaceId, profileId: episode.profileId },
+            sourceEpisodeRefs: [episode.episodeId], sourceRefs,
+          }));
+        }
       }
       await this.signals.succeed(signal.signalId, signal.lease!.token);
       await this.jobs.succeed(job.jobId, job.lease!.token);
@@ -61,6 +74,8 @@ export class EvolutionReflectionWorker {
     }
   }
 }
+
+function uniqueRefs<T>(refs: T[]): T[] { return [...new Map(refs.map((ref) => [JSON.stringify(ref), structuredClone(ref)])).values()]; }
 
 function draftFrom(signalId: string, profileId: string, episodeId: string, item: ExperienceAttribution): Omit<EvolutionPracticeDraft, "draftId" | "provenanceHash" | "status" | "createdAt" | "updatedAt"> {
   return {
