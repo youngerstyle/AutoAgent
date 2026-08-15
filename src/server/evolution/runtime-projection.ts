@@ -460,7 +460,10 @@ function matchesScope(
     && pointer.scope.organization?.id === organizationSource.organizationId
     && pointer.scope.organization.workspaceIds.includes(workspaceId),
   );
-  return identityMatches && matchesEvolutionOwner(scopeOf(pointer), workspaceId, agent)
+  const ownerMatches = organizationSource && pointer.scope.ownerLevel === undefined
+    ? true
+    : matchesEvolutionOwner(scopeOf(pointer), workspaceId, agent);
+  return identityMatches && ownerMatches
     && (!pointer.scope.roles?.length || pointer.scope.roles.includes(agent.roleInWorkspace))
     && (!pointer.scope.providers?.length || pointer.scope.providers.includes(agent.provider ?? profile.defaultProvider))
     && (!pointer.scope.models?.length || pointer.scope.models.includes(agent.model ?? profile.defaultModel))
