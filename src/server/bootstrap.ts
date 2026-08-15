@@ -10,6 +10,7 @@ import { PlanPolicyStore } from "./tickets/plan-policy-store.js";
 import type { RuntimeHostRegistry } from "./runtime/runtime-host-registry.js";
 import { RuntimeRestorationController } from "./runtime/runtime-restoration.js";
 import { ServiceInstanceLock } from "./storage/service-instance-lock.js";
+import { CompanyIdentityStore } from "./storage/company-identity-store.js";
 
 export type AutoAgentServer = Server & {
   stopRuntimeHosts(): Promise<void>;
@@ -24,6 +25,7 @@ export async function bootstrapServer(
   config: AppConfig = loadConfig(),
   options: BootstrapOptions = {},
 ): Promise<Express> {
+  await new CompanyIdentityStore(config.autoAgentHome).getOrCreate();
   const policyStore = new PlanPolicyStore(config.autoAgentHome);
   await seedMinimalTeamPlanPolicy(policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
   const app = createApp(config);

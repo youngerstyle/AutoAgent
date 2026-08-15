@@ -21,6 +21,14 @@ export function globalWorkspacesFile(home: string): string {
   return path.join(home, "workspaces.json");
 }
 
+export function globalCompanyIdentityFile(home: string): string {
+  return path.join(home, "company.json");
+}
+
+export function globalCompanyEvolutionDir(home: string): string {
+  return path.join(home, "evolution");
+}
+
 export function workspaceAutoAgentDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, ".autoagent");
 }
