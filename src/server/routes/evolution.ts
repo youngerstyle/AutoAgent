@@ -6,7 +6,6 @@ import { EvolutionEvaluationStore } from "../evolution/evaluation-store.js";
 import { ExperienceStore } from "../evolution/experience-store.js";
 import { ExtractionJobStore } from "../evolution/extraction-job-store.js";
 import { ExtractionRunner } from "../evolution/extraction-runner.js";
-import { MemoryConsolidator } from "../evolution/memory-consolidator.js";
 import { EvolutionEvalSuiteStore } from "../evolution/eval-suite-store.js";
 import { EvaluationJobStore } from "../evolution/evaluation-job-store.js";
 import { EvolutionReleaseRegistry } from "../evolution/release-registry.js";
@@ -17,9 +16,13 @@ import { asyncHandler, HttpError } from "../errors.js";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
-import { PromptConsolidator } from "../evolution/prompt-consolidator.js";
-import { SkillConsolidator } from "../evolution/skill-consolidator.js";
 import { EvolutionAssetSelector } from "../evolution/asset-selector.js";
+import { PracticeDraftStore } from "../evolution/practice-draft-store.js";
+import { PracticeStore } from "../evolution/practice-store.js";
+import { PracticeBindingStore } from "../evolution/practice-binding-store.js";
+import { CompanyIdentityStore } from "../storage/company-identity-store.js";
+import { ScopePromotionStore } from "../evolution/scope-promotion-store.js";
+import { SharedEvolutionReleaseRegistry } from "../evolution/shared-release-registry.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -113,6 +116,47 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const store = new ExperienceStore(workspace.id, workspace.rootPath);
     res.json({ episodes: await store.listEpisodes(), attributions: await store.listAttributions() });
   }));
+  router.get("/practices", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    res.json({
+      drafts: await new PracticeDraftStore(workspace.id, workspace.rootPath).list(),
+      practices: await new PracticeStore(workspace.id, workspace.rootPath).list(),
+      bindings: await new PracticeBindingStore(workspace.rootPath).list(),
+    });
+  }));
+  router.get("/scope-promotions", asyncHandler(async (_req, res) => {
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    res.json({ company: identity, proposals: await new ScopePromotionStore(workspaces.homePath(), identity.companyId).list() });
+  }));
+  router.post("/scope-promotions", asyncHandler(async (req, res) => {
+    const workspaceId = String(req.params.workspaceId);
+    await workspaces.get(workspaceId);
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const targetScope = { ...(req.body?.targetScope ?? {}) };
+    if (targetScope.ownerLevel === "project" || targetScope.ownerLevel === "agent_project") targetScope.workspaceId = workspaceId;
+    const proposal = await new ScopePromotionStore(workspaces.homePath(), identity.companyId).propose({
+      commandId: typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), companyId: identity.companyId,
+      origin: req.body?.origin, targetScope, originReleaseRef: req.body?.originReleaseRef, practiceRef: req.body?.practiceRef,
+      inheritanceProofRefs: req.body?.inheritanceProofRefs, effectWindowRefs: req.body?.effectWindowRefs, generalizationRisks: req.body?.generalizationRisks ?? [],
+    });
+    res.status(201).json({ proposal });
+  }));
+  router.post("/scope-promotions/:proposalId/transition", asyncHandler(async (req, res) => {
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const proposal = await new ScopePromotionStore(workspaces.homePath(), identity.companyId).transition(
+      typeof req.body?.commandId === "string" ? req.body.commandId : randomUUID(), String(req.params.proposalId), req.body?.status,
+      { type: "human", id: principalId(req) },
+    );
+    res.json({ proposal });
+  }));
+  router.post("/scope-promotions/:proposalId/rollback", asyncHandler(async (req, res) => {
+    const identity = await new CompanyIdentityStore(workspaces.homePath()).getOrCreate();
+    const proposals = new ScopePromotionStore(workspaces.homePath(), identity.companyId);
+    const pointer = await new SharedEvolutionReleaseRegistry(workspaces.homePath(), identity.companyId, proposals).rollback(
+      String(req.params.proposalId), { type: "human", id: principalId(req) },
+    );
+    res.json({ pointer });
+  }));
   router.post("/episodes/reconcile", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
     const jobs = new ExtractionJobStore(workspace.id, workspace.rootPath);
@@ -124,33 +168,6 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   router.get("/extraction-jobs", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
     res.json({ jobs: await new ExtractionJobStore(workspace.id, workspace.rootPath).list() });
-  }));
-  router.post("/memory-candidates/consolidate", asyncHandler(async (req, res) => {
-    const workspace = await workspaces.get(String(req.params.workspaceId));
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
-    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
-    const result = await new MemoryConsolidator(workspace.id, experience, candidates).consolidate(
-      req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
-    );
-    res.json({ result });
-  }));
-  router.post("/prompt-candidates/consolidate", asyncHandler(async (req, res) => {
-    const workspace = await workspaces.get(String(req.params.workspaceId));
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
-    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
-    const result = await new PromptConsolidator(workspace.id, experience, candidates).consolidate(
-      req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
-    );
-    res.json({ result });
-  }));
-  router.post("/skill-candidates/consolidate", asyncHandler(async (req, res) => {
-    const workspace = await workspaces.get(String(req.params.workspaceId));
-    const candidates = new EvolutionStore(workspace.id, workspace.rootPath);
-    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
-    const result = await new SkillConsolidator(workspace.id, experience, candidates).consolidate(
-      req.body?.minimumEpisodes === undefined ? 2 : Number(req.body.minimumEpisodes),
-    );
-    res.json({ result });
   }));
   router.get("/asset-selections", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));

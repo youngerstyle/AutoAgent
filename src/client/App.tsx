@@ -52,6 +52,8 @@ import {
   pinEvolutionMemory,
   reconcileEvolution,
   restoreEvolutionMemory,
+  rollbackEvolutionScopePromotion,
+  transitionEvolutionScopePromotion,
   pauseTask,
   removeWorkspaceAgent,
   reconcileHealth,
@@ -971,6 +973,8 @@ export function App() {
               onMaintain={() => void runEvolutionAction(() => maintainEvolutionMemories(selectedId))}
               onPin={(releaseId, pinned) => void runEvolutionAction(() => pinEvolutionMemory(selectedId, releaseId, pinned))}
               onRestore={(releaseId) => void runEvolutionAction(() => restoreEvolutionMemory(selectedId, releaseId))}
+              onScopeTransition={(proposalId, status) => void runEvolutionAction(() => transitionEvolutionScopePromotion(selectedId, proposalId, status))}
+              onScopeRollback={(proposalId) => void runEvolutionAction(() => rollbackEvolutionScopePromotion(selectedId, proposalId))}
             />
           ) : null}
         </section>
@@ -2486,6 +2490,8 @@ function EvolutionHub(props: {
   onMaintain: () => void;
   onPin: (releaseId: string, pinned: boolean) => void;
   onRestore: (releaseId: string) => void;
+  onScopeTransition: (proposalId: string, status: "reviewed" | "trial" | "approved" | "rejected") => void;
+  onScopeRollback: (proposalId: string) => void;
 }) {
   const candidates = props.overview?.candidates ?? [];
   const releases = props.overview?.releases ?? [];
@@ -2493,6 +2499,9 @@ function EvolutionHub(props: {
   const memories = props.overview?.memories ?? [];
   const activations = props.overview?.activations ?? [];
   const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
+  const practices = props.overview?.practices ?? [];
+  const practiceBindings = props.overview?.practiceBindings ?? [];
+  const scopePromotions = props.overview?.scopePromotions ?? [];
   const localAssetKinds = new Set(["memory", "prompt", "skill", "plugin", "harness"]);
   const localCandidates = candidates.filter((item) => localAssetKinds.has(item.kind));
   const localCandidateIds = new Set(localCandidates.map((item) => item.candidateId));
@@ -2526,9 +2535,47 @@ function EvolutionHub(props: {
             <div><span>待评测作业</span><strong>{pendingJobs}</strong><small>含 pending、running、retry</small></div>
             <div><span>已继承生产版本</span><strong>{activeProduction}</strong><small>{localActivations.filter((item) => item.status === "waiting_for_activation").length} 个等待下一 turn/session</small></div>
             <div><span>长期记忆</span><strong>{memories.length}</strong><small>active / stale / archived</small></div>
+            <div><span>实践与范围晋升</span><strong>{practices.length}</strong><small>{scopePromotions.filter((item) => !["approved", "rejected"].includes(item.status)).length} 个待治理提案</small></div>
           </section>
 
           <div className="evolution-grid">
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Practice lineage</span><h3>实践与资产绑定</h3></div></header>
+              <div className="evolution-list compact">
+                {practices.length ? practices.slice().reverse().map((practice) => {
+                  const bindings = practiceBindings.filter((binding) => binding.practiceRef.id === practice.practiceId && binding.practiceRef.version === String(practice.version));
+                  return <article key={`${practice.practiceId}:${practice.version}`}>
+                    <div><strong>{practice.statement}</strong><small>{practice.applicability.ownerLevel} · v{practice.version} · {practice.sourceEpisodeRefs.length} Episodes</small></div>
+                    <span className={`evolution-status ${practice.status}`}>{practice.status}</span>
+                    <p>{practice.procedure}</p>
+                    <code>{practice.practiceId} · bindings {bindings.map((binding) => `${binding.kind}:${binding.status}`).join(", ") || "none"}</code>
+                  </article>;
+                }) : <p className="evolution-empty">尚无经过 Dream consolidation 的 Practice。</p>}
+              </div>
+            </section>
+
+            <section className="evolution-panel">
+              <header><div><span className="section-kicker">Scope governance</span><h3>Agent / Project / Company 晋升</h3></div><small>{props.overview?.companyId}</small></header>
+              <div className="evolution-list compact">
+                {scopePromotions.length ? scopePromotions.slice().reverse().map((proposal) => (
+                  <article key={proposal.proposalId}>
+                    <div><strong>{proposal.origin.ownerLevel} → {proposal.targetScope.ownerLevel}</strong><small>{proposal.effectWindowRefs.length} effect windows · {proposal.inheritanceProofRefs.length} inheritance proofs</small></div>
+                    <span className={`evolution-status ${proposal.status}`}>{proposal.status}</span>
+                    <p>Practice {proposal.practiceRef.id}@{proposal.practiceRef.version}{proposal.generalizationRisks.length ? ` · risks: ${proposal.generalizationRisks.join("; ")}` : ""}</p>
+                    <code>{proposal.originReleaseRef.id}@{proposal.originReleaseRef.version}</code>
+                    <div className="memory-actions">
+                      {proposal.status === "proposed" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "reviewed")} disabled={props.loading}>评审通过</button> : null}
+                      {proposal.status === "reviewed" && proposal.targetScope.ownerLevel === "company" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "trial")} disabled={props.loading}>进入跨项目 Trial</button> : null}
+                      {proposal.status === "reviewed" && proposal.targetScope.ownerLevel !== "company" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "approved")} disabled={props.loading}>批准晋升</button> : null}
+                      {proposal.status === "trial" ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "approved")} disabled={props.loading}>批准公司发布</button> : null}
+                      {["proposed", "reviewed", "trial"].includes(proposal.status) ? <button type="button" onClick={() => props.onScopeTransition(proposal.proposalId, "rejected")} disabled={props.loading}>拒绝</button> : null}
+                      {proposal.status === "approved" && ["agent", "company"].includes(proposal.targetScope.ownerLevel) ? <button type="button" onClick={() => props.onScopeRollback(proposal.proposalId)} disabled={props.loading}>回滚共享层</button> : null}
+                    </div>
+                  </article>
+                )) : <p className="evolution-empty">尚无范围扩大提案；局部成功不会自动影响其他 Agent 或项目。</p>}
+              </div>
+            </section>
+
             <section className="evolution-panel">
               <header><div><span className="section-kicker">Activation reconciliation</span><h3>激活、继承与效果</h3></div></header>
               <div className="evolution-list compact">

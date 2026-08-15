@@ -1742,7 +1742,7 @@ button {
 
 .evolution-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   border-bottom: 1px solid var(--hq-line);
   background: #fff;
 }
@@ -1807,6 +1807,8 @@ button {
 
 .evolution-status.validated,
 .evolution-status.active,
+.evolution-status.approved,
+.evolution-status.reviewed,
 .evolution-status.succeeded { background: #e4f3ec; color: #176a4e; }
 .evolution-status.rejected,
 .evolution-status.failed,
@@ -1814,6 +1816,7 @@ button {
 .evolution-status.rolled_back,
 .evolution-status.archived { background: #fae9e7; color: #a2443b; }
 .evolution-status.running,
+.evolution-status.trial,
 .evolution-status.retry_wait,
 .evolution-status.stale { background: #fff1d9; color: #8c5b0a; }
 

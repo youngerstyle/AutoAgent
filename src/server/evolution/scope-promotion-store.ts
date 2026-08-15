@@ -13,7 +13,12 @@ export class ScopePromotionStore {
   constructor(private readonly homeDir: string, private readonly companyId: string, private readonly now: () => Date = () => new Date()) {}
 
   async propose(input: ProposalInput): Promise<EvolutionScopePromotionProposal> {
-    const normalized = { ...structuredClone(input), inheritanceProofRefs: unique(input.inheritanceProofRefs), effectWindowRefs: unique(input.effectWindowRefs), generalizationRisks: unique(input.generalizationRisks) };
+    const normalized = {
+      ...structuredClone(input),
+      inheritanceProofRefs: unique(Array.isArray(input.inheritanceProofRefs) ? input.inheritanceProofRefs : []),
+      effectWindowRefs: unique(Array.isArray(input.effectWindowRefs) ? input.effectWindowRefs : []),
+      generalizationRisks: unique(Array.isArray(input.generalizationRisks) ? input.generalizationRisks : []),
+    };
     validateProposal(normalized, this.companyId);
     return this.exclusive(async () => {
       const events = await this.readEvents(); const fingerprint = canonical(normalized);

@@ -100,6 +100,27 @@ describe("workspace evolution candidate control plane", () => {
       .expect(({ body }) => expect(body.error).toContain("Evolution ledger is corrupt"));
   });
 
+  it("exposes Practice lineage and governs scope promotion without legacy direct consolidation", async () => {
+    const { app, base, workspaceId } = await fixture();
+    await request(app).get(`${base}/practices`).expect(200).expect(({ body }) => {
+      expect(body).toEqual({ drafts: [], practices: [], bindings: [] });
+    });
+    const created = await request(app).post(`${base}/scope-promotions`).send({
+      commandId: "api-scope-promotion", origin: { ownerLevel: "agent_project", workspaceId, profileId: "profile-a" },
+      targetScope: { ownerLevel: "agent", profileId: "profile-a" },
+      originReleaseRef: { id: "release-a", version: "1", contentHash: "a".repeat(64) },
+      practiceRef: { id: "practice-a", version: "1", contentHash: "b".repeat(64) },
+      inheritanceProofRefs: ["proof-a"], effectWindowRefs: ["effect-a"], generalizationRisks: [],
+    }).expect(201);
+    expect(created.body.proposal).toMatchObject({ companyId: expect.stringMatching(/^company_/), status: "proposed", targetScope: { ownerLevel: "agent", profileId: "profile-a" } });
+    await request(app).post(`${base}/scope-promotions/${created.body.proposal.proposalId}/transition`).set("x-autoagent-principal-id", "owner-a").send({ commandId: "api-review", status: "reviewed" }).expect(200);
+    await request(app).post(`${base}/scope-promotions/${created.body.proposal.proposalId}/transition`).set("x-autoagent-principal-id", "owner-a").send({ commandId: "api-approve", status: "approved" }).expect(200);
+    await request(app).get(`${base}/scope-promotions`).expect(200).expect(({ body }) => {
+      expect(body.proposals).toEqual([expect.objectContaining({ proposalId: created.body.proposal.proposalId, status: "approved" })]);
+    });
+    await request(app).post(`${base}/memory-candidates/consolidate`).send({ minimumEpisodes: 2 }).expect(404);
+  });
+
   it("manages immutable evaluation suites without exposing a score-submission endpoint", async () => {
     const { app, base } = await fixture();
     const cases = [
@@ -132,7 +153,7 @@ describe("workspace evolution candidate control plane", () => {
     const app = createApp();
     const workspace = await request(app).post("/api/workspaces").send({ name: "Evolving company", rootPath: workspaceRoot }).expect(201);
     await new EvidenceLedger(workspaceRoot).append({ evidenceId: "evidence-a", agentId: "api-user", threadId: "thread", goalId: "goal", turnId: "turn", toolCallId: "call", toolName: "fixture", kind: "tool", capture: { status: "recorded" }, observation: { status: "observed", result: {} }, workspaceRoot, createdAt: "2026-08-14T00:00:00.000Z", input: {} });
-    return { app, base: `/api/workspaces/${workspace.body.workspace.id}/evolution` };
+    return { app, base: `/api/workspaces/${workspace.body.workspace.id}/evolution`, workspaceId: workspace.body.workspace.id as string };
   }
 
   function candidateInput(commandId: string) {

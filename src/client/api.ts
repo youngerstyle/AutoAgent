@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord } from "../shared/contracts/evolution";
+import type { EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PromotionRecord, ScopePromotionStatus } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -197,20 +197,40 @@ export interface EvolutionOverview {
   memories: MemoryLifecycleState[];
   activations: EvolutionActivationRecord[];
   inheritanceProofs: EvolutionInheritanceProof[];
+  practiceDrafts: EvolutionPracticeDraft[];
+  practices: EvolutionPractice[];
+  practiceBindings: EvolutionPracticeBinding[];
+  scopePromotions: EvolutionScopePromotionProposal[];
+  companyId: string;
   worker: EvolutionWorkerStatus;
 }
 
 export async function getEvolutionOverview(workspaceId: string): Promise<EvolutionOverview> {
   const root = `/api/workspaces/${workspaceId}/evolution`;
-  const [candidates, releases, jobs, memories, activations, worker] = await Promise.all([
+  const [candidates, releases, jobs, memories, activations, practices, promotions, worker] = await Promise.all([
     api<{ candidates: EvolutionCandidate[] }>(`${root}/candidates`),
     api<{ releases: PromotionRecord[] }>(`${root}/releases`),
     api<{ jobs: EvaluationJob[] }>(`${root}/evaluation-jobs`),
     api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
     api<{ activations: EvolutionActivationRecord[]; proofs: EvolutionInheritanceProof[] }>(`${root}/activations`),
+    api<{ drafts: EvolutionPracticeDraft[]; practices: EvolutionPractice[]; bindings: EvolutionPracticeBinding[] }>(`${root}/practices`),
+    api<{ company: { companyId: string }; proposals: EvolutionScopePromotionProposal[] }>(`${root}/scope-promotions`),
     api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
   ]);
-  return { candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories, activations: activations.activations, inheritanceProofs: activations.proofs, worker: worker.worker };
+  return {
+    candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories,
+    activations: activations.activations, inheritanceProofs: activations.proofs,
+    practiceDrafts: practices.drafts, practices: practices.practices, practiceBindings: practices.bindings,
+    scopePromotions: promotions.proposals, companyId: promotions.company.companyId, worker: worker.worker,
+  };
+}
+
+export function transitionEvolutionScopePromotion(workspaceId: string, proposalId: string, status: Exclude<ScopePromotionStatus, "proposed">): Promise<{ proposal: EvolutionScopePromotionProposal }> {
+  return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/transition`, { method: "POST", body: JSON.stringify({ commandId: crypto.randomUUID(), status }) });
+}
+
+export function rollbackEvolutionScopePromotion(workspaceId: string, proposalId: string): Promise<unknown> {
+  return api(`/api/workspaces/${workspaceId}/evolution/scope-promotions/${proposalId}/rollback`, { method: "POST", body: "{}" });
 }
 
 export function pinEvolutionMemory(workspaceId: string, releaseId: string, pinned: boolean): Promise<{ memory: MemoryLifecycleState }> {
