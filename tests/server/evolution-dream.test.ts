@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { EvolutionDreamWorker } from "../../src/server/evolution/dream-worker.js";
+import { EvolutionDreamWorker, hasIndependentDraftCluster } from "../../src/server/evolution/dream-worker.js";
 import { PracticeDraftStore } from "../../src/server/evolution/practice-draft-store.js";
 import { PracticeStore } from "../../src/server/evolution/practice-store.js";
 
@@ -49,6 +49,40 @@ describe("Evolution Dream consolidation", () => {
     expect(await new EvolutionDreamWorker("workspace-a", drafts, practices).run(2)).toMatchObject({ clustersEligible: 0, clustersConflicted: 1, practicesProduced: 0 });
     expect(await practices.list()).toEqual([]);
     expect((await drafts.list()).map((draft) => draft.status)).toEqual(["draft", "draft"]);
+  });
+
+  it("clusters semantically equivalent reflection prose and keeps guardrails without treating them as counter-evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-dream-semantic-"));
+    const drafts = new PracticeDraftStore("workspace-a", root);
+    const practices = new PracticeStore("workspace-a", root);
+    await drafts.create({ ...draftInput("command-a", "signal-a", "episode-a", "evidence-a"),
+      statement: "Before implementation, brief the goal, scope, acceptance criteria, and risks to every participant",
+      trigger: "A multi-agent development handoff starts without shared understanding",
+      procedure: "Have the PM brief all roles, collect confirmations, record evidence, then begin coding",
+      guardrails: ["Verify the method in a comparable run before attributing improvement"],
+    });
+    await drafts.create({ ...draftInput("command-b", "signal-b", "episode-b", "evidence-b"),
+      statement: "开发阶段前由 PM 向所有参与者宣讲目标、范围、验收标准和风险",
+      trigger: "多角色项目进入开发阶段前尚未完成共同理解确认",
+      procedure: "逐一确认理解并记录宣讲凭证，再开始开发",
+      guardrails: ["不要把一次成功当成因果证明"],
+    });
+
+    expect(hasIndependentDraftCluster(await drafts.list(), 2)).toBe(true);
+    expect(await new EvolutionDreamWorker("workspace-a", drafts, practices).run(2)).toMatchObject({ clustersEligible: 1, clustersConflicted: 0, practicesProduced: 1 });
+    expect(await practices.list()).toEqual([expect.objectContaining({
+      sourceEpisodeRefs: ["episode-a", "episode-b"],
+      guardrails: expect.arrayContaining(["不要把一次成功当成因果证明"]),
+      contraindications: [],
+    })]);
+  });
+
+  it("does not reach the Dream threshold from two drafts belonging to one Episode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-dream-threshold-"));
+    const drafts = new PracticeDraftStore("workspace-a", root);
+    await drafts.create(draftInput("command-a", "signal-a", "episode-a", "evidence-a"));
+    await drafts.create({ ...draftInput("command-b", "signal-b", "episode-a", "evidence-b"), statement: "Brief the authoritative document before collaborative execution again" });
+    expect(hasIndependentDraftCluster(await drafts.list(), 2)).toBe(false);
   });
 });
 

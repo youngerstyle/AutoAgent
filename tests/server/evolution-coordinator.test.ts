@@ -166,6 +166,9 @@ describe("EvolutionCoordinator", () => {
     await new EvolutionCoordinator(workspaces, { now, maintenanceIntervalMs: 10_000, isWorkspaceIdle: () => false }).runOnce();
     expect(await new EvolutionPhaseJobStore(workspace.id, root, now).list()).toEqual([]);
     await new EvolutionCoordinator(workspaces, { now, maintenanceIntervalMs: 10_000, isWorkspaceIdle: () => false, maintenanceWindowUtc: { startHour: 3, endHour: 4 } }).runOnce();
+    // A later pass in the same maintenance bucket must replay the durable
+    // consolidation command instead of failing on a changed wall-clock input.
+    await new EvolutionCoordinator(workspaces, { now, maintenanceIntervalMs: 10_000, isWorkspaceIdle: () => false, maintenanceWindowUtc: { startHour: 3, endHour: 4 } }).runOnce();
     expect(await new EvolutionPhaseJobStore(workspace.id, root, now).list()).toEqual([expect.objectContaining({ kind: "consolidation", scheduleReason: "maintenance", status: "succeeded" })]);
   });
 });

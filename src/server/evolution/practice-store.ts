@@ -25,11 +25,13 @@ export class PracticeStore {
       const timestamp = this.now().toISOString();
       const practice: EvolutionPractice = {
         statement: input.statement,
+        ...(input.conceptKey ? { conceptKey: input.conceptKey } : {}),
         trigger: input.trigger,
         procedure: input.procedure,
         expectedOutcome: structuredClone(input.expectedOutcome),
         observedComponents: [...new Set(input.observedComponents)].sort(),
         applicability: structuredClone(input.applicability),
+        guardrails: [...new Set(input.guardrails ?? [])].sort(),
         contraindications: [...new Set(input.contraindications)].sort(),
         sourceDraftRefs: [...new Set(input.sourceDraftRefs)].sort(),
         sourceEpisodeRefs: [...new Set(input.sourceEpisodeRefs)].sort(),
@@ -60,8 +62,8 @@ export class PracticeStore {
       if (canonical(base.applicability) !== canonical(input.applicability)) throw new HttpError(409, "Practice revision cannot widen or change scope", "PRACTICE_SCOPE_PROMOTION_REQUIRED");
       if (!input.sourceEpisodeRefs.some((episodeId) => !base.sourceEpisodeRefs.includes(episodeId))) throw new HttpError(409, "Practice revision requires new independent Episode evidence", "PRACTICE_REVISION_EVIDENCE_REQUIRED");
       const timestamp = this.now().toISOString(); const practice: EvolutionPractice = {
-        statement: input.statement, trigger: input.trigger, procedure: input.procedure, expectedOutcome: structuredClone(input.expectedOutcome),
-        observedComponents: [...new Set(input.observedComponents)].sort(), applicability: structuredClone(input.applicability), contraindications: [...new Set(input.contraindications)].sort(),
+        statement: input.statement, ...(input.conceptKey ? { conceptKey: input.conceptKey } : {}), trigger: input.trigger, procedure: input.procedure, expectedOutcome: structuredClone(input.expectedOutcome),
+        observedComponents: [...new Set(input.observedComponents)].sort(), applicability: structuredClone(input.applicability), guardrails: [...new Set(input.guardrails ?? [])].sort(), contraindications: [...new Set(input.contraindications)].sort(),
         sourceDraftRefs: [...new Set(input.sourceDraftRefs)].sort(), sourceEpisodeRefs: [...new Set(input.sourceEpisodeRefs)].sort(), sourceRefs: uniqueRefs(input.sourceRefs),
         practiceId: base.practiceId, version: base.version + 1, provenanceHash: fingerprint, status: "candidate",
         previousRevision: { id: base.practiceId, version: String(base.version), contentHash: base.provenanceHash }, revisionReason: input.revisionReason.trim(), createdAt: timestamp, updatedAt: timestamp,

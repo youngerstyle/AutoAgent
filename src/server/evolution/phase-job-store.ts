@@ -20,7 +20,11 @@ export class EvolutionPhaseJobStore {
     return this.exclusive(async () => {
       const jobs = await this.project(); const replay = [...jobs.values()].find((job) => job.commandId === input.commandId);
       if (replay) {
-        if (canonical(jobInput(replay)) !== canonical({ ...input, maxAttempts: input.maxAttempts ?? 5 })) throw conflict("Evolution phase job command idempotency conflict");
+        // `availableAt` is a scheduling hint, not command identity. A retry
+        // after a process restart or clock tick must replay the same durable
+        // command instead of turning harmless timing drift into a worker-wide
+        // error. All semantic payload fields remain part of the fingerprint.
+        if (canonical(idempotencyInput(jobInput(replay))) !== canonical(idempotencyInput({ ...input, maxAttempts: input.maxAttempts ?? 5 }))) throw conflict("Evolution phase job command idempotency conflict");
         return structuredClone(replay);
       }
       const timestamp = this.now().toISOString();
@@ -92,6 +96,7 @@ function validate(input: EvolutionPhaseJobInput): void { if (!input.commandId?.t
   || !Number.isSafeInteger(input.maxAttempts ?? 5) || (input.maxAttempts ?? 5) < 1) throw invalid("Evolution phase job input is invalid"); }
 function jobInput(job: EvolutionPhaseJob): EvolutionPhaseJobInput { return { commandId: job.commandId, kind: job.kind, priority: job.priority, sourceDraftRefs: job.sourceDraftRefs,
   scheduleReason: job.scheduleReason, availableAt: job.availableAt, ...(job.profileId ? { profileId: job.profileId } : {}), ...(job.sourceSignalId ? { sourceSignalId: job.sourceSignalId } : {}), maxAttempts: job.maxAttempts }; }
+function idempotencyInput(input: EvolutionPhaseJobInput): EvolutionPhaseJobInput { const { availableAt: _availableAt, ...semantic } = input; return semantic as EvolutionPhaseJobInput; }
 function project(events: JobEvent[]): Map<string, EvolutionPhaseJob> { const jobs = new Map<string, EvolutionPhaseJob>(); for (const event of events) jobs.set(event.job.jobId, event.job); return jobs; }
 async function readEvents(file: string): Promise<JobEvent[]> { try { return (await readFile(file, "utf8")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as JobEvent); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; } }
 async function readLease(file: string): Promise<EvolutionPhaseJob["lease"]> { try { return JSON.parse(await readFile(file, "utf8")); } catch { return undefined; } }

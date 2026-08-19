@@ -20,7 +20,7 @@ import { CompanyTrialReconciler } from "./company-trial-reconciler.js";
 import { EvolutionTelemetryStore } from "./telemetry-store.js";
 import { EvolutionSignalIngestor } from "./evolution-signal-ingestor.js";
 import { EvolutionReflectionWorker } from "./reflection-worker.js";
-import { EvolutionDreamWorker } from "./dream-worker.js";
+import { EvolutionDreamWorker, hasIndependentDraftCluster } from "./dream-worker.js";
 import { PracticeDraftStore } from "./practice-draft-store.js";
 import { PracticeStore } from "./practice-store.js";
 import { PracticeBindingStore } from "./practice-binding-store.js";
@@ -198,17 +198,22 @@ export class EvolutionCoordinator {
     if (!Number.isSafeInteger(budget) || budget < 1 || budget > 10_000) throw new Error("Evolution idle Dream draft budget is invalid");
     const phaseJobs = new EvolutionPhaseJobStore(workspace.id, workspace.rootPath, () => this.now());
     const maintenanceIntervalMs = this.options.maintenanceIntervalMs ?? 5 * 60_000;
-    const bucket = Math.floor(this.now().getTime() / maintenanceIntervalMs);
-    const thresholdReached = new Set(pending.flatMap((draft) => draft.sourceEpisodeRefs)).size >= minimum;
+    const now = this.now();
+    const bucket = Math.floor(now.getTime() / maintenanceIntervalMs);
+    const thresholdReached = hasIndependentDraftCluster(pending, minimum);
     const idle = await (this.options.isWorkspaceIdle?.(workspace.id) ?? true);
-    const inMaintenanceWindow = maintenanceWindowAllows(this.now(), this.options.maintenanceWindowUtc);
+    const inMaintenanceWindow = maintenanceWindowAllows(now, this.options.maintenanceWindowUtc);
     const reason = thresholdReached ? "threshold" : idle ? "idle" : inMaintenanceWindow ? "maintenance" : undefined;
     if (!reason) return 0;
     const selectedDrafts = pending.slice(0, budget);
+    // Keep the schedule input stable for the whole maintenance bucket. Drafts
+    // that remain unresolved must be safely re-observed by a later pass rather
+    // than producing an idempotency conflict because the wall clock advanced.
+    const availableAt = new Date(bucket * maintenanceIntervalMs).toISOString();
     await phaseJobs.enqueue({
       commandId: `dream:${reason}:${reason === "threshold" ? selectedDrafts.map((draft) => draft.draftId).sort().join(":") : bucket}`,
       kind: "consolidation", priority: reason === "threshold" ? 2 : reason === "idle" ? 3 : 4, sourceDraftRefs: selectedDrafts.map((draft) => draft.draftId).sort(),
-      scheduleReason: reason, availableAt: this.now().toISOString(),
+      scheduleReason: reason, availableAt,
     });
     const result = await new EvolutionDreamWorker(
       workspace.id,

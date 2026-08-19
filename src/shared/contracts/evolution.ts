@@ -124,12 +124,16 @@ export interface EvolutionPracticeDraft {
   commandId: string;
   signalId: string;
   statement: string;
+  /** Stable semantic family supplied by reflection; used instead of exact prose matching. */
+  conceptKey?: string;
   trigger: string;
   procedure: string;
   expectedOutcome: MetricExpectation[];
   /** Optional only for drafts persisted before Practice/Binding separation. */
   observedComponents?: AttributionComponent[];
   applicability: EvolutionPracticeScope;
+  /** Safety guardrails that travel with a Practice but do not block consolidation. */
+  guardrails?: string[];
   contraindications: string[];
   sourceEpisodeRefs: string[];
   sourceRefs: EvolutionSourceRef[];
@@ -143,11 +147,13 @@ export interface EvolutionPractice {
   practiceId: string;
   version: number;
   statement: string;
+  conceptKey?: string;
   trigger: string;
   procedure: string;
   expectedOutcome: MetricExpectation[];
   observedComponents: AttributionComponent[];
   applicability: EvolutionPracticeScope;
+  guardrails?: string[];
   contraindications: string[];
   sourceDraftRefs: string[];
   sourceEpisodeRefs: string[];

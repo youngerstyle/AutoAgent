@@ -4,8 +4,8 @@ import type { EvolutionReflectionFact } from "./observation-port.js";
 import type { AgentModelHistoryItem } from "../providers/types.js";
 
 export interface ReflectedPracticeHypothesis {
-  statement: string; trigger: string; procedure: string; expectedOutcome: MetricExpectation[];
-  observedComponents: AttributionComponent[]; contraindications: string[];
+  statement: string; conceptKey?: string; trigger: string; procedure: string; expectedOutcome: MetricExpectation[];
+  observedComponents: AttributionComponent[]; guardrails?: string[]; contraindications: string[];
 }
 export interface PracticeReflector { available(): Promise<boolean>; reflect(episode: ExperienceEpisode, sourceFacts: EvolutionReflectionFact[]): Promise<ReflectedPracticeHypothesis[]> }
 
@@ -38,8 +38,9 @@ export class ProviderPracticeReflector implements PracticeReflector {
 function validateHypothesis(value: unknown): ReflectedPracticeHypothesis {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Practice hypothesis is invalid"); const item = value as Record<string, unknown>;
   const components = ["memory", "prompt", "skill", "agent_profile", "workflow", "runtime_config", "tool", "provider", "plan", "policy", "environment", "unknown"];
-  if (![item.statement, item.trigger, item.procedure].every((field) => typeof field === "string" && field.trim()) || !Array.isArray(item.expectedOutcome) || !item.expectedOutcome.length
+  if (![item.statement, item.trigger, item.procedure].every((field) => typeof field === "string" && field.trim()) || (item.conceptKey !== undefined && (typeof item.conceptKey !== "string" || !item.conceptKey.trim())) || !Array.isArray(item.expectedOutcome) || !item.expectedOutcome.length
     || !Array.isArray(item.observedComponents) || !item.observedComponents.length || item.observedComponents.some((component) => !components.includes(String(component)))
+    || (item.guardrails !== undefined && (!Array.isArray(item.guardrails) || item.guardrails.some((value) => typeof value !== "string")))
     || !Array.isArray(item.contraindications) || item.contraindications.some((value) => typeof value !== "string")) throw new Error("Practice hypothesis fields are invalid");
   for (const expectation of item.expectedOutcome) {
     if (!expectation || typeof expectation !== "object" || Array.isArray(expectation)) throw new Error("expectedOutcome entries must be objects");
@@ -47,8 +48,8 @@ function validateHypothesis(value: unknown): ReflectedPracticeHypothesis {
     if (typeof metric.metric !== "string" || !metric.metric.trim() || !["increase", "decrease", "maintain"].includes(String(metric.direction))) throw new Error("expectedOutcome requires metric and direction increase|decrease|maintain");
     if (metric.minimumDelta !== undefined && (typeof metric.minimumDelta !== "number" || !Number.isFinite(metric.minimumDelta))) throw new Error("expectedOutcome minimumDelta must be numeric");
   }
-  return { statement: String(item.statement).trim(), trigger: String(item.trigger).trim(), procedure: String(item.procedure).trim(),
-    expectedOutcome: item.expectedOutcome as MetricExpectation[], observedComponents: item.observedComponents as AttributionComponent[], contraindications: item.contraindications.map(String) };
+  return { statement: String(item.statement).trim(), ...(item.conceptKey ? { conceptKey: String(item.conceptKey).trim() } : {}), trigger: String(item.trigger).trim(), procedure: String(item.procedure).trim(),
+    expectedOutcome: item.expectedOutcome as MetricExpectation[], observedComponents: item.observedComponents as AttributionComponent[], guardrails: (item.guardrails ?? []) as string[], contraindications: item.contraindications.map(String) };
 }
 function extractJson(value: string): string { const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(value); if (fenced) return fenced[1]!; const start = value.indexOf("["); const end = value.lastIndexOf("]"); if (start < 0 || end < start) throw new Error("Practice reflector returned no JSON array"); return value.slice(start, end + 1); }
-function instructions(): string { return `Return only a JSON array. Derive zero or more open-ended operational Practice hypotheses strictly from the supplied authoritative Episode and chronological sourceFacts. Return [] when evidence does not reveal an observed action or method. Never select from a rule catalog and never invent missing behavior. Pay special attention to a sequence of errors or stalled execution, a later human_intervention, and a subsequent successful outcome. Treat that ordering as a candidate recovery method, not proof of causality; state a narrow trigger and require verification. Separate provider/environment reliability failures from workflow or agent behavior. Each item must contain: statement:string; trigger:string; procedure:string; expectedOutcome: a non-empty array of {metric:string,direction:"increase"|"decrease"|"maintain",minimumDelta?:number}; observedComponents: a non-empty array using only "memory"|"prompt"|"skill"|"agent_profile"|"workflow"|"runtime_config"|"tool"|"provider"|"plan"|"policy"|"environment"|"unknown"; contraindications:string[]. Describe the concrete observed method, not a generic instruction to fix the cause. Do not widen scope or include secrets.`; }
+function instructions(): string { return `Return only a JSON array. Derive zero or more open-ended operational Practice hypotheses strictly from the supplied authoritative Episode and chronological sourceFacts. Return [] when evidence does not reveal an observed action or method. Never select from a rule catalog and never invent missing behavior. Pay special attention to a sequence of errors or stalled execution, a later human_intervention, and a subsequent successful outcome. Treat that ordering as a candidate recovery method, not proof of causality; state a narrow trigger and require verification. Separate provider/environment reliability failures from workflow or agent behavior. Each item must contain: statement:string; conceptKey?:string (a short stable semantic family such as workflow.pre_implementation_briefing); trigger:string; procedure:string; expectedOutcome: a non-empty array of {metric:string,direction:"increase"|"decrease"|"maintain",minimumDelta?:number}; observedComponents: a non-empty array using only "memory"|"prompt"|"skill"|"agent_profile"|"workflow"|"runtime_config"|"tool"|"provider"|"plan"|"policy"|"environment"|"unknown"; guardrails:string[] for cautious applicability notes; contraindications:string[] only for actual counter-evidence or conditions that make the method unsafe. Describe the concrete observed method, not a generic instruction to fix the cause. Do not widen scope or include secrets.`; }

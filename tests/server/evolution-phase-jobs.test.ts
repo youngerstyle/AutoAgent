@@ -32,4 +32,14 @@ describe("Evolution phase jobs", () => {
     const second = await jobs.claim("reflection", "worker");
     expect([first!.profileId, second!.profileId]).toEqual(["profile-a", "profile-b"]);
   });
+
+  it("replays a command when only its scheduling timestamp changes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-phase-job-idempotency-"));
+    let time = Date.parse("2026-08-15T08:00:00.000Z");
+    const jobs = new EvolutionPhaseJobStore("workspace-a", root, () => new Date(time));
+    const first = await jobs.enqueue({ commandId: "dream-a", kind: "consolidation", priority: 3, sourceDraftRefs: ["draft-a"], scheduleReason: "idle", availableAt: new Date(time).toISOString() });
+    time += 30_000;
+    const replay = await jobs.enqueue({ commandId: "dream-a", kind: "consolidation", priority: 3, sourceDraftRefs: ["draft-a"], scheduleReason: "idle", availableAt: new Date(time).toISOString() });
+    expect(replay).toEqual(first);
+  });
 });

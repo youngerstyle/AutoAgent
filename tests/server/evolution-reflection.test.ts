@@ -132,13 +132,13 @@ describe("Evolution fast reflection", () => {
       modelConfigs: async () => [{ id: "model-a", name: "Model", provider: "openai", model: "model-a", contextWindowTokens: 1000, supportsReasoning: false, supportsImages: false, thinkingLevel: "off", isDefault: true, createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:00:00.000Z" }],
       runModelTurnWithRetry: async (input: { history: Array<{ type: string; content?: string }> }) => {
         calls += 1;
-        if (calls === 1) return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"up"}],"observedComponents":["workflow"],"contraindications":[]}]' }] };
+        if (calls === 1) return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"increase"}],"observedComponents":["workflow"],"guardrails":"verify later","contraindications":[]}]' }] };
         expect(input.history.at(-1)?.content).toContain("failed validation");
-        return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"increase"}],"observedComponents":["workflow"],"contraindications":[]}]' }] };
+        return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"increase"}],"observedComponents":["workflow"],"guardrails":[],"contraindications":[]}]' }] };
       },
     } as unknown as ProviderRegistry;
     const result = await new ProviderPracticeReflector(providers).reflect({ episodeId: "episode-a", workspaceId: "workspace-a", taskId: "task-a", taskRunId: "run-a", ticketId: "ticket-a", attemptId: "attempt-a", goalId: "goal-a", agentId: "agent-a", profileId: "profile-a", outcome: "succeeded", sourceRefs: [{ kind: "ticket", ref: "ticket-a", workspaceId: "workspace-a" }], startedAt: "2026-08-15T00:00:00.000Z", endedAt: "2026-08-15T00:01:00.000Z", contentHash: "a".repeat(64) }, []);
     expect(calls).toBe(2);
-    expect(result).toEqual([expect.objectContaining({ expectedOutcome: [{ metric: "success", direction: "increase" }] })]);
+    expect(result).toEqual([expect.objectContaining({ expectedOutcome: [{ metric: "success", direction: "increase" }], guardrails: [] })]);
   });
 });
