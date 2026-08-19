@@ -74,7 +74,7 @@ function validate(input: { id: string; version: string; title: string; cases: Ev
   }
   if (input.automation) {
     const value = input.automation;
-    if (!value.kinds?.length || value.kinds.some((kind) => !["memory", "skill"].includes(kind))
+    if (!value.kinds?.length || value.kinds.some((kind) => !["memory", "prompt", "skill", "workflow"].includes(kind))
       || value.targets?.some((target) => !target?.trim()) || !value.baselineRef?.id || !value.baselineRef.version || !value.baselineRef.contentHash
       || !value.runtimeSnapshotRef?.trim() || !value.policyRef?.id || !value.policyRef.version || !value.policyRef.contentHash) throw invalid("Evaluation suite automation is invalid");
   }

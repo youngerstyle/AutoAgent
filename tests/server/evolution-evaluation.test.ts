@@ -201,7 +201,7 @@ describe("evolution evaluation and promotion gate", () => {
 
     const result = await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile();
     expect(result.recordedTelemetry).toEqual([
-      expect.objectContaining({ releaseRef: canary.toRelease, sampleSize: 5, decision: "inconclusive", recorder: { type: "system", id: "evolution-canary-monitor/v1" } }),
+      expect.objectContaining({ releaseRef: canary.toRelease, sampleSize: 5, decision: "pass", recorder: { type: "system", id: "evolution-canary-monitor/v1" } }),
     ]);
     expect((await fixture.evaluations.listPromotions()).find((item) => item.promotionId === canary.promotionId)?.status).toBe("active");
     expect((await new CanaryTelemetryReconciler(workspace, fixedNow, new PlatformEvolutionObservationAdapter(workspace)).reconcile()).recordedTelemetry[0]?.telemetryId)

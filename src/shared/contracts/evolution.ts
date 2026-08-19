@@ -725,16 +725,28 @@ export interface EvolutionPairedTrialRequest {
   cases: EvolutionEvalCase[];
 }
 
+export interface EvolutionTrialRuntimeContext {
+  trialId: string;
+  caseId: string;
+  variant: "baseline" | "candidate";
+  candidateId: string;
+  candidateHash: string;
+  baselineRef: VersionedEvolutionRef;
+}
+
 export interface EvolutionPairedTrial {
   trialId: string;
   commandId: string;
   requestFingerprint: string;
   workspaceId: string;
   request: EvolutionPairedTrialRequest;
-  status: "pending" | "dispatched" | "succeeded" | "failed" | "inconclusive";
+  status: "pending" | "dispatched" | "retry_wait" | "succeeded" | "failed" | "inconclusive";
+  attempts: number;
+  maxAttempts: number;
   createdAt: string;
   updatedAt: string;
   dispatchRef?: string;
+  nextAttemptAt?: string;
   caseResults?: EvaluationCaseResult[];
   lastError?: { category: "transient" | "terminal"; message: string };
 }

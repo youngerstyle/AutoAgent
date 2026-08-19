@@ -161,6 +161,10 @@ export function workspaceEvolutionPairedTrialCommandFile(workspaceRoot: string, 
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "paired-trial-commands", `${commandHash}.json`);
 }
 
+export function workspaceEvolutionTrialDispatchFile(workspaceRoot: string, trialId: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "trial-dispatches", `${createHash("sha256").update(trialId).digest("hex")}.json`);
+}
+
 export function workspaceEvolutionPromotionsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "promotions.jsonl");
 }

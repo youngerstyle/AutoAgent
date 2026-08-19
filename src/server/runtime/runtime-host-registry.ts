@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createId } from "../../shared/ids.js";
 import type { LoopDebugLog, WorkspaceSnapshot } from "../../shared/types.js";
 import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
@@ -27,6 +28,9 @@ import { CompanyIdentityStore } from "../storage/company-identity-store.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
 import { ProviderPluginArtifactAuthor } from "../evolution/plugin-authoring-worker.js";
 import { ProviderPracticeReflector } from "../evolution/practice-reflector.js";
+import { PlatformEvolutionTrialRouter, type EvolutionTrialRuntimeFacade } from "../evolution-adapters/platform-trial-adapter.js";
+import { EvidenceLedger } from "../evidence/evidence-ledger.js";
+import { AgentTraceStore } from "../agent-engine/trace-store.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -50,6 +54,11 @@ export class RuntimeHostRegistry {
     const executionConcurrency = options.executionConcurrency ?? 2;
     this.scheduler = new RuntimeHostScheduler(executionConcurrency);
     this.executionGate = new RuntimeExecutionGate(executionConcurrency);
+    const trialRuntime: EvolutionTrialRuntimeFacade = {
+      available: (workspaceId) => this.evolutionTrialRuntimeAvailable(workspaceId),
+      start: (input) => this.startEvolutionTrialRuntimeTask(input),
+      observe: (input) => this.observeEvolutionTrialRuntimeTask(input),
+    };
     this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
       observationPort: (workspace) => new PlatformEvolutionObservationAdapter(workspace),
       sourceVerificationPort: (workspace) => new PlatformEvolutionSourceVerifier(workspace.id, workspace.rootPath),
@@ -57,6 +66,7 @@ export class RuntimeHostRegistry {
       intervalMs: options.evolutionWorkerIntervalMs,
       pluginArtifactAuthor: new ProviderPluginArtifactAuthor(providers),
       practiceReflector: new ProviderPracticeReflector(providers),
+      trialPort: new PlatformEvolutionTrialRouter(workspaces, trialRuntime),
       isWorkspaceIdle: async (workspaceId) => {
         const host = this.hosts.get(workspaceId);
         if (!host) return true;
@@ -66,6 +76,63 @@ export class RuntimeHostRegistry {
   }
 
   evolutionStatus(): EvolutionWorkerStatus { return this.evolutionCoordinator.status(); }
+
+  private async evolutionTrialRuntimeAvailable(workspaceId: string): Promise<boolean> {
+    await this.workspaces.get(workspaceId);
+    const status = await this.providers.status();
+    return status.openai.configured || status.anthropic.configured;
+  }
+
+  private async startEvolutionTrialRuntimeTask(input: Parameters<EvolutionTrialRuntimeFacade["start"]>[0]): Promise<void> {
+    const workspace = await this.workspaces.get(input.workspaceId);
+    const store = new RuntimeHostStore(workspace.rootPath);
+    const existing = await store.get(input.taskId);
+    if (existing) {
+      if (existing.objective !== input.objective || JSON.stringify(existing.evolutionTrial) !== JSON.stringify(input.trial)) throw new Error("Evolution trial Runtime task identity conflict");
+      return;
+    }
+    const host = await this.host(input.workspaceId, true);
+    await host.createTask({ taskId: input.taskId, title: input.title, objective: input.objective, evolutionTrial: input.trial });
+  }
+
+  private async observeEvolutionTrialRuntimeTask(input: Parameters<EvolutionTrialRuntimeFacade["observe"]>[0]): ReturnType<EvolutionTrialRuntimeFacade["observe"]> {
+    const workspace = await this.workspaces.get(input.workspaceId);
+    const record = await new RuntimeHostStore(workspace.rootPath).get(input.taskId);
+    if (!record) return { status: "pending" };
+    if (["active", "paused", "waiting"].includes(record.status)) return { status: "running" };
+    const success = record.status === "completed";
+    const mission = await new MissionStore(workspace.rootPath, record.missionId).read();
+    const goalsByAgent = new Map<string, Set<string>>();
+    for (const link of mission?.links ?? []) if (link.agentGoalId) {
+      const goals = goalsByAgent.get(link.agentId) ?? new Set<string>(); goals.add(link.agentGoalId); goalsByAgent.set(link.agentId, goals);
+    }
+    let inputTokens = 0; let outputTokens = 0; let totalTokens = 0; let usageMeasured = false; let costUsd = 0; let costMeasured = true;
+    for (const [agentId, goalIds] of goalsByAgent) for (const trace of await new AgentTraceStore(workspace.rootPath, agentId).list()) {
+      if (trace.kind !== "provider_response" || !trace.goalId || !goalIds.has(trace.goalId) || !isRecord(trace.data)) continue;
+      const inputValue = finite(trace.data.inputTokens); const outputValue = finite(trace.data.outputTokens); const totalValue = finite(trace.data.totalTokens);
+      if (inputValue !== undefined && outputValue !== undefined && totalValue !== undefined) { inputTokens += inputValue; outputTokens += outputValue; totalTokens += totalValue; usageMeasured = true; }
+      const costValue = finite(trace.data.costUsd); if (trace.data.costMeasured === true && costValue !== undefined) costUsd += costValue; else costMeasured = false;
+    }
+    const evidenceId = `evidence_trial_task_${createHash("sha256").update(`${workspace.id}\0${record.taskId}\0${record.updatedAt}`).digest("hex").slice(0, 32)}`;
+    const ledger = new EvidenceLedger(workspace.rootPath);
+    if (!await ledger.get(evidenceId)) await ledger.append({
+      evidenceId, agentId: "evolution-trial-runtime", threadId: `trial:${record.evolutionTrial?.trialId ?? record.taskId}`,
+      goalId: `trial-task:${record.taskId}`, turnId: record.runId, toolCallId: `trial-task:${record.taskId}`,
+      toolName: "runtime-host-trial-observer", kind: "tool", capture: { status: "recorded" },
+      observation: { status: "observed", result: { taskId: record.taskId, runId: record.runId, missionId: record.missionId, status: record.status, workflowSnapshot: record.workflowSnapshot } },
+      input: { evolutionTrial: record.evolutionTrial }, workspaceRoot: workspace.rootPath, createdAt: record.updatedAt,
+    });
+    return {
+      status: success ? "succeeded" : "failed",
+      observation: {
+        success, qualityScore: success ? 1 : 0, costUsd, costMeasured: usageMeasured && costMeasured,
+        ...(usageMeasured ? { inputTokens, outputTokens, totalTokens } : {}),
+        latencyMs: Math.max(0, Date.parse(record.updatedAt) - Date.parse(record.createdAt)), toolFailures: record.runtimeError ? 1 : 0,
+        policyViolations: 0, safetyViolations: 0, evidenceCompleteness: record.workflowSnapshot ? 1 : 0,
+      },
+      evidenceRefs: [{ kind: "evidence", ref: evidenceId, workspaceId: workspace.id, taskId: record.taskId, taskRunId: record.runId }],
+    };
+  }
 
   /**
    * Freeze Runtime Config desired state at process boot. Promotions after this
@@ -295,6 +362,9 @@ export class RuntimeHostRegistry {
   }
 
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
+function finite(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
 
 export async function resolveSharedEvolutionLayerSources(homeDir: string, profileId: string): Promise<SharedEvolutionLayerSource[]> {
   const identity = await new CompanyIdentityStore(homeDir).getOrCreate();

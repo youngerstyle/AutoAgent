@@ -3,8 +3,10 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { productionEvolutionWorkflow } from "../../src/server/evolution/workflow-projection.js";
+import { productionEvolutionWorkflow, trialEvolutionWorkflow } from "../../src/server/evolution/workflow-projection.js";
 import type { EvolutionScope } from "../../src/shared/contracts/evolution.js";
+import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
+import { createMinimalTeamPlanDefinition } from "../../src/server/product/plan-template.js";
 
 describe("layered Workflow evolution", () => {
   it("inherits Company Workflow in a new project and lets Agent and Project layers override it deterministically", async () => {
@@ -21,6 +23,25 @@ describe("layered Workflow evolution", () => {
     await writeWorkflow(local, 3, { workspaceId: "workspace-new", ownerLevel: "project" });
     const overridden = await productionEvolutionWorkflow(local, "workspace-new", "minimal-team", policy(), { profileId: "profile-a", sharedReleaseSources: sources });
     expect(overridden).toMatchObject({ ownerLevel: "project", releaseVersion: "3", sourceRoot: local });
+  });
+
+  it("loads an immutable Workflow Candidate only for a candidate trial without changing the production pointer", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-workflow-trial-"));
+    const definition = createMinimalTeamPlanDefinition(policy(), "Run a frozen workflow trial");
+    const artifact = JSON.stringify({ schemaVersion: 1, templateId: "minimal-team", definitionVersion: 101, plannerAssignment: definition.plannerAssignment, amendmentTemplate: definition.amendmentTemplate, initialChange: definition.initialChange });
+    const candidates = new EvolutionStore("workspace-a", root, undefined, {}, { async verify() { return true; } });
+    const proposed = await candidates.create({
+      commandId: "workflow-trial-candidate", kind: "workflow", target: "minimal-team", title: "Trial workflow",
+      rationale: "Repeated project evidence supports a workflow trial.", hypothesis: "The candidate improves the frozen task.", artifactContent: artifact,
+      sourceRefs: [{ kind: "evidence", ref: "source-a", workspaceId: "workspace-a" }], scope: { workspaceId: "workspace-a", ownerLevel: "project" },
+      expectedMetrics: [{ metric: "task_success_rate", direction: "increase", minimumDelta: 0.01 }], riskLevel: "high", proposedBy: { type: "system", id: "test" },
+    });
+    const candidate = await candidates.validate({ commandId: "validate-workflow-trial", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
+    const baseline = await trialEvolutionWorkflow(root, "workspace-a", "minimal-team", policy(), { trialId: "trial-a", caseId: "case-a", variant: "baseline", candidateId: candidate.candidateId, candidateHash: candidate.contentHash, baselineRef: { id: "builtin:minimal-team", version: "1", contentHash: "builtin" } });
+    expect(baseline).toBeUndefined();
+    const preview = await trialEvolutionWorkflow(root, "workspace-a", "minimal-team", policy(), { trialId: "trial-a", caseId: "case-a", variant: "candidate", candidateId: candidate.candidateId, candidateHash: candidate.contentHash, baselineRef: { id: "builtin:minimal-team", version: "1", contentHash: "builtin" } });
+    expect(preview).toMatchObject({ stage: "trial", releaseId: candidate.candidateId, contentHash: candidate.contentHash, definition: { definitionVersion: 101 } });
+    expect(await productionEvolutionWorkflow(root, "workspace-a", "minimal-team", policy())).toBeUndefined();
   });
 });
 

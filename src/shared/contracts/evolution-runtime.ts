@@ -41,7 +41,7 @@ export interface SharedEvolutionLayerSource { layerRoot: string; ownerLevel: "ag
 
 export interface RuntimeEvolutionWorkflow {
   target: string; definition: PlanDefinition; releaseId: string; releaseVersion: string; contentHash: string;
-  generation: number; stage: "production"; ownerLevel: EvolutionOwnerLevel; sourceRoot: string;
+  generation: number; stage: "trial" | "production"; ownerLevel: EvolutionOwnerLevel; sourceRoot: string;
 }
 
 export interface RuntimeEvolutionResolvedRelease {

@@ -21,10 +21,10 @@ describe("evolution metric gate", () => {
     )).toEqual([{ metric: "token_count", baseline: 100, candidate: 80, delta: -20, passed: true }]);
   });
 
-  it("adds non-bypassable cost and latency gates to every candidate", () => {
+  it("adds non-bypassable measured resource and latency gates to every candidate", () => {
     expect(withMandatoryEvolutionMetrics([{ metric: "task_success_rate", direction: "increase" }])).toEqual([
       { metric: "task_success_rate", direction: "increase" },
-      { metric: "cost_usd", direction: "maintain", maximumRegression: 0.01 },
+      { metric: "resource_cost", direction: "maintain", maximumRegression: 0.01 },
       { metric: "latency_ms", direction: "maintain", maximumRegression: 250 },
     ]);
   });

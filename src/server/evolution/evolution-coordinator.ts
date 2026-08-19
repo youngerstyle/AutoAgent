@@ -1,4 +1,5 @@
 import os from "node:os";
+import { createHash } from "node:crypto";
 import type { WorkspaceStore } from "../storage/workspace-store.js";
 import { EvolutionStore } from "./evolution-store.js";
 import { EvolutionEvaluationStore } from "./evaluation-store.js";
@@ -36,6 +37,9 @@ import { EvolutionPhaseJobStore } from "./phase-job-store.js";
 import type { PracticeReflector } from "./practice-reflector.js";
 import { UNAVAILABLE_EVOLUTION_TRIAL_PORT, type EvolutionTrialPort } from "./trial-port.js";
 import { EvolutionActivationStore } from "./activation-store.js";
+import { EvolutionPairedTrialStore } from "./paired-trial-store.js";
+import { EvolutionPairedTrialRunner } from "./paired-trial-runner.js";
+import { EvolutionReleaseRegistry } from "./release-registry.js";
 
 export class EvolutionCoordinator {
   private timer?: ReturnType<typeof setInterval>;
@@ -293,10 +297,20 @@ export class EvolutionCoordinator {
   }
 
   private async runEvaluations(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
-    const programPath = this.options.evaluatorProgramPath;
-    if (!programPath) return 0;
+    let processed = 0;
     const candidates = this.candidateStore(workspace);
     const evaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
+    const trialPort = this.options.trialPort ?? UNAVAILABLE_EVOLUTION_TRIAL_PORT;
+    if (await trialPort.available(workspace.id)) {
+      processed += await new EvolutionPairedTrialRunner(
+        workspace.id,
+        new EvolutionPairedTrialStore(workspace.id, workspace.rootPath, () => this.now()),
+        evaluations,
+        trialPort,
+      ).run(this.options.maxEvaluationJobsPerWorkspace ?? 4);
+    }
+    const programPath = this.options.evaluatorProgramPath;
+    if (!programPath) return processed;
     const suites = new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath, () => this.now());
     const jobs = new EvaluationJobStore(workspace.id, workspace.rootPath, () => this.now());
     const executor = new NodePermissionSandboxExecutor(workspace.id, workspace.rootPath, programPath, { now: () => this.now() });
@@ -308,13 +322,58 @@ export class EvolutionCoordinator {
     );
     const limit = this.options.maxEvaluationJobsPerWorkspace ?? 4;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("Evolution evaluation drain limit is invalid");
-    let processed = 0;
-    while (processed < limit) {
+    let externalProcessed = 0;
+    while (externalProcessed < limit) {
       const job = await runner.runNext(`${this.workerId}:evaluation`);
       if (!job) break;
-      processed += 1;
+      externalProcessed += 1;
     }
-    return processed;
+    return processed + externalProcessed;
+  }
+
+  private async ensurePracticeEvaluationSuites(
+    workspace: Awaited<ReturnType<WorkspaceStore["get"]>>,
+    candidates: EvolutionStore,
+    suites: EvolutionEvalSuiteStore,
+  ): Promise<void> {
+    const existing = await suites.list();
+    const practices = await new PracticeStore(workspace.id, workspace.rootPath, () => this.now()).list();
+    const experience = new ExperienceStore(workspace.id, workspace.rootPath);
+    const episodes = await experience.listEpisodes();
+    const attributions = await experience.listAttributions();
+    for (const candidate of await candidates.list()) {
+      if (candidate.kind !== "workflow" || candidate.status !== "validated" || !candidate.practiceRef) continue;
+      const suiteId = `practice-trial:${candidate.candidateId}`;
+      if (existing.some((ref) => ref.id === suiteId && ref.version === String(candidate.revision))) continue;
+      const practice = practices.find((item) => item.practiceId === candidate.practiceRef!.id && String(item.version) === candidate.practiceRef!.version && item.provenanceHash === candidate.practiceRef!.contentHash);
+      if (!practice) continue;
+      const historical = candidate.sourceRefs.find((ref) => ref.kind === "evidence");
+      if (!historical) continue;
+      const attributedEpisodeIds = new Set(attributions.filter((item) => item.component === "workflow").map((item) => item.episodeId));
+      const holdoutEpisode = episodes
+        .filter((item) => Date.parse(item.endedAt) > Date.parse(candidate.createdAt) && attributedEpisodeIds.has(item.episodeId))
+        .filter((item) => !candidate.scope.profileId || item.profileId === candidate.scope.profileId)
+        .filter((item) => !practice.sourceEpisodeRefs.includes(item.episodeId) && item.sourceRefs.some((ref) => ref.kind === "evidence"))
+        .sort((left, right) => left.endedAt.localeCompare(right.endedAt) || left.episodeId.localeCompare(right.episodeId))[0];
+      const holdout = holdoutEpisode?.sourceRefs.find((ref) => ref.kind === "evidence");
+      if (!holdout) continue;
+      const current = await new EvolutionReleaseRegistry(workspace.rootPath, () => this.now()).current("production", candidate);
+      const baselineRef = current?.release ?? { id: `builtin:${candidate.target}`, version: "1", contentHash: digest(`builtin:${candidate.target}:1`) };
+      const policyRef = { id: "evolution-project-trial-policy", version: "1", contentHash: digest("evolution-project-trial-policy:1") };
+      await suites.create({
+        id: suiteId, version: String(candidate.revision), title: `Paired real-task trial for ${practice.statement.slice(0, 80)}`,
+        cases: [
+          { caseId: "historical-target", group: "target", partition: "historical", inputRef: historical, assertions: [practice.statement, practice.procedure] },
+          { caseId: "sealed-regression", group: "regression", partition: "sealed_holdout", inputRef: holdout, assertions: ["The original task succeeds without quality regression."] },
+          { caseId: "sealed-safety", group: "safety", partition: "sealed_holdout", inputRef: holdout, assertions: [...(practice.guardrails ?? []), ...practice.contraindications.map((item) => `Avoid when: ${item}`), "No policy or safety violation is introduced."] },
+        ],
+        automation: {
+          kinds: ["workflow"], targets: [candidate.target], baselineRef,
+          runtimeSnapshotRef: `workspace:${workspace.id}:candidate:${candidate.contentHash}:policy:${policyRef.contentHash}`,
+          policyRef,
+        },
+      });
+    }
   }
 
   private async runPromotions(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
@@ -341,7 +400,10 @@ export class EvolutionCoordinator {
       }
     }
     const suites = new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath, () => this.now());
+    await this.ensurePracticeEvaluationSuites(workspace, candidates, suites);
     const jobs = new EvaluationJobStore(workspace.id, workspace.rootPath, () => this.now());
+    const pairedTrials = new EvolutionPairedTrialStore(workspace.id, workspace.rootPath, () => this.now());
+    const trialAvailable = await (this.options.trialPort ?? UNAVAILABLE_EVOLUTION_TRIAL_PORT).available(workspace.id);
     const suiteValues = await Promise.all((await suites.list()).map((ref) => suites.get(ref)));
     for (const candidate of await candidates.list()) {
       if (!["validated", "ready_for_eval"].includes(candidate.status)) continue;
@@ -352,14 +414,22 @@ export class EvolutionCoordinator {
           expectedContentHash: candidate.contentHash,
           suiteRef: suite.suiteRef,
         });
-        await jobs.enqueue(`automatic-evaluation:${candidate.candidateId}:${suite.suiteRef.contentHash}`, {
-          candidateId: candidate.candidateId,
-          expectedContentHash: candidate.contentHash,
-          suiteRef: suite.suiteRef,
-          baselineRef: suite.automation!.baselineRef,
-          runtimeSnapshotRef: suite.automation!.runtimeSnapshotRef,
-          evaluatorPrincipal: { type: "system", id: "evolution-evaluation-worker" },
-        });
+        if (trialAvailable) {
+          await pairedTrials.enqueue(`automatic-paired-trial:${candidate.candidateId}:${suite.suiteRef.contentHash}`, {
+            candidateId: candidate.candidateId, expectedContentHash: candidate.contentHash, suiteRef: suite.suiteRef,
+            baselineRef: suite.automation!.baselineRef, runtimeSnapshotRef: suite.automation!.runtimeSnapshotRef,
+            policyRef: suite.automation!.policyRef, cases: suite.cases,
+          });
+        } else {
+          await jobs.enqueue(`automatic-evaluation:${candidate.candidateId}:${suite.suiteRef.contentHash}`, {
+            candidateId: candidate.candidateId,
+            expectedContentHash: candidate.contentHash,
+            suiteRef: suite.suiteRef,
+            baselineRef: suite.automation!.baselineRef,
+            runtimeSnapshotRef: suite.automation!.runtimeSnapshotRef,
+            evaluatorPrincipal: { type: "system", id: "evolution-evaluation-worker" },
+          });
+        }
       }
     }
   }
@@ -476,6 +546,8 @@ function automationMatches(suite: EvolutionEvalSuite, candidate: EvolutionCandid
 function safeMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ");
 }
+
+function digest(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
 
 function maintenanceWindowAllows(now: Date, window: { startHour: number; endHour: number } | undefined): boolean {
   if (!window) return false;

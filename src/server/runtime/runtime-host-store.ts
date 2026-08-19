@@ -1,6 +1,6 @@
 import { readJson, writeJson } from "../storage/json.js";
 import { runtimeHostFile } from "../storage/paths.js";
-import type { VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
+import type { EvolutionTrialRuntimeContext, VersionedEvolutionRef } from "../../shared/contracts/evolution.js";
 
 export interface RuntimeWorkflowSnapshot {
   source: "builtin" | "evolution";
@@ -22,9 +22,11 @@ export interface RuntimeTaskRecord {
   retryStates?: Record<string, RuntimeRetryState>;
   runtimeError?: RuntimeTaskError;
   workflowSnapshot?: RuntimeWorkflowSnapshot;
+  evolutionTrial?: EvolutionTrialRuntimeContext;
   createdAt: string;
   updatedAt: string;
 }
+
 
 export interface RuntimeTaskError {
   source: "scheduler" | "staffing" | "agent_turn";

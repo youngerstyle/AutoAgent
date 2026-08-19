@@ -23,15 +23,15 @@
 
 - [x] 在 Evol 内核定义 `EvolutionTrialPort`，只认识冻结试验请求与结果，不导入 Agent/Ticket/Mission 实现。
 - [x] 增加 workspace-scoped paired trial 幂等账本、恢复状态与只读 API；适配器缺失时保持 pending，不伪造结果。
-- [ ] 在 `evolution-adapters` 实现平台适配器，把 baseline/candidate 两个受控任务交给现有 RuntimeHost/Mission Control。
-- [ ] 试验请求固定 Candidate hash、baseline release、runtime/policy snapshot、输入 Evidence refs 和预算。
-- [ ] Provider 故障进入可恢复 job，不写假的失败/通过结果。
+- [x] 在 `evolution-adapters` 实现平台适配器，把 baseline/candidate 两个受控任务交给现有 RuntimeHost/Mission Control。
+- [x] 试验请求固定 Candidate hash、baseline release、runtime/policy snapshot 和输入 Evidence refs；资源门禁在有价格时使用实际 cost，否则使用实测 token proxy。
+- [x] Provider 故障进入可恢复 job，不写假的失败/通过结果。
 
 ### Phase 2：Practice 自动评估计划
 
-- [ ] 为 Practice-derived Memory/Prompt/Skill/Workflow 生成版本化 EvaluationPlan。
-- [ ] historical evidence 只用于构造任务；sealed holdout 必须来自未参与 Candidate 归纳的任务或后续任务。
-- [ ] 静态 qualification 与真实 comparative trial 分账。
+- [ ] 为 Practice-derived Memory/Prompt/Skill/Workflow 生成版本化 EvaluationPlan（Workflow 已完成；Memory/Prompt/Skill 待接各自 trial override）。
+- [x] historical evidence 只用于构造任务；sealed holdout 必须来自未参与 Candidate 归纳的后续 Episode。
+- [x] 静态 qualification 与真实 comparative trial 分账。
 - [ ] executable Plugin/Harness 继续使用独立受控 evaluator adapter 和人工批准。
 
 ### Phase 3：项目内自动 Canary 与 Production

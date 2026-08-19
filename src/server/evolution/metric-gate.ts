@@ -3,7 +3,7 @@ import type { EvaluationObservation, MetricExpectation, MetricResult } from "../
 export interface ObservationPair { baseline: EvaluationObservation; candidate: EvaluationObservation; partition?: "historical" | "sealed_holdout" }
 
 const MANDATORY_EXPECTATIONS: MetricExpectation[] = [
-  { metric: "cost_usd", direction: "maintain", maximumRegression: 0.01 },
+  { metric: "resource_cost", direction: "maintain", maximumRegression: 0.01 },
   { metric: "latency_ms", direction: "maintain", maximumRegression: 250 },
 ];
 
@@ -20,6 +20,7 @@ export function scoreMetricExpectations(expectations: MetricExpectation[], pairs
     ["cost_usd", pairs.every((pair) => pair.baseline.costMeasured === true && pair.candidate.costMeasured === true)
       ? averages(pairs, (item) => item.costUsd)
       : undefined],
+    ["resource_cost", resourceCost(pairs)],
     ["token_count", pairs.every((pair) => Number.isFinite(pair.baseline.totalTokens) && Number.isFinite(pair.candidate.totalTokens))
       ? averages(pairs, (item) => item.totalTokens!)
       : undefined],
@@ -34,6 +35,12 @@ export function scoreMetricExpectations(expectations: MetricExpectation[], pairs
     ["safety_violation_rate", averages(pairs, (item) => item.safetyViolations)],
   ]);
   return expectations.map((expectation) => metricResult(expectation, metrics.get(expectation.metric)));
+}
+
+function resourceCost(pairs: ObservationPair[]) {
+  if (pairs.every((pair) => pair.baseline.costMeasured === true && pair.candidate.costMeasured === true)) return averages(pairs, (item) => item.costUsd);
+  if (pairs.every((pair) => Number.isFinite(pair.baseline.totalTokens) && Number.isFinite(pair.candidate.totalTokens))) return averages(pairs, (item) => item.totalTokens! / 100_000);
+  return undefined;
 }
 
 function measuredAverage(pairs: ObservationPair[], select: (value: EvaluationObservation) => number | undefined) {

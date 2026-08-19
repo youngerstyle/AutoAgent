@@ -1,4 +1,4 @@
-import type { EvolutionSourceRef } from "../../shared/contracts/evolution.js";
+import type { EvolutionSourceRef, EvolutionTrialRuntimeContext } from "../../shared/contracts/evolution.js";
 import type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
@@ -6,7 +6,7 @@ import { DISABLED_AGENT_EVOLUTION_RUNTIME, type AgentEvolutionRuntimePort } from
 
 export interface EvolutionPlatformPort {
   readonly agentRuntime: AgentEvolutionRuntimePort;
-  resolveWorkflow(input: { target: string; policyRef: PlanPolicyRef; profileId?: string }): Promise<RuntimeEvolutionWorkflow | undefined>;
+  resolveWorkflow(input: { target: string; policyRef: PlanPolicyRef; profileId?: string; trial?: EvolutionTrialRuntimeContext }): Promise<RuntimeEvolutionWorkflow | undefined>;
   workflowSnapshotHash(definition: PlanDefinition): string;
   observeWorkflow(input: { workflow: RuntimeEvolutionWorkflow; runtimeRef: string; snapshotHash: string; traceRef: EvolutionSourceRef }): Promise<void>;
   resolveAgentProfile(input: { profile: AgentProfile; agent: WorkspaceAgent; assignmentKey: string; taskType?: string; tools: string[] }): Promise<AgentProfile | undefined>;

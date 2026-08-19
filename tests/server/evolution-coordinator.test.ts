@@ -15,6 +15,11 @@ import { EvolutionEvaluationStore } from "../../src/server/evolution/evaluation-
 import { EvolutionTelemetryStore } from "../../src/server/evolution/telemetry-store.js";
 import { PracticeDraftStore } from "../../src/server/evolution/practice-draft-store.js";
 import { EvolutionPhaseJobStore } from "../../src/server/evolution/phase-job-store.js";
+import { PracticeStore } from "../../src/server/evolution/practice-store.js";
+import { ExperienceStore } from "../../src/server/evolution/experience-store.js";
+import { EvolutionPairedTrialStore } from "../../src/server/evolution/paired-trial-store.js";
+import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../../src/server/product/plan-template.js";
+import type { EvolutionTrialPort } from "../../src/server/evolution/trial-port.js";
 
 describe("EvolutionCoordinator", () => {
   it("maintains idle workspaces and consumes server-configured sandbox evaluation jobs", async () => {
@@ -153,6 +158,39 @@ describe("EvolutionCoordinator", () => {
     expect((await evaluations.listPromotions()).find((item) => item.stage === "production")).toMatchObject({
       status: "active", candidateId: candidate.candidateId, approvedBy: { type: "system", id: "evolution-coordinator/v1" },
     });
+  });
+
+  it("creates and dispatches a paired real-task plan for a Practice Workflow only after later holdout evidence exists", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-paired-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-paired-workspace-"));
+    const workspaces = new WorkspaceStore(home); const workspace = await workspaces.create({ name: "Paired trial", rootPath: root, policyProfile: "development" });
+    const candidateNow = () => new Date("2026-08-19T01:00:00.000Z");
+    const ledger = new EvidenceLedger(root); await appendEvidence(ledger, "historical-evidence", root); await appendEvidence(ledger, "holdout-evidence", root);
+    const practice = await new PracticeStore(workspace.id, root, candidateNow).createCandidate({
+      commandId: "paired-practice", statement: "Brief the project team before implementation", conceptKey: "workflow.project_briefing",
+      trigger: "A multi-agent project starts", procedure: "Present the authoritative document and confirm understanding before implementation.",
+      expectedOutcome: [{ metric: "task_success_rate", direction: "increase", minimumDelta: 0 }], observedComponents: ["workflow"],
+      applicability: { ownerLevel: "agent_project", workspaceId: workspace.id, profileId: "profile-a" }, guardrails: [], contraindications: [],
+      sourceDraftRefs: ["draft-a", "draft-b"], sourceEpisodeRefs: ["episode-a", "episode-b"], sourceRefs: [{ kind: "evidence", ref: "historical-evidence", workspaceId: workspace.id }],
+    });
+    const definition = createMinimalTeamPlanDefinition({ policyId: "policy", policyVersion: 1, contentHash: "policy-hash" }, "Trial learned workflow");
+    const artifact = JSON.stringify({ schemaVersion: 1, templateId: DEFAULT_PLAN_TEMPLATE_ID, definitionVersion: 101, plannerAssignment: definition.plannerAssignment, amendmentTemplate: definition.amendmentTemplate, initialChange: definition.initialChange });
+    const candidates = platformEvolutionStore(workspace.id, root, candidateNow);
+    const candidate = await candidates.create({
+      commandId: "paired-workflow-candidate", kind: "workflow", target: DEFAULT_PLAN_TEMPLATE_ID, title: "Learned briefing workflow", rationale: "Two episodes support a trial", hypothesis: "Briefing improves success",
+      artifactContent: artifact, sourceRefs: [{ kind: "evidence", ref: "historical-evidence", workspaceId: workspace.id }], scope: { ownerLevel: "agent_project", workspaceId: workspace.id, profileId: "profile-a" },
+      expectedMetrics: practice.expectedOutcome, riskLevel: "high", proposedBy: { type: "system", id: "practice-binding-compiler/v1" }, practiceRef: { id: practice.practiceId, version: String(practice.version), contentHash: practice.provenanceHash },
+    });
+    await new ExperienceStore(workspace.id, root).record("holdout-episode", {
+      episode: { episodeId: "episode-c", workspaceId: workspace.id, taskId: "task-c", taskRunId: "run-c", ticketId: "ticket-c", attemptId: "attempt-c", goalId: "goal-c", agentId: "agent-c", profileId: "profile-a", outcome: "succeeded", sourceRefs: [{ kind: "evidence", ref: "holdout-evidence", workspaceId: workspace.id }], startedAt: "2026-08-19T01:30:00.000Z", endedAt: "2026-08-19T02:00:00.000Z", contentHash: "episode-c-hash" },
+      attributions: [{ attributionId: "attribution-c", episodeId: "episode-c", symptom: "Project start", component: "workflow", cause: "Briefing sequence", confidence: 0.9, sourceRefs: [{ kind: "evidence", ref: "holdout-evidence", workspaceId: workspace.id }], counterEvidenceRefs: [], scope: { ownerLevel: "agent_project", workspaceId: workspace.id, profileId: "profile-a" }, createdAt: "2026-08-19T02:00:00.000Z" }],
+    });
+    const trialPort: EvolutionTrialPort = { async available() { return true; }, async dispatch(input) { return { dispatchRef: input.trialId }; }, async observe() { return { status: "pending" }; } };
+    const coordinator = new EvolutionCoordinator(workspaces, { now: () => new Date("2026-08-19T03:00:00.000Z"), maintenanceIntervalMs: 10_000, trialPort, sourceVerificationPort: (item) => new PlatformEvolutionSourceVerifier(item.id, item.rootPath) });
+    await coordinator.runOnce();
+    expect(coordinator.status().lastError).toBeUndefined();
+    expect(await candidates.get(candidate.candidateId)).toMatchObject({ status: "ready_for_eval", evaluationSuiteRefs: [expect.objectContaining({ id: `practice-trial:${candidate.candidateId}` })] });
+    expect(await new EvolutionPairedTrialStore(workspace.id, root).list()).toEqual([expect.objectContaining({ status: "dispatched", request: expect.objectContaining({ candidateId: candidate.candidateId, cases: expect.arrayContaining([expect.objectContaining({ partition: "sealed_holdout" })]) }) })]);
   });
 
   it("defers sub-threshold Dream work while busy and admits it through a configured maintenance window", async () => {

@@ -19,6 +19,14 @@
 - 风险：自生成资产可能通过自评或 fixture 直接进入发布阶段。
 - 偿还路径：拆成 Structural Qualification、Paired Real Trial、Canary Telemetry 三类不可互相替代的证据；前者最大只能到 Shadow。
 
+## TD-EVOL-EVAL-003：Provider 价格不可用时缺少 USD 成本事实
+
+- 严重度：中
+- 当前状态：部分缓解
+- 现状：Provider trace 始终记录 token usage，但本地/自定义模型通常没有可验证的 USD 单价，不能把 `costUsd: 0` 冒充实测成本。
+- 当前策略：显式声明 `cost_usd` 的 Candidate 继续 fail closed；默认不可绕过的 `resource_cost` 门禁在双方都有实测 USD 时比较 USD，否则比较归一化的实测 token 数。
+- 偿还路径：在 Provider 配置增加版本化 pricing snapshot；EvaluationRun 写明本次 resource gate 的计量单位与价格版本。
+
 ## TD-EVOL-ARCH-001：Evol 内核仍有平台 Store 依赖
 
 - 严重度：最高

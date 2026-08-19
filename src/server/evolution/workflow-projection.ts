@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { ActiveReleasePointer, EvolutionOwnerLevel } from "../../shared/contracts/evolution.js";
+import type { ActiveReleasePointer, EvolutionOwnerLevel, EvolutionTrialRuntimeContext } from "../../shared/contracts/evolution.js";
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { SharedEvolutionLayerSource } from "./runtime-projection.js";
 import type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
 export type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
 import { resolveEvolutionLayers } from "./runtime-projection.js";
+import { EvolutionStore } from "./evolution-store.js";
 
 interface WorkflowReleaseManifest {
   schemaVersion: 1;
@@ -37,7 +38,7 @@ export async function productionEvolutionWorkflow(
   policyRef: PlanPolicyRef,
   context: { profileId?: string; sharedReleaseSources?: SharedEvolutionLayerSource[] } = {},
 ): Promise<RuntimeEvolutionWorkflow | undefined> {
-  const matches: RuntimeEvolutionWorkflow[] = [];
+  const matches: Array<RuntimeEvolutionWorkflow & { stage: "production" }> = [];
   const roots = [{ root: workspaceRoot }, ...(context.sharedReleaseSources ?? []).map((item) => ({ root: item.layerRoot }))];
   for (const { root } of roots) {
     const directory = path.join(root, ".autoagent", "evolution", "active", "production");
@@ -66,6 +67,35 @@ export async function productionEvolutionWorkflow(
     }
   }
   return resolveEvolutionLayers(matches, (item) => item.target)[0];
+}
+
+export async function trialEvolutionWorkflow(
+  workspaceRoot: string,
+  workspaceId: string,
+  target: string,
+  policyRef: PlanPolicyRef,
+  trial: EvolutionTrialRuntimeContext,
+): Promise<RuntimeEvolutionWorkflow | undefined> {
+  if (trial.variant === "baseline") {
+    if (trial.baselineRef.id.startsWith("builtin:")) return undefined;
+    const current = await productionEvolutionWorkflow(workspaceRoot, workspaceId, target, policyRef);
+    if (!current || current.releaseId !== trial.baselineRef.id || current.releaseVersion !== trial.baselineRef.version || current.contentHash !== trial.baselineRef.contentHash) throw new Error("Evolution trial baseline release is no longer the frozen production revision");
+    return current;
+  }
+  const store = new EvolutionStore(workspaceId, workspaceRoot);
+  const candidate = await store.get(trial.candidateId);
+  if (candidate.kind !== "workflow" || candidate.target !== target || candidate.contentHash !== trial.candidateHash || !["validated", "ready_for_eval"].includes(candidate.status)) throw new Error("Evolution trial Workflow Candidate is not the frozen validated revision");
+  if (candidate.scope.workspaceId !== workspaceId) throw new Error("Evolution trial Workflow Candidate crossed its workspace scope");
+  const artifact = parseArtifact(await store.artifactContent(candidate.candidateId));
+  if (artifact.templateId !== target) throw new Error("Evolution trial Workflow Candidate target mismatch");
+  return {
+    target, releaseId: candidate.candidateId, releaseVersion: String(candidate.revision), contentHash: candidate.contentHash,
+    generation: 0, stage: "trial", ownerLevel: candidate.scope.ownerLevel ?? "project", sourceRoot: workspaceRoot,
+    definition: {
+      definitionId: artifact.templateId, definitionVersion: artifact.definitionVersion, policyRef: structuredClone(policyRef),
+      plannerAssignment: structuredClone(artifact.plannerAssignment), amendmentTemplate: structuredClone(artifact.amendmentTemplate), initialChange: structuredClone(artifact.initialChange),
+    },
+  };
 }
 
 function matchesOwner(pointer: ActiveReleasePointer, workspaceId: string, profileId?: string): boolean { const owner = pointer.scope.ownerLevel ?? "project"; if (owner === "company") return true; if (owner === "agent") return Boolean(profileId && pointer.scope.profileId === profileId); if (owner === "project") return pointer.scope.workspaceId === workspaceId; return pointer.scope.workspaceId === workspaceId && Boolean(profileId && pointer.scope.profileId === profileId); }

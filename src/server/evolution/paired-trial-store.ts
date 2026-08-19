@@ -13,15 +13,16 @@ const queues = new Map<string, Promise<void>>();
 export class EvolutionPairedTrialStore {
   constructor(private readonly workspaceId: string, private readonly workspaceRoot: string, private readonly now: () => Date = () => new Date()) {}
 
-  async enqueue(commandId: string, request: EvolutionPairedTrialRequest): Promise<EvolutionPairedTrial> {
+  async enqueue(commandId: string, request: EvolutionPairedTrialRequest, maxAttempts = 3): Promise<EvolutionPairedTrial> {
     validateRequest(commandId, request, this.workspaceId);
-    const fingerprint = hash(canonical({ commandId, request }));
+    if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) throw invalid("Paired trial retry policy is invalid");
+    const fingerprint = hash(canonical({ commandId, request, maxAttempts }));
     return this.exclusive(async () => {
       const commandFile = workspaceEvolutionPairedTrialCommandFile(this.workspaceRoot, hash(commandId));
       const timestamp = this.now().toISOString();
       const trial: EvolutionPairedTrial = {
         trialId: stableId("paired_trial", this.workspaceId, commandId), commandId, requestFingerprint: fingerprint,
-        workspaceId: this.workspaceId, request: structuredClone(request), status: "pending", createdAt: timestamp, updatedAt: timestamp,
+        workspaceId: this.workspaceId, request: structuredClone(request), status: "pending", attempts: 0, maxAttempts, createdAt: timestamp, updatedAt: timestamp,
       };
       await mkdir(path.dirname(commandFile), { recursive: true });
       try {
@@ -44,7 +45,8 @@ export class EvolutionPairedTrialStore {
     if (!dispatchRef.trim()) throw invalid("Paired trial dispatch reference is invalid");
     return this.transition(trialId, "dispatched", (current) => {
       if (current.dispatchRef && current.dispatchRef !== dispatchRef) throw conflict("Paired trial dispatch reference conflict");
-      return { ...current, status: "dispatched", dispatchRef, updatedAt: this.now().toISOString() };
+      if (!["pending", "retry_wait", "dispatched"].includes(current.status)) throw conflict(`Paired trial cannot dispatch from ${current.status}`);
+      return { ...current, status: "dispatched", attempts: current.status === "dispatched" ? current.attempts : current.attempts + 1, dispatchRef, nextAttemptAt: undefined, updatedAt: this.now().toISOString() };
     });
   }
 
@@ -53,11 +55,23 @@ export class EvolutionPairedTrialStore {
     return this.transition(trialId, "succeeded", (current) => ({ ...current, status: "succeeded", caseResults: structuredClone(caseResults), lastError: undefined, updatedAt: this.now().toISOString() }));
   }
 
-  async fail(trialId: string, input: { status: "failed" | "inconclusive"; category: "transient" | "terminal"; message: string }): Promise<EvolutionPairedTrial> {
-    return this.transition(trialId, input.status, (current) => ({
-      ...current, status: input.status, updatedAt: this.now().toISOString(),
-      lastError: { category: input.category, message: safeError(input.message) },
-    }));
+  async fail(trialId: string, input: { status: "failed" | "inconclusive"; category: "transient" | "terminal"; message: string; countAttempt?: boolean }): Promise<EvolutionPairedTrial> {
+    return this.transition(trialId, input.status, (current) => {
+      const timestamp = this.now();
+      const attempts = current.attempts + (input.countAttempt ? 1 : 0);
+      const retry = input.category === "transient" && attempts < current.maxAttempts;
+      const delay = Math.min(300_000, 1_000 * (2 ** Math.min(Math.max(0, attempts - 1), 8)));
+      return {
+        ...current, attempts, status: retry ? "retry_wait" : input.status, dispatchRef: retry ? undefined : current.dispatchRef, updatedAt: timestamp.toISOString(),
+        ...(retry ? { nextAttemptAt: new Date(timestamp.getTime() + delay).toISOString() } : { nextAttemptAt: undefined }),
+        lastError: { category: input.category, message: safeError(input.message) },
+      };
+    });
+  }
+
+  async listDispatchable(): Promise<EvolutionPairedTrial[]> {
+    const now = this.now().getTime();
+    return (await this.list()).filter((item) => item.status === "pending" || (item.status === "retry_wait" && Date.parse(item.nextAttemptAt ?? "") <= now));
   }
 
   async get(trialId: string): Promise<EvolutionPairedTrial> {

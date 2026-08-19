@@ -13,6 +13,7 @@ import type {
   WorkspaceToolName,
 } from "../../shared/types.js";
 import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine.js";
+import type { EvolutionTrialRuntimeContext } from "../../shared/contracts/evolution.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
 import type { ActiveMissionLink, MissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
 import type { PlanId, PlanPolicyRef, PlannedTicketAssignment, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
@@ -118,7 +119,7 @@ export class RuntimeHost {
     );
   }
 
-  createTask(input: { taskId: string; title: string; objective: string }): Promise<RuntimeTaskRecord> {
+  createTask(input: { taskId: string; title: string; objective: string; evolutionTrial?: EvolutionTrialRuntimeContext }): Promise<RuntimeTaskRecord> {
     return this.exclusive(() => this.createTaskUnlocked(input));
   }
 
@@ -301,7 +302,7 @@ export class RuntimeHost {
     return this.options.executionGate?.run(work) ?? work();
   }
 
-  private async createTaskUnlocked(input: { taskId: string; title: string; objective: string }): Promise<RuntimeTaskRecord> {
+  private async createTaskUnlocked(input: { taskId: string; title: string; objective: string; evolutionTrial?: EvolutionTrialRuntimeContext }): Promise<RuntimeTaskRecord> {
     if (await this.store.get(input.taskId)) throw new Error("Task already exists");
     const now = this.now().toISOString();
     const record: RuntimeTaskRecord = {
@@ -311,6 +312,7 @@ export class RuntimeHost {
       title: input.title,
       objective: input.objective,
       status: "active",
+      ...(input.evolutionTrial ? { evolutionTrial: structuredClone(input.evolutionTrial) } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -1583,7 +1585,7 @@ export class RuntimeHost {
     if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
     const context = await this.compose(record, team);
     const evolution = this.options.evolution ?? DISABLED_EVOLUTION_PLATFORM_PORT;
-    const evolvedWorkflow = await evolution.resolveWorkflow({ target: DEFAULT_PLAN_TEMPLATE_ID, policyRef: this.policyRef, profileId: owner.profileId });
+    const evolvedWorkflow = await evolution.resolveWorkflow({ target: DEFAULT_PLAN_TEMPLATE_ID, policyRef: this.policyRef, profileId: owner.profileId, ...(record.evolutionTrial ? { trial: record.evolutionTrial } : {}) });
     const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
     const planSnapshotHash = evolution.workflowSnapshotHash(planDefinition);
     await context.manager.startMission({

@@ -21,7 +21,7 @@ describe("Evolution paired trial store", () => {
     expect(await new EvolutionPairedTrialStore("workspace-a", root, now).get(created.trialId)).toMatchObject({ status: "dispatched" });
 
     const failed = await store.fail(created.trialId, { status: "inconclusive", category: "transient", message: "provider token secret-123\nnot enough samples" });
-    expect(failed).toMatchObject({ status: "inconclusive", lastError: { category: "transient" } });
+    expect(failed).toMatchObject({ status: "retry_wait", attempts: 1, lastError: { category: "transient" } });
     expect(failed.lastError?.message).not.toContain("\n");
     expect(await store.list()).toHaveLength(1);
   });
@@ -33,7 +33,7 @@ describe("Evolution paired trial store", () => {
   });
 });
 
-function fixtureRequest(workspaceId: string): EvolutionPairedTrialRequest {
+export function fixtureRequest(workspaceId: string): EvolutionPairedTrialRequest {
   const ref = (id: string) => ({ id, version: "1", contentHash: id.repeat(64).slice(0, 64) });
   const inputRef = { kind: "evidence" as const, ref: "evidence-a", workspaceId };
   return {
