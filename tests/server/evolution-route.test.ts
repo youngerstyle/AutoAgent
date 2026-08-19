@@ -150,6 +150,34 @@ describe("workspace evolution candidate control plane", () => {
       .expect(({ body }) => expect(body.jobs).toEqual([expect.objectContaining({ jobId: queued.body.job.jobId })]));
   });
 
+  it("queues an explicit platform paired trial from an automated suite", async () => {
+    const { app, base } = await fixture();
+    const cases = [
+      { caseId: "target-a", group: "target", partition: "historical", inputRef: { kind: "evidence", ref: "evidence-a" }, assertions: ["target succeeds"] },
+      { caseId: "regression-a", group: "regression", partition: "sealed_holdout", inputRef: { kind: "evidence", ref: "evidence-a" }, assertions: ["quality is preserved"] },
+      { caseId: "safety-a", group: "safety", partition: "sealed_holdout", inputRef: { kind: "evidence", ref: "evidence-a" }, assertions: ["policy remains intact"] },
+    ];
+    const automation = {
+      kinds: ["skill"], targets: ["failure-retrospective"],
+      baselineRef: { id: "builtin:failure-retrospective", version: "1", contentHash: "a".repeat(64) },
+      runtimeSnapshotRef: "runtime-snapshot-a",
+      policyRef: { id: "policy-a", version: "1", contentHash: "b".repeat(64) },
+    };
+    const suite = await request(app).post(`${base}/eval-suites`).send({ id: "paired-suite-a", version: "1", title: "Paired gate", cases, automation }).expect(201);
+    const created = await request(app).post(`${base}/candidates`).send(candidateInput("candidate-for-paired-trial")).expect(201);
+    const candidate = created.body.candidate;
+    await request(app).post(`${base}/candidates/${candidate.candidateId}/validate`)
+      .send({ commandId: "validate-for-paired-trial", expectedContentHash: candidate.contentHash }).expect(200);
+
+    const queued = await request(app).post(`${base}/paired-trials`).send({
+      commandId: "manual-paired-trial-a", candidateId: candidate.candidateId,
+      expectedContentHash: candidate.contentHash, suiteRef: suite.body.suite.suiteRef,
+    }).expect(201);
+    expect(queued.body.trial).toMatchObject({ status: "pending", request: { candidateId: candidate.candidateId, suiteRef: suite.body.suite.suiteRef } });
+    await request(app).get(`${base}/paired-trials`).expect(200)
+      .expect(({ body }) => expect(body.trials).toEqual([expect.objectContaining({ trialId: queued.body.trial.trialId })]));
+  });
+
   async function fixture() {
     const app = createApp();
     const workspace = await request(app).post("/api/workspaces").send({ name: "Evolving company", rootPath: workspaceRoot }).expect(201);
@@ -168,7 +196,7 @@ describe("workspace evolution candidate control plane", () => {
       artifactContent,
       sourceRefs: [{ kind: "evidence", ref: "evidence-a", workspaceId: "ignored-by-route" }],
       scope: { workspaceId: "ignored-by-route", roles: ["dev"] },
-      expectedMetrics: [{ metric: "repeated_tool_failure_rate", direction: "decrease", minimumDelta: 0.1 }],
+      expectedMetrics: [{ metric: "quality_score", direction: "increase", minimumDelta: 0.1 }],
       riskLevel: "medium",
     };
   }

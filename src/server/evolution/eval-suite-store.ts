@@ -5,6 +5,7 @@ import type { EvolutionEvalCase, EvolutionEvalSuite, VersionedEvolutionRef } fro
 import { HttpError } from "../errors.js";
 import { writeJson } from "../storage/json.js";
 import { workspaceEvolutionEvalSuiteFile, workspaceEvolutionEvalSuiteIndexFile } from "../storage/paths.js";
+import { validLocalTrialInputRef } from "./trial-input-ref.js";
 
 const queues = new Map<string, Promise<void>>();
 interface SuiteIndexEntry { suiteRef: VersionedEvolutionRef; createdAt: string }
@@ -69,7 +70,7 @@ function validate(input: { id: string; version: string; title: string; cases: Ev
   if (!input.cases.some((item) => item.partition === "historical") || !input.cases.some((item) => item.partition === "sealed_holdout")) throw invalid("Evaluation suite must separate historical cases from a sealed holdout");
   const ids = new Set<string>();
   for (const item of input.cases) {
-    if (!item.caseId?.trim() || ids.has(item.caseId) || !["historical", "sealed_holdout"].includes(item.partition) || item.inputRef?.kind !== "evidence" || !item.inputRef.ref || item.inputRef.workspaceId !== workspaceId || !item.assertions?.length || item.assertions.some((value) => !value.trim())) throw invalid("Evaluation suite case is invalid");
+    if (!item.caseId?.trim() || ids.has(item.caseId) || !["historical", "sealed_holdout"].includes(item.partition) || !validLocalTrialInputRef(item.inputRef, workspaceId) || !item.assertions?.length || item.assertions.some((value) => !value.trim())) throw invalid("Evaluation suite case is invalid");
     ids.add(item.caseId);
   }
   if (input.automation) {

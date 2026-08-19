@@ -249,7 +249,7 @@ async function validateEvaluationEvidence(workspaceRoot: string, cases: Evaluati
 }
 
 function scoreEvaluation(candidate: EvolutionCandidate, cases: EvaluationCaseResult[]): MetricResult[] {
-  return scoreMetricExpectations(withMandatoryEvolutionMetrics(candidate.expectedMetrics), cases);
+  return scoreMetricExpectations(withMandatoryEvolutionMetrics(candidate.expectedMetrics, candidate.kind), cases);
 }
 
 function evaluationDecision(cases: EvaluationCaseResult[], metrics: MetricResult[]): EvaluationRun["decision"] {

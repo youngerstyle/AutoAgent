@@ -75,6 +75,31 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
     const workspace = await workspaces.get(String(req.params.workspaceId));
     res.json({ trials: await new EvolutionPairedTrialStore(workspace.id, workspace.rootPath).list() });
   }));
+  router.post("/paired-trials", asyncHandler(async (req, res) => {
+    const workspaceId = String(req.params.workspaceId);
+    const workspace = await workspaces.get(workspaceId);
+    const stores = await storeFor(workspaceId);
+    const candidate = await stores.candidates.get(String(req.body?.candidateId ?? ""));
+    const expectedContentHash = String(req.body?.expectedContentHash ?? "");
+    if (!candidate.validation?.passed || !["validated", "ready_for_eval"].includes(candidate.status) || candidate.contentHash !== expectedContentHash) {
+      throw new HttpError(409, "Paired trial requires the validated immutable candidate revision", "EVOLUTION_CONFLICT");
+    }
+    const suite = await stores.suites.get(req.body?.suiteRef);
+    if (!suite.automation || !suite.automation.kinds.includes(candidate.kind) || !suite.automation.targets?.includes(candidate.target)) {
+      throw new HttpError(409, "Evaluation suite is not an automated paired trial for this candidate", "EVOLUTION_CONFLICT");
+    }
+    const commandId = typeof req.body?.commandId === "string" && req.body.commandId.trim() ? req.body.commandId : randomUUID();
+    await stores.candidates.markReadyForEvaluation({
+      commandId: `${commandId}:candidate-ready`, candidateId: candidate.candidateId,
+      expectedContentHash, suiteRef: suite.suiteRef,
+    });
+    const trial = await new EvolutionPairedTrialStore(workspace.id, workspace.rootPath).enqueue(commandId, {
+      candidateId: candidate.candidateId, expectedContentHash, suiteRef: suite.suiteRef,
+      baselineRef: suite.automation.baselineRef, runtimeSnapshotRef: suite.automation.runtimeSnapshotRef,
+      policyRef: suite.automation.policyRef, cases: suite.cases,
+    });
+    res.status(201).json({ trial });
+  }));
   router.get("/memories", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
     res.json({ memories: await new MemoryLifecycleStore(workspace.id, workspace.rootPath).list() });

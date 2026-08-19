@@ -23,6 +23,7 @@ import {
 import { isKnownToolName } from "../../shared/tool-catalog.js";
 import { HttpError } from "../errors.js";
 import { writeJson } from "../storage/json.js";
+import { isSafeEvolutionMetricDirection, isSupportedEvolutionMetric } from "./metric-gate.js";
 import { workspaceEvolutionArtifactFile, workspaceEvolutionArtifactManifestFile, workspaceEvolutionLedgerFile, workspaceEvolutionSkillEntrypointFile } from "../storage/paths.js";
 import { scanSkillArtifact } from "./skill-scanner.js";
 import { materializePluginBundle, parseAndScanPluginBundle, type ParsedPluginBundle } from "./plugin-scanner.js";
@@ -320,6 +321,8 @@ export function parseCreateEvolutionCandidateInput(raw: CreateEvolutionCandidate
   if (!Array.isArray(input.expectedMetrics) || input.expectedMetrics.length === 0) throw invalid("At least one expected metric is required");
   for (const metric of input.expectedMetrics) {
     if (!metric || typeof metric.metric !== "string" || !metric.metric.trim() || !["increase", "decrease", "maintain"].includes(metric.direction)) throw invalid("Evolution metric expectation is invalid");
+    if (!isSupportedEvolutionMetric(metric.metric)) throw invalid(`Evolution metric is not measurable: ${metric.metric}`);
+    if (!isSafeEvolutionMetricDirection(metric)) throw invalid(`Evolution metric direction is unsafe: ${metric.metric}`);
   }
   if (!["low", "medium", "high", "critical"].includes(input.riskLevel)) throw invalid("Evolution risk level is invalid");
   if ((input.kind === "plugin" || input.kind === "harness") && input.riskLevel !== "critical") throw invalid("Plugin and harness candidates must be critical risk");
@@ -351,7 +354,7 @@ function validateCandidate(
   const common: EvolutionValidationCheck[] = [
     { name: "source_evidence", passed: candidate.sourceRefs.length > 0 && sourceVerification.length === candidate.sourceRefs.length && sourceVerification.every(Boolean), message: "Candidate source references resolve in authoritative workspace stores" },
     { name: "practice_provenance", passed: practiceVerification, message: "Candidate Practice provenance resolves to the immutable local Practice version" },
-    { name: "metric_hypothesis", passed: candidate.expectedMetrics.length > 0 && candidate.hypothesis.length >= 20, message: "Candidate has a falsifiable metric hypothesis" },
+    { name: "metric_hypothesis", passed: candidate.expectedMetrics.length > 0 && candidate.expectedMetrics.every((item) => isSupportedEvolutionMetric(item.metric)) && candidate.hypothesis.length >= 20, message: "Candidate has a falsifiable hypothesis using registered measurable metrics" },
     { name: "scope_boundary", passed: candidate.sourceRefs.every((ref) => ref.workspaceId === candidate.scope.workspaceId), message: "Candidate is workspace scoped" },
     { name: "mutation_contract", passed: Boolean(mutation && mutation.assetKind === candidate.kind && mutation.target === candidate.target && mutation.candidateRef.id === candidate.candidateId && mutation.candidateRef.version === String(candidate.revision) && mutation.candidateRef.contentHash === candidate.contentHash && mutation.activationBoundary === DEFAULT_EVOLUTION_ACTIVATION_BOUNDARY[candidate.kind] && mutation.rollbackRef.id === mutation.baseRef.id && mutation.rollbackRef.contentHash === mutation.baseRef.contentHash), message: "MutationSet identity, base, rollback, and activation boundary match the immutable Candidate" },
   ];

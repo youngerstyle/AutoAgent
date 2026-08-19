@@ -1,4 +1,4 @@
-import type { EvolutionPractice, EvolutionScope } from "../../shared/contracts/evolution.js";
+import type { EvolutionArtifactKind, EvolutionPractice, EvolutionScope } from "../../shared/contracts/evolution.js";
 import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { EvolutionStore } from "./evolution-store.js";
 import { PluginAuthoringJobStore } from "./plugin-authoring-job-store.js";
@@ -28,6 +28,7 @@ export class PluginAuthoringWorker {
     private readonly author: PluginArtifactAuthor,
     private readonly now: () => Date = () => new Date(),
     private readonly candidates = new EvolutionStore(workspaceId, workspaceRoot, now),
+    private readonly mayCreateCandidate: (input: { kind: EvolutionArtifactKind; target: string; scope: EvolutionScope }) => Promise<boolean> = async () => true,
   ) {}
   async run(): Promise<{ jobsInspected: number; candidatesCreated: number }> {
     const bindings = new PracticeBindingStore(this.workspaceRoot, this.now); const practices = new PracticeStore(this.workspaceId, this.workspaceRoot, this.now);
@@ -37,6 +38,11 @@ export class PluginAuthoringWorker {
     if (!await this.author.available()) return { jobsInspected: pending.length, candidatesCreated: 0 };
     let created = 0;
     for (const queued of (await jobs.list()).filter((item) => ["pending", "retry_wait"].includes(item.status))) {
+      const bindingBeforeClaim = (await bindings.list()).find((item) => item.bindingId === queued.bindingId);
+      const practiceBeforeClaim = (await practices.list()).find((item) => item.practiceId === queued.practiceId && item.version === queued.practiceVersion);
+      if (!bindingBeforeClaim || !practiceBeforeClaim) continue;
+      const scopeBeforeClaim: EvolutionScope = { workspaceId: this.workspaceId, ownerLevel: practiceBeforeClaim.applicability.ownerLevel, ...(practiceBeforeClaim.applicability.profileId ? { profileId: practiceBeforeClaim.applicability.profileId } : {}), ...(practiceBeforeClaim.applicability.roles ? { roles: practiceBeforeClaim.applicability.roles } : {}), ...(practiceBeforeClaim.applicability.taskTypes ? { taskTypes: practiceBeforeClaim.applicability.taskTypes } : {}) };
+      if (!await this.mayCreateCandidate({ kind: "plugin", target: bindingBeforeClaim.target, scope: scopeBeforeClaim })) continue;
       const job = await jobs.claim(queued.jobId); if (!job) continue;
       try {
         const binding = (await bindings.list()).find((item) => item.bindingId === job.bindingId);

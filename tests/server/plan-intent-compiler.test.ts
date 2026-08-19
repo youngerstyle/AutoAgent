@@ -59,10 +59,13 @@ describe("compilePlanIntent", () => {
     expect(() => compilePlanIntent(value, snapshot())).toThrow("at least one implementation todo");
   });
 
-  it("rejects a lifecycle the team cannot actually staff", () => {
+  it("leaves a capability vacancy for Mission Control staffing instead of rejecting the plan", () => {
     const base = snapshot();
     base.teamMembers = base.teamMembers.filter((member) => !member.capabilities.includes("delivery:verify"));
-    expect(() => compilePlanIntent(intent(), base)).toThrow("independent verification");
+    const change = compilePlanIntent(intent(), base);
+    expect(change.additions.find((node) => node.clientRef === "assurance")?.assignment).toEqual({
+      requiredCapabilities: ["delivery:verify"],
+    });
   });
 
   it("gates a new delivery on every healthy exit of the latest existing increment", () => {

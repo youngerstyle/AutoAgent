@@ -11,6 +11,7 @@ dist/
 .tmp/
 .tmp-*.log
 .pi-debug*.log
+.evol-*.log
 .server.*.log
 .server-*.log
 .tank*-snapshot.json

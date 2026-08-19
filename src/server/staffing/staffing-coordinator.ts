@@ -164,6 +164,10 @@ export class StaffingCoordinator {
         createdAt: request.createdAt,
       },
     });
+    if (!request.contextMessage) {
+      request = { ...request, contextMessage: await this.contextMessage(request), updatedAt: this.now().toISOString() };
+      await this.store.save(request);
+    }
     const contextMessageId = stableId("staffing-context", request.staffingRequestId);
     await runtime.engine.sendMessage({
       messageId: contextMessageId,
@@ -171,7 +175,7 @@ export class StaffingCoordinator {
       goalId,
       senderPrincipalId: "mission-control",
       deliveryKind: "context",
-      content: await this.contextMessage(request),
+      content: request.contextMessage!,
       createdAt: request.createdAt,
     });
     await runtime.engine.sendMessage({

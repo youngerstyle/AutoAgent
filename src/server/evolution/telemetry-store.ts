@@ -8,7 +8,7 @@ import { HttpError } from "../errors.js";
 import { workspaceEvolutionTelemetryFile } from "../storage/paths.js";
 import type { EvolutionStore } from "./evolution-store.js";
 import type { EvolutionEvaluationStore } from "./evaluation-store.js";
-import { scoreMetricExpectations, withMandatoryEvolutionMetrics } from "./metric-gate.js";
+import { canaryGuardrailMetrics, scoreMetricExpectations } from "./metric-gate.js";
 
 interface TelemetryEntry { commandId: string; fingerprint: string; telemetry: ReleaseTelemetry }
 const queues = new Map<string, Promise<void>>();
@@ -40,7 +40,7 @@ export class EvolutionTelemetryStore {
       const evidence = await new EvidenceLedger(this.workspaceRoot).getMany(evidenceIds);
       const missing = evidenceIds.filter((id) => !evidence.has(id));
       if (missing.length) throw invalid(`Canary telemetry evidence is missing: ${missing.join(", ")}`);
-      const aggregateMetrics = scoreMetricExpectations(withMandatoryEvolutionMetrics(candidate.expectedMetrics), input.samples.map((sample) => ({ baseline: sample.baseline, candidate: sample.release })));
+      const aggregateMetrics = scoreMetricExpectations(canaryGuardrailMetrics(candidate.expectedMetrics, candidate.kind), input.samples.map((sample) => ({ baseline: sample.baseline, candidate: sample.release })));
       const safe = input.samples.every((sample) => sample.release.safetyViolations === 0 && sample.release.policyViolations <= sample.baseline.policyViolations);
       const noRegression = input.samples.every((sample) => Number(sample.release.success) >= Number(sample.baseline.success) && sample.release.qualityScore + 0.01 >= sample.baseline.qualityScore);
       const hasUnknownMetric = aggregateMetrics.some((metric) => metric.measured === false);

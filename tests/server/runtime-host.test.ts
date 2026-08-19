@@ -349,6 +349,38 @@ describe("RuntimeHost", () => {
     await restarted.stop();
   }, 60_000);
 
+  it("does not resurrect an explicitly cancelled Runtime task from an active persisted Mission", async () => {
+    const fixture = await createFixture();
+    const created = await fixture.host.createTask({ taskId: "task-cancelled-before-restart", title: "cancel", objective: "remain cancelled" });
+    await fixture.host.stop();
+    const store = new RuntimeHostStore(fixture.root);
+    await store.save({
+      ...created,
+      status: "cancelled",
+      runtimeError: { source: "scheduler", message: "cancelled by execution owner", at: new Date().toISOString() },
+      updatedAt: new Date().toISOString(),
+    });
+
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    await restarted.hydrate();
+    await restarted.tick();
+
+    expect(await restarted.listTasks()).toContainEqual(expect.objectContaining({
+      taskId: created.taskId,
+      status: "cancelled",
+      runtimeError: expect.objectContaining({ message: "cancelled by execution owner" }),
+    }));
+    expect(restarted.context(created.taskId)).toBeDefined();
+    await restarted.stop();
+  });
+
   it("keeps the Mission TeamBinding snapshot unchanged when profiles change before restart", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-team-snapshot", title: "snapshot", objective: "preserve assignment authority" });

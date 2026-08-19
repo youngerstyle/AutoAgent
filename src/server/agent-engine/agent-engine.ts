@@ -359,6 +359,19 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     if (hasUnconsumedHumanTurn(aggregate, thread.threadId, goalId)) {
       return { ready: true, reason: "new_input" };
     }
+    const goalProposalIds = new Set(aggregate.proposals
+      .filter((item) => item.goalId === goalId)
+      .map((item) => item.proposalId));
+    const goalDecisions = aggregate.decisions.filter((item) => goalProposalIds.has(item.proposalId));
+    const contractRejectionTail = goalDecisions.slice(-3);
+    if (contractRejectionTail.length === 3
+      && contractRejectionTail.every((item) => isCorrectableContractRejection(item.decisionId))) {
+      return { ready: false, reason: "repeated_contract_rejection_without_progress" };
+    }
+    if (contractRejectionTail.length === 3
+      && contractRejectionTail.every((item) => item.result.applied && item.result.goal.status === "active")) {
+      return { ready: false, reason: "repeated_resolution_rejection_without_progress" };
+    }
     const controlRecords = thread.items
       .filter((item) => item.kind === "control")
       .map((item) => ({
@@ -832,6 +845,10 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
   private requireAgent(agentId: string): void {
     if (agentId !== this.store.agentId) throw new Error("Agent partition mismatch");
   }
+}
+
+function isCorrectableContractRejection(decisionId: string): boolean {
+  return decisionId.startsWith("invalid_goal_decision_") || decisionId.startsWith("plan_change_rejected_");
 }
 
 function latestCompactionBoundary(

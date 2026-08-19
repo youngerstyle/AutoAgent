@@ -595,6 +595,70 @@ describe("AgentEngine", () => {
     });
   });
 
+  it("stops after three consecutive Mission contract rejections until new input arrives", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    let goal = fixture.goal;
+    for (let index = 1; index <= 3; index += 1) {
+      const proposal = { ...proposalFor(goal), proposalId: `contract-proposal-${index}` };
+      const attempted = await fixture.engine.proposeGoalResolution(proposal);
+      const settled = await fixture.engine.settleProposal({
+        decisionId: `invalid_goal_decision_${index}`,
+        proposalId: proposal.proposalId,
+        expectedGoalVersion: attempted.goal.version,
+        decision: { accepted: false, disposition: "correctable", reason: "Mission contract rejected the proposal" },
+      });
+      goal = settled.goal;
+    }
+
+    expect(await fixture.engine.executionReadiness(goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_contract_rejection_without_progress",
+    });
+
+    await fixture.engine.sendMessage({
+      messageId: "contract-recovery",
+      turnId: "contract-recovery",
+      threadId: goal.spec.threadId,
+      goalId: goal.spec.id,
+      senderPrincipalId: "human",
+      content: "根据合同拒绝原因调整方案",
+      createdAt: T1,
+    });
+    expect(await fixture.engine.executionReadiness(goal.spec.id)).toEqual({ ready: true, reason: "new_input" });
+  });
+
+  it("stops after three ordinary correctable resolution rejections until new input arrives", async () => {
+    const fixture = await activeGoalFixture(new RetryPort());
+    let goal = fixture.goal;
+    for (let index = 1; index <= 3; index += 1) {
+      const proposal = { ...proposalFor(goal), proposalId: `ordinary-proposal-${index}` };
+      const attempted = await fixture.engine.proposeGoalResolution(proposal);
+      const settled = await fixture.engine.settleProposal({
+        decisionId: `ordinary-decision-${index}`,
+        proposalId: proposal.proposalId,
+        expectedGoalVersion: attempted.goal.version,
+        decision: { accepted: false, disposition: "correctable", reason: "Evidence does not satisfy the host contract" },
+      });
+      goal = settled.goal;
+    }
+
+    expect(await fixture.engine.executionReadiness(goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_resolution_rejection_without_progress",
+    });
+
+    await fixture.engine.sendMessage({
+      messageId: "ordinary-recovery",
+      turnId: "ordinary-recovery",
+      threadId: goal.spec.threadId,
+      goalId: goal.spec.id,
+      senderPrincipalId: "human",
+      content: "根据宿主退回原因补齐证据",
+      createdAt: T1,
+    });
+    expect(await fixture.engine.executionReadiness(goal.spec.id)).toEqual({ ready: true, reason: "new_input" });
+  });
+
   it("makes duplicate appends no-ops and rejects conflicting reuse", async () => {
     const fixture = await createFixture();
     const thread = await fixture.engine.ensureThread({

@@ -6,6 +6,7 @@ import {
   abortPiSessionPromptly,
   awaitPiPromptOutcome,
   compactPiToolEventDetails,
+  withPortablePromptCacheCompatibility,
   createPiToolExecutionBarrier,
   createPiPromptWatchdog,
   goalResolutionDomainOutcomeSchema,
@@ -38,6 +39,22 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+describe("Pi Provider portability", () => {
+  it("disables only optional long prompt-cache retention for OpenAI models", () => {
+    const openai = withPortablePromptCacheCompatibility({
+      provider: "openai",
+      compat: { supportsLongCacheRetention: true, supportsStrictMode: true },
+    } as any);
+    const anthropic = { provider: "anthropic", compat: { supportsLongCacheRetention: true } } as any;
+
+    expect(openai.compat).toMatchObject({
+      supportsLongCacheRetention: false,
+      supportsStrictMode: true,
+    });
+    expect(withPortablePromptCacheCompatibility(anthropic)).toBe(anthropic);
+  });
+});
 
 describe("Pi tool error projection", () => {
   it("removes rejected argument payloads from model-facing validation errors", () => {

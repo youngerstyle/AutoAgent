@@ -3,7 +3,10 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const writeQueues = new Map<string, Promise<void>>();
-const RENAME_MAX_ATTEMPTS = 6;
+// Antivirus/indexer handles on Windows can outlive a short burst of retries.
+// Keep the update atomic and wait for a bounded release rather than deleting
+// the destination or falling back to an in-place partial write.
+const RENAME_MAX_ATTEMPTS = 90;
 const RENAME_RETRY_BACKOFF_MS = 25;
 
 export async function readJson<T>(filePath: string, fallback: T): Promise<T> {
@@ -69,7 +72,7 @@ async function renameWithRetry(source: string, target: string): Promise<void> {
       return;
     } catch (error) {
       if (!isRetriableRenameError(error) || attempt === RENAME_MAX_ATTEMPTS - 1) throw error;
-      await delay(RENAME_RETRY_BACKOFF_MS * (attempt + 1));
+      await delay(Math.min(500, RENAME_RETRY_BACKOFF_MS * (attempt + 1)));
     }
   }
 }

@@ -31,7 +31,7 @@ import { ScopePromotionStore } from "./scope-promotion-store.js";
 import { ScopePromotionCandidateCompiler } from "./scope-promotion-compiler.js";
 import { SharedEvolutionReleaseRegistry } from "./shared-release-registry.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
-import type { EvolutionCandidate, EvolutionEvalSuite, EvolutionReleaseBlocker } from "../../shared/contracts/evolution.js";
+import type { EvolutionCandidate, EvolutionEvalSuite, EvolutionReleaseBlocker, EvolutionSourceRef } from "../../shared/contracts/evolution.js";
 import { PluginAuthoringWorker, type PluginArtifactAuthor } from "./plugin-authoring-worker.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
 import type { PracticeReflector } from "./practice-reflector.js";
@@ -243,13 +243,31 @@ export class EvolutionCoordinator {
   }
 
   private async runBindings(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<number> {
+    const candidates = this.candidateStore(workspace);
+    const evaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
+    const mayCreateCandidate = async ({ kind, target, scope }: { kind: EvolutionCandidate["kind"]; target: string; scope: EvolutionCandidate["scope"] }) => {
+      const promotions = await evaluations.listPromotions();
+      const pairedTrials = await new EvolutionPairedTrialStore(workspace.id, workspace.rootPath, () => this.now()).list();
+      for (const candidate of (await candidates.list()).filter((item) => item.kind === kind && item.target === target && sameEvolutionScope(item.scope, scope))) {
+        const runs = await evaluations.listEvaluations(candidate.candidateId);
+        const resolved = candidateChallengerResolved({
+          candidateStatus: candidate.status,
+          evaluationDecisions: runs.map((run) => run.decision),
+          productionActive: promotions.some((promotion) => promotion.candidateId === candidate.candidateId && promotion.stage === "production" && promotion.status === "active"),
+          trialStatuses: pairedTrials.filter((trial) => trial.request.candidateId === candidate.candidateId).map((trial) => trial.status),
+        });
+        if (!resolved) return false;
+      }
+      return true;
+    };
     const result = await new PracticeBindingCompiler(
       workspace.id,
       new PracticeStore(workspace.id, workspace.rootPath, () => this.now()),
       new PracticeBindingStore(workspace.rootPath, () => this.now()),
-      this.candidateStore(workspace),
+      candidates,
+      mayCreateCandidate,
     ).compile();
-    if (this.options.pluginArtifactAuthor) await new PluginAuthoringWorker(workspace.id, workspace.rootPath, this.options.pluginArtifactAuthor, () => this.now(), this.candidateStore(workspace)).run();
+    if (this.options.pluginArtifactAuthor) await new PluginAuthoringWorker(workspace.id, workspace.rootPath, this.options.pluginArtifactAuthor, () => this.now(), candidates, mayCreateCandidate).run();
     return result.bindingsProposed;
   }
 
@@ -340,22 +358,24 @@ export class EvolutionCoordinator {
     const practices = await new PracticeStore(workspace.id, workspace.rootPath, () => this.now()).list();
     const experience = new ExperienceStore(workspace.id, workspace.rootPath);
     const episodes = await experience.listEpisodes();
-    const attributions = await experience.listAttributions();
     for (const candidate of await candidates.list()) {
       if (candidate.kind !== "workflow" || candidate.status !== "validated" || !candidate.practiceRef) continue;
       const suiteId = `practice-trial:${candidate.candidateId}`;
       if (existing.some((ref) => ref.id === suiteId && ref.version === String(candidate.revision))) continue;
       const practice = practices.find((item) => item.practiceId === candidate.practiceRef!.id && String(item.version) === candidate.practiceRef!.version && item.provenanceHash === candidate.practiceRef!.contentHash);
       if (!practice) continue;
-      const historical = candidate.sourceRefs.find((ref) => ref.kind === "evidence");
+      const historical = trialInputRef(candidate.sourceRefs);
       if (!historical) continue;
-      const attributedEpisodeIds = new Set(attributions.filter((item) => item.component === "workflow").map((item) => item.episodeId));
+      const sourceTaskIds = new Set([
+        ...practice.sourceRefs.flatMap((ref) => ref.taskId ? [ref.taskId] : []),
+        ...episodes.filter((item) => practice.sourceEpisodeRefs.includes(item.episodeId)).map((item) => item.taskId),
+      ]);
       const holdoutEpisode = episodes
-        .filter((item) => Date.parse(item.endedAt) > Date.parse(candidate.createdAt) && attributedEpisodeIds.has(item.episodeId))
+        .filter((item) => Date.parse(item.endedAt) > Date.parse(candidate.createdAt) && !sourceTaskIds.has(item.taskId))
         .filter((item) => !candidate.scope.profileId || item.profileId === candidate.scope.profileId)
-        .filter((item) => !practice.sourceEpisodeRefs.includes(item.episodeId) && item.sourceRefs.some((ref) => ref.kind === "evidence"))
+        .filter((item) => !practice.sourceEpisodeRefs.includes(item.episodeId) && Boolean(trialInputRef(item.sourceRefs)))
         .sort((left, right) => left.endedAt.localeCompare(right.endedAt) || left.episodeId.localeCompare(right.episodeId))[0];
-      const holdout = holdoutEpisode?.sourceRefs.find((ref) => ref.kind === "evidence");
+      const holdout = holdoutEpisode ? trialInputRef(holdoutEpisode.sourceRefs) : undefined;
       if (!holdout) continue;
       const current = await new EvolutionReleaseRegistry(workspace.rootPath, () => this.now()).current("production", candidate);
       const baselineRef = current?.release ?? { id: `builtin:${candidate.target}`, version: "1", contentHash: digest(`builtin:${candidate.target}:1`) };
@@ -401,12 +421,16 @@ export class EvolutionCoordinator {
     }
     const suites = new EvolutionEvalSuiteStore(workspace.id, workspace.rootPath, () => this.now());
     await this.ensurePracticeEvaluationSuites(workspace, candidates, suites);
+    const evaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
     const jobs = new EvaluationJobStore(workspace.id, workspace.rootPath, () => this.now());
     const pairedTrials = new EvolutionPairedTrialStore(workspace.id, workspace.rootPath, () => this.now());
     const trialAvailable = await (this.options.trialPort ?? UNAVAILABLE_EVOLUTION_TRIAL_PORT).available(workspace.id);
-    const suiteValues = await Promise.all((await suites.list()).map((ref) => suites.get(ref)));
+    const suiteValues = latestEvalSuiteVersions(await Promise.all((await suites.list()).map((ref) => suites.get(ref))));
+    const pairedTrialValues = await pairedTrials.list();
     for (const candidate of await candidates.list()) {
-      if (!["validated", "ready_for_eval"].includes(candidate.status)) continue;
+      const priorEvaluations = await evaluations.listEvaluations(candidate.candidateId);
+      const priorTrialStatuses = pairedTrialValues.filter((trial) => trial.request.candidateId === candidate.candidateId).map((trial) => trial.status);
+      if (!candidateNeedsAutomaticEvaluation(candidate.status, priorEvaluations.length, priorTrialStatuses)) continue;
       for (const suite of suiteValues.filter((value) => automationMatches(value, candidate))) {
         await candidates.markReadyForEvaluation({
           commandId: `automatic-suite-binding:${candidate.candidateId}:${suite.suiteRef.contentHash}`,
@@ -534,6 +558,40 @@ export class EvolutionCoordinator {
   private now(): Date { return (this.options.now ?? (() => new Date()))(); }
 }
 
+export function latestEvalSuiteVersions<T extends { suiteRef: { id: string; version: string } }>(suites: T[]): T[] {
+  const latest = new Map<string, T>();
+  for (const suite of suites) {
+    const current = latest.get(suite.suiteRef.id);
+    if (!current || compareSuiteVersion(suite.suiteRef.version, current.suiteRef.version) > 0) latest.set(suite.suiteRef.id, suite);
+  }
+  return [...latest.values()];
+}
+
+export function candidateChallengerResolved(input: {
+  candidateStatus: EvolutionCandidate["status"];
+  evaluationDecisions: Array<"pass" | "fail" | "inconclusive">;
+  productionActive: boolean;
+  trialStatuses: Array<"pending" | "dispatched" | "retry_wait" | "succeeded" | "failed" | "inconclusive">;
+}): boolean {
+  if (input.candidateStatus === "rejected" || input.evaluationDecisions.includes("fail") || input.productionActive) return true;
+  return input.trialStatuses.length > 0 && input.trialStatuses.every((status) => status === "failed" || status === "inconclusive");
+}
+
+export function candidateNeedsAutomaticEvaluation(
+  status: EvolutionCandidate["status"],
+  evaluationCount: number,
+  trialStatuses: Array<"pending" | "dispatched" | "retry_wait" | "succeeded" | "failed" | "inconclusive"> = [],
+): boolean {
+  if (!["validated", "ready_for_eval"].includes(status) || evaluationCount > 0) return false;
+  return trialStatuses.length === 0 || !trialStatuses.every((trialStatus) => trialStatus === "failed" || trialStatus === "inconclusive");
+}
+
+function compareSuiteVersion(left: string, right: string): number {
+  const leftNumber = Number(left); const rightNumber = Number(right);
+  if (Number.isSafeInteger(leftNumber) && Number.isSafeInteger(rightNumber)) return leftNumber - rightNumber;
+  return left.localeCompare(right, undefined, { numeric: true });
+}
+
 function blocker(workspaceId: string, candidate: EvolutionCandidate, code: EvolutionReleaseBlocker["code"], message: string): EvolutionReleaseBlocker {
   return { workspaceId, candidateId: candidate.candidateId, kind: candidate.kind, target: candidate.target, status: candidate.status, code, message };
 }
@@ -548,6 +606,23 @@ function safeMessage(error: unknown): string {
 }
 
 function digest(value: string): string { return createHash("sha256").update(value, "utf8").digest("hex"); }
+
+function sameEvolutionScope(left: EvolutionCandidate["scope"], right: EvolutionCandidate["scope"]): boolean {
+  const normalized = (scope: EvolutionCandidate["scope"]) => JSON.stringify({
+    workspaceId: scope.workspaceId,
+    ownerLevel: scope.ownerLevel,
+    profileId: scope.profileId,
+    roles: [...(scope.roles ?? [])].sort(),
+    taskTypes: [...(scope.taskTypes ?? [])].sort(),
+    tools: [...(scope.tools ?? [])].sort(),
+  });
+  return normalized(left) === normalized(right);
+}
+
+function trialInputRef(refs: EvolutionSourceRef[]): EvolutionSourceRef | undefined {
+  const priority: EvolutionSourceRef["kind"][] = ["evidence", "human_feedback", "ticket", "mission", "goal_decision", "goal_proposal", "trace"];
+  return priority.flatMap((kind) => refs.filter((ref) => ref.kind === kind))[0];
+}
 
 function maintenanceWindowAllows(now: Date, window: { startHour: number; endHour: number } | undefined): boolean {
   if (!window) return false;

@@ -41,14 +41,14 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     throw new PlanIntentError("intent.todos must contain at least one implementation todo");
   }
 
-  const implementationMember = memberForCapabilities(snapshot, ["delivery:implement"], "implementation");
-  const assuranceMember = memberForCapabilities(snapshot, ["delivery:verify"], "independent verification");
+  const implementationMember = memberForCapabilities(snapshot, ["delivery:implement"]);
+  const assuranceMember = memberForCapabilities(snapshot, ["delivery:verify"]);
   const terminalCapabilities = snapshot.requiredTerminalCapabilities.length
     ? snapshot.requiredTerminalCapabilities
     : ["delivery:accept"];
-  const acceptanceMember = memberForCapabilities(snapshot, terminalCapabilities, "final acceptance");
+  const acceptanceMember = memberForCapabilities(snapshot, terminalCapabilities);
   const architectureMember = intent.todos.some((todo) => todo.kind === "architecture")
-    ? memberForCapabilities(snapshot, ["architecture:design"], "architecture")
+    ? memberForCapabilities(snapshot, ["architecture:design"])
     : undefined;
 
   const existingIncrements = uniqueIncrements(snapshot.tickets);
@@ -129,25 +129,21 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
 }
 
 function assignmentFor(
-  member: PlanCompilerSnapshot["teamMembers"][number],
+  member: PlanCompilerSnapshot["teamMembers"][number] | undefined,
   requiredCapabilities: string[],
 ) {
   return {
-    principalId: member.principalId,
     requiredCapabilities,
-    requiredTools: [...member.enabledTools],
+    ...(member ? { principalId: member.principalId, requiredTools: [...member.enabledTools] } : {}),
   };
 }
 
 function memberForCapabilities(
   snapshot: PlanCompilerSnapshot,
   requiredCapabilities: string[],
-  label: string,
-): PlanCompilerSnapshot["teamMembers"][number] {
-  const member = snapshot.teamMembers.find((candidate) =>
+): PlanCompilerSnapshot["teamMembers"][number] | undefined {
+  return snapshot.teamMembers.find((candidate) =>
     requiredCapabilities.every((capability) => candidate.capabilities.includes(capability)));
-  if (!member) throw new PlanIntentError(`team has no member assignable to ${label}: ${requiredCapabilities.join(", ")}`);
-  return member;
 }
 
 function compileHistoricalFailureResolutions(

@@ -11,6 +11,8 @@ import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from ".
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import { parseTeamStaffingOutcome } from "../../src/shared/contracts/staffing.js";
 import type { Workspace } from "../../src/shared/types.js";
+import { StaffingCoordinator } from "../../src/server/staffing/staffing-coordinator.js";
+import { StaffingRequestStore, type StaffingRequestRecord } from "../../src/server/staffing/staffing-request-store.js";
 
 describe("automatic project staffing", () => {
   it("requires each staffing member to declare auditable capability coverage", () => {
@@ -294,6 +296,63 @@ describe("automatic project staffing", () => {
     expect(host.context("task-staffing-resume")).toBeDefined();
     expect((await host.snapshot()).status).toBe("running");
     await host.stop();
+  });
+
+  it("freezes the staffing context payload so a retry cannot conflict when project history changes", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-frozen-home-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-frozen-ws-"));
+    const workspace: Workspace = { id: "workspace-staffing-frozen", name: "Frozen staffing", rootPath: root, policyProfile: "development", createdAt: "2026-08-19T00:00:00.000Z" };
+    const profiles = new AgentProfileStore(home);
+    await ensureProjectOwner(workspace, await profiles.list());
+    const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
+    let providerCalls = 0;
+    providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        providerCalls += 1;
+        if (providerCalls === 1) return { items: [{ type: "assistant_message" as const, content: "Reviewing the frozen context." }] };
+        return { items: [{ type: "tool_call" as const, callId: "staff-frozen", name: "staff_project", arguments: {
+          status: "staffed", members: [member("prof_boss", "Own acceptance"), member("prof_pm", "Plan"), member("prof_dev", "Implement"), member("prof_qa", "Verify")], recruitmentRequests: [],
+        } }] };
+      },
+    });
+    let historyLabel = "before-retry";
+    let now = new Date("2026-08-19T00:00:00.000Z");
+    const coordinator = new StaffingCoordinator(
+      workspace, profiles, providers, ["mission:intake", "plan:plan", "delivery:accept"],
+      async () => [{ taskId: "history", title: historyLabel, objective: historyLabel, status: "completed", createdAt: now.toISOString(), updatedAt: now.toISOString() }],
+      () => now, { maxProviderFailures: 3, baseDelayMs: 1, maxDelayMs: 1 },
+    );
+    await coordinator.create("task-frozen", "Deliver a project");
+    expect((await coordinator.runOnce("task-frozen")).request.status).toBe("running");
+    const frozen = (await new StaffingRequestStore(root).getByTask("task-frozen"))!.contextMessage!;
+    expect(frozen).toContain("before-retry");
+
+    historyLabel = "after-retry";
+    now = new Date(now.getTime() + 1);
+    expect((await coordinator.runOnce("task-frozen")).outcome?.status).toBe("staffed");
+    expect((await new StaffingRequestStore(root).getByTask("task-frozen"))!.contextMessage).toBe(frozen);
+    expect(frozen).not.toContain("after-retry");
+  });
+
+  it("serializes concurrent saves from separate Store instances without losing staffing requests", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-concurrent-ws-"));
+    const requests = Array.from({ length: 24 }, (_, index): StaffingRequestRecord => ({
+      staffingRequestId: `staff-${index}`,
+      taskId: `task-${index}`,
+      workspaceId: "workspace-concurrent",
+      objective: `objective-${index}`,
+      staffingProfileId: "prof_boss",
+      staffingAgentId: "wa_boss",
+      status: "pending",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      updatedAt: "2026-08-19T00:00:00.000Z",
+    }));
+
+    await Promise.all(requests.map((request) => new StaffingRequestStore(root).save(request)));
+
+    expect((await new StaffingRequestStore(root).list()).map((request) => request.taskId).sort())
+      .toEqual(requests.map((request) => request.taskId).sort());
   });
 });
 

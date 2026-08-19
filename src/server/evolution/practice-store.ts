@@ -4,6 +4,7 @@ import path from "node:path";
 import type { EvolutionPractice } from "../../shared/contracts/evolution.js";
 import { HttpError } from "../errors.js";
 import { workspaceEvolutionPracticesFile } from "../storage/paths.js";
+import { isSafeEvolutionMetricDirection, isSupportedEvolutionMetric } from "./metric-gate.js";
 
 export type PracticeInput = Omit<EvolutionPractice, "practiceId" | "version" | "provenanceHash" | "status" | "createdAt" | "updatedAt"> & { commandId: string };
 interface PracticeEvent { eventId: string; commandId: string; practice: EvolutionPractice }
@@ -97,6 +98,7 @@ function validate(input: PracticeInput, workspaceId: string): void {
   if (!input.commandId.trim() || !input.statement.trim() || !input.trigger.trim() || !input.procedure.trim()
     || input.sourceDraftRefs.length < 2 || input.sourceEpisodeRefs.length < 2 || !input.sourceRefs.length || !input.observedComponents.length
     || input.sourceRefs.some((ref) => ref.workspaceId !== workspaceId)
+    || !input.expectedOutcome.length || input.expectedOutcome.some((item) => !isSupportedEvolutionMetric(item.metric) || !isSafeEvolutionMetricDirection(item))
     || input.applicability.ownerLevel !== "agent_project" || input.applicability.workspaceId !== workspaceId || !input.applicability.profileId) {
     throw new HttpError(400, "Practice candidate is invalid", "INVALID_PRACTICE");
   }

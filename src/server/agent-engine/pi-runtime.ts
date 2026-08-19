@@ -1786,16 +1786,34 @@ async function configureModel(
   if (!config.apiKey) throw new ProviderError(`${provider} 未配置 API Key`, false, `MISSING_${provider.toUpperCase()}_API_KEY`);
   await modelRuntime.setRuntimeApiKey(provider, config.apiKey);
   const builtIn = registry.find(provider, modelId);
-  if (builtIn && !config.baseUrl) return builtIn;
+  if (builtIn && !config.baseUrl) return withPortablePromptCacheCompatibility(builtIn);
   const api = provider === "anthropic" ? "anthropic-messages" : "openai-completions";
   registry.registerProvider(provider, {
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
-    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: supportsReasoning, input: supportsImages ? ["text", "image"] : ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))) }] as any,
+    models: [{ id: modelId, name: modelId, api, baseUrl: config.baseUrl, reasoning: supportsReasoning, input: supportsImages ? ["text", "image"] : ["text"], cost: zeroCost(), contextWindow, maxTokens: Math.min(32_768, Math.max(4_096, Math.floor(contextWindow / 4))), compat: provider === "openai" ? { supportsLongCacheRetention: false } : undefined }] as any,
   });
   const configured = registry.find(provider, modelId);
   if (!configured) throw new Error(`Pi 无法加载模型 ${provider}/${modelId}`);
-  return configured;
+  return withPortablePromptCacheCompatibility(configured);
+}
+
+/**
+ * AutoAgent accepts OpenAI-compatible gateways whose model identifiers can look
+ * identical to first-party models. Long (24h) prompt-cache retention is an
+ * optional extension and several compatible gateways reject the parameter
+ * instead of ignoring it. Keep ordinary prompt caching enabled, but do not let
+ * this optional optimization make an otherwise valid Provider unusable.
+ */
+export function withPortablePromptCacheCompatibility(model: Model<any>): Model<any> {
+  if (model.provider !== "openai") return model;
+  return {
+    ...model,
+    compat: {
+      ...model.compat,
+      supportsLongCacheRetention: false,
+    },
+  };
 }
 
 function mockStream(providers: ProviderRegistry, modelId: string) {

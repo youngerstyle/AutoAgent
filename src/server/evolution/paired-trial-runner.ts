@@ -25,7 +25,7 @@ export class EvolutionPairedTrialRunner {
           expectedContentHash: trial.request.expectedContentHash, suiteRef: trial.request.suiteRef,
           baselineRef: trial.request.baselineRef, runtimeSnapshotRef: trial.request.runtimeSnapshotRef,
           caseResults: observed.caseResults, evaluatorPrincipal: this.evaluatorPrincipal,
-          grader: { id: "evolution-deterministic-gate", version: "1", type: "deterministic" },
+          grader: { id: "evolution-deterministic-gate", version: "3", type: "deterministic" },
         });
         await this.trials.succeed(trial.trialId, observed.caseResults);
       } else if (observed.status === "failed" || observed.status === "inconclusive") {

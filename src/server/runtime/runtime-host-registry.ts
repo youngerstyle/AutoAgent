@@ -31,6 +31,7 @@ import { ProviderPracticeReflector } from "../evolution/practice-reflector.js";
 import { PlatformEvolutionTrialRouter, type EvolutionTrialRuntimeFacade } from "../evolution-adapters/platform-trial-adapter.js";
 import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
+import { EvolutionPairedTrialStore } from "../evolution/paired-trial-store.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
@@ -99,12 +100,20 @@ export class RuntimeHostRegistry {
     const workspace = await this.workspaces.get(input.workspaceId);
     const record = await new RuntimeHostStore(workspace.rootPath).get(input.taskId);
     if (!record) return { status: "pending" };
-    if (["active", "paused", "waiting"].includes(record.status)) return { status: "running" };
-    const taskCompleted = record.status === "completed";
+    if (record.runtimeError?.source === "staffing") return { status: "infrastructure_failed", message: `Staffing infrastructure failed: ${record.runtimeError.message}` };
+    const staffing = await new StaffingRequestStore(workspace.rootPath).getByTask(record.taskId);
+    if (!record.workflowSnapshot && staffing && ["blocked", "failed"].includes(staffing.status)) return { status: "infrastructure_failed", message: `Staffing infrastructure is ${staffing.status}: ${staffing.blockReason ?? "no reason recorded"}` };
     const mission = await new MissionStore(workspace.rootPath, record.missionId).read();
     const ticketAggregate = mission
       ? await new TicketStore(workspace.rootPath, record.taskId, record.runId).read(mission.record.planId)
       : undefined;
+    const infrastructureFailure = evolutionTrialInfrastructureFailure(ticketAggregate);
+    if (infrastructureFailure) return { status: "infrastructure_failed", message: infrastructureFailure };
+    const trialPlanTerminal = ticketAggregate
+      ? ["blocked", "completed", "failed", "cancelled"].includes(ticketAggregate.plan.status)
+      : false;
+    if (["active", "paused", "waiting"].includes(record.status) && !trialPlanTerminal) return { status: "running" };
+    const taskCompleted = record.status === "completed" || ticketAggregate?.plan.status === "completed";
     const assessment = assessEvolutionTrial(record.evolutionTrial, record.workflowSnapshot, taskCompleted, ticketAggregate);
     const goalsByAgent = new Map<string, Set<string>>();
     for (const link of mission?.links ?? []) if (link.agentGoalId) {
@@ -123,7 +132,7 @@ export class RuntimeHostRegistry {
       evidenceId, agentId: "evolution-trial-runtime", threadId: `trial:${record.evolutionTrial?.trialId ?? record.taskId}`,
       goalId: `trial-task:${record.taskId}`, turnId: record.runId, toolCallId: `trial-task:${record.taskId}`,
       toolName: "runtime-host-trial-observer", kind: "tool", capture: { status: "recorded" },
-      observation: { status: "observed", result: { taskId: record.taskId, runId: record.runId, missionId: record.missionId, status: record.status, workflowSnapshot: record.workflowSnapshot, assessment } },
+      observation: { status: "observed", result: { taskId: record.taskId, runId: record.runId, missionId: record.missionId, status: record.status, planStatus: ticketAggregate?.plan.status, workflowSnapshot: record.workflowSnapshot, assessment } },
       input: { evolutionTrial: record.evolutionTrial }, workspaceRoot: workspace.rootPath, createdAt: record.updatedAt,
     });
     return {
@@ -300,6 +309,7 @@ export class RuntimeHostRegistry {
    */
   private async workspaceNeedsScheduler(workspace: Workspace): Promise<boolean> {
     const runtimeStore = new RuntimeHostStore(workspace.rootPath);
+    await reconcileTerminalEvolutionTrialTasks(workspace, runtimeStore);
     const staffingStore = new StaffingRequestStore(workspace.rootPath);
     for (const record of await runtimeStore.list()) {
       if (record.status !== "active") continue;
@@ -339,6 +349,7 @@ export class RuntimeHostRegistry {
   private async createHost(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {
     try {
       const workspace = await this.workspaces.get(workspaceId);
+      await reconcileTerminalEvolutionTrialTasks(workspace, new RuntimeHostStore(workspace.rootPath));
       const profiles = await this.profiles.list();
       await migrateAndValidateWorkspaceAgentProfiles(workspace, profiles);
       await ensureProjectOwner(workspace, profiles);
@@ -367,6 +378,44 @@ export class RuntimeHostRegistry {
 
 }
 
+const TERMINAL_PAIRED_TRIAL_STATUSES = new Set(["succeeded", "failed", "inconclusive"]);
+const TERMINAL_RUNTIME_TASK_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+/**
+ * A Runtime task is an execution owned by its paired trial. Once that owner is
+ * terminal (or no longer exists), process recovery may retain the task as
+ * audit history but must not schedule another Agent turn for it.
+ */
+export async function reconcileTerminalEvolutionTrialTasks(
+  workspace: Workspace,
+  runtimeStore = new RuntimeHostStore(workspace.rootPath),
+  now: () => Date = () => new Date(),
+): Promise<string[]> {
+  const trials = new Map((await new EvolutionPairedTrialStore(workspace.id, workspace.rootPath).list())
+    .map((trial) => [trial.trialId, trial]));
+  const reconciled: string[] = [];
+  for (const record of await runtimeStore.list()) {
+    if (!record.evolutionTrial || TERMINAL_RUNTIME_TASK_STATUSES.has(record.status)) continue;
+    const trial = trials.get(record.evolutionTrial.trialId);
+    if (trial && !TERMINAL_PAIRED_TRIAL_STATUSES.has(trial.status)) continue;
+    const timestamp = now().toISOString();
+    await runtimeStore.save({
+      ...record,
+      status: "cancelled",
+      runtimeError: {
+        source: "scheduler",
+        at: timestamp,
+        message: trial
+          ? `Evolution trial ${trial.trialId} is ${trial.status}; recovery suppressed this Runtime task.`
+          : `Evolution trial ${record.evolutionTrial.trialId} is missing; recovery suppressed this orphan Runtime task.`,
+      },
+      updatedAt: timestamp,
+    });
+    reconciled.push(record.taskId);
+  }
+  return reconciled;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function finite(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
 
@@ -386,20 +435,75 @@ export function assessEvolutionTrial(
     && workflow.releaseRef.id === trial.candidateId
     && workflow.releaseRef.contentHash === trial.candidateHash,
   );
-  const completed = new Set<string>(completedTicketIds);
+  const completed = new Set<string>((aggregate?.tickets ?? []).filter((ticket) => ticket.status === "completed" && trialTicketHandoffVerified(ticket)).map((ticket) => ticket.ticketId));
+  const practiceExecutionVerified = (aggregate?.tickets ?? []).some((ticket) => ticket.status === "completed" && trialPracticeHandoffVerified(ticket));
   const executedText = Object.entries(aggregate?.definitionsByTicketId ?? {})
     .filter(([ticketId]) => completed.has(ticketId))
     .flatMap(([, definition]) => [definition.title, definition.objective, ...definition.successCriteria])
     .map(normalizeTrialText)
     .filter(Boolean);
-  const matchedAssertions = trial.assertions.filter((assertion) => {
+  const textMatchedAssertions = trial.assertions.filter((assertion) => {
     const expected = normalizeTrialText(assertion);
     if (!expected) return false;
     const stablePrefix = expected.slice(0, Math.min(expected.length, 64));
     return executedText.some((actual) => actual.includes(expected) || expected.includes(actual) || (stablePrefix.length >= 24 && actual.includes(stablePrefix)));
   });
+  // A candidate target Practice is generated from this frozen assertion set
+  // and loaded by immutable candidate hash. Once that exact binding produces
+  // a criterion-complete, evidence-backed Practice handoff, reparaphrasing its
+  // Ticket definition must not turn the deterministic gate into fuzzy NLP.
+  const matchedAssertions = trial.variant === "candidate" && bindingVerified && practiceExecutionVerified
+    ? [...trial.assertions]
+    : textMatchedAssertions;
   const qualityScore = trial.assertions.length > 0 ? matchedAssertions.length / trial.assertions.length : 0;
-  return { success: taskCompleted && bindingVerified && matchedAssertions.length > 0, qualityScore, bindingVerified, matchedAssertions, completedTicketIds };
+  const success = trial.variant === "candidate"
+    ? bindingVerified && practiceExecutionVerified && matchedAssertions.length > 0
+    : taskCompleted && matchedAssertions.length > 0;
+  return { success, qualityScore, bindingVerified, matchedAssertions, completedTicketIds };
+}
+
+function trialTicketHandoffVerified(ticket: TicketAggregate["tickets"][number]): boolean {
+  const attempt = [...(ticket.attempts ?? [])].reverse().find((item) => item.status === "completed" && item.handoff);
+  if (!attempt?.handoff || attempt.handoff.criterionResults.some((item) => item.status !== "satisfied")) return false;
+  const output = attempt.handoff.output;
+  if (isRecord(output) && (output.schemaRef === "evolution-practice-result-v1" || output.schema === "evolution-practice-result-v1")) {
+    const executionResult = isRecord(output.executionResult) ? output.executionResult : undefined;
+    const result = output.result ?? executionResult?.result ?? executionResult?.status;
+    const embeddedEvidence = isRecord(output.evidence) ? output.evidence : undefined;
+    const authoritativeEmbeddedEvidence = embeddedEvidence?.authoritative === true
+      && Array.isArray(embeddedEvidence.references)
+      && embeddedEvidence.references.some((reference) => typeof reference === "string" && reference.trim());
+    const resultEvidence = isRecord(result) ? result.authoritativeEvidence : undefined;
+    const platformEvidenceRefs = Array.isArray(output.authoritativeEvidence)
+      ? output.authoritativeEvidence
+      : Array.isArray(resultEvidence) ? resultEvidence : [];
+    const platformEvidence = platformEvidenceRefs.some((reference) => isRecord(reference)
+        && typeof reference.evidenceId === "string"
+        && reference.evidenceId.trim());
+    return output.executed === true
+      && result !== undefined
+      && result !== "not_applicable"
+      && (attempt.handoff.evidence.length > 0 || authoritativeEmbeddedEvidence || platformEvidence);
+  }
+  return true;
+}
+
+function trialPracticeHandoffVerified(ticket: TicketAggregate["tickets"][number]): boolean {
+  const attempt = [...(ticket.attempts ?? [])].reverse().find((item) => item.status === "completed" && item.handoff);
+  const output = attempt?.handoff?.output;
+  return isRecord(output)
+    && (output.schemaRef === "evolution-practice-result-v1" || output.schema === "evolution-practice-result-v1")
+    && trialTicketHandoffVerified(ticket);
+}
+
+export function evolutionTrialInfrastructureFailure(aggregate: TicketAggregate | undefined): string | undefined {
+  for (const ticket of aggregate?.tickets ?? []) {
+    const attempt = [...ticket.attempts].reverse().find((item) => item.status === "blocked" && item.requiredInput);
+    if (attempt?.requiredInput?.details?.source === "agent_engine.provider") {
+      return `Provider infrastructure blocked Ticket ${ticket.ticketId}: ${attempt.reason ?? attempt.requiredInput.description}`;
+    }
+  }
+  return undefined;
 }
 
 function normalizeTrialText(value: string): string {

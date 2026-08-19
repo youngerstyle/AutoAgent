@@ -1,25 +1,25 @@
-# 五框架方向与 Evol 发布闭环设计
+# 四框架方向、组织人才边界与 Evol 发布闭环设计
 
 日期：2026-08-19  
 状态：Accepted，作为后续实现与验收基线
 
 ## 1. 决策摘要
 
-AutoAgent 的长期产品边界确定为五个相互解耦的框架：
+AutoAgent 的长期运行内核确定为四个相互解耦的框架：
 
 1. **Agent Engine / Agent Loop**：单个 Agent 的 turn、工具调用、上下文和结果。
 2. **Ticket Engine**：工作项、依赖、领取、阻塞、完成事实。
 3. **Mission Control**：把目标、团队与 Ticket 编排为可恢复的 Mission。
 4. **Evol**：从真实经历形成可复用能力，评估、发布，并在后续边界加载。
-5. **Organization & Talent**：公司、岗位、人才、雇佣关系、招聘、任职和组织级能力供给。
+**Organization & Talent 不是第五框架**。公司、岗位、人才、雇佣、招聘和任职是独立业务域；它通过人才供给端口服务 Mission Control，不拥有新的执行循环、调度内核或发布生命周期。`StaffingRequest` 属于 Mission Control 的任务启动/恢复协议，人才模块只是该协议的一个提供者。
 
-本期选择 **HOLD SCOPE**：先闭合 Evol 的真实发布链；只冻结 Organization & Talent 的边界，不把招聘 UI 或人才市场混进本期代码。
+本期选择 **HOLD SCOPE**：先闭合 Evol 的真实发布链；只冻结 Organization & Talent 业务域边界，不把招聘 UI 或人才市场混进本期代码。文件名中的 `five-framework` 是早期判断的历史痕迹，不再代表本设计结论。
 
 Evol 不是源码自修改器，也不是部署系统。它管理的进化资产是 Memory、Prompt、Skill、Workflow 和本地 Plugin；资产只在声明的下一 turn、session 或 task 边界加载。GitHub、CI、Kubernetes 都只能是可选适配器，不是进化前置条件。
 
-## 2. 为什么不是现在直接做“招聘第五框架”
+## 2. 为什么招聘不是第五框架
 
-现有代码已经有 AgentProfile、WorkspaceAgent、TeamBinding、StaffingRequest 和基本 roster。这些证明“组织与人才”有真实领域，不是凭空增加框架；但当前最影响产品可信度的断点是 Evol：真实 Provider 任务已经形成 Practice 和 Candidate，Candidate 却停在 `validated`，没有进入真实评估、Canary 和下一任务加载。
+现有代码已经有 AgentProfile、WorkspaceAgent、TeamBinding、StaffingRequest 和基本 roster。这些证明“组织与人才”有真实业务领域，但不证明它需要与 Agent/Ticket/Mission/Evol 同级的运行框架。框架的判据是拥有独立、持续的状态机与运行生命周期；招聘是一段按需业务流程，其结果是人才事实和可用 Assignment，随后仍由 Mission Control 组队、Ticket 分工、Agent 执行。
 
 如果此时先扩招聘，系统会多一个管理面，却仍不能证明“公司真的学会了”。因此顺序固定为：
 
@@ -33,7 +33,7 @@ Evol 不是源码自修改器，也不是部署系统。它管理的进化资产
 再把有效能力推广到 Agent / Company
         |
         v
-最后让 Organization & Talent 使用这些能力事实做招聘与配置
+最后让 Organization & Talent 业务模块使用这些能力事实做招聘与配置
 ```
 
 ## 3. Evol 的完成定义
@@ -80,6 +80,8 @@ next turn/session/task load + inheritance proof
 
 外部 JS evaluator 保留为可选 Evaluation Adapter，适合公司自有基准或可执行扩展评估；平台不能再把它当作 Evol 是否可工作的必填配置。默认路径应通过 `EvolutionTrialPort` 把对照试验交给平台正常的 Agent/Ticket/Mission 运行链，继续使用用户已经配置的 Provider。
 
+指标同样属于发布契约，不是 LLM 自由文本：Practice/Candidate 只能声明平台注册且能从权威运行事实计算的指标；未知指标在不可变 Candidate 创建前直接拒绝。资源和延迟门禁始终存在，并按 Memory/Prompt、Skill/Plugin、Workflow 等资产的真实生命周期使用平台上限；候选可以声明更严格预算，不能放宽平台预算。当前使用绝对预算，后续再以版本化策略加入相对基线/置信区间。
+
 ## 4. 自治与审批策略
 
 默认策略按资产风险和推广范围分层：
@@ -110,9 +112,9 @@ Company defaults
 
 加载优先级由具体资产策略定义，但任何 override 都必须可追溯、可回滚且不能放宽上层安全策略。一个项目实例的偶然经验不会自动污染 Alice 的所有项目；只有通过 Agent scope promotion 后才成为 Alice 的长期个人能力。
 
-## 6. Organization & Talent 的冻结边界
+## 6. Organization & Talent 业务域的冻结边界
 
-第五框架拥有：
+该业务域拥有：
 
 - Company、OrgUnit、RoleDefinition；
 - TalentProfile / Employment / Assignment；
@@ -126,7 +128,7 @@ Company defaults
 - Mission 编排；
 - Evol 的 Practice、Candidate、Release 或推广决策。
 
-框架间只通过端口和事实协作：
+它与四个框架只通过端口和事实协作：
 
 ```text
 Organization & Talent --TalentCatalogPort--> Mission Control staffing
@@ -145,6 +147,8 @@ Evol release facts -----CapabilityFactPort-> Organization & Talent
 | 没有可比较基线 | 标记 inconclusive，不进入 Canary |
 | Candidate/证据 hash 改变 | 原试验失效，新建 immutable revision |
 | 对照任务失败或污染 | 隔离该 trial，保留原生产 pointer |
+| Paired trial 产生 Episode | 只作为 Evaluation/Telemetry 事实，禁止进入 Experience -> Dream 学习池 |
+| 同一 kind/target/scope 已有未决 challenger | 新 Practice binding 保持 proposed，前一 challenger 失败或进入 Production 后再编译 |
 | Canary 指标下降 | 自动 rollback，记录 restoration proof |
 | 下一边界未观察到新版本 | 状态保持 waiting_for_activation，不报告完成 |
 | Company trial 无足够跨项目样本 | 不允许公司批准 |
@@ -152,7 +156,7 @@ Evol release facts -----CapabilityFactPort-> Organization & Talent
 ## 8. 非目标
 
 - 不让 Evol 修改 AutoAgent 自身源码、提交 Git 或触发部署。
-- 不把 Provider、Memory 或招聘重新塞进四个现有框架内部。
+- 不把 Provider、Memory 或招聘业务模型塞进四个框架内部；Mission Control 只持有稳定的人才供给端口和 Staffing 协议。
 - 不用 LLM 自评文本替代 paired trial 和 Runtime telemetry。
 - 不在当前 turn 中热替换 Prompt/Skill/Workflow/Plugin。
 - 不在本期实现人才市场、薪酬、绩效或完整招聘 UI。
@@ -176,3 +180,24 @@ Evol release facts -----CapabilityFactPort-> Organization & Talent
 6. 再下一任务产生 actual inheritance proof；
 7. 全程不跨 workspace/company 泄漏，服务重启后可恢复。
 
+## 11. 真实试验隔离补充
+
+Paired trial、Canary 与普通生产经历在数据用途上必须严格区分：
+
+- paired qualification task 是“测量流量”，不得成为下一版 Candidate 的独立支持 Episode；
+- Canary/Production later-task 才是“效果流量”，可以进入遥测，并在发布窗口结束后作为新的生产经验；
+- 同一 `kind + target + scope` 采用 incumbent/challenger 单飞模型。新证据可以继续形成 Practice revision 和 proposed binding，但不能并发启动多个 challenger；
+- Provider、Staffing 和 Agent Engine 的基础设施失败必须跨框架归因到 trial 的 `infrastructure_failed`，不得作为候选质量失败或 human business input；
+- 每次干净重跑创建新的 immutable EvalSuite/Trial lineage，历史失败保留，不覆盖、不改写。
+
+## 12. 2026-08-19 真实发布验收结论
+
+本设计的第一阶段完成定义已由用户现有 Provider 和本地平台服务真实闭合：
+
+- grader-v3 paired trial `paired_trial_e34ad74241e94e2f2ad291e5cf908c91` / Evaluation `eval_a6864db9dc444a72` 证明候选在 target 上把成功率与质量从 0.6667 提升到 1.0，并通过 sealed regression/safety 与资源、延迟门禁；
+- 25% Canary 使用真实任务自然分桶：对照任务加载 builtin，实验任务加载 `7-canary`，两者均由完整四框架链和独立 QA 完成；
+- Telemetry `telemetry_622a5e4192de4da2` 包含五对独立 Episode，成功率、质量、证据完整度均无回退，资源预算通过且平均延迟下降约 2.1 秒；
+- Production Release `release_debe5ddbe6f8cc19805c37a21ec9d02b` 在冷重启后的新任务中以 `stage=production` 加载，并完成实践宣讲 -> 规划 -> 实现 -> 独立 QA -> 最终验收；
+- 随后真实回滚把 Production 指针置为 inactive。再次冷重启的新任务加载 builtin 并完成，证明 Release 与 rollback 均在下一 session/turn 边界生效；验收环境最终停留在安全 baseline。
+
+该结论不消除 `TD-EVOL-TRIAL-003`：paired arms 仍共用 workspace 文件面。本次 target 收益依赖候选专属 Practice handoff，不能把共享文件产物解释成严格隔离的反事实效果量。

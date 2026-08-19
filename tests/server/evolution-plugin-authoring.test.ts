@@ -36,6 +36,20 @@ describe("Provider-authored local Plugin evolution", () => {
     expect(result.candidatesCreated).toBe(0);
     expect((await jobs.list())[0]).toMatchObject({ status: "pending", attempts: 0 });
   });
+
+  it("does not spend a Provider turn while the same Plugin target has an in-flight challenger", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plugin-author-gated-")); const now = () => new Date("2026-08-15T08:00:00.000Z");
+    await new EvidenceLedger(root).append({ evidenceId: "tool-practice-evidence", agentId: "agent-a", threadId: "thread-a", goalId: "goal-a", turnId: "turn-a", toolCallId: "call-a", toolName: "observer", kind: "tool", capture: { status: "recorded" }, observation: { status: "observed", result: {} }, workspaceRoot: root, createdAt: now().toISOString(), input: {} });
+    const practices = new PracticeStore("workspace-a", root, now);
+    await practices.createCandidate({ commandId: "tool-practice", statement: "Normalize checklists", trigger: "Checklist is inconsistent", procedure: "Return a normalized checklist.", expectedOutcome: [{ metric: "task_success_rate", direction: "increase" }], observedComponents: ["tool"], applicability: { ownerLevel: "agent_project", workspaceId: "workspace-a", profileId: "profile-a" }, contraindications: [], sourceDraftRefs: ["draft-a", "draft-b"], sourceEpisodeRefs: ["episode-a", "episode-b"], sourceRefs: [{ kind: "evidence", ref: "tool-practice-evidence", workspaceId: "workspace-a", profileId: "profile-a" }] });
+    const bindings = new PracticeBindingStore(root, now); const candidates = platformEvolutionStore("workspace-a", root, now);
+    await new PracticeBindingCompiler("workspace-a", practices, bindings, candidates).compile();
+    let authorCalls = 0;
+    const result = await new PluginAuthoringWorker("workspace-a", root, { available: async () => true, author: async () => { authorCalls += 1; return "{}"; } }, now, candidates, async () => false).run();
+    expect(result.candidatesCreated).toBe(0);
+    expect(authorCalls).toBe(0);
+    expect((await new PluginAuthoringJobStore(root, now).list())[0]).toMatchObject({ status: "pending", attempts: 0 });
+  });
 });
 
 class FixtureAuthor implements PluginArtifactAuthor {

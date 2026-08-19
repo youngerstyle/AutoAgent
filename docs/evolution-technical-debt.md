@@ -27,6 +27,13 @@
 - 当前策略：显式声明 `cost_usd` 的 Candidate 继续 fail closed；默认不可绕过的 `resource_cost` 门禁在双方都有实测 USD 时比较 USD，否则比较归一化的实测 token 数。
 - 偿还路径：在 Provider 配置增加版本化 pricing snapshot；EvaluationRun 写明本次 resource gate 的计量单位与价格版本。
 
+## TD-EVOL-METRIC-002：资源门禁仍使用绝对预算
+
+- 严重度：中
+- 当前状态：受控
+- 现状：指标注册表已经禁止不可测的自由文本指标；资源和延迟门禁按资产生命周期使用平台上限，Candidate 只能收紧、不能放宽。但不同 Provider、模型和任务规模的绝对 token/毫秒差异较大。
+- 偿还路径：引入版本化 MetricPolicy，支持相对基线比例、样本方差、置信区间和最小可检测效果；EvaluationRun/Telemetry 固化 policy version。迁移前不允许 LLM 或 Candidate 自行生成预算。
+
 ## TD-EVOL-ARCH-001：Evol 内核仍有平台 Store 依赖
 
 - 严重度：最高
@@ -97,3 +104,102 @@
 - 现状：新 Reflection 已避免在成功恢复场景中为每个瞬时错误生成泛化草稿，并对同类归因去重；升级前已经写入 ledger 的重复或泛化草稿仍会保留。
 - 风险：历史草稿可能污染 Dream 聚类和管理界面。
 - 偿还路径：增加可审计的 draft rejection/supersession、同义聚类与迁移工具；不得直接重写 append-only ledger。
+
+## TD-EVOL-RUNTIME-001：并行 Trial 的活跃上下文内存成本
+
+- 严重度：高
+- 当前状态：部分缓解
+- 现状：终态 Runtime task 已改为启动时冷恢复，避免历史 Trial 全量 compose；但一个三 case 的 paired trial 仍会同时持有六个活跃 Mission/Agent 上下文，真实验收工作集约 1.5–2.5GB。
+- 风险：更大 EvalSuite 或多个 workspace 同时试验可能触及 Node heap 上限；内存压力会被误归因成候选质量或 Provider 故障。
+- 临时控制：全局 execution concurrency、单 scoped target challenger、终态 task 冷恢复、真实验收监测 working set。
+- 偿还路径：将 paired case 改为有界 cohort/分批 dispatch；非运行 task 只保留轻量索引，AgentStore/trace 按 turn 懒加载；增加 trial 级内存/时间预算与可审计 cancellation port。
+
+## TD-EVOL-TRIAL-001：Paired case 顺序观察存在队头阻塞
+
+- 严重度：中
+- 当前状态：已偿还
+- 现状：Trial adapter 按 case 顺序观察；前一 case 仍 running 时，会延迟发现后一 case 已确定的 infrastructure failure。
+- 风险：已无效 generation 继续消耗 Provider 与运行资源，transient retry 变慢。
+- 临时控制：运维可通过正常 stop 接口终止该 generation 剩余任务，runner 随后保留审计并重派。
+- 已偿还：每轮并行观察全部 case，任一后续 case 的基础设施失败可优先于前序 running case 短路并触发 generation retry。
+- 剩余：generation-scoped cancel 尚未实现，失败代际中的其他运行任务只能由终态对账或正常 stop 收敛，计入 `TD-EVOL-RUNTIME-001`。
+
+## TD-EVOL-TRIAL-002：相同 Suite 的 baseline arm 尚未跨 Candidate revision 复用
+
+- 严重度：中
+- 当前状态：开放
+- 现状：同一 EvalSuite、baseline release、policy/runtime snapshot 和冻结输入在 Candidate revision 变化后会重新执行 baseline Mission；revision 6 到 revision 7 的真实验收因此再次派发三条 baseline 任务。
+- 风险：重复消耗 Provider token、时间和内存，延长自进化反馈周期；若 workspace 外部事实发生变化，表面相同的 baseline 还可能不再可比。
+- 临时控制：每个 EvaluationRun 固化 baseline、suite、runtime/policy snapshot 与输入 refs；没有完全相同的不可变键时禁止复用。
+- 偿还路径：增加带有效期和 workspace-artifact snapshot hash 的 baseline observation cache；复用必须写明来源 Evaluation/Trial 与时间窗，任何输入、Provider/model、policy、runtime 或工作区事实变化均强制重跑。
+
+## TD-EVOL-TRIAL-003：Paired arms 共用 workspace 文件面
+
+- 严重度：最高
+- 当前状态：开放
+- 现状：baseline/candidate 各自拥有独立 Runtime task、Mission、Ticket、Agent Goal、workflow snapshot 和 changeSet baseline，但仍在同一 workspace 根目录执行；并发任务可能读写同名交付文件。
+- 风险：目标组的 Practice/Mission handoff 事实可独立归因，但涉及文件产物的 regression/safety observation 可能受另一 arm 的先行写入影响，削弱反事实可信度。
+- 临时控制：Evaluation 固化每个 arm 的 Mission/Ticket/Evidence refs，目标收益必须来自候选专属 Practice Ticket；共享产物组只用于 fail-closed 回归/安全门禁，不据此宣称精确效果量。
+- 偿还路径：PlatformTrialAdapter 为每个 case/arm 创建同一冻结输入的临时 workspace/worktree 或 copy-on-write 文件层；Provider/policy/runtime snapshot 保持一致，结束后只保留 Evidence、manifest 和 hash，清理执行副本。隔离适配器属于评测试验基础设施，不改变 Evol 在普通项目中“下一 turn/session 本地加载”的产品语义。
+
+## TD-EVOL-TRIAL-004：Target objective 混入历史请求合同
+
+- 严重度：高
+- 当前状态：已偿还并通过真实复验
+- 现状：早期 PlatformTrialAdapter 把完整历史 source 与当前 suite assertions 一并放入 target Mission objective。真实 revision 7 试验中，需求接收 Agent 因而把历史上“必须逐角色确认”的不可执行要求重新提升为当前 Mission 合同；Candidate 正确不伪造确认，却无法完成整个 target task。
+- 风险：评估的被测对象从“候选 Practice 是否满足冻结断言”漂移成“能否重做历史请求的全部要求”，产生假阴性，也可能诱导 Candidate 针对历史文本过拟合。
+- 已偿还：target objective 只包含冻结 assertions 与不可执行的 `historicalSourceRef`，并明确历史原请求不是当前验收合同；baseline/candidate 看到完全相同的 objective。regression/safety 仍包含原始 source，以继续验证原任务成功与安全边界。
+- 复验结果：grader-v3 的真实 target baseline=false/candidate=true；target intake 未恢复历史合同，候选 Practice Ticket 以当前 Goal evidenceId 和冻结 Candidate hash 形成成功。旧 Trial 保留原样作为发现该问题的审计记录。
+
+## TD-EVOL-TRIAL-005：回放上下文截断与 target outcome 错绑
+
+- 严重度：高
+- 当前状态：已偿还，待 v5 全组复验
+- 现状：非 target case 曾对 `{source, assertions}` 的完整 JSON 直接做 24k 字符截断，可能得到无效 JSON 并截掉位于末尾的 assertions。target assessment 又曾强制要求整个通用 Mission `completed`，即使候选专属 Practice 已完整满足冻结断言，也会被下游无关 planning/staffing 缺口判失败。
+- 风险：回归 Agent 看不到完整评估合同；target 将 harness 的后续计划能力错误归因给候选 Practice，产生资源浪费和假阴性。
+- 已偿还：Ticket source 只回放正式 baseline、Ticket definition、完成摘要和 residual risks；过大来源使用带 sourceRef 的合法 JSON excerpt，assertions 永远保留。target candidate success 只依赖冻结 Candidate binding、权威 `evolution-practice-result-v1` 执行 handoff 与 assertion 命中；baseline 仍要求自身任务完成，regression/safety 始终要求整个任务完成。
+- 复验要求：v5 证明 objective 可解析、assertions 完整、target candidate=true/baseline=false，且 regression/safety 任务终态不受该放宽影响。
+
+## TD-EVOL-TRIAL-006：Practice 权威证据存在合法布局差异
+
+- 严重度：高
+- 当前状态：已偿还并通过 grader-v3 真实复验
+- 现状：真实 Provider 曾分别把 `authoritativeEvidence` 写在 `evolution-practice-result-v1` 顶层和其 concrete `result` 内；两者都携带当前 Goal 的平台 `evidenceId`，但旧评估器只识别通用 handoff evidence 或 `evidence.references`，导致真实 Practice 被误判为无证据。
+- 风险：评估器对单次模型输出布局过拟合，候选能力明明执行并留下权威证据仍产生假阴性。
+- 已偿还：Practice 验证同时接受 handoff evidence、显式 authoritative references、顶层或 result 内的 `authoritativeEvidence[{ evidenceId }]`；仍强制 `executed=true`、非 `not_applicable`、候选 hash 绑定和 assertion 命中。paired deterministic grader 升级为 v2，旧 Evaluation 不重写。
+- 复验结果：`eval_a6864db9dc444a72` 以真实 Provider handoff 得到 target candidate success；旧 grader-v2 fail 保留审计。缺 evidenceId、伪造 acknowledgement 或未执行的 handoff 仍由单元/集成门禁 fail-closed。
+
+## TD-EVOL-CANARY-001：离线收益与在线小流量门禁曾混用同一 minimumDelta
+
+- 严重度：高
+- 当前状态：已偿还并通过真实 Canary 复验
+- 现状：Candidate 的 `expectedMetrics` 同时用于 paired evaluation 和 Canary telemetry；例如离线要求 `quality_score +0.1` 时，五对 Canary 样本即使全部成功且质量相同也会被判 fail。
+- 风险：小流量方差和成功任务的质量上限使安全 rollout 无法进入 Production；同时 Canary 被错误要求重新证明离线 efficacy。
+- 已偿还：paired trial 保持原始 direction/minimumDelta 证明收益；Canary 将这些收益指标投影成零容忍非回退 guardrail，继续叠加资产级资源/延迟预算，安全/策略违规仍独立 fail-closed。
+- 复验结果：`telemetry_622a5e4192de4da2` 使用五对真实 selected/control Episode；质量、成功率、证据完整度均保持 1.0，资源和延迟预算通过，无安全/策略违规，并据此获准 Production。回退、违规和超预算拒绝路径继续由回归测试覆盖。
+
+## TD-EVOL-COMPILER-001：历史无效 Practice 缺少显式 rejected/superseded 状态
+
+- 严重度：中
+- 当前状态：部分缓解
+- 现状：Binding compiler 已把不符合现行 4xx 指标/资产合同的历史 Practice 隔离，避免单条 poison record 阻断整个 workspace；但该 binding 仍停留在 proposed，并会在后续周期再次被检查。
+- 风险：产生重复校验成本，管理面无法清楚区分“待编译”和“因合同升级被拒绝”。
+- 偿还路径：为 PracticeBinding 增加 `rejected`/`superseded` 终态、reason code、compiler version 与迁移命令；保留 append-only 审计，不重写历史 Practice。
+
+## TD-STAFFING-STORAGE-001：Staffing 快照仍依赖 Windows 原子 rename
+
+- 严重度：高
+- 当前状态：部分缓解
+- 现状：跨实例读改写已统一到进程内 path-scoped 临界区，并对 Windows `EPERM/EBUSY` 保持原子 rename 的长窗口有界重试；真实六任务并发仍观察到扫描器/索引器持有目标文件超过 12 秒。
+- 风险：高并发私有化部署中，长共享锁会把正常 Staffing 派发归因为 transient infrastructure failure，造成 trial generation 重派和额外 Provider 成本。
+- 临时控制：不删除目标、不做非原子原地覆盖；延长有界 rename 等待，并由 paired trial generation retry 隔离基础设施失败。
+- 偿还路径：把 StaffingRequest 改为 append-only event log + 可重建 projection（或事务型本地数据库）；单条 append 不替换热点目标文件，projection compaction 使用版本化快照和校验后指针切换。
+
+## TD-STAFFING-PLAN-001：Plan Compiler 把人员空缺误判为计划不可执行
+
+- 严重度：高
+- 当前状态：已偿还，待 EvalSuite v6 复验
+- 现状：Plan Compiler 曾对 implementation、independent verification、final acceptance 和可选 architecture 都调用 `memberForCapabilities`，当前 team snapshot 缺少对应成员就直接拒绝 PlanIntent。真实 paired 并发中，同一成员被另一 arm 使用或新项目尚未招聘时，候选任务因此阻塞。
+- 风险：规划阶段和供给阶段耦合；项目不能先表达需要什么能力再由 Mission Control 招聘，造成并发假失败，也会诱导把招聘错误提升成“第五运行框架”。
+- 已偿还：若 snapshot 中已有匹配成员，Plan 继续冻结 principalId 与 tools；若没有，只写 requiredCapabilities，不伪造 principal。后续 Ticket ready/running 边界由现有 Mission Control -> StaffingRequest -> Organization & Talent 适配器补齐人员。
+- 复验要求：全新/并发 Mission 在缺少 delivery:implement、delivery:verify 或 delivery:accept 成员时仍能生成 DAG；Staffing 随后产生可审计供给事实，且无能力成员不会越权执行。

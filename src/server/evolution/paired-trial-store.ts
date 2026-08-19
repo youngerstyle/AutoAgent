@@ -5,6 +5,7 @@ import type { EvaluationCaseResult, EvolutionPairedTrial, EvolutionPairedTrialRe
 import { HttpError } from "../errors.js";
 import { workspaceEvolutionPairedTrialCommandFile, workspaceEvolutionPairedTrialsFile } from "../storage/paths.js";
 import { redactEvolutionText } from "./secret-redactor.js";
+import { validLocalTrialInputRef } from "./trial-input-ref.js";
 
 interface TrialEvent { type: "created" | "dispatched" | "succeeded" | "failed" | "inconclusive"; occurredAt: string; trial: EvolutionPairedTrial }
 interface CommandRecord { commandId: string; fingerprint: string; trial: EvolutionPairedTrial }
@@ -122,7 +123,7 @@ export class EvolutionPairedTrialStore {
 function validateRequest(commandId: string, request: EvolutionPairedTrialRequest, workspaceId: string): void {
   if (!commandId.trim() || !request.candidateId || !/^[a-f0-9]{64}$/.test(request.expectedContentHash)) throw invalid("Paired trial identity is invalid");
   if (!validRef(request.suiteRef) || !validRef(request.baselineRef) || !validRef(request.policyRef) || !request.runtimeSnapshotRef.trim()) throw invalid("Paired trial snapshot is incomplete");
-  if (!Array.isArray(request.cases) || request.cases.length < 3 || request.cases.some((item) => item.inputRef.kind !== "evidence" || item.inputRef.workspaceId !== workspaceId)) throw invalid("Paired trial cases must use local evidence");
+  if (!Array.isArray(request.cases) || request.cases.length < 3 || request.cases.some((item) => !validLocalTrialInputRef(item.inputRef, workspaceId))) throw invalid("Paired trial cases must use locally resolvable authoritative facts");
   const groups = new Set(request.cases.map((item) => item.group));
   if (!["target", "regression", "safety"].every((group) => groups.has(group as "target" | "regression" | "safety"))) throw invalid("Paired trial requires target, regression, and safety cases");
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
-import { EvolutionCoordinator } from "../../src/server/evolution/evolution-coordinator.js";
+import { candidateChallengerResolved, candidateNeedsAutomaticEvaluation, EvolutionCoordinator, latestEvalSuiteVersions } from "../../src/server/evolution/evolution-coordinator.js";
 import { ExtractionJobStore } from "../../src/server/evolution/extraction-job-store.js";
 import { EvolutionStore } from "../../src/server/evolution/evolution-store.js";
 import { PlatformEvolutionSourceVerifier, platformEvolutionStore } from "../../src/server/evolution-adapters/platform-source-verifier.js";
@@ -22,6 +22,28 @@ import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../..
 import type { EvolutionTrialPort } from "../../src/server/evolution/trial-port.js";
 
 describe("EvolutionCoordinator", () => {
+  it("selects only the newest immutable revision of each evaluation suite", () => {
+    const suite = (id: string, version: string) => ({ suiteRef: { id, version } });
+    expect(latestEvalSuiteVersions([suite("suite-a", "1"), suite("suite-b", "1"), suite("suite-a", "2")]))
+      .toEqual([suite("suite-a", "2"), suite("suite-b", "1")]);
+  });
+
+  it("releases the challenger gate after all paired trials terminate without an evaluation", () => {
+    const base = { candidateStatus: "ready_for_eval" as const, evaluationDecisions: [], productionActive: false };
+    expect(candidateChallengerResolved({ ...base, trialStatuses: ["failed", "inconclusive"] })).toBe(true);
+    expect(candidateChallengerResolved({ ...base, trialStatuses: ["failed", "pending"] })).toBe(false);
+    expect(candidateChallengerResolved({ ...base, trialStatuses: ["failed", "succeeded"] })).toBe(false);
+    expect(candidateChallengerResolved({ ...base, evaluationDecisions: ["fail"], trialStatuses: ["succeeded"] })).toBe(true);
+  });
+
+  it("does not automatically re-evaluate a resolved candidate when a newer suite appears", () => {
+    expect(candidateNeedsAutomaticEvaluation("ready_for_eval", 1)).toBe(false);
+    expect(candidateNeedsAutomaticEvaluation("validated", 0)).toBe(true);
+    expect(candidateNeedsAutomaticEvaluation("ready_for_eval", 0, ["failed", "inconclusive"])).toBe(false);
+    expect(candidateNeedsAutomaticEvaluation("ready_for_eval", 0, ["failed", "pending"])).toBe(true);
+    expect(candidateNeedsAutomaticEvaluation("rejected", 0)).toBe(false);
+  });
+
   it("maintains idle workspaces and consumes server-configured sandbox evaluation jobs", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-coordinator-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-coordinator-workspace-"));
@@ -160,7 +182,7 @@ describe("EvolutionCoordinator", () => {
     });
   });
 
-  it("creates and dispatches a paired real-task plan for a Practice Workflow only after later holdout evidence exists", async () => {
+  it("creates and dispatches a paired real-task plan from a later independent successful Episode without requiring a failure attribution", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-paired-home-"));
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-paired-workspace-"));
     const workspaces = new WorkspaceStore(home); const workspace = await workspaces.create({ name: "Paired trial", rootPath: root, policyProfile: "development" });
@@ -183,7 +205,7 @@ describe("EvolutionCoordinator", () => {
     });
     await new ExperienceStore(workspace.id, root).record("holdout-episode", {
       episode: { episodeId: "episode-c", workspaceId: workspace.id, taskId: "task-c", taskRunId: "run-c", ticketId: "ticket-c", attemptId: "attempt-c", goalId: "goal-c", agentId: "agent-c", profileId: "profile-a", outcome: "succeeded", sourceRefs: [{ kind: "evidence", ref: "holdout-evidence", workspaceId: workspace.id }], startedAt: "2026-08-19T01:30:00.000Z", endedAt: "2026-08-19T02:00:00.000Z", contentHash: "episode-c-hash" },
-      attributions: [{ attributionId: "attribution-c", episodeId: "episode-c", symptom: "Project start", component: "workflow", cause: "Briefing sequence", confidence: 0.9, sourceRefs: [{ kind: "evidence", ref: "holdout-evidence", workspaceId: workspace.id }], counterEvidenceRefs: [], scope: { ownerLevel: "agent_project", workspaceId: workspace.id, profileId: "profile-a" }, createdAt: "2026-08-19T02:00:00.000Z" }],
+      attributions: [],
     });
     const trialPort: EvolutionTrialPort = { async available() { return true; }, async dispatch(input) { return { dispatchRef: input.trialId }; }, async observe() { return { status: "pending" }; } };
     const coordinator = new EvolutionCoordinator(workspaces, { now: () => new Date("2026-08-19T03:00:00.000Z"), maintenanceIntervalMs: 10_000, trialPort, sourceVerificationPort: (item) => new PlatformEvolutionSourceVerifier(item.id, item.rootPath) });

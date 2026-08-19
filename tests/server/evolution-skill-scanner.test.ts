@@ -67,6 +67,19 @@ describe("evolution static Skill scanner", () => {
     const rejected = await store.validate({ commandId: "validate-missing-source", candidateId: proposed.candidateId, expectedContentHash: proposed.contentHash });
     expect(rejected).toMatchObject({ status: "rejected", validation: { checks: expect.arrayContaining([expect.objectContaining({ name: "source_evidence", passed: false })]) } });
   });
+
+  it("rejects an immutable candidate before creation when its metric is not measurable", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-unmeasured-metric-"));
+    const store = new EvolutionStore("workspace-a", root, fixedNow);
+    await expect(store.create({
+      commandId: "unknown-metric", kind: "skill", target: "unknown-metric", title: "Unknown metric",
+      rationale: "A free-form model phrase must not become an unevaluable release contract.",
+      hypothesis: "This should fail before an immutable candidate is persisted.",
+      artifactContent: "---\nname: unknown-metric\ndescription: Reject unmeasured release metrics.\n---\n# Unknown metric\n\nThis content is otherwise structurally valid and intentionally uses an invalid metric.\n",
+      sourceRefs: [{ kind: "evidence", ref: "evidence-a", workspaceId: "workspace-a" }], scope: { workspaceId: "workspace-a" },
+      expectedMetrics: [{ metric: "everyone_understood_the_document", direction: "increase" }], riskLevel: "medium", proposedBy: { type: "system", id: "metric-registry-test" },
+    })).rejects.toThrow("Evolution metric is not measurable");
+  });
 });
 
 function fixedNow(): Date { return new Date("2026-08-14T01:00:00.000Z"); }

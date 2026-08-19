@@ -7,7 +7,7 @@ import { listWorkspaceAgents } from "../agents/roster.js";
 import type { EvolutionCompactionObservation, EvolutionEpisodeObservationBatch, EvolutionMemoryUsageObservation, EvolutionObservationPort, EvolutionReflectionFact, EvolutionRuntimeTelemetryObservation } from "../evolution/observation-port.js";
 import { redactEvolutionText } from "../evolution/secret-redactor.js";
 import { MissionStore } from "../mission-process/mission-store.js";
-import { RuntimeHostStore } from "../runtime/runtime-host-store.js";
+import { RuntimeHostStore, type RuntimeTaskRecord } from "../runtime/runtime-host-store.js";
 import { TicketStore } from "../tickets/ticket-store.js";
 
 /** Platform adapter; all knowledge of the three operational frameworks lives here. */
@@ -22,6 +22,9 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
     let inspectedWorkItems = 0;
     let skippedWorkItems = 0;
     for (const task of runtimeTasks) {
+      // Qualification traffic measures a Candidate; it is not independent
+      // production experience and must never train a later Candidate.
+      if (!isLearningEligibleRuntimeTask(task)) continue;
       const mission = await new MissionStore(this.workspace.rootPath, task.missionId).read();
       if (!mission) continue;
       const tickets = new TicketStore(this.workspace.rootPath, task.taskId, task.runId);
@@ -202,6 +205,10 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
     if (!trace || trace.kind !== "context" || !isRecord(trace.data) || !Array.isArray(trace.data.evolutionCanaryAssignments)) return false;
     return trace.data.evolutionCanaryAssignments.some((item) => isRuntimeAssignment(item) && item.promotionId === input.promotionId && item.releaseId === input.releaseId && item.selected === input.selected);
   }
+}
+
+export function isLearningEligibleRuntimeTask(task: { evolutionTrial?: RuntimeTaskRecord["evolutionTrial"] }): boolean {
+  return !task.evolutionTrial;
 }
 
 function workflowAssignmentTraceId(taskId: string, agentId: string, goalId: string): string { return `workflow-task:${taskId}:${agentId}:${goalId}`; }

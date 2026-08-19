@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { TeamStaffingOutcome } from "../../shared/contracts/staffing.js";
-import { readJson, writeJson } from "../storage/json.js";
+import { readJson, updateJson } from "../storage/json.js";
 
 export interface StaffingRequestRecord {
   staffingRequestId: string;
@@ -12,6 +12,8 @@ export interface StaffingRequestRecord {
   status: "pending" | "running" | "blocked" | "completed" | "failed";
   threadId?: string;
   goalId?: string;
+  /** Frozen before the first send so retries keep the same message identity and payload. */
+  contextMessage?: string;
   proposal?: TeamStaffingOutcome;
   blockReason?: string;
   retryAt?: string;
@@ -26,8 +28,6 @@ interface StaffingRequestState {
 }
 
 export class StaffingRequestStore {
-  private pending: Promise<void> = Promise.resolve();
-
   constructor(private readonly workspaceRoot: string) {}
 
   async list(): Promise<StaffingRequestRecord[]> {
@@ -42,18 +42,13 @@ export class StaffingRequestStore {
   }
 
   async save(request: StaffingRequestRecord): Promise<void> {
-    const operation = this.pending.then(async () => {
-      const requests = await this.list();
-      await writeJson(this.file(), {
+    await updateJson<StaffingRequestState>(this.file(), { schemaVersion: 1, requests: [] }, (current) => ({
         schemaVersion: 1,
         requests: [
-          ...requests.filter((item) => item.staffingRequestId !== request.staffingRequestId),
+          ...current.requests.filter((item) => item.staffingRequestId !== request.staffingRequestId),
           request,
         ],
-      } satisfies StaffingRequestState);
-    });
-    this.pending = operation.catch(() => undefined);
-    await operation;
+      } satisfies StaffingRequestState));
   }
 
   private file(): string {

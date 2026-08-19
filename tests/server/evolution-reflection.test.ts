@@ -11,13 +11,18 @@ import { ProviderPracticeReflector, type PracticeReflector } from "../../src/ser
 import { AgentStore } from "../../src/server/agent-engine/agent-store.js";
 import { AgentEngine } from "../../src/server/agent-engine/agent-engine.js";
 import { AgentTraceStore } from "../../src/server/agent-engine/trace-store.js";
-import { PlatformEvolutionObservationAdapter } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
+import { PlatformEvolutionObservationAdapter, isLearningEligibleRuntimeTask } from "../../src/server/evolution-adapters/platform-observation-adapter.js";
 import { PlatformEvolutionSourceVerifier } from "../../src/server/evolution-adapters/platform-source-verifier.js";
 import type { Workspace } from "../../src/shared/types.js";
 import type { ProviderRegistry } from "../../src/server/providers/provider-registry.js";
 import { EMPTY_EVOLUTION_OBSERVATION_PORT } from "../../src/server/evolution/observation-port.js";
 
 describe("Evolution fast reflection", () => {
+  it("does not treat paired qualification tasks as independent learning experience", () => {
+    expect(isLearningEligibleRuntimeTask({ evolutionTrial: undefined } as any)).toBe(true);
+    expect(isLearningEligibleRuntimeTask({ evolutionTrial: { trialId: "trial-a" } } as any)).toBe(false);
+  });
+
   it("turns an explicit attribution into an agent-project PracticeDraft without activating an asset", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-reflection-"));
     const now = () => new Date("2026-08-15T01:00:00.000Z");
@@ -134,11 +139,11 @@ describe("Evolution fast reflection", () => {
         calls += 1;
         if (calls === 1) return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"increase"}],"observedComponents":["workflow"],"guardrails":"verify later","contraindications":[]}]' }] };
         expect(input.history.at(-1)?.content).toContain("failed validation");
-        return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"success","direction":"increase"}],"observedComponents":["workflow"],"guardrails":[],"contraindications":[]}]' }] };
+        return { items: [{ type: "assistant_message" as const, content: '[{"statement":"Learn","trigger":"Stall","procedure":"Recover","expectedOutcome":[{"metric":"task_success_rate","direction":"increase"}],"observedComponents":["workflow"],"guardrails":[],"contraindications":[]}]' }] };
       },
     } as unknown as ProviderRegistry;
     const result = await new ProviderPracticeReflector(providers).reflect({ episodeId: "episode-a", workspaceId: "workspace-a", taskId: "task-a", taskRunId: "run-a", ticketId: "ticket-a", attemptId: "attempt-a", goalId: "goal-a", agentId: "agent-a", profileId: "profile-a", outcome: "succeeded", sourceRefs: [{ kind: "ticket", ref: "ticket-a", workspaceId: "workspace-a" }], startedAt: "2026-08-15T00:00:00.000Z", endedAt: "2026-08-15T00:01:00.000Z", contentHash: "a".repeat(64) }, []);
     expect(calls).toBe(2);
-    expect(result).toEqual([expect.objectContaining({ expectedOutcome: [{ metric: "success", direction: "increase" }], guardrails: [] })]);
+    expect(result).toEqual([expect.objectContaining({ expectedOutcome: [{ metric: "task_success_rate", direction: "increase" }], guardrails: [] })]);
   });
 });

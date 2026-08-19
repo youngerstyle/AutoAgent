@@ -56,6 +56,7 @@ interface RuntimeContext {
 }
 
 const SCHEDULER_TICKET_STATUSES = new Set(["pending", "ready", "running"]);
+const TERMINAL_RUNTIME_TASK_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export function planHasRunnableTickets(tickets: Array<{ status: string }>): boolean {
   return tickets.some((ticket) => SCHEDULER_TICKET_STATUSES.has(ticket.status));
@@ -339,7 +340,7 @@ export class RuntimeHost {
       try {
         const persistedMission = await new MissionStore(this.workspace.rootPath, record.missionId).read();
         if (!persistedMission) {
-          if (new Set(["completed", "failed", "cancelled"]).has(record.status)) continue;
+          if (TERMINAL_RUNTIME_TASK_STATUSES.has(record.status)) continue;
           const staffing = await this.staffing.get(record.taskId);
           if (staffing?.status === "completed" && staffing.proposal?.status === "staffed") {
             await this.initializeMissionFromStaffing(record, staffing.proposal);
@@ -347,6 +348,19 @@ export class RuntimeHost {
           continue;
         }
         const persisted = persistedMission.record;
+        // RuntimeTask is the lifecycle authority for an explicitly terminalized
+        // execution. Its persisted Mission/Plan may still be active when a
+        // user, recovery reconciler, or external owner cancels the execution.
+        // Recovery must keep that history readable without resurrecting work.
+        if (TERMINAL_RUNTIME_TASK_STATUSES.has(record.status)) {
+          // Process startup keeps terminal history cold. Explicit hydration can
+          // still materialize it for a read-only snapshot on demand.
+          if (!options.deferActive) {
+            const context = await this.compose(record);
+            this.contexts.set(record.taskId, context);
+          }
+          continue;
+        }
         const aggregate = options.deferActive
           ? await new TicketStore(this.workspace.rootPath, record.taskId, record.runId).read(persisted.planId)
           : undefined;
@@ -465,6 +479,7 @@ export class RuntimeHost {
       else void handled;
     }
     for (const context of this.contexts.values()) {
+      if (context.record.status !== "active") continue;
       try {
         await this.tickTask(context, awaitAgentRuns);
         await this.clearRuntimeError(context);
@@ -1029,6 +1044,9 @@ export class RuntimeHost {
   }
 
   private async tickTask(context: RuntimeContext, awaitAgentRuns = true): Promise<void> {
+    // Scheduler ticks are execution, not status reconciliation. A terminal,
+    // paused, or waiting Runtime record is never reopened from Mission state.
+    if (context.record.status !== "active") return;
     let mission = await context.manager.tick();
     const runningLinkKeysAtStart = new Set(
       mission.links
@@ -1702,6 +1720,7 @@ export class RuntimeHost {
   }
 
   private async restoreActiveContext(context: RuntimeContext, record: RuntimeTaskRecord): Promise<void> {
+    if (TERMINAL_RUNTIME_TASK_STATUSES.has(context.record.status)) return;
     const mission = await context.manager.current();
     const plan = await context.tickets.getPlan(mission.record.planId);
     const status = runtimeTaskStatusFor(plan.status, mission.record.status);
@@ -2040,6 +2059,7 @@ function hasEligibleMember(team: TeamBinding, assignment: PlannedTicketAssignmen
 
 const AGENT_STALL_REASONS = new Set([
   "repeated_execution_retry_without_progress",
+  "repeated_contract_rejection_without_progress",
   "repeated_turn_without_progress",
   "no_durable_progress_window_elapsed",
 ]);
