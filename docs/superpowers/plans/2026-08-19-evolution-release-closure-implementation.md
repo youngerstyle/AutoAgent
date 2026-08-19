@@ -8,8 +8,9 @@
 - 已有 Episode -> PracticeDraft -> Practice -> Binding -> Candidate。
 - 已有 Candidate validation、EvalSuite、EvaluationJob、Promotion、Release、Canary telemetry、rollback、next-boundary projection 和 inheritance proof。
 - 已有真实 Provider reflector 和 Plugin authoring。
-- 真实项目测试中 Workflow Candidate 停在 `validated`：没有自动 suite，没有 EvaluationRun，没有 Release，因此下一任务没有 Evol trace。
-- `AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM` 当前是运行 EvaluationJob 的唯一执行路径；它不应是默认产品链的隐藏前置条件。
+- Workflow Candidate 已能在后续独立 holdout Episode 出现后自动形成 suite，并通过平台正常的 RuntimeHost/Mission 路径运行 paired trial；真实 Provider 仍是该任务的执行 Provider。
+- `AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM` 只保留为可选适配器，不再是默认产品链的隐藏前置条件。
+- 真实项目的最终 Production inheritance 验收仍未完成，因此不能只凭机制测试宣称 Evol 发布闭环已经完成。
 
 ## 实施顺序
 
@@ -37,9 +38,11 @@
 ### Phase 3：项目内自动 Canary 与 Production
 
 - [ ] 真实 paired trial 通过后，按 Company policy 决定自动/人工进入 Canary。
-- [ ] Canary assignment 写入下一任务冻结 snapshot；对照组继续使用基线。
-- [ ] 自动收集最少样本、质量、成功率、成本、安全与人工干预指标。
+- [x] Canary assignment 写入下一任务冻结 snapshot；selected 加载候选 Workflow，对照组继续使用 Production/builtin 基线。
+- [x] 自动收集最少样本、质量、成功率、成本、安全与人工干预指标；Workflow assignment 由任务 snapshot + Mission Goal 事实投影并可反向验证，不接受自报。
 - [ ] pass -> Production；fail -> rollback；inconclusive -> 延长或停止，不猜测。
+
+Paired target case 的收益判定也已收紧：baseline/candidate 都到达 `completed` 不等于 Candidate 有效。候选必须证明冻结 Candidate hash 被加载、学习步骤成为真实 Ticket、对应 Ticket 已完成且覆盖 suite assertion；regression/safety case 继续使用独立任务终态与违规事实。
 
 ### Phase 4：真实项目验收
 

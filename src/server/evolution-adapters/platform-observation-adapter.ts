@@ -164,6 +164,19 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
   async collectRuntimeTelemetry(agentId?: string): Promise<EvolutionRuntimeTelemetryObservation[]> {
     const agentIds = agentId ? [agentId] : (await listWorkspaceAgents(this.workspace)).map((agent) => agent.id);
     const result: EvolutionRuntimeTelemetryObservation[] = [];
+    for (const task of await new RuntimeHostStore(this.workspace.rootPath).list()) {
+      const assignment = task.workflowSnapshot?.canaryAssignment;
+      if (!assignment) continue;
+      const mission = await new MissionStore(this.workspace.rootPath, task.missionId).read();
+      for (const link of mission?.links ?? []) {
+        if (!link.agentGoalId || !link.agentThreadId || !agentIds.includes(link.agentId)) continue;
+        result.push({
+          agentId: link.agentId, traceId: workflowAssignmentTraceId(task.taskId, link.agentId, link.agentGoalId),
+          threadId: link.agentThreadId, turnId: task.runId, goalId: link.agentGoalId,
+          assignments: [structuredClone(assignment)],
+        });
+      }
+    }
     for (const currentAgentId of agentIds) for (const trace of await new AgentTraceStore(this.workspace.rootPath, currentAgentId).list()) {
       if (!trace.goalId) continue;
       const assignments = trace.kind === "context" && isRecord(trace.data) && Array.isArray(trace.data.evolutionCanaryAssignments)
@@ -178,11 +191,20 @@ export class PlatformEvolutionObservationAdapter implements EvolutionObservation
   }
 
   async verifyRuntimeAssignment(input: { agentId: string; traceId: string; promotionId: string; releaseId: string; selected: boolean }): Promise<boolean> {
+    for (const task of await new RuntimeHostStore(this.workspace.rootPath).list()) {
+      const assignment = task.workflowSnapshot?.canaryAssignment;
+      if (!assignment) continue;
+      const mission = await new MissionStore(this.workspace.rootPath, task.missionId).read();
+      const link = mission?.links.find((item) => item.agentId === input.agentId && item.agentGoalId && workflowAssignmentTraceId(task.taskId, item.agentId, item.agentGoalId) === input.traceId);
+      if (link && assignment.promotionId === input.promotionId && assignment.releaseId === input.releaseId && assignment.selected === input.selected) return true;
+    }
     const trace = (await new AgentTraceStore(this.workspace.rootPath, input.agentId).list()).find((item) => item.traceId === input.traceId);
     if (!trace || trace.kind !== "context" || !isRecord(trace.data) || !Array.isArray(trace.data.evolutionCanaryAssignments)) return false;
     return trace.data.evolutionCanaryAssignments.some((item) => isRuntimeAssignment(item) && item.promotionId === input.promotionId && item.releaseId === input.releaseId && item.selected === input.selected);
   }
 }
+
+function workflowAssignmentTraceId(taskId: string, agentId: string, goalId: string): string { return `workflow-task:${taskId}:${agentId}:${goalId}`; }
 
 function refsFor(workspaceId: string, taskId: string, taskRunId: string, ticketId: string, link: { missionId: string; agentId: string; lastProposalId?: string; lastDecisionId?: string }, profileId: string, evidenceIds: string[]): EvolutionSourceRef[] {
   const base = { workspaceId, taskId, taskRunId, agentId: link.agentId, profileId };

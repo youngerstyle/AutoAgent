@@ -1,12 +1,12 @@
 import type { EvolutionSourceRef, EvolutionTrialRuntimeContext } from "../../shared/contracts/evolution.js";
-import type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
+import type { RuntimeEvolutionWorkflow, RuntimeEvolutionWorkflowResolution } from "../../shared/contracts/evolution-runtime.js";
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import { DISABLED_AGENT_EVOLUTION_RUNTIME, type AgentEvolutionRuntimePort } from "../agent-engine/evolution-runtime-port.js";
 
 export interface EvolutionPlatformPort {
   readonly agentRuntime: AgentEvolutionRuntimePort;
-  resolveWorkflow(input: { target: string; policyRef: PlanPolicyRef; profileId?: string; trial?: EvolutionTrialRuntimeContext }): Promise<RuntimeEvolutionWorkflow | undefined>;
+  resolveWorkflow(input: { target: string; policyRef: PlanPolicyRef; assignmentKey: string; profileId?: string; trial?: EvolutionTrialRuntimeContext }): Promise<RuntimeEvolutionWorkflowResolution>;
   workflowSnapshotHash(definition: PlanDefinition): string;
   observeWorkflow(input: { workflow: RuntimeEvolutionWorkflow; runtimeRef: string; snapshotHash: string; traceRef: EvolutionSourceRef }): Promise<void>;
   resolveAgentProfile(input: { profile: AgentProfile; agent: WorkspaceAgent; assignmentKey: string; taskType?: string; tools: string[] }): Promise<AgentProfile | undefined>;
@@ -14,7 +14,7 @@ export interface EvolutionPlatformPort {
 
 export const DISABLED_EVOLUTION_PLATFORM_PORT: EvolutionPlatformPort = {
   agentRuntime: DISABLED_AGENT_EVOLUTION_RUNTIME,
-  async resolveWorkflow() { return undefined; },
+  async resolveWorkflow() { return {}; },
   workflowSnapshotHash(definition) { return createHash("sha256").update(canonical(definition), "utf8").digest("hex"); },
   async observeWorkflow() {},
   async resolveAgentProfile() { return undefined; },

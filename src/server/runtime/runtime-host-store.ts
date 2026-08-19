@@ -10,6 +10,8 @@ export interface RuntimeWorkflowSnapshot {
   generation: number;
   releaseRef: VersionedEvolutionRef;
   snapshotHash: string;
+  stage?: "trial" | "canary" | "production";
+  canaryAssignment?: { target: string; promotionId: string; releaseId: string; selected: boolean };
 }
 
 export interface RuntimeTaskRecord {

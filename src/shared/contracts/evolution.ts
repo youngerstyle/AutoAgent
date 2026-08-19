@@ -728,6 +728,8 @@ export interface EvolutionPairedTrialRequest {
 export interface EvolutionTrialRuntimeContext {
   trialId: string;
   caseId: string;
+  group: "target" | "regression" | "safety";
+  assertions: string[];
   variant: "baseline" | "candidate";
   candidateId: string;
   candidateHash: string;

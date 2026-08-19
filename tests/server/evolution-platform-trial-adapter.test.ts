@@ -28,6 +28,7 @@ describe("Platform evolution trial adapter", () => {
     for (const evalCase of request.cases) {
       const pair = started.filter((item) => item.trial.caseId === evalCase.caseId);
       expect(pair.map((item) => item.trial.variant).sort()).toEqual(["baseline", "candidate"]);
+      expect(pair[0]!.trial).toMatchObject({ group: evalCase.group, assertions: evalCase.assertions });
       expect(pair[0]!.objective).toBe(pair[1]!.objective);
       expect(pair[0]!.objective).not.toContain(request.candidateId);
     }

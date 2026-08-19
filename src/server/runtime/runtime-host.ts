@@ -1585,7 +1585,8 @@ export class RuntimeHost {
     if (!owner) throw new Error("组队提案通过后仍缺少 mission:intake 能力");
     const context = await this.compose(record, team);
     const evolution = this.options.evolution ?? DISABLED_EVOLUTION_PLATFORM_PORT;
-    const evolvedWorkflow = await evolution.resolveWorkflow({ target: DEFAULT_PLAN_TEMPLATE_ID, policyRef: this.policyRef, profileId: owner.profileId, ...(record.evolutionTrial ? { trial: record.evolutionTrial } : {}) });
+    const workflowResolution = await evolution.resolveWorkflow({ target: DEFAULT_PLAN_TEMPLATE_ID, policyRef: this.policyRef, assignmentKey: record.taskId, profileId: owner.profileId, ...(record.evolutionTrial ? { trial: record.evolutionTrial } : {}) });
+    const evolvedWorkflow = workflowResolution.workflow;
     const planDefinition = evolvedWorkflow?.definition ?? createMinimalTeamPlanDefinition(this.policyRef, record.objective);
     const planSnapshotHash = evolution.workflowSnapshotHash(planDefinition);
     await context.manager.startMission({
@@ -1604,12 +1605,14 @@ export class RuntimeHost {
       definitionId: planDefinition.definitionId, definitionVersion: planDefinition.definitionVersion,
       generation: evolvedWorkflow.generation,
       releaseRef: { id: evolvedWorkflow.releaseId, version: evolvedWorkflow.releaseVersion, contentHash: evolvedWorkflow.contentHash },
-      snapshotHash: planSnapshotHash,
+      snapshotHash: planSnapshotHash, stage: evolvedWorkflow.stage,
+      ...(workflowResolution.canaryAssignment ? { canaryAssignment: structuredClone(workflowResolution.canaryAssignment) } : {}),
     } : {
       source: "builtin", target: DEFAULT_PLAN_TEMPLATE_ID,
       definitionId: planDefinition.definitionId, definitionVersion: planDefinition.definitionVersion, generation: 0,
       releaseRef: { id: `builtin:${planDefinition.definitionId}`, version: String(planDefinition.definitionVersion), contentHash: planSnapshotHash },
       snapshotHash: planSnapshotHash,
+      ...(workflowResolution.canaryAssignment ? { canaryAssignment: structuredClone(workflowResolution.canaryAssignment) } : {}),
     };
     record.updatedAt = this.now().toISOString();
     context.record = record;

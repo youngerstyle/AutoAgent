@@ -9,9 +9,9 @@ import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
 import type { PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 import type { Workspace } from "../../shared/types.js";
 import { RuntimeHost, planHasRunnableTickets, runtimeTaskStatusFor } from "./runtime-host.js";
-import { RuntimeHostStore } from "./runtime-host-store.js";
+import { RuntimeHostStore, type RuntimeWorkflowSnapshot } from "./runtime-host-store.js";
 import { MissionStore } from "../mission-process/mission-store.js";
-import { TicketStore } from "../tickets/ticket-store.js";
+import { TicketStore, type TicketAggregate } from "../tickets/ticket-store.js";
 import { StaffingRequestStore } from "../staffing/staffing-request-store.js";
 import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from "../tickets/plan-policy-config.js";
 import { RuntimeExecutionGate, RuntimeHostScheduler } from "./runtime-scheduler.js";
@@ -20,7 +20,7 @@ import { EvolutionCoordinator } from "../evolution/evolution-coordinator.js";
 import { PlatformEvolutionObservationAdapter } from "../evolution-adapters/platform-observation-adapter.js";
 import { EvolutionPlatformRuntimeAdapter } from "../evolution-adapters/platform-runtime-adapter.js";
 import { PlatformEvolutionSourceVerifier } from "../evolution-adapters/platform-source-verifier.js";
-import type { EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
+import type { EvolutionTrialRuntimeContext, EvolutionWorkerStatus } from "../../shared/contracts/evolution.js";
 import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../evolution/runtime-projection.js";
 import { productionEvolutionRuntimeConfig, runtimeConfigSnapshotHash, type RuntimeEvolutionConfig } from "../evolution/runtime-config-projection.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
@@ -100,8 +100,12 @@ export class RuntimeHostRegistry {
     const record = await new RuntimeHostStore(workspace.rootPath).get(input.taskId);
     if (!record) return { status: "pending" };
     if (["active", "paused", "waiting"].includes(record.status)) return { status: "running" };
-    const success = record.status === "completed";
+    const taskCompleted = record.status === "completed";
     const mission = await new MissionStore(workspace.rootPath, record.missionId).read();
+    const ticketAggregate = mission
+      ? await new TicketStore(workspace.rootPath, record.taskId, record.runId).read(mission.record.planId)
+      : undefined;
+    const assessment = assessEvolutionTrial(record.evolutionTrial, record.workflowSnapshot, taskCompleted, ticketAggregate);
     const goalsByAgent = new Map<string, Set<string>>();
     for (const link of mission?.links ?? []) if (link.agentGoalId) {
       const goals = goalsByAgent.get(link.agentId) ?? new Set<string>(); goals.add(link.agentGoalId); goalsByAgent.set(link.agentId, goals);
@@ -119,13 +123,13 @@ export class RuntimeHostRegistry {
       evidenceId, agentId: "evolution-trial-runtime", threadId: `trial:${record.evolutionTrial?.trialId ?? record.taskId}`,
       goalId: `trial-task:${record.taskId}`, turnId: record.runId, toolCallId: `trial-task:${record.taskId}`,
       toolName: "runtime-host-trial-observer", kind: "tool", capture: { status: "recorded" },
-      observation: { status: "observed", result: { taskId: record.taskId, runId: record.runId, missionId: record.missionId, status: record.status, workflowSnapshot: record.workflowSnapshot } },
+      observation: { status: "observed", result: { taskId: record.taskId, runId: record.runId, missionId: record.missionId, status: record.status, workflowSnapshot: record.workflowSnapshot, assessment } },
       input: { evolutionTrial: record.evolutionTrial }, workspaceRoot: workspace.rootPath, createdAt: record.updatedAt,
     });
     return {
-      status: success ? "succeeded" : "failed",
+      status: taskCompleted ? "succeeded" : "failed",
       observation: {
-        success, qualityScore: success ? 1 : 0, costUsd, costMeasured: usageMeasured && costMeasured,
+        success: assessment.success, qualityScore: assessment.qualityScore, costUsd, costMeasured: usageMeasured && costMeasured,
         ...(usageMeasured ? { inputTokens, outputTokens, totalTokens } : {}),
         latencyMs: Math.max(0, Date.parse(record.updatedAt) - Date.parse(record.createdAt)), toolFailures: record.runtimeError ? 1 : 0,
         policyViolations: 0, safetyViolations: 0, evidenceCompleteness: record.workflowSnapshot ? 1 : 0,
@@ -365,6 +369,42 @@ export class RuntimeHostRegistry {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === "object" && !Array.isArray(value); }
 function finite(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined; }
+
+export function assessEvolutionTrial(
+  trial: EvolutionTrialRuntimeContext | undefined,
+  workflow: RuntimeWorkflowSnapshot | undefined,
+  taskCompleted: boolean,
+  aggregate: TicketAggregate | undefined,
+): { success: boolean; qualityScore: number; bindingVerified: boolean; matchedAssertions: string[]; completedTicketIds: string[] } {
+  const completedTicketIds = (aggregate?.tickets ?? []).filter((ticket) => ticket.status === "completed").map((ticket) => ticket.ticketId);
+  if (!trial || trial.group !== "target") {
+    return { success: taskCompleted, qualityScore: taskCompleted ? 1 : 0, bindingVerified: true, matchedAssertions: [], completedTicketIds };
+  }
+  const bindingVerified = trial.variant === "baseline" || Boolean(
+    workflow?.source === "evolution"
+    && workflow.stage === "trial"
+    && workflow.releaseRef.id === trial.candidateId
+    && workflow.releaseRef.contentHash === trial.candidateHash,
+  );
+  const completed = new Set<string>(completedTicketIds);
+  const executedText = Object.entries(aggregate?.definitionsByTicketId ?? {})
+    .filter(([ticketId]) => completed.has(ticketId))
+    .flatMap(([, definition]) => [definition.title, definition.objective, ...definition.successCriteria])
+    .map(normalizeTrialText)
+    .filter(Boolean);
+  const matchedAssertions = trial.assertions.filter((assertion) => {
+    const expected = normalizeTrialText(assertion);
+    if (!expected) return false;
+    const stablePrefix = expected.slice(0, Math.min(expected.length, 64));
+    return executedText.some((actual) => actual.includes(expected) || expected.includes(actual) || (stablePrefix.length >= 24 && actual.includes(stablePrefix)));
+  });
+  const qualityScore = trial.assertions.length > 0 ? matchedAssertions.length / trial.assertions.length : 0;
+  return { success: taskCompleted && bindingVerified && matchedAssertions.length > 0, qualityScore, bindingVerified, matchedAssertions, completedTicketIds };
+}
+
+function normalizeTrialText(value: string): string {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
 
 export async function resolveSharedEvolutionLayerSources(homeDir: string, profileId: string): Promise<SharedEvolutionLayerSource[]> {
   const identity = await new CompanyIdentityStore(homeDir).getOrCreate();

@@ -11,7 +11,7 @@ export interface EvolutionTrialRuntimeFacade {
   available(workspaceId: string): Promise<boolean>;
   start(input: {
     workspaceId: string; taskId: string; title: string; objective: string;
-    trial: { trialId: string; caseId: string; variant: "baseline" | "candidate"; candidateId: string; candidateHash: string; baselineRef: EvolutionPairedTrialRequest["baselineRef"] };
+    trial: { trialId: string; caseId: string; group: EvolutionEvalCase["group"]; assertions: string[]; variant: "baseline" | "candidate"; candidateId: string; candidateHash: string; baselineRef: EvolutionPairedTrialRequest["baselineRef"] };
   }): Promise<void>;
   observe(input: { workspaceId: string; taskId: string }): Promise<
     | { status: "pending" | "running" }
@@ -58,7 +58,7 @@ export class PlatformEvolutionTrialAdapter implements EvolutionTrialPort {
         await this.runtime.start({
           workspaceId: this.workspaceId, taskId: variant === "baseline" ? task.baselineTaskId : task.candidateTaskId,
           title: `Evol ${variant} trial · ${evalCase.caseId}`, objective,
-          trial: { trialId: input.trialId, caseId: evalCase.caseId, variant, candidateId: input.request.candidateId, candidateHash: input.request.expectedContentHash, baselineRef: input.request.baselineRef },
+          trial: { trialId: input.trialId, caseId: evalCase.caseId, group: evalCase.group, assertions: [...evalCase.assertions], variant, candidateId: input.request.candidateId, candidateHash: input.request.expectedContentHash, baselineRef: input.request.baselineRef },
         });
       }
     }

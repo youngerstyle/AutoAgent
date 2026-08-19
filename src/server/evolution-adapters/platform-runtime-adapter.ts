@@ -1,7 +1,7 @@
 import type { EvolutionPlatformPort } from "../runtime/evolution-platform-port.js";
 import { EvolutionActivationStore } from "../evolution/activation-store.js";
 import { evolutionAgentProfileForSession } from "../evolution/runtime-projection.js";
-import { productionEvolutionWorkflow, trialEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
+import { evolutionWorkflowForTask, trialEvolutionWorkflow, workflowSnapshotHash } from "../evolution/workflow-projection.js";
 import type { OrganizationMemorySource, SharedEvolutionLayerSource } from "../../shared/contracts/evolution-runtime.js";
 import { EvolutionAgentRuntimeAdapter } from "./agent-runtime-adapter.js";
 
@@ -21,8 +21,8 @@ export class EvolutionPlatformRuntimeAdapter implements EvolutionPlatformPort {
   }
 
   async resolveWorkflow(input: Parameters<EvolutionPlatformPort["resolveWorkflow"]>[0]) {
-    if (input.trial) return trialEvolutionWorkflow(this.workspaceRoot, this.workspaceId, input.target, input.policyRef, input.trial);
-    return productionEvolutionWorkflow(this.workspaceRoot, this.workspaceId, input.target, input.policyRef, {
+    if (input.trial) return { workflow: await trialEvolutionWorkflow(this.workspaceRoot, this.workspaceId, input.target, input.policyRef, input.trial) };
+    return evolutionWorkflowForTask(this.workspaceRoot, this.workspaceId, input.target, input.policyRef, input.assignmentKey, {
       profileId: input.profileId,
       sharedReleaseSources: input.profileId ? await this.options.sharedEvolutionLayerSources?.(input.profileId) ?? [] : [],
     });

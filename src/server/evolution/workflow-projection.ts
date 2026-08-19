@@ -6,11 +6,12 @@ import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticke
 import type { SharedEvolutionLayerSource } from "./runtime-projection.js";
 import type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
 export type { RuntimeEvolutionWorkflow } from "../../shared/contracts/evolution-runtime.js";
-import { resolveEvolutionLayers } from "./runtime-projection.js";
+import { isCanaryAssignment, resolveEvolutionLayers } from "./runtime-projection.js";
 import { EvolutionStore } from "./evolution-store.js";
 
 interface WorkflowReleaseManifest {
   schemaVersion: 1;
+  stage: "canary" | "production";
   release: { id: string; version: string; contentHash: string };
   candidateHash: string;
   candidateKind: "workflow";
@@ -48,25 +49,38 @@ export async function productionEvolutionWorkflow(
     for (const file of files) {
       const pointer = JSON.parse(await readFile(path.join(directory, file), "utf8")) as ActiveReleasePointer;
       if (pointer?.schemaVersion !== 1 || pointer.stage !== "production" || !pointer.active || !pointer.release || pointer.target !== target || !matchesOwner(pointer, workspaceId, context.profileId)) continue;
-      const manifest = parseManifest(await readFile(safeResolve(root, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
-    if (manifest.schemaVersion !== 1 || manifest.candidateKind !== "workflow" || manifest.target !== target || manifest.promotionId !== pointer.promotionId
-      || manifest.release?.id !== pointer.release.id || manifest.release?.contentHash !== pointer.release.contentHash || manifest.runtimeActive !== true || manifest.validationPassed !== true
-      || canonical(manifest.scope) !== canonical(pointer.scope) || !manifest.validationChecks.some((check) => check.name === "workflow_contract" && check.passed === true)) continue;
-    const content = await readFile(safeResolve(root, path.join(".autoagent", "evolution", manifest.artifactRef)), "utf8");
-    if (hash(content) !== manifest.candidateHash) throw new Error(`Production Workflow release ${pointer.release.id} failed content verification`);
-    const artifact = parseArtifact(content);
-    if (artifact.templateId !== target) throw new Error(`Production Workflow release ${pointer.release.id} has an invalid target`);
-    matches.push({
-      target, releaseId: pointer.release.id, releaseVersion: pointer.release.version, contentHash: pointer.release.contentHash, generation: pointer.generation, stage: "production", ownerLevel: pointer.scope.ownerLevel ?? "project", sourceRoot: root,
-      definition: {
-        definitionId: artifact.templateId, definitionVersion: artifact.definitionVersion,
-        policyRef: structuredClone(policyRef), plannerAssignment: structuredClone(artifact.plannerAssignment),
-        amendmentTemplate: structuredClone(artifact.amendmentTemplate), initialChange: structuredClone(artifact.initialChange),
-      },
-    });
+      const workflow = await workflowFromPointer(root, pointer, target, policyRef, "production");
+      if (workflow?.stage === "production") matches.push({ ...workflow, stage: "production" });
     }
   }
   return resolveEvolutionLayers(matches, (item) => item.target)[0];
+}
+
+export async function evolutionWorkflowForTask(
+  workspaceRoot: string,
+  workspaceId: string,
+  target: string,
+  policyRef: PlanPolicyRef,
+  assignmentKey: string,
+  context: { profileId?: string; sharedReleaseSources?: SharedEvolutionLayerSource[] } = {},
+): Promise<{ workflow?: RuntimeEvolutionWorkflow; canaryAssignment?: { target: string; promotionId: string; releaseId: string; selected: boolean } }> {
+  const production = await productionEvolutionWorkflow(workspaceRoot, workspaceId, target, policyRef, context);
+  const directory = path.join(workspaceRoot, ".autoagent", "evolution", "active", "canary");
+  let files: string[];
+  try { files = (await readdir(directory)).filter((file) => file.endsWith(".json")).sort(); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return production ? { workflow: production } : {}; throw error; }
+  const pointers = files.map(async (file) => JSON.parse(await readFile(path.join(directory, file), "utf8")) as ActiveReleasePointer);
+  const eligible = (await Promise.all(pointers))
+    .filter((pointer) => pointer?.schemaVersion === 1 && pointer.stage === "canary" && pointer.active && pointer.release && pointer.promotionId && pointer.rollout && pointer.target === target && matchesOwner(pointer, workspaceId, context.profileId))
+    .sort((left, right) => ownerRank(right.scope.ownerLevel) - ownerRank(left.scope.ownerLevel) || right.generation - left.generation);
+  const pointer = eligible[0];
+  if (!pointer?.release || !pointer.promotionId || !pointer.rollout) return production ? { workflow: production } : {};
+  const selected = isCanaryAssignment(pointer.rollout, assignmentKey);
+  const canaryAssignment = { target, promotionId: pointer.promotionId, releaseId: pointer.release.id, selected };
+  if (!selected) return { ...(production ? { workflow: production } : {}), canaryAssignment };
+  const canary = await workflowFromPointer(workspaceRoot, pointer, target, policyRef, "canary");
+  if (!canary) throw new Error("Selected Workflow Canary failed immutable release verification");
+  return { workflow: canary, canaryAssignment };
 }
 
 export async function trialEvolutionWorkflow(
@@ -99,6 +113,23 @@ export async function trialEvolutionWorkflow(
 }
 
 function matchesOwner(pointer: ActiveReleasePointer, workspaceId: string, profileId?: string): boolean { const owner = pointer.scope.ownerLevel ?? "project"; if (owner === "company") return true; if (owner === "agent") return Boolean(profileId && pointer.scope.profileId === profileId); if (owner === "project") return pointer.scope.workspaceId === workspaceId; return pointer.scope.workspaceId === workspaceId && Boolean(profileId && pointer.scope.profileId === profileId); }
+function ownerRank(owner: EvolutionOwnerLevel | undefined): number { return owner === "agent_project" ? 4 : owner === "project" ? 3 : owner === "agent" ? 2 : 1; }
+
+async function workflowFromPointer(root: string, pointer: ActiveReleasePointer, target: string, policyRef: PlanPolicyRef, stage: "canary" | "production"): Promise<RuntimeEvolutionWorkflow | undefined> {
+  if (!pointer.release || !pointer.promotionId) return undefined;
+  const manifest = parseManifest(await readFile(safeResolve(root, path.join(".autoagent", "evolution", "releases", pointer.release.id, "manifest.json")), "utf8"));
+  if (manifest.schemaVersion !== 1 || manifest.stage !== stage || manifest.candidateKind !== "workflow" || manifest.target !== target || manifest.promotionId !== pointer.promotionId
+    || manifest.release?.id !== pointer.release.id || manifest.release?.contentHash !== pointer.release.contentHash || manifest.runtimeActive !== true || manifest.validationPassed !== true
+    || canonical(manifest.scope) !== canonical(pointer.scope) || !manifest.validationChecks.some((check) => check.name === "workflow_contract" && check.passed === true)) return undefined;
+  const content = await readFile(safeResolve(root, path.join(".autoagent", "evolution", manifest.artifactRef)), "utf8");
+  if (hash(content) !== manifest.candidateHash) throw new Error(`${stage} Workflow release ${pointer.release.id} failed content verification`);
+  const artifact = parseArtifact(content);
+  if (artifact.templateId !== target) throw new Error(`${stage} Workflow release ${pointer.release.id} has an invalid target`);
+  return {
+    target, releaseId: pointer.release.id, releaseVersion: pointer.release.version, contentHash: pointer.release.contentHash, generation: pointer.generation, stage, ownerLevel: pointer.scope.ownerLevel ?? "project", sourceRoot: root,
+    definition: { definitionId: artifact.templateId, definitionVersion: artifact.definitionVersion, policyRef: structuredClone(policyRef), plannerAssignment: structuredClone(artifact.plannerAssignment), amendmentTemplate: structuredClone(artifact.amendmentTemplate), initialChange: structuredClone(artifact.initialChange) },
+  };
+}
 
 export function workflowSnapshotHash(definition: PlanDefinition): string { return hash(canonical(definition)); }
 function parseManifest(raw: string): WorkflowReleaseManifest {
