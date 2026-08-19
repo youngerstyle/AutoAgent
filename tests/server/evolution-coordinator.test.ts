@@ -83,6 +83,9 @@ describe("EvolutionCoordinator", () => {
     expect(coordinator.status()).toMatchObject({
       running: false, evaluatorConfigured: true, workspacesScanned: 1, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, scopePromotionArtifactsCreated: 0, evaluationJobsProcessed: 1, promotionTransitionsProcessed: 1,
     });
+    expect(coordinator.status().releaseBlockers).toEqual([
+      expect.objectContaining({ candidateId: ready.candidateId, code: "approval_required", status: "ready_for_eval" }),
+    ]);
     expect(coordinator.status()).not.toHaveProperty("lastError");
   });
 
@@ -93,7 +96,7 @@ describe("EvolutionCoordinator", () => {
     const second = coordinator.runOnce();
     expect(second).toBe(first);
     await first;
-    expect(coordinator.status()).toMatchObject({ evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, scopePromotionArtifactsCreated: 0, evaluationJobsProcessed: 0, promotionTransitionsProcessed: 0 });
+    expect(coordinator.status()).toMatchObject({ evaluatorConfigured: false, evaluationMode: "unavailable", releaseBlockers: [], workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, scopePromotionArtifactsCreated: 0, evaluationJobsProcessed: 0, promotionTransitionsProcessed: 0 });
   });
 
   it("autonomously advances a low-risk Memory through evaluation, canary, measured telemetry, and production", async () => {

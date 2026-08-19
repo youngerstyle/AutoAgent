@@ -691,6 +691,8 @@ export interface EvaluationJob {
 export interface EvolutionWorkerStatus {
   running: boolean;
   evaluatorConfigured: boolean;
+  evaluationMode: "platform_trial" | "external_adapter" | "unavailable";
+  releaseBlockers: EvolutionReleaseBlocker[];
   lastStartedAt?: string;
   lastCompletedAt?: string;
   lastError?: string;
@@ -701,6 +703,40 @@ export interface EvolutionWorkerStatus {
   scopePromotionArtifactsCreated: number;
   evaluationJobsProcessed: number;
   promotionTransitionsProcessed: number;
+}
+
+export interface EvolutionReleaseBlocker {
+  workspaceId: string;
+  candidateId: string;
+  kind: EvolutionArtifactKind;
+  target: string;
+  status: EvolutionCandidateStatus;
+  code: "evaluation_plan_missing" | "evaluation_executor_unavailable" | "evaluation_pending" | "approval_required" | "canary_telemetry_pending" | "activation_pending";
+  message: string;
+}
+
+export interface EvolutionPairedTrialRequest {
+  candidateId: string;
+  expectedContentHash: string;
+  suiteRef: VersionedEvolutionRef;
+  baselineRef: VersionedEvolutionRef;
+  runtimeSnapshotRef: string;
+  policyRef: VersionedEvolutionRef;
+  cases: EvolutionEvalCase[];
+}
+
+export interface EvolutionPairedTrial {
+  trialId: string;
+  commandId: string;
+  requestFingerprint: string;
+  workspaceId: string;
+  request: EvolutionPairedTrialRequest;
+  status: "pending" | "dispatched" | "succeeded" | "failed" | "inconclusive";
+  createdAt: string;
+  updatedAt: string;
+  dispatchRef?: string;
+  caseResults?: EvaluationCaseResult[];
+  lastError?: { category: "transient" | "terminal"; message: string };
 }
 
 export interface RecordEvaluationInput {

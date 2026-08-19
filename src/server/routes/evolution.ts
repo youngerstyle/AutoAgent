@@ -36,6 +36,7 @@ import { EvolutionSignalStore } from "../evolution/evolution-signal-store.js";
 import { EvolutionPhaseJobStore } from "../evolution/phase-job-store.js";
 import { SharedPracticeRegistry } from "../evolution/shared-practice-registry.js";
 import { EvidenceLedger } from "../agent-engine/evidence-ledger.js";
+import { EvolutionPairedTrialStore } from "../evolution/paired-trial-store.js";
 
 export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?: () => EvolutionWorkerStatus) {
   const router = Router({ mergeParams: true });
@@ -52,7 +53,7 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   };
 
   router.get("/worker", (_req, res) => res.json({
-    worker: workerStatus?.() ?? { running: false, evaluatorConfigured: false, workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, scopePromotionArtifactsCreated: 0, evaluationJobsProcessed: 0, promotionTransitionsProcessed: 0 },
+    worker: workerStatus?.() ?? { running: false, evaluatorConfigured: false, evaluationMode: "unavailable", releaseBlockers: [], workspacesScanned: 0, reflectionSignalsProcessed: 0, dreamPracticesProduced: 0, practiceBindingsCreated: 0, scopePromotionArtifactsCreated: 0, evaluationJobsProcessed: 0, promotionTransitionsProcessed: 0 },
   }));
 
   router.get("/candidates", asyncHandler(async (req, res) => res.json({ candidates: await (await storeFor(String(req.params.workspaceId))).candidates.list() })));
@@ -69,6 +70,10 @@ export function createEvolutionRouter(workspaces: WorkspaceStore, workerStatus?:
   router.get("/evaluation-jobs", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));
     res.json({ jobs: await new EvaluationJobStore(workspace.id, workspace.rootPath).list() });
+  }));
+  router.get("/paired-trials", asyncHandler(async (req, res) => {
+    const workspace = await workspaces.get(String(req.params.workspaceId));
+    res.json({ trials: await new EvolutionPairedTrialStore(workspace.id, workspace.rootPath).list() });
   }));
   router.get("/memories", asyncHandler(async (req, res) => {
     const workspace = await workspaces.get(String(req.params.workspaceId));

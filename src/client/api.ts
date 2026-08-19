@@ -1,6 +1,6 @@
 import type { AgentPolicy, AgentProfile, LoopDebugLog, ModelConfig, ProviderConfig, ProviderName, Workspace, WorkspaceAgent, WorkspaceSnapshot } from "../shared/types";
 import type { AgentMessageAttachment } from "../shared/contracts/agent-engine";
-import type { CompanyEvolutionTrial, CompanyPromotionReview, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPhaseJob, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PluginAuthoringJob, PromotionRecord, ScopePromotionStatus, SharedEvolutionPracticeRecord } from "../shared/contracts/evolution";
+import type { CompanyEvolutionTrial, CompanyPromotionReview, CompanyTrialEvidence, EvaluationJob, EvolutionActivationRecord, EvolutionCandidate, EvolutionInheritanceProof, EvolutionPairedTrial, EvolutionPhaseJob, EvolutionPractice, EvolutionPracticeBinding, EvolutionPracticeDraft, EvolutionScopePromotionProposal, EvolutionWorkerStatus, MemoryLifecycleState, PluginAuthoringJob, PromotionRecord, ScopePromotionStatus, SharedEvolutionPracticeRecord } from "../shared/contracts/evolution";
 
 export type RuntimeHealth = {
   ok: boolean;
@@ -194,6 +194,7 @@ export interface EvolutionOverview {
   candidates: EvolutionCandidate[];
   releases: PromotionRecord[];
   evaluationJobs: EvaluationJob[];
+  pairedTrials: EvolutionPairedTrial[];
   memories: MemoryLifecycleState[];
   activations: EvolutionActivationRecord[];
   inheritanceProofs: EvolutionInheritanceProof[];
@@ -212,10 +213,11 @@ export interface EvolutionOverview {
 
 export async function getEvolutionOverview(workspaceId: string): Promise<EvolutionOverview> {
   const root = `/api/workspaces/${workspaceId}/evolution`;
-  const [candidates, releases, jobs, memories, activations, practices, phaseJobs, promotions, worker] = await Promise.all([
+  const [candidates, releases, jobs, pairedTrials, memories, activations, practices, phaseJobs, promotions, worker] = await Promise.all([
     api<{ candidates: EvolutionCandidate[] }>(`${root}/candidates`),
     api<{ releases: PromotionRecord[] }>(`${root}/releases`),
     api<{ jobs: EvaluationJob[] }>(`${root}/evaluation-jobs`),
+    api<{ trials: EvolutionPairedTrial[] }>(`${root}/paired-trials`),
     api<{ memories: MemoryLifecycleState[] }>(`${root}/memories`),
     api<{ activations: EvolutionActivationRecord[]; proofs: EvolutionInheritanceProof[] }>(`${root}/activations`),
     api<{ drafts: EvolutionPracticeDraft[]; practices: EvolutionPractice[]; bindings: EvolutionPracticeBinding[]; pluginAuthoringJobs: PluginAuthoringJob[]; sharedPractices: SharedEvolutionPracticeRecord[] }>(`${root}/practices`),
@@ -224,7 +226,7 @@ export async function getEvolutionOverview(workspaceId: string): Promise<Evoluti
     api<{ worker: EvolutionWorkerStatus }>(`${root}/worker`),
   ]);
   return {
-    candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, memories: memories.memories,
+    candidates: candidates.candidates, releases: releases.releases, evaluationJobs: jobs.jobs, pairedTrials: pairedTrials.trials, memories: memories.memories,
     activations: activations.activations, inheritanceProofs: activations.proofs,
     practiceDrafts: practices.drafts, practices: practices.practices, practiceBindings: practices.bindings, pluginAuthoringJobs: practices.pluginAuthoringJobs,
     phaseJobs: phaseJobs.jobs,

@@ -153,6 +153,14 @@ export function workspaceEvolutionEvaluationCommandFile(workspaceRoot: string, c
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "evaluation-commands", `${commandHash}.json`);
 }
 
+export function workspaceEvolutionPairedTrialsFile(workspaceRoot: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "paired-trials.jsonl");
+}
+
+export function workspaceEvolutionPairedTrialCommandFile(workspaceRoot: string, commandHash: string): string {
+  return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "paired-trial-commands", `${commandHash}.json`);
+}
+
 export function workspaceEvolutionPromotionsFile(workspaceRoot: string): string {
   return path.join(workspaceAutoAgentDir(workspaceRoot), "evolution", "promotions.jsonl");
 }

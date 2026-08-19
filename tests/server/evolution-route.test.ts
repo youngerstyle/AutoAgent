@@ -30,6 +30,9 @@ describe("workspace evolution candidate control plane", () => {
     const { app, base } = await fixture();
     const worker = await request(app).get(`${base}/worker`).expect(200);
     expect(worker.body.worker).toMatchObject({ running: false, evaluatorConfigured: false });
+    const pairedTrials = await request(app).get(`${base}/paired-trials`);
+    expect(pairedTrials.status).toBe(200);
+    expect(pairedTrials.body.trials).toEqual([]);
     expect(worker.body.worker).not.toHaveProperty("pluginSandboxConfigured");
     const input = candidateInput("candidate-create-a");
     const created = await request(app).post(`${base}/candidates`).send(input).expect(201);

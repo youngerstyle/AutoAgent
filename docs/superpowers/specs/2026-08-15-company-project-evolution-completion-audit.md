@@ -4,6 +4,8 @@
 权威规范：`2026-08-15-company-project-evolution-promotion-v1.md`  
 实现计划：`../plans/2026-08-15-company-project-evolution-promotion-implementation.md`
 
+> 2026-08-19 复核结论：本文件证明的是各机制和隔离规则已有自动化覆盖，不能再解释为“默认配置下真实项目已完成端到端进化”。真实 Provider 验收中，Practice-derived Workflow Candidate 停在 `validated`，因为没有自动 EvaluationPlan/EvalSuite，且 EvaluationJob 仍依赖额外的 `AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM`。新的完成口径和修复计划见 `2026-08-19-five-framework-and-evolution-release-closure.md` 与 `../plans/2026-08-19-evolution-release-closure-implementation.md`。在其真实验收标准完成前，Evol 状态是 **机制基本完备、默认发布链未闭合**。
+
 本审计只把“权威事实 → 开放 Practice → Runtime Binding → 不可变 Release → 后续生命周期实际继承/测量/回滚”称为进化。生成一段文本、运行一次脚本、修改当前 turn，均不计为完成。
 
 | # | 完成定义 | 实现与自动化证据 |
@@ -22,7 +24,7 @@
 | 12 | UI 完整 provenance | Evolution 管理面展示 Workspace/profile/Episode、Practice revision/Binding、效果 refs、Promotion、五项公司评审、Trial、共享/本地 activation/proof/rollback 与 phase jobs。生产构建验证类型与渲染路径。 |
 | 13 | 非阻塞捕获与独立可恢复阶段 | `evolution-extraction-jobs.test.ts`、`evolution-phase-jobs.test.ts`、`evolution-evaluation-jobs.test.ts`；Signal、ReflectionJob、ConsolidationJob 分账并各自 lease/retry/dead-letter。 |
 | 14 | 混合时机而非固定凌晨 | `evolution-coordinator.test.ts` 与 `evolution-signals.test.ts` 证明 P0-P4、高显著性快速反思、threshold、真实 Runtime idle、可配置 UTC maintenance window、manual trigger 和公平预算。 |
-| 15 | 冻结 snapshot 与 next boundary | `evolution-runtime-projection.test.ts`、`evolution-plugin-runtime.test.ts`、`evolution-workflow-layering.test.ts`、`evolution-runtime-config-layering.test.ts` 分别覆盖 next-turn、next-session、next-task、next-restart。 |
+| 15 | 冻结 snapshot 与 next boundary（机制覆盖） | `evolution-runtime-projection.test.ts`、`evolution-plugin-runtime.test.ts`、`evolution-workflow-layering.test.ts`、`evolution-runtime-config-layering.test.ts` 分别覆盖 next-turn、next-session、next-task、next-restart；尚不能替代默认配置下从真实 Practice 自动到达 Release 的验收。 |
 
 ## 关键边界
 

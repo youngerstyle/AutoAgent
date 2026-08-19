@@ -30,10 +30,12 @@ import { ScopePromotionStore } from "./scope-promotion-store.js";
 import { ScopePromotionCandidateCompiler } from "./scope-promotion-compiler.js";
 import { SharedEvolutionReleaseRegistry } from "./shared-release-registry.js";
 import { globalEvolutionLayerRoot } from "../storage/paths.js";
-import type { EvolutionCandidate, EvolutionEvalSuite } from "../../shared/contracts/evolution.js";
+import type { EvolutionCandidate, EvolutionEvalSuite, EvolutionReleaseBlocker } from "../../shared/contracts/evolution.js";
 import { PluginAuthoringWorker, type PluginArtifactAuthor } from "./plugin-authoring-worker.js";
 import { EvolutionPhaseJobStore } from "./phase-job-store.js";
 import type { PracticeReflector } from "./practice-reflector.js";
+import { UNAVAILABLE_EVOLUTION_TRIAL_PORT, type EvolutionTrialPort } from "./trial-port.js";
+import { EvolutionActivationStore } from "./activation-store.js";
 
 export class EvolutionCoordinator {
   private timer?: ReturnType<typeof setInterval>;
@@ -62,12 +64,15 @@ export class EvolutionCoordinator {
       pluginArtifactAuthor?: PluginArtifactAuthor;
       observationPort?: (workspace: Awaited<ReturnType<WorkspaceStore["get"]>>) => EvolutionObservationPort;
       sourceVerificationPort?: (workspace: Awaited<ReturnType<WorkspaceStore["get"]>>) => EvolutionSourceVerificationPort;
+      trialPort?: EvolutionTrialPort;
     } = {},
   ) {
     this.workerId = options.workerId ?? `evolution-coordinator:${os.hostname()}:${process.pid}`;
     this.statusValue = {
       running: false,
       evaluatorConfigured: Boolean(options.evaluatorProgramPath),
+      evaluationMode: options.evaluatorProgramPath ? "external_adapter" : "unavailable",
+      releaseBlockers: [],
       workspacesScanned: 0,
       reflectionSignalsProcessed: 0,
       dreamPracticesProduced: 0,
@@ -116,6 +121,8 @@ export class EvolutionCoordinator {
     let scopePromotionArtifactsCreated = 0;
     let evaluationJobsProcessed = 0;
     let promotionTransitionsProcessed = 0;
+    const releaseBlockers: EvolutionReleaseBlocker[] = [];
+    let platformTrialConfigured = false;
     const errors: string[] = [];
     const listedWorkspaces = await this.workspaces.list();
     const workspaces = listedWorkspaces.length ? [...listedWorkspaces.slice(this.workspaceCursor % listedWorkspaces.length), ...listedWorkspaces.slice(0, this.workspaceCursor % listedWorkspaces.length)] : [];
@@ -157,6 +164,12 @@ export class EvolutionCoordinator {
       } catch (error) {
         errors.push(`${workspace.id}/promotion: ${safeMessage(error)}`);
       }
+      try {
+        platformTrialConfigured ||= await (this.options.trialPort ?? UNAVAILABLE_EVOLUTION_TRIAL_PORT).available(workspace.id);
+        releaseBlockers.push(...await this.collectReleaseBlockers(workspace));
+      } catch (error) {
+        errors.push(`${workspace.id}/release-readiness: ${safeMessage(error)}`);
+      }
     }
     try {
       scopePromotionArtifactsCreated += await this.runSharedScopePromotions();
@@ -166,6 +179,8 @@ export class EvolutionCoordinator {
     this.statusValue = {
       running: false,
       evaluatorConfigured: Boolean(this.options.evaluatorProgramPath),
+      evaluationMode: platformTrialConfigured ? "platform_trial" : this.options.evaluatorProgramPath ? "external_adapter" : "unavailable",
+      releaseBlockers: releaseBlockers.slice(0, 100),
       lastStartedAt: startedAt,
       lastCompletedAt: this.now().toISOString(),
       ...(errors.length ? { lastError: errors.join("; ").slice(0, 2_000) } : {}),
@@ -409,7 +424,48 @@ export class EvolutionCoordinator {
     );
   }
 
+  private async collectReleaseBlockers(workspace: Awaited<ReturnType<WorkspaceStore["get"]>>): Promise<EvolutionReleaseBlocker[]> {
+    const candidates = this.candidateStore(workspace);
+    const evaluations = new EvolutionEvaluationStore(workspace.id, workspace.rootPath, candidates, () => this.now());
+    const allEvaluations = await evaluations.listEvaluations();
+    const promotions = await evaluations.listPromotions();
+    const activations = await new EvolutionActivationStore(workspace.rootPath, () => this.now()).list();
+    const trialAvailable = await (this.options.trialPort ?? UNAVAILABLE_EVOLUTION_TRIAL_PORT).available(workspace.id);
+    const blockers: EvolutionReleaseBlocker[] = [];
+    for (const candidate of await candidates.list()) {
+      if (["rejected", "superseded"].includes(candidate.status)) continue;
+      const candidateEvaluations = allEvaluations.filter((item) => item.candidateId === candidate.candidateId && item.candidateHash === candidate.contentHash);
+      const candidatePromotions = promotions.filter((item) => item.candidateId === candidate.candidateId && item.toRelease.contentHash === candidate.contentHash && item.status === "active");
+      const production = candidatePromotions.find((item) => item.stage === "production");
+      if (production) {
+        const activation = activations.find((item) => item.promotionId === production.promotionId);
+        if (activation && activation.status === "waiting_for_activation") blockers.push(blocker(workspace.id, candidate, "activation_pending", "Production pointer is waiting for a later Runtime boundary inheritance proof."));
+        continue;
+      }
+      if (candidatePromotions.some((item) => item.stage === "canary")) {
+        blockers.push(blocker(workspace.id, candidate, "canary_telemetry_pending", "Canary is active and requires measured later-task telemetry before Production."));
+        continue;
+      }
+      if (candidatePromotions.some((item) => item.stage === "shadow")) {
+        blockers.push(blocker(workspace.id, candidate, "approval_required", "Shadow passed qualification; a real paired trial and applicable approval policy are required before Canary."));
+        continue;
+      }
+      if (candidateEvaluations.some((item) => item.decision === "pass")) continue;
+      if (candidate.status === "ready_for_eval") {
+        blockers.push(blocker(workspace.id, candidate, trialAvailable || this.options.evaluatorProgramPath ? "evaluation_pending" : "evaluation_executor_unavailable",
+          trialAvailable || this.options.evaluatorProgramPath ? "Evaluation is queued or waiting for its configured adapter." : "No platform paired-trial adapter or external evaluator is available."));
+        continue;
+      }
+      if (candidate.status === "validated") blockers.push(blocker(workspace.id, candidate, "evaluation_plan_missing", "Validated Candidate has no bound EvaluationPlan/EvalSuite and cannot enter Shadow."));
+    }
+    return blockers;
+  }
+
   private now(): Date { return (this.options.now ?? (() => new Date()))(); }
+}
+
+function blocker(workspaceId: string, candidate: EvolutionCandidate, code: EvolutionReleaseBlocker["code"], message: string): EvolutionReleaseBlocker {
+  return { workspaceId, candidateId: candidate.candidateId, kind: candidate.kind, target: candidate.target, status: candidate.status, code, message };
 }
 
 function automationMatches(suite: EvolutionEvalSuite, candidate: EvolutionCandidate): boolean {

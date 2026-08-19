@@ -2522,6 +2522,7 @@ function EvolutionHub(props: {
   const candidates = props.overview?.candidates ?? [];
   const releases = props.overview?.releases ?? [];
   const jobs = props.overview?.evaluationJobs ?? [];
+  const pairedTrials = props.overview?.pairedTrials ?? [];
   const memories = props.overview?.memories ?? [];
   const activations = props.overview?.activations ?? [];
   const inheritanceProofs = props.overview?.inheritanceProofs ?? [];
@@ -2707,11 +2708,18 @@ function EvolutionHub(props: {
             <section className="evolution-panel">
               <header>
                 <div><span className="section-kicker">Evaluation workers</span><h3>隔离评测作业</h3></div>
-                <span className={`evolution-status ${props.overview?.worker.evaluatorConfigured ? "active" : "failed"}`}>
-                  {props.overview?.worker.evaluatorConfigured ? (props.overview.worker.running ? "running" : "ready") : "not configured"}
+                <span className={`evolution-status ${props.overview?.worker.evaluationMode !== "unavailable" ? "active" : "failed"}`}>
+                  {props.overview?.worker.running ? "running" : props.overview?.worker.evaluationMode ?? "unavailable"}
                 </span>
               </header>
               <div className="evolution-list compact">
+                {props.overview?.worker.releaseBlockers.map((item) => (
+                  <article key={`${item.workspaceId}:${item.candidateId}:${item.code}`}>
+                    <div><strong>{item.code}</strong><small>{item.kind} · {item.status}</small></div>
+                    <span className="evolution-status failed">blocked</span>
+                    <p>{item.message}</p>
+                  </article>
+                ))}
                 {jobs.length ? jobs.slice().reverse().map((job) => (
                   <article key={job.jobId}>
                     <div><strong>{job.status}</strong><small>attempt {job.attempts}/{job.maxAttempts}</small></div>
@@ -2720,6 +2728,14 @@ function EvolutionHub(props: {
                     {job.lastError ? <small className="evolution-error">{job.lastError.message}</small> : null}
                   </article>
                 )) : <p className="evolution-empty">没有排队中的隔离评测。</p>}
+                {pairedTrials.slice().reverse().map((trial) => (
+                  <article key={trial.trialId}>
+                    <div><strong>paired real trial</strong><small>{trial.status}</small></div>
+                    <span className={`evolution-status ${trial.status}`}>{trial.status}</span>
+                    <p>{trial.request.candidateId} · {trial.request.cases.length} cases</p>
+                    {trial.lastError ? <small className="evolution-error">{trial.lastError.message}</small> : null}
+                  </article>
+                ))}
               </div>
             </section>
 

@@ -1,6 +1,23 @@
 # Evol 技术债务账本
 
-更新时间：2026-08-15
+更新时间：2026-08-19
+
+## TD-EVOL-EVAL-001：默认发布链依赖外部 evaluator 程序
+
+- 严重度：阻断
+- 当前状态：开放，已进入 P0 实施
+- 现状：`AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM` 是 EvaluationJob 的唯一执行入口；真实 Provider 可以完成任务、反思和候选生成，却不能直接完成评估。Practice-derived Workflow 也不会自动获得 EvalSuite。
+- 风险：平台会把“已生成 validated Candidate”误报为自进化完成；真实用户配置 Provider 后仍无法观察下一任务加载。
+- 临时控制：完成审计已降级为“机制覆盖”，管理面不得把 validated 当作 active Release。
+- 偿还路径：`EvolutionTrialPort` + 平台 paired-task adapter + 自动 EvaluationPlan，详见 `superpowers/plans/2026-08-19-evolution-release-closure-implementation.md`。
+
+## TD-EVOL-EVAL-002：结构资格与效果评估共用 EvaluationRun 语义
+
+- 严重度：高
+- 当前状态：开放
+- 现状：静态格式/安全检查与 baseline/candidate 效果门禁没有独立的领域记录，容易把“能加载”误解为“有效”。
+- 风险：自生成资产可能通过自评或 fixture 直接进入发布阶段。
+- 偿还路径：拆成 Structural Qualification、Paired Real Trial、Canary Telemetry 三类不可互相替代的证据；前者最大只能到 Shadow。
 
 ## TD-EVOL-ARCH-001：Evol 内核仍有平台 Store 依赖
 

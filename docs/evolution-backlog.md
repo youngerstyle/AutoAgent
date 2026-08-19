@@ -1,8 +1,22 @@
 # Evol 待实现清单
 
-更新时间：2026-08-15
+更新时间：2026-08-19
 
 本文件记录已经确认有价值、但尚未达到完成定义的 Evol 能力。条目只有在代码、测试、后续真实生命周期加载证据和文档同时完成后才能移出。
+
+## 默认发布链闭合（P0）
+
+状态：开发中
+
+权威实施计划：`superpowers/plans/2026-08-19-evolution-release-closure-implementation.md`
+
+- 用 `EvolutionTrialPort` 把真实 baseline/candidate 对照任务交给现有三大运行框架；
+- Practice-derived Memory/Prompt/Skill/Workflow 自动形成版本化 EvaluationPlan；
+- 现有 Provider 配置可直接承担试验任务，不再要求额外 evaluator 程序才能前进；
+- 结构校验只允许 Shadow，真实对照效果才允许 Canary，真实 Canary telemetry 才允许 Production；
+- 下一 task/turn/session 必须产生 inheritance proof 后才报告完成。
+
+退出标准：真实 Provider A/B/C/D 项目链在默认本地部署完成学习、试验、Canary、Production 和下一边界继承，或按证据安全失败/回滚。
 
 ## Memory Retrieval V2
 
