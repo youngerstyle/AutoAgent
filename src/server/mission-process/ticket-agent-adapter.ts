@@ -1244,7 +1244,7 @@ function legacyMissionOutcomeInstruction(schemaRef: string, availableCapabilitie
         evidenceRequirements: anchor.evidenceRequirements,
       })) ?? [];
     });
-    return `${base} 输出契约 mission-assurance-v1：按 orderedCheckList 顺序逐项真实验证：${JSON.stringify(orderedChecks)}。全部满足时 domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}，每项 check 对应列表中的同一位置；平台自动绑定 criterion、anchor、satisfied 状态和本 Goal 的真实工具证据。发现已完成上游交付存在可由团队内部返工修复的缺陷时调用 report_goal_correction，只提交 targetTicketId、reason 和 findings:[{summary,details}]；当前 Plan 缺少团队能够执行的必要工作时调用 request_goal_plan_change。若验收缺少不可替代的外部事实、凭证、授权或人工操作，调用 request_human_input 并保持当前 Ticket/Plan blocked；human 明确本轮不提供该输入时，仍应按同一外部阻塞事实重新提交 request_human_input，不得改写成上游缺陷或计划缺口，也不得生成重复纠错、实现或验收工作。不要填写 criterionId、anchorIndex、status 或 evidenceId。`;
+    return `${base} 输出契约 mission-assurance-v1：按 orderedCheckList 顺序逐项真实验证：${JSON.stringify(orderedChecks)}。全部满足时 domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}，每项 check 对应列表中的同一位置；平台自动绑定 criterion、anchor、satisfied 状态和本 Goal 的真实工具证据。工具证据只能证明实际执行并出现在结果中的观察：复合 shell 命令因非零退出或条件链停止后，不得声称未出现在 stdout、stderr 或独立工具结果中的后续步骤已经执行；需要验证成功、预期失败或不同退出码时分别调用 shell。发现已完成上游交付存在可由团队内部返工修复的缺陷时调用 report_goal_correction，只提交 targetTicketId、reason 和 findings:[{summary,details}]；当前 Plan 缺少团队能够执行的必要工作时调用 request_goal_plan_change。若验收缺少不可替代的外部事实、凭证、授权或人工操作，调用 request_human_input 并保持当前 Ticket/Plan blocked；human 明确本轮不提供该输入时，仍应按同一外部阻塞事实重新提交 request_human_input，不得改写成上游缺陷或计划缺口，也不得生成重复纠错、实现或验收工作。不要填写 criterionId、anchorIndex、status 或 evidenceId。`;
   }
   if (assignmentContext?.ticket.permissions?.settleMission) {
     const evidenceMatrix = settlementEvidence

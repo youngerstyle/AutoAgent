@@ -1047,7 +1047,7 @@ async function findListeningPid(port: number): Promise<number | undefined> {
 
 function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
   const shellDescription = process.platform === "win32"
-    ? "在工作区通过 Windows cmd.exe 执行一条已授权命令并等待结束。不要使用 Bash heredoc、mkdir -p、cat 或 PowerShell here-string；创建或修改多行文本文件必须调用 writeFile"
+    ? "在工作区通过 Windows cmd.exe 执行一条已授权命令并等待结束。不要使用 Bash heredoc、mkdir -p、cat 或 PowerShell here-string；创建或修改多行文本文件必须调用 writeFile。同一复合命令会在执行 set 前展开 %VAR%，需要运行期变量时使用 setlocal EnableDelayedExpansion 和 !VAR!，或拆成多次 shell 调用"
     : "在工作区通过 POSIX shell 执行一条已授权命令并等待结束。创建或修改多行文本文件优先调用 writeFile";
   const serviceDescription = process.platform === "win32"
     ? "在工作区通过 Windows cmd.exe 启动一个已授权的后台服务。不要使用 Bash 或 PowerShell 专用语法"
@@ -1088,7 +1088,7 @@ function toolDefinition(name: WorkspaceToolName): AgentToolDefinition {
     },
     shell: {
       name,
-      description: `${shellDescription}。已有一级工具覆盖操作时必须直接调用，不得通过 shell 间接调用 readFile、writeFile、editFile、browser、startService 或 pollProcess`,
+      description: `${shellDescription}。验证不同退出码时分别调用 shell；不要把预期非零步骤放入 && 链后再声称后续命令已执行，只能依据 stdout、stderr 和 exitCode 中实际观察到的步骤形成证据。已有一级工具覆盖操作时必须直接调用，不得通过 shell 间接调用 readFile、writeFile、editFile、browser、startService 或 pollProcess`,
       inputSchema: objectSchema({ command: { type: "string" } }, ["command"]),
     },
     startService: {

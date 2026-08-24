@@ -827,6 +827,8 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("domainOutcome 只提交 {summary,checks:[{verificationBasis,observations}]}");
     expect(instruction).toContain("平台自动绑定 criterion、anchor、satisfied 状态");
     expect(instruction).toContain("本 Goal 的真实工具证据");
+    expect(instruction).toContain("条件链停止后，不得声称");
+    expect(instruction).toContain("需要验证成功、预期失败或不同退出码时分别调用 shell");
     expect(instruction).toContain("verificationBasis");
     expect(instruction).toContain("不要填写 criterionId、anchorIndex、status 或 evidenceId");
     expect(instruction).toContain("可由团队内部返工修复的缺陷时调用 report_goal_correction");

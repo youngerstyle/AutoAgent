@@ -1059,9 +1059,13 @@ describe("AgentToolRuntime", () => {
     const startService = definitions.find((item) => item.name === "startService");
 
     expect(shell?.description).toContain("writeFile");
+    expect(shell?.description).toContain("验证不同退出码时分别调用 shell");
+    expect(shell?.description).toContain("只能依据 stdout、stderr 和 exitCode");
     if (process.platform === "win32") {
       expect(shell?.description).toContain("Windows cmd.exe");
       expect(shell?.description).toContain("不要使用 Bash heredoc");
+      expect(shell?.description).toContain("setlocal EnableDelayedExpansion");
+      expect(shell?.description).toContain("!VAR!");
       expect(startService?.description).toContain("Windows cmd.exe");
     } else {
       expect(shell?.description).toContain("POSIX shell");
