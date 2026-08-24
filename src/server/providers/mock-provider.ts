@@ -27,7 +27,7 @@ export class MockProvider implements AgentModelProvider {
                   ? ["plan:plan"]
                   : profileId === "prof_architect"
                     ? ["architecture:design"]
-                    : profileId === "prof_dev"
+                    : profileId === "prof_dev" || profileId === "prof_dev_integration"
                       ? ["delivery:implement"]
                       : ["delivery:verify"],
             })),

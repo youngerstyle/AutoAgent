@@ -18,6 +18,15 @@ describe("WorkspaceAgent profile identity migration", () => {
     expect(await readJson<WorkspaceAgent | undefined>(file, undefined)).toMatchObject({ profileId: "profile-dev" });
   });
 
+  it("maps a legacy developer to the canonical profile when parallel developer profiles exist", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-profile-canonical-")); const workspace = fixtureWorkspace(root);
+    const file = workspaceAgentFile(root, "legacy-dev"); await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify({ id: "legacy-dev", workspaceId: workspace.id, roleInWorkspace: "dev", agentDir: "agents/legacy-dev", status: "idle" }), "utf8");
+    const parallelProfiles = [profile("prof_dev", "dev"), profile("prof_dev_integration", "dev")];
+    expect(await migrateAndValidateWorkspaceAgentProfiles(workspace, parallelProfiles))
+      .toEqual([expect.objectContaining({ id: "legacy-dev", profileId: "prof_dev" })]);
+  });
+
   it("rejects unknown and duplicate personal identities instead of silently splitting or merging growth", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-agent-profile-invalid-")); const workspace = fixtureWorkspace(root);
     await writeAgent(root, workspace.id, "one", "profile-dev"); await writeAgent(root, workspace.id, "two", "profile-dev");

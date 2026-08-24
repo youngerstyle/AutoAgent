@@ -16,6 +16,8 @@ describe("plan-intent-v1 adapter", () => {
     expect(instruction).toContain("capability");
     expect(instruction).toContain("最多四项合并为一个持久执行 Ticket");
     expect(instruction).toContain("不同 workstream 名称");
+    expect(instruction).toContain("具备 delivery:implement 的成员数量");
+    expect(instruction).toContain("共享文件、接口未稳定或合并风险高时省略 workstream");
     expect(instruction).toContain('todos:[{kind:"architecture"|"implementation",title,objective,successCriteria,workstream?}]');
     expect(instruction).not.toContain("dependencyAdditions");
     expect(instruction).not.toContain("requiredTerminalRefs");

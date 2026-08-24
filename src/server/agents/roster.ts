@@ -45,6 +45,16 @@ export const CORE_AGENT_PROFILES: AgentProfile[] = [
     defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] }
   },
   {
+    id: "prof_dev_integration",
+    name: "集成开发",
+    role: "dev",
+    defaultSkills: ["agent-browser"],
+    capabilities: ["delivery:implement", "代码阅读", "实现修改", "工具执行", "本地验证", "调试定位", "变更说明", "风险反馈", "并行交付", "集成冲突处理"],
+    defaultProvider: "mock",
+    defaultModel: "mock-dev",
+    defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true, enabledTools: ["listFiles", "readFile", "readImage", "writeFile", "editFile", "shell", "startService", "pollProcess", "browser"] }
+  },
+  {
     id: "prof_qa",
     name: "测试",
     role: "qa",
@@ -122,8 +132,9 @@ export async function migrateAndValidateWorkspaceAgentProfiles(workspace: Worksp
     let profileId = raw.profileId;
     if (!profileId) {
       const candidates = profiles.filter((profile) => profile.role === raw.roleInWorkspace);
-      if (candidates.length !== 1) throw new Error(`Legacy Workspace Agent ${raw.id} has no unambiguous AgentProfile mapping`);
-      profileId = candidates[0]!.id;
+      const canonical = candidates.find((profile) => profile.id === `prof_${raw.roleInWorkspace}`);
+      if (candidates.length !== 1 && !canonical) throw new Error(`Legacy Workspace Agent ${raw.id} has no unambiguous AgentProfile mapping`);
+      profileId = (canonical ?? candidates[0])!.id;
       await writeJson(file, { ...raw, profileId });
     }
     if (!known.has(profileId)) throw new Error(`Workspace Agent ${raw.id} references unknown AgentProfile ${profileId}`);

@@ -398,6 +398,7 @@ export class StaffingCoordinator {
           memberCoverage: "每个成员必须声明 capabilityCoverage；平台只验证声明能力属于对应人才档案",
           talentPoolMeaning: "talentPool 是本次可以直接选择并实例化到项目的现有人才，不是尚未招聘的外部候选；需要其中的成员时把对应 profileId 放入 staffed.members",
           missingCapability: "只有 talentPool 中不存在任何能够覆盖所需能力和工具的人才时，才提交 recruitment_required；不得把尚未加入 currentTeam 误判为人才缺口",
+          parallelCapacity: "中大型目标如果存在可由独立 Git worktree 安全拆分的实现边界，应选择至少两名具备 delivery:implement 的长期成员；小型、单文件或强顺序目标可只选择一名。不要为了人数制造伪并行。",
         },
       },
       currentTeam: projectAgents.map((agent) => {
