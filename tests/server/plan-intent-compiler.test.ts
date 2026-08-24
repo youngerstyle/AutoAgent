@@ -156,6 +156,8 @@ describe("compilePlanIntent", () => {
       .toEqual(["todo-02", "todo-03", "todo-04"]);
     expect(change.additions.slice(1, 4).map((node) => node.assignment.principalId))
       .toEqual(["dev", "dev-2", "dev"]);
+    expect(change.additions.slice(0, 4).map((node) => node.workstream))
+      .toEqual([undefined, "frontend", "backend", "frontend"]);
   });
 
   it("treats an unlabelled todo as a global barrier between workstream waves", () => {

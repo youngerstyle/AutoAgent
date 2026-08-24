@@ -15,6 +15,7 @@ import {
   projectWorkspaceLifecycle,
   presentationStatus,
   projectTicketBlocker,
+  projectTicketExecution,
   projectedAgentStatus,
   queuedMessageRoute,
   runtimeTaskStatusFor,
@@ -42,6 +43,46 @@ afterEach(async () => {
 });
 
 describe("RuntimeHost", () => {
+  it("projects durable isolated Attempt state without exposing the worktree path", () => {
+    expect(projectTicketExecution({
+      attemptId: "attempt-visible",
+      attemptNumber: 1,
+      status: "completed",
+      principalId: "principal:dev",
+      startedAt: "2026-08-24T08:00:00.000Z",
+      workspaceBaseline: {
+        baselineId: "baseline",
+        capturedAt: "2026-08-24T08:00:00.000Z",
+        artifactVersion: "before",
+        manifestRef: ".autoagent/baseline.json",
+        isolation: {
+          mode: "git_worktree",
+          rootPath: "C:/private/worktree",
+          branch: "autoagent/attempt/attempt-visible",
+          baseCommit: "a".repeat(40),
+          stateRef: ".autoagent/worktree.json",
+        },
+      },
+      changeSet: {
+        baselineId: "baseline",
+        capturedAt: "2026-08-24T08:00:00.000Z",
+        completedAt: "2026-08-24T08:01:00.000Z",
+        artifactVersion: "after",
+        manifestRef: ".autoagent/result.json",
+        added: [{ path: "src/new.ts", afterSha256: "hash" }],
+        modified: [{ path: "README.md", beforeSha256: "a", afterSha256: "b" }],
+        deleted: [],
+        integration: { status: "integrated", branch: "autoagent/attempt/attempt-visible", baseCommit: "a".repeat(40) },
+      },
+    })).toEqual({
+      attemptId: "attempt-visible",
+      workspaceMode: "git_worktree",
+      workspaceBranch: "autoagent/attempt/attempt-visible",
+      workspaceStatus: "integrated",
+      changedFileCount: 2,
+    });
+  });
+
   it("projects authoritative convergence usage into the task snapshot", async () => {
     const fixture = await createFixture();
     await fixture.host.createTask({ taskId: "task-convergence-projection", title: "收敛投影", objective: "展示预算使用量" });

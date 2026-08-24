@@ -88,6 +88,7 @@ export function materializePlanGraph(input: MaterializePlanGraphInput): Material
       successCriteria: addition.successCriteria.map((item) => item.trim()),
       assignment: cloneAssignment(addition.assignment),
       outputContract: { schemaRef: addition.outputContract.schemaRef.trim() },
+      ...(addition.workstream ? { workstream: addition.workstream.trim() } : {}),
       ...(addition.deliveryIncrement ? { deliveryIncrement: {
         incrementId: addition.deliveryIncrement.incrementId.trim(),
         sequence: addition.deliveryIncrement.sequence,
@@ -312,6 +313,7 @@ function validateDefinition(value: Omit<TicketDefinition, "parentTicketId">, lab
   }
   value.successCriteria.forEach((item, index) => requireText(item, `${label}.successCriteria[${index}]`));
   requireText(value.outputContract.schemaRef, `${label}.outputContract.schemaRef`);
+  if (value.workstream !== undefined) requireText(value.workstream, `${label}.workstream`);
   if (value.assignment.requiredTools !== undefined) {
     if (!Array.isArray(value.assignment.requiredTools)
       || value.assignment.requiredTools.some((tool) => !isKnownToolName(tool))) {

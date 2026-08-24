@@ -97,6 +97,7 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
       successCriteria: materialized.successCriteria,
       assignment: assignmentFor(member, batch.kind === "architecture" ? ["architecture:design"] : ["delivery:implement"]),
       outputContract: { schemaRef: "delivery-v1" },
+      ...(batch.workstream ? { workstream: batch.workstream } : {}),
       deliveryIncrement: increment,
       ...((usesWorkstreams ? batch.kind === "implementation" : index === lastImplementationBatchIndex) && snapshot.missionCriterionIds.length
         ? { missionContribution: { missionCriterionIds: [...snapshot.missionCriterionIds] } }

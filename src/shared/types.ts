@@ -144,7 +144,9 @@ export interface Ticket {
   brief: string;
   expectedArtifact: string;
   targetAgentId?: string;
+  targetAgentName?: string;
   targetRole?: AgentRole;
+  workstream?: string;
   capabilityTags?: string[];
   priority: number;
   attempt: number;
@@ -169,6 +171,11 @@ export interface TicketExecutionState {
   continuationCount?: number;
   lastAssignmentRunId?: string;
   nextRunAfter?: string;
+  attemptId?: string;
+  workspaceMode?: "shared" | "git_worktree";
+  workspaceBranch?: string;
+  workspaceStatus?: "isolated_active" | "integrated" | "no_changes" | "isolated_discarded" | "conflict";
+  changedFileCount?: number;
 }
 
 export interface AgentInboxMessage {

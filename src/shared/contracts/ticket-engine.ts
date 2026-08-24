@@ -43,6 +43,8 @@ export interface TicketDefinition {
   successCriteria: string[];
   assignment: PlannedTicketAssignment;
   outputContract: TicketOutputContract;
+  /** Stable semantic lane used to explain and schedule related delivery work. */
+  workstream?: string;
   deliveryIncrement?: TicketDeliveryIncrement;
   missionContribution?: {
     missionCriterionIds: string[];

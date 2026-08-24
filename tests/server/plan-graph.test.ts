@@ -70,6 +70,17 @@ describe("append-only Plan graph", () => {
       .toThrow(/unknown tool/);
   });
 
+  it("preserves a validated semantic workstream on the materialized Ticket", () => {
+    const input = change(["frontend"]);
+    input.additions[0]!.workstream = "customer-ui";
+    const graph = materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[0] });
+    expect(graph.definitionsByTicketId[ids[0]].workstream).toBe("customer-ui");
+
+    input.additions[0]!.workstream = "   ";
+    expect(() => materializePlanGraph({ planId, change: input, ticketIdFactory: () => ids[1] }))
+      .toThrow(/workstream is required/);
+  });
+
   it("preserves explicit Mission baseline and settlement authority without inferring roles", () => {
     const input = change(["intake", "acceptance"]);
     input.additions[0]!.contextPolicy = { establishesMissionBaseline: true };

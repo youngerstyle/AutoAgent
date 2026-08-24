@@ -11,6 +11,7 @@ export interface TicketInspectorItem {
   resultSummary?: string;
   resultLines: string[];
   relationLines: string[];
+  executionLines: string[];
   rawJson: string;
 }
 
@@ -29,13 +30,39 @@ export function buildTicketInspectorItems(tickets: Ticket[] | undefined): Ticket
       resultSummary: resultView.summary,
       resultLines: resultView.lines,
       relationLines: ticketRelationLines(ticket, labelsById),
+      executionLines: ticketExecutionLines(ticket),
       rawJson: JSON.stringify(ticket, null, 2)
     };
   });
 }
 
 function ticketReadableName(ticket: Ticket): string {
-  return `${ticket.targetRole ? roleLabel(ticket.targetRole) : "团队"}：${assignmentLabel(ticket.type)}`;
+  const owner = ticket.targetAgentName ?? (ticket.targetRole ? roleLabel(ticket.targetRole) : "团队");
+  return `${owner}：${assignmentLabel(ticket.type)}`;
+}
+
+function ticketExecutionLines(ticket: Ticket): string[] {
+  const lines: string[] = [];
+  if (ticket.targetAgentName && ticket.targetRole) lines.push(`固定成员：${ticket.targetAgentName}（${roleLabel(ticket.targetRole)}）`);
+  if (ticket.workstream) lines.push(`工作流：${ticket.workstream}`);
+  const execution = ticket.execution;
+  if (!execution?.attemptId) return lines;
+  lines.push(`Attempt ${ticket.attempt} · ${shortId(execution.attemptId)}`);
+  const changed = execution.changedFileCount === undefined ? "" : ` · ${execution.changedFileCount} 个文件`;
+  const labels: Record<NonNullable<typeof execution.workspaceStatus>, string> = {
+    isolated_active: "隔离执行中，可在重启后继续",
+    integrated: `已合入主工作区${changed}`,
+    no_changes: "已验证，无文件变更",
+    isolated_discarded: `隔离区已清理，未合入${changed}`,
+    conflict: "合并冲突，隔离区已保留",
+  };
+  if (execution.workspaceStatus) lines.push(labels[execution.workspaceStatus]);
+  else if (execution.workspaceMode === "shared") lines.push("共享工作区执行");
+  return lines;
+}
+
+function shortId(value: string): string {
+  return value.length > 8 ? value.slice(0, 8) : value;
 }
 
 function ticketRelationLines(ticket: Ticket, labelsById: Map<string, string>): string[] {

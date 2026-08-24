@@ -24,8 +24,17 @@ describe("ticket inspector", () => {
         type: "implementation",
         status: "running",
         targetRole: "dev",
+        targetAgentName: "开发二组",
+        workstream: "frontend",
         brief: "按计划开发并产出交付物",
-        expectedArtifact: "可运行变更"
+        expectedArtifact: "可运行变更",
+        attempt: 2,
+        execution: {
+          attemptId: "12345678-abcd-4abc-8abc-123456789012",
+          workspaceMode: "git_worktree",
+          workspaceBranch: "autoagent/attempt/12345678-abcd-4abc-8abc-123456789012",
+          workspaceStatus: "isolated_active"
+        }
       })
     ]);
 
@@ -42,10 +51,16 @@ describe("ticket inspector", () => {
     expect(JSON.parse(items[0].rawJson)).toMatchObject({ id: "tk_pm", type: "pm_plan" });
 
     expect(items[1]).toMatchObject({
-      title: "开发：开发执行",
+      title: "开发二组：开发执行",
       statusLabel: "运行中",
       resultSummary: undefined
     });
+    expect(items[1].executionLines).toEqual([
+      "固定成员：开发二组（开发）",
+      "工作流：frontend",
+      "Attempt 2 · 12345678",
+      "隔离执行中，可在重启后继续"
+    ]);
   });
 
   it("keeps blocker details as a readable summary without duplicating raw JSON in the card body", () => {

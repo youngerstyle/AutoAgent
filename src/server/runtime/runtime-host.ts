@@ -17,7 +17,7 @@ import type { AgentMessageAttachment } from "../../shared/contracts/agent-engine
 import type { EvolutionTrialRuntimeContext } from "../../shared/contracts/evolution.js";
 import { AttachmentStore } from "../storage/attachment-store.js";
 import type { ActiveMissionLink, MissionLink, TeamBinding } from "../../shared/contracts/mission-control.js";
-import type { PlanId, PlanPolicyRef, PlannedTicketAssignment, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
+import type { PlanId, PlanPolicyRef, PlannedTicketAssignment, TicketAttempt, TicketRequiredInput } from "../../shared/contracts/ticket-engine.js";
 import { AgentEngine } from "../agent-engine/agent-engine.js";
 import { AgentStore } from "../agent-engine/agent-store.js";
 import { AgentContextAssembler } from "../agent-engine/context-assembler.js";
@@ -922,6 +922,7 @@ export class RuntimeHost {
         ? undefined
         : eligibleMember(mission.record.teamBinding, work.definition.assignment);
       const targetAgent = agents.find((agent) => agent.id === (link?.agentId ?? plannedMember?.agentId));
+      const targetProfile = profiles.find((profile) => profile.id === targetAgent?.profileId);
       const activeAttempt = work.ticket.attempts.find((attempt) => attempt.attemptId === work.ticket.activeAttemptId)
         ?? work.ticket.attempts.at(-1);
       tickets.push({
@@ -934,7 +935,9 @@ export class RuntimeHost {
         brief: work.definition.objective,
         expectedArtifact: work.definition.outputContract.schemaRef,
         targetAgentId: targetAgent?.id,
+        targetAgentName: targetProfile?.name,
         targetRole: targetAgent?.roleInWorkspace,
+        workstream: work.definition.workstream,
         capabilityTags: work.definition.assignment.requiredCapabilities,
         priority: 0,
         attempt: Math.max(1, work.ticket.attempts.length),
@@ -949,6 +952,7 @@ export class RuntimeHost {
                 details: { assignment: work.definition.assignment },
               }
           : undefined,
+        execution: activeAttempt ? projectTicketExecution(activeAttempt) : undefined,
         createdAt: record.createdAt,
         updatedAt: link?.updatedAt ?? record.updatedAt,
       });
@@ -1868,6 +1872,27 @@ function canonicalRuntimeValue(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalRuntimeValue).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalRuntimeValue(item)}`).join(",")}}`;
   return JSON.stringify(value);
+}
+
+export function projectTicketExecution(attempt: TicketAttempt): Ticket["execution"] {
+  const isolation = attempt.workspaceBaseline?.isolation;
+  const integration = attempt.changeSet?.integration;
+  const changedFileCount = attempt.changeSet
+    ? attempt.changeSet.added.length + attempt.changeSet.modified.length + attempt.changeSet.deleted.length
+    : undefined;
+  let workspaceStatus: NonNullable<Ticket["execution"]>["workspaceStatus"];
+  if (integration?.status === "conflict") workspaceStatus = "conflict";
+  else if (integration?.status === "integrated") workspaceStatus = "integrated";
+  else if (integration?.status === "no_changes") workspaceStatus = "no_changes";
+  else if (isolation && attempt.status === "running") workspaceStatus = "isolated_active";
+  else if (isolation) workspaceStatus = "isolated_discarded";
+  return {
+    attemptId: attempt.attemptId,
+    workspaceMode: isolation ? "git_worktree" : "shared",
+    ...(isolation?.branch ? { workspaceBranch: isolation.branch } : {}),
+    ...(workspaceStatus ? { workspaceStatus } : {}),
+    ...(changedFileCount !== undefined ? { changedFileCount } : {}),
+  };
 }
 
 export function queuedMessageRoute(

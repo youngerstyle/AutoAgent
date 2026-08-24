@@ -1215,6 +1215,13 @@ button:disabled {
   font-size: 12px;
 }
 
+.raw-ticket-card .ticket-execution-line {
+  border-radius: 4px;
+  background: #eef6f6;
+  padding: 4px 6px;
+  color: #176666;
+}
+
 .raw-ticket-card p {
   margin: 0;
   color: #26384d;
