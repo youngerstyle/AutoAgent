@@ -261,6 +261,41 @@ describe("MissionProcessManager", () => {
     expect(tickets.map((ticket) => ticket?.status).sort()).toEqual(["ready", "running"]);
   });
 
+  it("dispatches independent ready Tickets concurrently to distinct persistent Agents", async () => {
+    const fixture = await createFixture();
+    const secondDeveloper = { agentId: "dev-2", principalId: "principal-dev-2", capabilities: ["implementation"], enabledTools: [] };
+    fixture.team.members.push(secondDeveloper);
+    fixture.engines.set("dev-2", new AgentEngine<MissionTicketOutcome>(
+      new AgentStore(fixture.root, "dev-2"),
+      new MissionGoalResolutionPort(() => undefined, "dev-2", () => new Date(NOW)),
+      { now: () => new Date(NOW) },
+    ));
+    const definition = createMinimalTeamPlanDefinition(fixture.policy.ref, "build");
+    definition.initialChange = {
+      additions: [{ clientRef: "frontend", principalId: "principal-dev" }, { clientRef: "backend", principalId: "principal-dev-2" }].map((item) => ({
+        clientRef: item.clientRef,
+        title: item.clientRef,
+        objective: `deliver ${item.clientRef}`,
+        successCriteria: [`${item.clientRef} delivered`],
+        assignment: { principalId: item.principalId, requiredCapabilities: ["implementation"] },
+        outputContract: { schemaRef: `${item.clientRef}-v1` },
+      })),
+      dependencyAdditions: [],
+      cancelTicketIds: [],
+      requiredTerminalRefs: [{ clientRef: "frontend" }, { clientRef: "backend" }],
+    };
+    await fixture.manager.startMission({
+      missionId: "mission-a", objective: "build", requestedByPrincipalId: "human", ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: { planDefinition: definition, teamBindingId: fixture.team.teamBindingId },
+    });
+
+    const mission = await fixture.manager.tick();
+
+    expect(mission.links.filter((link) => link.status === "running").map((link) => link.agentId).sort())
+      .toEqual(["dev", "dev-2"]);
+  });
+
   it("rejects a changed TeamBinding when an existing Mission is reopened", async () => {
     const fixture = await createFixture();
     const request = {

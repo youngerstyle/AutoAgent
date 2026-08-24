@@ -47,6 +47,8 @@ describe("versioned plan product data", () => {
     const registry = new PlanDefinitionRegistry(policyRef);
     await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 8, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 8 } });
+    await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 9, teamBindingId: "team-a", objective: "构建坦克大战" }))
+      .resolves.toMatchObject({ teamBindingId: "team-a", planDefinition: { definitionVersion: 9 } });
     await expect(registry.resolve({ templateId: "minimal-team", templateVersion: 6, teamBindingId: "team-a", objective: "构建坦克大战" }))
       .rejects.toThrow("version does not exist");
   });

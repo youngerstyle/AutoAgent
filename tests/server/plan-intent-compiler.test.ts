@@ -123,6 +123,63 @@ describe("compilePlanIntent", () => {
     ]);
   });
 
+  it("compiles independent workstreams as parallel branches with an assurance join", () => {
+    const value: PlanIntent = {
+      rationale: "Build independent frontend and backend slices",
+      todos: [{
+        kind: "architecture", title: "Define boundary", objective: "Define shared contracts", successCriteria: ["Contract is actionable"],
+      }, {
+        kind: "implementation", workstream: "frontend", title: "Build UI", objective: "Implement the UI", successCriteria: ["UI works"],
+      }, {
+        kind: "implementation", workstream: "backend", title: "Build API", objective: "Implement the API", successCriteria: ["API works"],
+      }, {
+        kind: "implementation", workstream: "frontend", title: "Wire UI", objective: "Wire the UI contract", successCriteria: ["UI is wired"],
+      }],
+    };
+
+    const base = snapshot();
+    const firstDeveloper = base.teamMembers.find((member) => member.principalId === "dev")!;
+    base.teamMembers.push({ ...firstDeveloper, principalId: "dev-2" });
+    const change = compilePlanIntent(value, base);
+
+    expect(change.additions.slice(0, -2).map((node) => node.clientRef)).toEqual(["todo-01", "todo-02", "todo-03", "todo-04"]);
+    expect(change.dependencyAdditions).toEqual([
+      { from: { ticketId: sourceTicketId }, to: { clientRef: "todo-01" } },
+      { from: { clientRef: "todo-01" }, to: { clientRef: "todo-02" } },
+      { from: { clientRef: "todo-01" }, to: { clientRef: "todo-03" } },
+      { from: { clientRef: "todo-02" }, to: { clientRef: "todo-04" } },
+      { from: { clientRef: "todo-04" }, to: { clientRef: "assurance" } },
+      { from: { clientRef: "todo-03" }, to: { clientRef: "assurance" } },
+      { from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } },
+    ]);
+    expect(change.additions.filter((node) => node.missionContribution).map((node) => node.clientRef))
+      .toEqual(["todo-02", "todo-03", "todo-04"]);
+    expect(change.additions.slice(1, 4).map((node) => node.assignment.principalId))
+      .toEqual(["dev", "dev-2", "dev"]);
+  });
+
+  it("treats an unlabelled todo as a global barrier between workstream waves", () => {
+    const value: PlanIntent = {
+      rationale: "Build, integrate, then extend",
+      todos: [{ kind: "implementation", workstream: "a", title: "A", objective: "A", successCriteria: ["A"] },
+        { kind: "implementation", workstream: "b", title: "B", objective: "B", successCriteria: ["B"] },
+        { kind: "implementation", title: "Integrate", objective: "Integrate", successCriteria: ["Integrated"] },
+        { kind: "implementation", workstream: "c", title: "C", objective: "C", successCriteria: ["C"] }],
+    };
+    const change = compilePlanIntent(value, snapshot());
+    expect(change.dependencyAdditions).toEqual(expect.arrayContaining([
+      { from: { clientRef: "todo-01" }, to: { clientRef: "todo-03" } },
+      { from: { clientRef: "todo-02" }, to: { clientRef: "todo-03" } },
+      { from: { clientRef: "todo-03" }, to: { clientRef: "todo-04" } },
+    ]));
+  });
+
+  it("rejects workstreams on architecture todos", () => {
+    const value = intent();
+    value.todos[0]!.workstream = "architecture";
+    expect(() => compilePlanIntent(value, snapshot())).toThrow("workstream is only valid for implementation work");
+  });
+
   it("bounds one execution batch to four semantic todos", () => {
     const value = intent();
     value.todos = Array.from({ length: 5 }, (_, index) => ({

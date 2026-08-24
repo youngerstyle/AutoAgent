@@ -95,6 +95,8 @@ export interface PlanTodoIntent {
   title: string;
   objective: string;
   successCriteria: string[];
+  /** Optional semantic lane. Distinct lanes may run concurrently between global barriers. */
+  workstream?: string;
 }
 
 export interface PlannedTicketGraph {

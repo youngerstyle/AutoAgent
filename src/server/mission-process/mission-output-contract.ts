@@ -110,6 +110,7 @@ export function missionCompletionOutcomeSchema(
       title: Type.String({ minLength: 1 }),
       objective: Type.String({ minLength: 1 }),
       successCriteria: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      workstream: Type.Optional(Type.String({ minLength: 1 })),
     }, { additionalProperties: false });
     return Type.Object({
       disposition,
@@ -118,7 +119,7 @@ export function missionCompletionOutcomeSchema(
         rationale: Type.String({ minLength: 1 }),
         todos: Type.Array(todo, {
           minItems: 1,
-          description: "按执行顺序排列的语义工作；连续同 kind 项可由 Plan Compiler 最多四项合并为一个持久执行 Ticket，kind 切换保持独立边界。",
+          description: "语义工作列表；implementation 可用 workstream 声明独立工作流。同一 workstream 保持顺序，不同 workstream 可并行；未标注项与 architecture 是全局有序边界。",
         }),
       }, { additionalProperties: false }),
     }, { additionalProperties: false });

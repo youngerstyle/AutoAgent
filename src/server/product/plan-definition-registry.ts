@@ -7,6 +7,7 @@ import {
   createMinimalTeamPlanDefinition,
   DEFAULT_PLAN_TEMPLATE_ID,
   DEFAULT_PLAN_TEMPLATE_VERSION,
+  SUPPORTED_PLAN_TEMPLATE_VERSIONS,
 } from "./plan-template.js";
 
 export class PlanDefinitionRegistry implements PlanDefinitionRegistryPort {
@@ -19,11 +20,16 @@ export class PlanDefinitionRegistry implements PlanDefinitionRegistryPort {
     objective: string;
   }): Promise<ResolvedMissionStartBundle> {
     if (input.templateId !== DEFAULT_PLAN_TEMPLATE_ID) throw new Error("Plan template does not exist");
-    if (input.templateVersion !== undefined && input.templateVersion !== DEFAULT_PLAN_TEMPLATE_VERSION) {
+    const templateVersion = input.templateVersion ?? DEFAULT_PLAN_TEMPLATE_VERSION;
+    if (!SUPPORTED_PLAN_TEMPLATE_VERSIONS.includes(templateVersion as (typeof SUPPORTED_PLAN_TEMPLATE_VERSIONS)[number])) {
       throw new Error("Plan template version does not exist");
     }
     return {
-      planDefinition: createMinimalTeamPlanDefinition(this.policyRef, input.objective),
+      planDefinition: createMinimalTeamPlanDefinition(
+        this.policyRef,
+        input.objective,
+        templateVersion as (typeof SUPPORTED_PLAN_TEMPLATE_VERSIONS)[number],
+      ),
       teamBindingId: input.teamBindingId,
     };
   }

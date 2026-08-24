@@ -43,7 +43,8 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     throw new PlanIntentError("intent.todos must contain at least one implementation todo");
   }
 
-  const implementationMember = memberForCapabilities(snapshot, ["delivery:implement"]);
+  const implementationMembers = membersForCapabilities(snapshot, ["delivery:implement"]);
+  const implementationMember = implementationMembers[0];
   const assuranceMember = memberForCapabilities(snapshot, ["delivery:verify"]);
   const terminalCapabilities = snapshot.requiredTerminalCapabilities.length
     ? snapshot.requiredTerminalCapabilities
@@ -67,14 +68,27 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     validateTodo(todo, index);
   }
   const batches = batchConsecutiveTodos(intent.todos);
+  const usesWorkstreams = batches.some((batch) => batch.workstream !== undefined);
   const todoRefs = batches.map((batch) => `todo-${String(batch.startIndex + 1).padStart(2, "0")}`);
   let lastImplementationBatchIndex = -1;
   for (const [index, batch] of batches.entries()) {
     if (batch.kind === "implementation") lastImplementationBatchIndex = index;
   }
 
+  const workstreamAssignments = new Map<string, PlanCompilerSnapshot["teamMembers"][number] | undefined>();
+  let nextWorkstreamMember = 0;
   for (const [index, batch] of batches.entries()) {
-    const member = batch.kind === "architecture" ? architectureMember! : implementationMember;
+    let member: PlanCompilerSnapshot["teamMembers"][number] | undefined = batch.kind === "architecture"
+      ? architectureMember
+      : implementationMember;
+    if (batch.kind === "implementation" && batch.workstream) {
+      if (!workstreamAssignments.has(batch.workstream)) {
+        workstreamAssignments.set(batch.workstream, implementationMembers.length
+          ? implementationMembers[nextWorkstreamMember++ % implementationMembers.length]
+          : undefined);
+      }
+      member = workstreamAssignments.get(batch.workstream);
+    }
     const materialized = materializeTodoBatch(batch);
     additions.push({
       clientRef: todoRefs[index]!,
@@ -84,7 +98,7 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
       assignment: assignmentFor(member, batch.kind === "architecture" ? ["architecture:design"] : ["delivery:implement"]),
       outputContract: { schemaRef: "delivery-v1" },
       deliveryIncrement: increment,
-      ...(index === lastImplementationBatchIndex && snapshot.missionCriterionIds.length
+      ...((usesWorkstreams ? batch.kind === "implementation" : index === lastImplementationBatchIndex) && snapshot.missionCriterionIds.length
         ? { missionContribution: { missionCriterionIds: [...snapshot.missionCriterionIds] } }
         : {}),
     });
@@ -115,12 +129,16 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     { ticketId: snapshot.sourceTicketId },
     ...exitsOfLatestIncrement(snapshot, existingIncrements),
   ];
-  const firstRef = todoRefs[0]!;
-  for (const gate of gates) dependencyAdditions.push({ from: gate, to: { clientRef: firstRef } });
-  for (let index = 1; index < todoRefs.length; index += 1) {
-    dependencyAdditions.push({ from: { clientRef: todoRefs[index - 1]! }, to: { clientRef: todoRefs[index]! } });
+  if (usesWorkstreams) {
+    dependencyAdditions.push(...compileWorkstreamDependencies(batches, todoRefs, gates));
+  } else {
+    const firstRef = todoRefs[0]!;
+    for (const gate of gates) dependencyAdditions.push({ from: gate, to: { clientRef: firstRef } });
+    for (let index = 1; index < todoRefs.length; index += 1) {
+      dependencyAdditions.push({ from: { clientRef: todoRefs[index - 1]! }, to: { clientRef: todoRefs[index]! } });
+    }
+    dependencyAdditions.push({ from: { clientRef: todoRefs.at(-1)! }, to: { clientRef: "assurance" } });
   }
-  dependencyAdditions.push({ from: { clientRef: todoRefs.at(-1)! }, to: { clientRef: "assurance" } });
   dependencyAdditions.push({ from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } });
 
   const failureResolutions = compileHistoricalFailureResolutions(snapshot, additions);
@@ -149,6 +167,14 @@ function memberForCapabilities(
   requiredCapabilities: string[],
 ): PlanCompilerSnapshot["teamMembers"][number] | undefined {
   return snapshot.teamMembers.find((candidate) =>
+    requiredCapabilities.every((capability) => candidate.capabilities.includes(capability)));
+}
+
+function membersForCapabilities(
+  snapshot: PlanCompilerSnapshot,
+  requiredCapabilities: string[],
+): PlanCompilerSnapshot["teamMembers"] {
+  return snapshot.teamMembers.filter((candidate) =>
     requiredCapabilities.every((capability) => candidate.capabilities.includes(capability)));
 }
 
@@ -265,25 +291,70 @@ function validateTodo(todo: PlanIntent["todos"][number], index: number): void {
     throw new PlanIntentError(`${label}.successCriteria must not be empty`);
   }
   todo.successCriteria.forEach((criterion) => requireText(criterion, `${label}.successCriteria`));
+  if (todo.workstream !== undefined) requireText(todo.workstream, `${label}.workstream`);
+  if (todo.kind === "architecture" && todo.workstream !== undefined) {
+    throw new PlanIntentError(`${label}.workstream is only valid for implementation work`);
+  }
 }
 
 interface TodoBatch {
   kind: PlanIntent["todos"][number]["kind"];
   startIndex: number;
   todos: PlanIntent["todos"];
+  workstream?: string;
 }
 
 function batchConsecutiveTodos(todos: PlanIntent["todos"]): TodoBatch[] {
   const batches: TodoBatch[] = [];
   for (const [index, todo] of todos.entries()) {
     const current = batches.at(-1);
-    if (current?.kind === todo.kind && current.todos.length < MAX_TODOS_PER_EXECUTION_BATCH) {
+    const workstream = todo.workstream?.trim();
+    if (current?.kind === todo.kind && current.workstream === workstream && current.todos.length < MAX_TODOS_PER_EXECUTION_BATCH) {
       current.todos.push(todo);
     } else {
-      batches.push({ kind: todo.kind, startIndex: index, todos: [todo] });
+      batches.push({ kind: todo.kind, startIndex: index, todos: [todo], ...(workstream ? { workstream } : {}) });
     }
   }
   return batches;
+}
+
+function compileWorkstreamDependencies(
+  batches: TodoBatch[],
+  todoRefs: string[],
+  gates: PlanTicketRef[],
+): PlanChangeSet["dependencyAdditions"] {
+  const edges: PlanChangeSet["dependencyAdditions"] = [];
+  let barrier: PlanTicketRef[] = [...gates];
+  const streamTails = new Map<string, PlanTicketRef>();
+  for (const [index, batch] of batches.entries()) {
+    const current = { clientRef: todoRefs[index]! };
+    if (batch.kind === "architecture" || !batch.workstream) {
+      for (const predecessor of uniqueRefs([...barrier, ...streamTails.values()])) {
+        edges.push({ from: predecessor, to: current });
+      }
+      streamTails.clear();
+      barrier = [current];
+      continue;
+    }
+    const predecessor = streamTails.get(batch.workstream);
+    for (const dependency of predecessor ? [predecessor] : barrier) {
+      edges.push({ from: dependency, to: current });
+    }
+    streamTails.set(batch.workstream, current);
+  }
+  const exits = streamTails.size > 0 ? [...streamTails.values()] : barrier;
+  for (const exit of uniqueRefs(exits)) edges.push({ from: exit, to: { clientRef: "assurance" } });
+  return edges;
+}
+
+function uniqueRefs(refs: PlanTicketRef[]): PlanTicketRef[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = JSON.stringify(ref);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function materializeTodoBatch(batch: TodoBatch): Pick<PlanIntent["todos"][number], "title" | "objective" | "successCriteria"> {

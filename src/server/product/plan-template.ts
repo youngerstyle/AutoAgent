@@ -1,13 +1,19 @@
 import type { PlanDefinition, PlanPolicyRef } from "../../shared/contracts/ticket-engine.js";
 
 export const DEFAULT_PLAN_TEMPLATE_ID = "minimal-team";
-export const DEFAULT_PLAN_TEMPLATE_VERSION = 8;
+export const DEFAULT_PLAN_TEMPLATE_VERSION = 9;
+export const SUPPORTED_PLAN_TEMPLATE_VERSIONS = [8, DEFAULT_PLAN_TEMPLATE_VERSION] as const;
 
-export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, originalRequest: string): PlanDefinition {
+export function createMinimalTeamPlanDefinition(
+  policyRef: PlanPolicyRef,
+  originalRequest: string,
+  definitionVersion: (typeof SUPPORTED_PLAN_TEMPLATE_VERSIONS)[number] = DEFAULT_PLAN_TEMPLATE_VERSION,
+): PlanDefinition {
   if (!originalRequest.trim()) throw new Error("Mission original request is required");
+  if (!SUPPORTED_PLAN_TEMPLATE_VERSIONS.includes(definitionVersion)) throw new Error("Plan template version does not exist");
   return {
     definitionId: DEFAULT_PLAN_TEMPLATE_ID,
-    definitionVersion: DEFAULT_PLAN_TEMPLATE_VERSION,
+    definitionVersion,
     policyRef,
     plannerAssignment: { requiredCapabilities: ["plan:plan"] },
     amendmentTemplate: {
@@ -43,6 +49,9 @@ export function createMinimalTeamPlanDefinition(policyRef: PlanPolicyRef, origin
             "新增交付链包含实现、必要验证和最终可验收终点",
             "提交前按目标规模、不确定性、依赖和验收风险审查交付策略；单次增量必须说明为何可可靠交付，否则拆成按依赖自动衔接、各自可验证的多个增量",
             "只提交业务意图，不生成 Ticket ID、依赖边、增量序号或终点引用",
+            ...(definitionVersion >= 9
+              ? ["识别可安全并行的独立实现工作流；只有彼此不依赖且能从同一已完成边界开始时才使用不同 workstream"]
+              : []),
           ],
           assignment: { requiredCapabilities: ["plan:plan"] },
           outputContract: { schemaRef: "plan-intent-v1" },
