@@ -369,9 +369,14 @@ describe("evolution evaluation and promotion gate", () => {
       riskLevel: "low", proposedBy: { type: "human", id: "governor" },
     });
     const baselineLifecycle = await promoteLocalAssetToProduction(root, candidates, baseline, "memory-baseline");
-    expect(((await runPiAgentAndReadEvolutionContext(root, "memory-baseline-turn")).evolutionMemories as Array<{ releaseId: string }>)).toEqual([
+    const baselineContext = await runPiAgentAndReadEvolutionContext(root, "memory-baseline-turn", [], undefined, {
+      objective: "Handle a transient provider failure with the correct retry procedure",
+      successCriteria: ["Confirm the provider failure is retryable before retrying"],
+    });
+    expect((baselineContext.evolutionMemories as Array<{ releaseId: string }>)).toEqual([
       expect.objectContaining({ releaseId: baselineLifecycle.production.toRelease.id }),
     ]);
+    expect(baselineContext.evolutionMemoryRetrieval).toMatchObject({ policyVersion: "memory-retrieval/v2", queryPresent: true });
 
     const evolved = (await new MemoryConsolidator("workspace-a", experience, candidates).consolidate(2)).candidates[0]!;
     expect(evolved).toMatchObject({ kind: "memory", target, proposedBy: { type: "system", id: "memory-consolidator/v1" } });
@@ -642,15 +647,24 @@ async function runPiAgentAndReadEvolutionContext(
   scopeId: string,
   capabilities: AgentProfile["capabilities"] = [],
   observedTools?: string[][],
+  goalQuery?: { objective: string; successCriteria: string[] },
 ): Promise<Record<string, unknown>> {
   const profile = { ...runtimeProfile(), capabilities };
   const agent = runtimeAgent();
   const store = new AgentStore(root, agent.id);
   const engine = new AgentEngine(store);
   const thread = await engine.ensureThread({ agentId: agent.id, scopeId, idempotencyKey: scopeId });
+  const goal = goalQuery ? await engine.startGoal({
+    agentId: agent.id, threadId: thread.threadId, idempotencyKey: `goal-${scopeId}`,
+    spec: {
+      id: `goal-${scopeId}`, threadId: thread.threadId, objective: goalQuery.objective,
+      successCriteria: goalQuery.successCriteria, contextRefs: [], createdAt: "2026-08-14T00:09:00.000Z",
+    },
+  }) : undefined;
   const messageId = `message-${scopeId}`;
   await engine.sendMessage({
     messageId, turnId: `turn-${scopeId}`, threadId: thread.threadId, senderPrincipalId: "human",
+    ...(goal ? { goalId: goal.spec.id } : {}),
     content: "Inspect the current evidence context.", createdAt: "2026-08-14T00:10:00.000Z",
   });
   const policy = {
@@ -670,9 +684,10 @@ async function runPiAgentAndReadEvolutionContext(
   try {
     const result = await runtime.runSlice({
       threadId: thread.threadId, turnId: `turn-${scopeId}`, triggerMessageId: messageId,
+      ...(goal ? { goalId: goal.spec.id } : {}),
       profile, agent, policy, provider: "mock", model: "mock",
     });
-    expect(result.status).toBe("waiting");
+    if (!goal) expect(result.status).toBe("waiting");
     const recordedTraces = await traces.list(thread.threadId);
     const contextTrace = recordedTraces.find((trace) => trace.kind === "context"
       && typeof trace.data === "object" && trace.data !== null && "evolutionReleases" in trace.data);

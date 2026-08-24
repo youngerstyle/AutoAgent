@@ -27,7 +27,7 @@ export class EvolutionAgentRuntimeAdapter implements AgentEvolutionRuntimePort {
 
   async project(input: Parameters<AgentEvolutionRuntimePort["project"]>[0]) {
     return runtimeEvolutionProjection(this.workspaceRoot, input.workspaceId, input.profile, input.agent, {
-      assignmentKey: input.assignmentKey, taskType: input.taskType, tools: input.tools,
+      assignmentKey: input.assignmentKey, taskType: input.taskType, objective: input.objective, constraints: input.constraints, tools: input.tools,
       organizationMemorySources: await this.options.organizationMemorySources?.() ?? [],
       sharedReleaseSources: await this.options.sharedEvolutionLayerSources?.(input.profile.id) ?? [],
     });

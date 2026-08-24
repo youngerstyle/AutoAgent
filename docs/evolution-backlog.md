@@ -1,12 +1,12 @@
 # Evol 待实现清单
 
-更新时间：2026-08-19
+更新时间：2026-08-24
 
 本文件记录已经确认有价值、但尚未达到完成定义的 Evol 能力。条目只有在代码、测试、后续真实生命周期加载证据和文档同时完成后才能移出。
 
 ## 默认发布链闭合（P0）
 
-状态：开发中
+状态：核心 Workflow 默认链已完成；Memory/Prompt/Skill 的资产专属 trial override 仍待完成
 
 权威实施计划：`superpowers/plans/2026-08-19-evolution-release-closure-implementation.md`
 
@@ -20,16 +20,16 @@
 
 ## Memory Retrieval V2
 
-状态：待实现
+状态：本地 V2 基线已实现；可选 embedding 与大规模离线 replay 待增强
 
 目标：在 V1 硬约束与可解释评分之上，引入与当前任务内容相关的检索，但继续保持私有化、本地优先、可禁用和可审计。
 
-- 为 Runtime context 增加规范化的 task objective、约束和关键实体输入；
-- 提供本地 lexical/BM25 baseline，不依赖外部 SaaS；
+- [x] 为 Runtime context 增加来自持久化 Goal 的 task objective 与 success criteria；
+- [x] 提供确定性的本地中英文 lexical/BM25 baseline，不依赖外部 SaaS；
 - embedding 作为可选本地 Provider adapter，未配置时不得影响 Evol 健康状态；
-- 对候选做语义相关度评分，并记录 query、模型/索引版本和分数组件；
-- 使用 MMR 或等价方法控制重复内容与覆盖多样性；
-- 从固定 `top 20` 升级为 token budget packing，超预算时给出未选择原因；
+- [x] 对候选做 lexical 相关度评分，并记录 query hash、策略版本和分数组件；
+- [x] 使用 MMR 控制近重复内容与覆盖多样性；
+- [x] 从固定 `top 20` 升级为 token budget packing，记录截断和未选择原因；
 - 将负面适用条件和冲突关系作为硬过滤，不交给相似度分数覆盖；
 - 建立离线 replay suite，比较任务成功、召回、误注入、token 成本与稳定性。
 

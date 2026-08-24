@@ -215,6 +215,8 @@ export class StaffingCoordinator {
       supportsImages: modelRuntime.supportsImages,
       thinkingLevel: modelRuntime.thinkingLevel,
       taskType: "staffing",
+      objective: request.objective,
+      constraints: ["Return a valid staffing outcome without exceeding the approved company and workspace scope"],
     });
     request = await this.requireRequest(taskId);
     if (request.proposal) return { request, outcome: request.proposal };

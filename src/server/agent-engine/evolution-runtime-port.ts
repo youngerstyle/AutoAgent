@@ -20,6 +20,8 @@ export interface AgentEvolutionRuntimePort {
     agent: WorkspaceAgent;
     assignmentKey: string;
     taskType?: string;
+    objective?: string;
+    constraints?: string[];
     tools: string[];
   }): Promise<RuntimeEvolutionProjection>;
   agentTools(input: { enabled: boolean; agentId: string }): ToolDefinition[];

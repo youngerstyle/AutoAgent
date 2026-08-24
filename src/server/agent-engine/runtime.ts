@@ -18,6 +18,8 @@ export interface AgentExecutionSliceInput {
   supportsImages?: boolean;
   thinkingLevel?: ModelThinkingLevel;
   taskType?: string;
+  objective?: string;
+  constraints?: string[];
 }
 
 export interface AgentExecutionSliceResult {

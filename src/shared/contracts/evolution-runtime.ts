@@ -18,6 +18,22 @@ export interface RuntimeEvolutionMemory {
   target: string; content: string; releaseId: string; releaseVersion: string; contentHash: string;
   generation: number; stage: "canary" | "production"; ownerLevel: EvolutionOwnerLevel;
   sourceWorkspaceId?: string; layer?: "workspace" | "organization"; selection: MemorySelectionExplanation;
+  injectionContent?: string;
+  retrieval?: {
+    policyVersion: "memory-retrieval/v2"; queryHash: string; bm25Score: number; normalizedRelevance: number;
+    lifecycleScore: number; combinedScore: number; redundancyPenalty: number;
+    estimatedTokens: number; injectedTokens: number; truncated: boolean;
+  };
+}
+
+export interface MemoryRetrievalTrace {
+  policyVersion: "memory-retrieval/v2";
+  queryHash: string;
+  queryPresent: boolean;
+  tokenBudget: number;
+  usedTokens: number;
+  selectedReleaseIds: string[];
+  excluded: Array<{ releaseId: string; reason: "lexical_irrelevant" | "redundant" | "token_budget" }>;
 }
 
 export interface RuntimeEvolutionExtension {
@@ -62,11 +78,13 @@ export interface RuntimeEvolutionProjection {
   prompts: RuntimeEvolutionPrompt[]; agentProfiles: RuntimeEvolutionAgentProfile[];
   canaryReleases: Array<{ target: string; releaseId: string; contentHash: string }>;
   canaryAssignments: Array<{ target: string; promotionId: string; releaseId: string; selected: boolean }>;
-  organizationConflicts: string[]; resolvedReleases: RuntimeEvolutionResolvedRelease[]; snapshotHash: string;
+  organizationConflicts: string[]; resolvedReleases: RuntimeEvolutionResolvedRelease[];
+  memoryRetrieval: MemoryRetrievalTrace; snapshotHash: string;
 }
 
 export const EMPTY_RUNTIME_EVOLUTION_PROJECTION: RuntimeEvolutionProjection = {
   skills: [], memories: [], plugins: [], harnesses: [], prompts: [], agentProfiles: [],
   canaryReleases: [], canaryAssignments: [], organizationConflicts: [], resolvedReleases: [],
+  memoryRetrieval: { policyVersion: "memory-retrieval/v2", queryHash: "none", queryPresent: false, tokenBudget: 0, usedTokens: 0, selectedReleaseIds: [], excluded: [] },
   snapshotHash: "disabled",
 };

@@ -1,23 +1,21 @@
 # Evol 技术债务账本
 
-更新时间：2026-08-19
+更新时间：2026-08-24
 
 ## TD-EVOL-EVAL-001：默认发布链依赖外部 evaluator 程序
 
 - 严重度：阻断
-- 当前状态：开放，已进入 P0 实施
-- 现状：`AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM` 是 EvaluationJob 的唯一执行入口；真实 Provider 可以完成任务、反思和候选生成，却不能直接完成评估。Practice-derived Workflow 也不会自动获得 EvalSuite。
-- 风险：平台会把“已生成 validated Candidate”误报为自进化完成；真实用户配置 Provider 后仍无法观察下一任务加载。
-- 临时控制：完成审计已降级为“机制覆盖”，管理面不得把 validated 当作 active Release。
-- 偿还路径：`EvolutionTrialPort` + 平台 paired-task adapter + 自动 EvaluationPlan，详见 `superpowers/plans/2026-08-19-evolution-release-closure-implementation.md`。
+- 当前状态：已偿还并通过真实 Provider 验收
+- 原问题：`AUTOAGENT_EVOLUTION_EVALUATOR_PROGRAM` 曾是 EvaluationJob 的唯一执行入口；真实 Provider 可以完成任务、反思和候选生成，却不能直接完成评估。
+- 已偿还：默认链使用 `EvolutionTrialPort`、平台 paired-task adapter 和自动 EvaluationPlan，把 baseline/candidate 交给现有 Runtime/Mission/Ticket/Agent 执行；外部 evaluator 只保留为可选适配器。健康接口明确报告 `platform_trial | external_adapter | unavailable`，validated Candidate 不会被误报为 active Release。
+- 验收证据：真实 Provider 已完成 paired trial、Canary telemetry、Production 和下一边界继承，详见 `superpowers/plans/2026-08-19-evolution-release-closure-implementation.md`。
 
 ## TD-EVOL-EVAL-002：结构资格与效果评估共用 EvaluationRun 语义
 
 - 严重度：高
-- 当前状态：开放
-- 现状：静态格式/安全检查与 baseline/candidate 效果门禁没有独立的领域记录，容易把“能加载”误解为“有效”。
-- 风险：自生成资产可能通过自评或 fixture 直接进入发布阶段。
-- 偿还路径：拆成 Structural Qualification、Paired Real Trial、Canary Telemetry 三类不可互相替代的证据；前者最大只能到 Shadow。
+- 当前状态：已偿还
+- 原问题：静态格式/安全检查与 baseline/candidate 效果门禁曾共用 EvaluationRun 语义，容易把“能加载”误解为“有效”。
+- 已偿还：Candidate validation/Structural Qualification、immutable Paired Trial/EvaluationRun、Canary Telemetry 已分账；结构资格最大只能进入 Shadow，Paired Trial 才能进入 Canary，独立线上 telemetry 才能进入 Production。qualification 流量也被排除在 Experience/Dream 学习源之外。
 
 ## TD-EVOL-EVAL-003：Provider 价格不可用时缺少 USD 成本事实
 
@@ -46,20 +44,17 @@
 ## TD-EVOL-MEM-001：Runtime 缺少任务正文相关度
 
 - 严重度：高
-- 当前状态：开放
-- 现状：Memory Selection V1 只有 scope、效果、样本置信度、时间衰减和 Canary 探索；`RuntimeEvolutionContext` 只有 task type 与 tools，没有规范化 objective。
-- 风险：不同 target 的 Memory 即使与当前任务无关，也可能因历史表现较好进入前 20。
-- 临时控制：严格 scope 硬过滤、最多 20 条、完整选择 trace。
-- 偿还路径：Evol 待实现清单中的 Memory Retrieval V2。
+- 当前状态：已偿还（本地检索基线）
+- 原问题：Memory Selection V1 只有 scope、效果、样本置信度、时间衰减和 Canary 探索；`RuntimeEvolutionContext` 没有任务正文。
+- 已偿还：Runtime 从当前持久化 Goal 注入 objective 与 success criteria；通过 scope/lifecycle/release 硬门禁后的候选使用本地、确定性的中英文 BM25 计算正文相关度。检索 query hash、BM25、归一化相关度、生命周期分、组合分及未入选原因写入 context trace 和 snapshot hash；没有任务 query 时确定性回退生命周期评分。
+- 后续增强：可选本地 embedding adapter 和离线大规模 replay 继续记录在 `evolution-backlog.md`，未配置 embedding 不影响健康状态。
 
 ## TD-EVOL-MEM-002：固定条数而非 Token Budget
 
 - 严重度：中
-- 当前状态：开放
-- 现状：Runtime 最多选择 20 条，每条系统提示最多截取 8,000 字符。
-- 风险：上下文成本不可预测，长 Memory 可能挤压任务上下文。
-- 临时控制：单条截断和总条数上限。
-- 偿还路径：加入总 token budget、单条预算、边际价值排序和未选原因。
+- 当前状态：已偿还
+- 原问题：Runtime 最多选择 20 条，每条系统提示最多截取 8,000 字符，上下文成本不可预测。
+- 已偿还：Memory Retrieval V2 使用默认 6,000 token 总预算、单条最多 2,000 token 和固定标题开销；按 BM25、生命周期效果和 MMR 边际价值确定顺序，可在剩余预算内确定性截断。trace 记录预算、实际使用量、截断和 `lexical_irrelevant | redundant | token_budget` 未选原因。
 
 ## TD-EVOL-MEM-003：时间评分使用会话构建时钟
 
@@ -83,10 +78,10 @@
 
 - 严重度：高
 - 当前状态：部分缓解
-- 现状：同 target 的跨组织内容冲突会 fail closed，但不同 target 的同义、包含或矛盾 Memory 尚不能识别。
+- 现状：同 target 的跨组织内容冲突会 fail closed；Memory Retrieval V2 已用 lexical token Jaccard/MMR 抑制不同 target 的近重复内容，但语义同义、包含关系和矛盾 Memory 尚不能可靠识别。
 - 风险：重复注入浪费上下文；矛盾建议可能同时进入提示。
 - 临时控制：同 target 覆盖规则、组织冲突隔离、人工评审和数量上限。
-- 偿还路径：本地索引、内容簇、MMR、多条冲突图与显式人工裁决。
+- 偿还路径：补充可选本地 embedding、内容簇、多条冲突图与显式人工裁决。
 
 ## TD-EVOL-REFLECT-001：时间顺序不是因果证明
 
@@ -154,11 +149,11 @@
 ## TD-EVOL-TRIAL-005：回放上下文截断与 target outcome 错绑
 
 - 严重度：高
-- 当前状态：已偿还，待 v5 全组复验
+- 当前状态：已偿还并通过 v5/v6 全组复验
 - 现状：非 target case 曾对 `{source, assertions}` 的完整 JSON 直接做 24k 字符截断，可能得到无效 JSON 并截掉位于末尾的 assertions。target assessment 又曾强制要求整个通用 Mission `completed`，即使候选专属 Practice 已完整满足冻结断言，也会被下游无关 planning/staffing 缺口判失败。
 - 风险：回归 Agent 看不到完整评估合同；target 将 harness 的后续计划能力错误归因给候选 Practice，产生资源浪费和假阴性。
 - 已偿还：Ticket source 只回放正式 baseline、Ticket definition、完成摘要和 residual risks；过大来源使用带 sourceRef 的合法 JSON excerpt，assertions 永远保留。target candidate success 只依赖冻结 Candidate binding、权威 `evolution-practice-result-v1` 执行 handoff 与 assertion 命中；baseline 仍要求自身任务完成，regression/safety 始终要求整个任务完成。
-- 复验要求：v5 证明 objective 可解析、assertions 完整、target candidate=true/baseline=false，且 regression/safety 任务终态不受该放宽影响。
+- 复验结果：v5/v6 objective 均为可解析的有界 JSON，assertions 完整；target candidate=true/baseline=false，regression/safety baseline 与 candidate 均形成正常终态。历史失败 Trial 保持不可变。
 
 ## TD-EVOL-TRIAL-006：Practice 权威证据存在合法布局差异
 
@@ -198,8 +193,8 @@
 ## TD-STAFFING-PLAN-001：Plan Compiler 把人员空缺误判为计划不可执行
 
 - 严重度：高
-- 当前状态：已偿还，待 EvalSuite v6 复验
+- 当前状态：已偿还并通过 EvalSuite v6 复验
 - 现状：Plan Compiler 曾对 implementation、independent verification、final acceptance 和可选 architecture 都调用 `memberForCapabilities`，当前 team snapshot 缺少对应成员就直接拒绝 PlanIntent。真实 paired 并发中，同一成员被另一 arm 使用或新项目尚未招聘时，候选任务因此阻塞。
 - 风险：规划阶段和供给阶段耦合；项目不能先表达需要什么能力再由 Mission Control 招聘，造成并发假失败，也会诱导把招聘错误提升成“第五运行框架”。
 - 已偿还：若 snapshot 中已有匹配成员，Plan 继续冻结 principalId 与 tools；若没有，只写 requiredCapabilities，不伪造 principal。后续 Ticket ready/running 边界由现有 Mission Control -> StaffingRequest -> Organization & Talent 适配器补齐人员。
-- 复验要求：全新/并发 Mission 在缺少 delivery:implement、delivery:verify 或 delivery:accept 成员时仍能生成 DAG；Staffing 随后产生可审计供给事实，且无能力成员不会越权执行。
+- 复验结果：EvalSuite v6 的六个真实 Provider arm 均通过计划编译与 Staffing，回归/安全两组 baseline/candidate 全部成功；缺能力时先生成 capability-based DAG，再由 Staffing 补充可审计供给，无能力成员仍不能越权执行。

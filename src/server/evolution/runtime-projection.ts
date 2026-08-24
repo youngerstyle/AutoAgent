@@ -4,12 +4,12 @@ import path from "node:path";
 import type { ActiveReleasePointer, EvolutionAgentProfileArtifact, EvolutionOwnerLevel, EvolutionScope, MemoryLifecycleState, PluginArtifactManifest, SkillArtifactManifest } from "../../shared/contracts/evolution.js";
 import type { AgentProfile, WorkspaceAgent } from "../../shared/types.js";
 import type {
-  MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
+  MemoryRetrievalTrace, MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
   RuntimeEvolutionMemory, RuntimeEvolutionProjection, RuntimeEvolutionPrompt, RuntimeEvolutionResolvedRelease,
   RuntimeEvolutionSkill, SharedEvolutionLayerSource,
 } from "../../shared/contracts/evolution-runtime.js";
 export type {
-  MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
+  MemoryRetrievalTrace, MemorySelectionExplanation, OrganizationMemorySource, RuntimeEvolutionAgentProfile, RuntimeEvolutionExtension,
   RuntimeEvolutionMemory, RuntimeEvolutionProjection, RuntimeEvolutionPrompt, RuntimeEvolutionResolvedRelease,
   RuntimeEvolutionSkill, SharedEvolutionLayerSource,
 } from "../../shared/contracts/evolution-runtime.js";
@@ -37,6 +37,8 @@ interface ReleaseManifest {
 export interface RuntimeEvolutionContext {
   assignmentKey: string;
   taskType?: string;
+  objective?: string;
+  constraints?: string[];
   tools?: string[];
   organizationMemorySources?: OrganizationMemorySource[];
   sharedReleaseSources?: SharedEvolutionLayerSource[];
@@ -124,7 +126,7 @@ export async function productionEvolutionMemories(
   agent: WorkspaceAgent,
   context?: Omit<RuntimeEvolutionContext, "assignmentKey">,
 ): Promise<RuntimeEvolutionMemory[]> {
-  return evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context);
+  return rankEvolutionMemories(await evolutionMemoriesForStage(workspaceRoot, workspaceId, profile, agent, "production", undefined, context));
 }
 
 export async function productionEvolutionExtensions(
@@ -220,7 +222,7 @@ async function evolutionMemoriesForStage(
       ...(organizationSource ? { sourceWorkspaceId: storageWorkspaceId, layer: "organization" as const } : {}),
     });
   }
-  return rankEvolutionMemories(resolveEvolutionLayers(projected, (item) => item.target));
+  return resolveEvolutionLayers(projected, (item) => item.target);
 }
 
 async function evolutionDeclarativeAssetsForStage(
@@ -329,7 +331,11 @@ export async function runtimeEvolutionProjection(
   const productionMemories = resolveEvolutionLayers([...organizationMemories, ...sharedSets.flatMap((item) => item.memories), ...localProductionMemories], (item) => item.target);
   const canaryAssignments = await matchingCanaryAssignments(workspaceRoot, workspaceId, profile, agent, context);
   const skills = resolveEvolutionLayers([...productionSkills, ...canarySkills], (item) => item.name);
-  const memories = rankEvolutionMemories(resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target));
+  const memoryRetrieval = retrieveEvolutionMemories(
+    resolveEvolutionLayers([...productionMemories, ...canaryMemories], (item) => item.target),
+    { objective: context.objective, taskType: context.taskType, constraints: context.constraints },
+  );
+  const memories = memoryRetrieval.memories;
   const extensions = resolveEvolutionLayers([...productionExtensions, ...canaryExtensions], (item) => `${item.kind}:${item.name}`);
   const prompts = resolveEvolutionLayers([...productionDeclarative.prompts, ...canaryDeclarative.prompts], (item) => item.target);
   const agentProfiles = resolveEvolutionLayers([...productionDeclarative.agentProfiles, ...canaryDeclarative.agentProfiles], (item) => item.target);
@@ -342,7 +348,8 @@ export async function runtimeEvolutionProjection(
   ].sort((left, right) => `${left.assetKind}:${left.target}:${left.ownerLevel}`.localeCompare(`${right.assetKind}:${right.target}:${right.ownerLevel}`));
   const snapshotHash = hash(canonical({
     workspaceId, profileId: profile.id, resolvedReleases, organizationConflicts,
-    memorySelections: memories.map((item) => ({ releaseId: item.releaseId, selection: item.selection })),
+    memorySelections: memories.map((item) => ({ releaseId: item.releaseId, selection: item.selection, retrieval: item.retrieval })),
+    memoryRetrieval: memoryRetrieval.trace,
   }));
   return {
     skills,
@@ -361,6 +368,7 @@ export async function runtimeEvolutionProjection(
     canaryAssignments,
     organizationConflicts,
     resolvedReleases,
+    memoryRetrieval: memoryRetrieval.trace,
     snapshotHash,
   };
 }
@@ -523,6 +531,161 @@ export function rankEvolutionMemories(memories: RuntimeEvolutionMemory[], limit 
     || left.target.localeCompare(right.target)
     || left.releaseId.localeCompare(right.releaseId)).slice(0, limit);
 }
+
+const DEFAULT_MEMORY_TOKEN_BUDGET = 6_000;
+const MAX_MEMORY_TOKENS = 2_000;
+const MIN_MEMORY_TOKENS = 64;
+
+/**
+ * Local, deterministic retrieval over memories that already passed ownership,
+ * scope, lifecycle and release gates. BM25 cannot grant access; it only ranks
+ * the authorized candidate set. MMR reduces near-duplicate prompt injection,
+ * and packing is bounded by one explicit token budget.
+ */
+export function retrieveEvolutionMemories(
+  memories: RuntimeEvolutionMemory[],
+  input: { objective?: string; taskType?: string; constraints?: string[]; tokenBudget?: number },
+): { memories: RuntimeEvolutionMemory[]; trace: MemoryRetrievalTrace } {
+  const tokenBudget = input.tokenBudget ?? DEFAULT_MEMORY_TOKEN_BUDGET;
+  if (!Number.isSafeInteger(tokenBudget) || tokenBudget < MIN_MEMORY_TOKENS) throw new Error("Memory retrieval token budget is invalid");
+  const query = [input.taskType, input.objective, ...(input.constraints ?? [])].filter((item): item is string => Boolean(item?.trim())).join("\n").normalize("NFKC").trim();
+  const queryTokens = lexicalTokens(query);
+  const queryHash = query ? hash(query) : "none";
+  const documents = memories.map((memory) => lexicalTokens(`${memory.target}\n${memory.content}`));
+  const bm25Scores = queryTokens.length ? bm25(queryTokens, documents) : memories.map(() => 0);
+  const maximumBm25 = Math.max(0, ...bm25Scores);
+  const candidates = memories.map((memory, index) => {
+    const normalizedRelevance = maximumBm25 > 0 ? bm25Scores[index]! / maximumBm25 : 0;
+    const combinedScore = queryTokens.length
+      ? (memory.selection.score * 0.55) + (normalizedRelevance * 0.45)
+      : memory.selection.score;
+    return { memory, tokens: new Set(documents[index]), bm25Score: bm25Scores[index]!, normalizedRelevance, combinedScore };
+  });
+  const excluded: MemoryRetrievalTrace["excluded"] = [];
+  let remaining = candidates.filter((candidate) => {
+    if (queryTokens.length && candidate.bm25Score <= 0) {
+      excluded.push({ releaseId: candidate.memory.releaseId, reason: "lexical_irrelevant" });
+      return false;
+    }
+    return true;
+  });
+  const selected: RuntimeEvolutionMemory[] = [];
+  const selectedTokens: Set<string>[] = [];
+  let usedTokens = 0;
+  while (remaining.length) {
+    const ranked = remaining.map((candidate) => {
+      const redundancyPenalty = selectedTokens.length ? Math.max(...selectedTokens.map((tokens) => jaccard(candidate.tokens, tokens))) : 0;
+      return { ...candidate, redundancyPenalty, mmrScore: (candidate.combinedScore * 0.8) - (redundancyPenalty * 0.2) };
+    }).sort((left, right) => right.mmrScore - left.mmrScore
+      || right.combinedScore - left.combinedScore
+      || left.memory.target.localeCompare(right.memory.target)
+      || left.memory.releaseId.localeCompare(right.memory.releaseId));
+    const candidate = ranked[0]!;
+    remaining = remaining.filter((item) => item.memory.releaseId !== candidate.memory.releaseId);
+    if (candidate.redundancyPenalty >= 0.92) {
+      excluded.push({ releaseId: candidate.memory.releaseId, reason: "redundant" });
+      continue;
+    }
+    const available = tokenBudget - usedTokens - 24;
+    if (available < MIN_MEMORY_TOKENS) {
+      excluded.push({ releaseId: candidate.memory.releaseId, reason: "token_budget" });
+      continue;
+    }
+    const estimatedTokens = estimateTokens(candidate.memory.content);
+    const injectionContent = truncateToTokenBudget(candidate.memory.content, Math.min(MAX_MEMORY_TOKENS, available));
+    const injectedTokens = estimateTokens(injectionContent) + 24;
+    selected.push({
+      ...candidate.memory,
+      injectionContent,
+      retrieval: {
+        policyVersion: "memory-retrieval/v2", queryHash,
+        bm25Score: rounded(candidate.bm25Score), normalizedRelevance: rounded(candidate.normalizedRelevance),
+        lifecycleScore: candidate.memory.selection.score, combinedScore: rounded(candidate.combinedScore),
+        redundancyPenalty: rounded(candidate.redundancyPenalty), estimatedTokens, injectedTokens,
+        truncated: injectionContent.length < candidate.memory.content.length,
+      },
+    });
+    selectedTokens.push(candidate.tokens);
+    usedTokens += injectedTokens;
+  }
+  return {
+    memories: selected,
+    trace: {
+      policyVersion: "memory-retrieval/v2", queryHash, queryPresent: Boolean(queryTokens.length), tokenBudget, usedTokens,
+      selectedReleaseIds: selected.map((memory) => memory.releaseId),
+      excluded: excluded.sort((left, right) => left.releaseId.localeCompare(right.releaseId) || left.reason.localeCompare(right.reason)),
+    },
+  };
+}
+
+function bm25(query: string[], documents: string[][]): number[] {
+  if (!documents.length) return [];
+  const averageLength = documents.reduce((total, document) => total + document.length, 0) / documents.length || 1;
+  const documentFrequency = new Map<string, number>();
+  for (const document of documents) for (const term of new Set(document)) documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
+  const terms = [...new Set(query)];
+  return documents.map((document) => {
+    const frequencies = new Map<string, number>();
+    for (const term of document) frequencies.set(term, (frequencies.get(term) ?? 0) + 1);
+    return terms.reduce((score, term) => {
+      const frequency = frequencies.get(term) ?? 0;
+      if (!frequency) return score;
+      const containing = documentFrequency.get(term) ?? 0;
+      const inverseDocumentFrequency = Math.log(1 + ((documents.length - containing + 0.5) / (containing + 0.5)));
+      const denominator = frequency + 1.2 * (0.25 + 0.75 * (document.length / averageLength));
+      return score + inverseDocumentFrequency * ((frequency * 2.2) / denominator);
+    }, 0);
+  });
+}
+
+function lexicalTokens(value: string): string[] {
+  const normalized = value.normalize("NFKC").toLocaleLowerCase();
+  const tokens: string[] = [];
+  const stopwords = new Set(["a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with"]);
+  for (const match of normalized.matchAll(/[\p{L}\p{N}]+/gu)) {
+    const term = match[0];
+    if (/^[\p{Script=Han}]+$/u.test(term)) {
+      const characters = [...term];
+      tokens.push(...characters);
+      for (let index = 0; index + 1 < characters.length; index += 1) tokens.push(`${characters[index]}${characters[index + 1]}`);
+    } else if (!stopwords.has(term)) tokens.push(term);
+  }
+  return tokens;
+}
+
+function estimateTokens(value: string): number {
+  let units = 0;
+  for (const character of value) units += characterTokenUnits(character);
+  return Math.max(1, Math.ceil(units));
+}
+
+function truncateToTokenBudget(value: string, budget: number): string {
+  if (estimateTokens(value) <= budget) return value;
+  let result = "";
+  let units = 0;
+  for (const character of value) {
+    const nextUnits = units + characterTokenUnits(character);
+    if (Math.ceil(nextUnits) > budget - 1) break;
+    result += character;
+    units = nextUnits;
+  }
+  return `${result.trimEnd()}…`;
+}
+
+function characterTokenUnits(character: string): number {
+  if (/\s/u.test(character)) return 0;
+  if (/\p{Script=Han}/u.test(character)) return 1;
+  return character.codePointAt(0)! <= 0x7f ? 0.25 : 0.5;
+}
+
+function jaccard(left: Set<string>, right: Set<string>): number {
+  if (!left.size && !right.size) return 1;
+  let intersection = 0;
+  for (const token of left) if (right.has(token)) intersection += 1;
+  return intersection / (left.size + right.size - intersection);
+}
+
+function rounded(value: number): number { return Number(value.toFixed(6)); }
 
 export function explainMemorySelection(
   ownerLevel: EvolutionOwnerLevel,
