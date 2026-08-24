@@ -14,6 +14,8 @@ describe("plan-intent-v1 adapter", () => {
     const instruction = missionOutcomeInstruction("plan-intent-v1", ["code:write", "test:verify"], [], link.ticketId, plan);
     expect(instruction).toContain("TodoList");
     expect(instruction).toContain("capability");
+    expect(instruction).toContain("最多把四项合并为一个持久执行 Ticket");
+    expect(instruction).toContain("kind 切换仍是独立有序边界");
     expect(instruction).toContain('todos:[{kind:"architecture"|"implementation",title,objective,successCriteria}]');
     expect(instruction).not.toContain("dependencyAdditions");
     expect(instruction).not.toContain("requiredTerminalRefs");

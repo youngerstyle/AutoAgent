@@ -26,6 +26,7 @@
     "test:process:recovery": "npm run build && node scripts/verify-process-recovery.mjs",
     "verify:autonomous-closure": "npm run build && node scripts/verify-autonomous-runtime-closure.mjs",
     "verify:plan-convergence": "npm run build && node scripts/verify-plan-convergence-closure.mjs",
+    "verify:plan-throughput": "npm run build && node scripts/verify-plan-throughput-batching.mjs",
     "verify:linux-node": "node scripts/verify-linux-node.mjs",
     "typecheck": "tsc --noEmit"
   },

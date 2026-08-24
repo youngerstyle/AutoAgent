@@ -53,6 +53,95 @@ describe("compilePlanIntent", () => {
     expect(() => compilePlanIntent(value, base)).not.toThrow();
   });
 
+  it("batches consecutive same-owner implementation todos into one durable execution boundary", () => {
+    const value = intent();
+    value.todos.push({
+      kind: "implementation",
+      title: "Add runtime integration",
+      objective: "Wire the delivery into the runtime",
+      successCriteria: ["Runtime uses the delivery"],
+    }, {
+      kind: "implementation",
+      title: "Add atomic admission",
+      objective: "Guard authoritative command paths",
+      successCriteria: ["Admission is atomic"],
+    }, {
+      kind: "implementation",
+      title: "Document operations",
+      objective: "Record the recovery procedure",
+      successCriteria: ["Recovery steps are actionable"],
+    });
+
+    const change = compilePlanIntent(value, snapshot());
+    const implementation = change.additions.find((node) => node.clientRef === "todo-02");
+
+    expect(change.additions.map((node) => node.clientRef)).toEqual([
+      "todo-01", "todo-02", "assurance", "acceptance",
+    ]);
+    expect(implementation).toMatchObject({
+      title: "Implementation batch: Build the delivery · Add runtime integration · Add atomic admission · Document operations",
+      objective: expect.stringContaining("1. Build the delivery: Implement the user-visible product"),
+      successCriteria: [
+        "[Build the delivery] The product runs and can be independently verified",
+        "[Add runtime integration] Runtime uses the delivery",
+        "[Add atomic admission] Admission is atomic",
+        "[Document operations] Recovery steps are actionable",
+      ],
+      assignment: { principalId: "dev", requiredCapabilities: ["delivery:implement"] },
+      missionContribution: { missionCriterionIds: ["criterion-a", "criterion-b"] },
+    });
+    expect(change.dependencyAdditions).toEqual([
+      { from: { ticketId: sourceTicketId }, to: { clientRef: "todo-01" } },
+      { from: { clientRef: "todo-01" }, to: { clientRef: "todo-02" } },
+      { from: { clientRef: "todo-02" }, to: { clientRef: "assurance" } },
+      { from: { clientRef: "assurance" }, to: { clientRef: "acceptance" } },
+    ]);
+    expect(2 + change.additions.length).toBe(6);
+  });
+
+  it("keeps role transitions as separate ordered execution boundaries", () => {
+    const value = intent();
+    value.todos.push({
+      kind: "architecture",
+      title: "Review the integration boundary",
+      objective: "Review architecture after implementation",
+      successCriteria: ["Boundary review is recorded"],
+    }, {
+      kind: "implementation",
+      title: "Apply the boundary review",
+      objective: "Implement the reviewed changes",
+      successCriteria: ["Reviewed changes are implemented"],
+    });
+
+    const change = compilePlanIntent(value, snapshot());
+
+    expect(change.additions.slice(0, -2).map((node) => ({ ref: node.clientRef, capability: node.assignment.requiredCapabilities?.[0] }))).toEqual([
+      { ref: "todo-01", capability: "architecture:design" },
+      { ref: "todo-02", capability: "delivery:implement" },
+      { ref: "todo-03", capability: "architecture:design" },
+      { ref: "todo-04", capability: "delivery:implement" },
+    ]);
+  });
+
+  it("bounds one execution batch to four semantic todos", () => {
+    const value = intent();
+    value.todos = Array.from({ length: 5 }, (_, index) => ({
+      kind: "implementation" as const,
+      title: `Implementation ${index + 1}`,
+      objective: `Complete implementation ${index + 1}`,
+      successCriteria: [`Implementation ${index + 1} works`],
+    }));
+
+    const change = compilePlanIntent(value, snapshot());
+
+    expect(change.additions.map((node) => node.clientRef)).toEqual([
+      "todo-01", "todo-05", "assurance", "acceptance",
+    ]);
+    expect(change.additions[0]?.successCriteria).toHaveLength(4);
+    expect(change.additions[1]?.successCriteria).toHaveLength(1);
+    expect(change.additions[1]?.missionContribution).toEqual({ missionCriterionIds: ["criterion-a", "criterion-b"] });
+  });
+
   it("rejects a list with no implementation work", () => {
     const value = intent();
     value.todos = value.todos.filter((todo) => todo.kind === "architecture");

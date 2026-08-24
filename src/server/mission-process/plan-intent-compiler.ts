@@ -31,6 +31,8 @@ export interface PlanCompilerSnapshot {
 
 export class PlanIntentError extends Error {}
 
+const MAX_TODOS_PER_EXECUTION_BATCH = 4;
+
 /** Compile Mission work intent into the graph shape accepted by Ticket Engine. */
 export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnapshot): PlanChangeSet {
   requireText(intent.rationale, "intent.rationale");
@@ -61,24 +63,28 @@ export function compilePlanIntent(intent: PlanIntent, snapshot: PlanCompilerSnap
     title: `Verified delivery ${nextSequence}`,
     objective: intent.rationale.trim(),
   };
-  const todoRefs = intent.todos.map((_todo, index) => `todo-${String(index + 1).padStart(2, "0")}`);
-  let lastImplementationIndex = -1;
-  for (const [index, todo] of intent.todos.entries()) {
-    if (todo.kind === "implementation") lastImplementationIndex = index;
-  }
-
   for (const [index, todo] of intent.todos.entries()) {
     validateTodo(todo, index);
-    const member = todo.kind === "architecture" ? architectureMember! : implementationMember;
+  }
+  const batches = batchConsecutiveTodos(intent.todos);
+  const todoRefs = batches.map((batch) => `todo-${String(batch.startIndex + 1).padStart(2, "0")}`);
+  let lastImplementationBatchIndex = -1;
+  for (const [index, batch] of batches.entries()) {
+    if (batch.kind === "implementation") lastImplementationBatchIndex = index;
+  }
+
+  for (const [index, batch] of batches.entries()) {
+    const member = batch.kind === "architecture" ? architectureMember! : implementationMember;
+    const materialized = materializeTodoBatch(batch);
     additions.push({
       clientRef: todoRefs[index]!,
-      title: todo.title.trim(),
-      objective: todo.objective.trim(),
-      successCriteria: todo.successCriteria.map((item) => item.trim()),
-      assignment: assignmentFor(member, todo.kind === "architecture" ? ["architecture:design"] : ["delivery:implement"]),
+      title: materialized.title,
+      objective: materialized.objective,
+      successCriteria: materialized.successCriteria,
+      assignment: assignmentFor(member, batch.kind === "architecture" ? ["architecture:design"] : ["delivery:implement"]),
       outputContract: { schemaRef: "delivery-v1" },
       deliveryIncrement: increment,
-      ...(index === lastImplementationIndex && snapshot.missionCriterionIds.length
+      ...(index === lastImplementationBatchIndex && snapshot.missionCriterionIds.length
         ? { missionContribution: { missionCriterionIds: [...snapshot.missionCriterionIds] } }
         : {}),
     });
@@ -259,6 +265,46 @@ function validateTodo(todo: PlanIntent["todos"][number], index: number): void {
     throw new PlanIntentError(`${label}.successCriteria must not be empty`);
   }
   todo.successCriteria.forEach((criterion) => requireText(criterion, `${label}.successCriteria`));
+}
+
+interface TodoBatch {
+  kind: PlanIntent["todos"][number]["kind"];
+  startIndex: number;
+  todos: PlanIntent["todos"];
+}
+
+function batchConsecutiveTodos(todos: PlanIntent["todos"]): TodoBatch[] {
+  const batches: TodoBatch[] = [];
+  for (const [index, todo] of todos.entries()) {
+    const current = batches.at(-1);
+    if (current?.kind === todo.kind && current.todos.length < MAX_TODOS_PER_EXECUTION_BATCH) {
+      current.todos.push(todo);
+    } else {
+      batches.push({ kind: todo.kind, startIndex: index, todos: [todo] });
+    }
+  }
+  return batches;
+}
+
+function materializeTodoBatch(batch: TodoBatch): Pick<PlanIntent["todos"][number], "title" | "objective" | "successCriteria"> {
+  if (batch.todos.length === 1) {
+    const todo = batch.todos[0]!;
+    return {
+      title: todo.title.trim(),
+      objective: todo.objective.trim(),
+      successCriteria: todo.successCriteria.map((item) => item.trim()),
+    };
+  }
+
+  const label = batch.kind === "architecture" ? "Architecture batch" : "Implementation batch";
+  return {
+    title: `${label}: ${batch.todos.map((todo) => todo.title.trim()).join(" · ")}`,
+    objective: batch.todos
+      .map((todo, index) => `${index + 1}. ${todo.title.trim()}: ${todo.objective.trim()}`)
+      .join("\n"),
+    successCriteria: batch.todos.flatMap((todo) => todo.successCriteria
+      .map((criterion) => `[${todo.title.trim()}] ${criterion.trim()}`)),
+  };
 }
 
 function dedupeEdges(edges: PlanChangeSet["dependencyAdditions"]): PlanChangeSet["dependencyAdditions"] {

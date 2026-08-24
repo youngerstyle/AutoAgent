@@ -116,7 +116,10 @@ export function missionCompletionOutcomeSchema(
       summary: Type.Optional(Type.String()),
       intent: Type.Object({
         rationale: Type.String({ minLength: 1 }),
-        todos: Type.Array(todo, { minItems: 1 }),
+        todos: Type.Array(todo, {
+          minItems: 1,
+          description: "按执行顺序排列的语义工作；连续同 kind 项可由 Plan Compiler 最多四项合并为一个持久执行 Ticket，kind 切换保持独立边界。",
+        }),
       }, { additionalProperties: false }),
     }, { additionalProperties: false });
   }

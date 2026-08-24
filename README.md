@@ -123,6 +123,8 @@ OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent �
 
 每个项目同一时间只允许一个活跃 `TaskRun`。
 
+Plan Compiler 会把规划结果中的连续同角色语义 Todo 最多四项合并为一个持久执行 Ticket，同时保留每项 objective 和 success criteria。角色切换、独立质量验证和最终验收仍是有序边界。当前所有成员共享项目工作区，因此系统不会让多个写入型 Goal 在同一工作区并发执行；真正的并行交付需要先提供每 Ticket 独立分支或 worktree 以及可验证的合并流程。
+
 每个 Plan 还持久化独立的收敛预算。产品默认最多 64 张 Ticket、8 次正式采纳的 Plan 修订；Workflow 可以通过 `convergenceLimits` 覆盖。修订请求本身只占用 Ticket 容量，只有成功的 `apply_change` 才增加正式修订计数。预算耗尽时原命令不会改变 Plan 或 Ticket，Mission 会把当前执行持久化为由 planner 负责的阻塞状态并禁止自动重试；运行台直接展示权威 Ticket 容量和修订使用量。旧版 Plan 没有该字段时保留现有图，从首次迁移后的正式修订开始计数。
 
 ## 安全策略
@@ -139,10 +141,12 @@ npm.cmd run test:e2e
 npm.cmd run typecheck
 npm.cmd run build
 npm.cmd run verify:plan-convergence
+npm.cmd run verify:plan-throughput
 ```
 
 E2E 测试会创建项目，通过 HTTP API 跑完整模拟团队流程，验证 Ticket DAG、Agent Goal、私聊隔离和完成后的权威快照。
 `verify:plan-convergence` 会强制耗尽两类预算，并验证类型化拒绝、状态不变、幂等重放和重启稳定性。
+`verify:plan-throughput` 会重放 Challenge 02 的一项架构加四项连续实现意图，验证执行边界从旧结构的 9 张 Ticket 降到 6 张，同时验证五项连续工作会按四项上限拆批。
 
 ## 当前边界
 

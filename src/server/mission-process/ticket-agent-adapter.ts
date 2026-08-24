@@ -1173,7 +1173,7 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
     };
     const ticketCriteria = assignmentContext?.ticket.successCriteria ?? [];
     const goalEnvelope = `[current-ticket]\noutput-schema=plan-intent-v1\nsettle-mission=false\n[/current-ticket]\n成功标准：\n${ticketCriteria.map((criterion) => `- ${criterion}`).join("\n")}\n`;
-    return `${goalEnvelope}当前 Goal 是规划工作。规划上下文：${JSON.stringify(planningContext)}。像负责人写 TodoList 一样，只描述真正需要完成的业务工作，不要填写平台控制字段。完成时 domainOutcome 只提交 {intent:{rationale,todos:[{kind:"architecture"|"implementation",title,objective,successCriteria}]}}。todos 按执行顺序排列；仅在确实需要先形成技术方案时加入 architecture，至少包含一项 implementation。不要创建 QA 或最终验收 Todo：Plan Compiler 会固定追加独立验证和最终验收，并负责成员分配、工具权限、输出契约、Mission 标准覆盖、依赖、增量、Ticket ID 和终点。不要生成 capability、tool、schemaRef、criterionIndex、evidenceId、permissions 或 dependsOn。缺少不可替代外部输入时调用 request_human_input 进入 blocked，不要编造补充事实。`;
+    return `${goalEnvelope}当前 Goal 是规划工作。规划上下文：${JSON.stringify(planningContext)}。像负责人写 TodoList 一样，只描述真正需要完成的业务工作，不要填写平台控制字段。完成时 domainOutcome 只提交 {intent:{rationale,todos:[{kind:"architecture"|"implementation",title,objective,successCriteria}]}}。todos 按执行顺序排列；仅在确实需要先形成技术方案时加入 architecture，至少包含一项 implementation。连续同 kind 的 Todo 表示同一成员可连续完成的语义工作；Plan Compiler 会在保留每项 objective 和 successCriteria 的前提下，最多把四项合并为一个持久执行 Ticket，kind 切换仍是独立有序边界。不要创建 QA 或最终验收 Todo：Plan Compiler 会固定追加独立验证和最终验收，并负责成员分配、工具权限、输出契约、Mission 标准覆盖、依赖、增量、Ticket ID 和终点。不要生成 capability、tool、schemaRef、criterionIndex、evidenceId、permissions 或 dependsOn。缺少不可替代外部输入时调用 request_human_input 进入 blocked，不要编造补充事实。`;
   }
   const domainGuidance = legacyMissionOutcomeInstruction(
     schemaRef,
