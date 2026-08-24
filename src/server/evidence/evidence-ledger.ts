@@ -20,6 +20,7 @@ export class EvidenceLedger {
   }
   async get(evidenceId: string): Promise<EvidenceFact | undefined> { const fact = (await this.readAll()).get(evidenceId); return fact ? structuredClone(fact) : undefined; }
   async getMany(evidenceIds: readonly string[]): Promise<Map<string, EvidenceFact>> { const facts = await this.readAll(); return new Map(evidenceIds.flatMap((id) => facts.has(id) ? [[id, structuredClone(facts.get(id)!)] as const] : [])); }
+  async list(): Promise<EvidenceFact[]> { return [...(await this.readAll()).values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.evidenceId.localeCompare(right.evidenceId)).map((fact) => structuredClone(fact)); }
   async listForGoal(input: { agentId: string; goalId: string; attemptId?: string }): Promise<EvidenceFact[]> { return [...(await this.readAll()).values()].filter((fact) => fact.agentId === input.agentId && fact.goalId === input.goalId).filter((fact) => !input.attemptId || fact.attemptId === input.attemptId).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.evidenceId.localeCompare(right.evidenceId)).map((fact) => structuredClone(fact)); }
   private async readAll(): Promise<Map<string, EvidenceFact>> {
     await this.writeTail; let info: Awaited<ReturnType<typeof stat>>; try { info = await stat(this.filePath); } catch { return new Map(); }

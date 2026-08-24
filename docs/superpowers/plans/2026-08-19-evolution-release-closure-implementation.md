@@ -25,6 +25,7 @@
 - EvalSuite v5 证明有界回放合同生效，并暴露 Plan/Staffing 的职责倒置：Plan Compiler 曾要求当前 team snapshot 已有 implementation/verification/acceptance 人员，否则拒绝形成 DAG；并发 arm 因人员正忙而出现假失败。现改为已有合适成员时冻结 principal/tools，没有成员时只声明 requiredCapabilities，由 Mission Control 的 StaffingRequest 正常复用或招聘。这不增加第五框架，Organization & Talent 仍是 Mission Control 的供给适配器。
 - EvalSuite v6 的六个真实 Provider arm 全部形成终态，回归/安全 baseline 与 candidate 均成功，candidate 的 token proxy 资源成本和延迟均优于 baseline；正式 gate 仍 fail-closed，因为 Practice 的平台 evidenceId 使用了评估器未识别的合法 handoff 布局。评估器现同时验证顶层和 concrete result 内的 `authoritativeEvidence[{ evidenceId }]`，grader 升级为 v2，旧 Evaluation `eval_c241421c81c448ff` 保留不可变审计。
 - 发布门禁已按职责分层：paired trial 证明冻结候选在历史目标和 sealed holdout 上有收益；后续 Canary 只验证真实流量中的安全、质量/成功率非回退及资源/延迟预算，不要求五对小样本再次达到离线 minimumDelta。否则会把同质量安全 rollout 误判为无效，同时混淆 efficacy 与 rollout guardrail。
+- Paired trial 文件面已完成物理隔离：每个 generation 从同一冻结 snapshot 派生六个独立 arm root；Runtime/Mission/Ticket/Agent/Staffing/Evidence 状态不再写入原项目或另一 arm。终态先汇聚每个 arm 的完整 Evidence Ledger 和 generation manifest/hash，再释放 host 并清理副本；重启从 dispatch 账本中的 arm root 恢复。
 - 招聘不提升为第五运行框架：Organization & Talent 保持业务域，`StaffingRequest` 是 Mission Control 的供给/恢复协议；本期不扩招聘实现。
 
 ## 实施顺序
@@ -74,7 +75,7 @@ Paired target case 的收益判定也已收紧：baseline/candidate 都到达 `c
 - [x] 终态 Trial task 重启不复活；终态历史保持冷加载且 scheduler 不重开 Mission；
 - [x] Staffing 跨实例并发写入使用共享原子 update，失败 generation 可自动 transient retry；
 - [x] qualification Episode 不再进入 Experience/Dream；污染候选保留失败审计但取消其试验任务；
-- [x] focused tests、116 files / 819 tests full suite、typecheck、production build 通过；
+- [x] focused tests、116 files / 822 tests full suite、typecheck、production build 通过；
 - [x] EvalSuite v2 对 revision 5 形成正式 fail Evaluation `eval_922196a8fdc4479c`；失败原因是跨角色确认超出单一 Ticket 授权，未误晋升；
 - [x] 平台原生 revision 6 `evo_a27181e7b91b4a9b` 使用 EvalSuite v3 完成 paired trial 和正式 fail Evaluation `eval_61e62e1299304a1a`：回归/安全组全部成功，目标组因 Practice handoff 未绑定 criterion-level Evidence 而未提升，且资源成本门禁正确拒绝；
 - [x] revision 7 `evo_54e8a29410844147` 已由 compiler 自动形成并通过结构验证；它要求 Practice Ticket 以当前 Goal/attempt 的只读平台 evidenceId 锚定权威 handoff；

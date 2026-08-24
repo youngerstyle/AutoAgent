@@ -136,11 +136,11 @@
 ## TD-EVOL-TRIAL-003：Paired arms 共用 workspace 文件面
 
 - 严重度：最高
-- 当前状态：开放
-- 现状：baseline/candidate 各自拥有独立 Runtime task、Mission、Ticket、Agent Goal、workflow snapshot 和 changeSet baseline，但仍在同一 workspace 根目录执行；并发任务可能读写同名交付文件。
-- 风险：目标组的 Practice/Mission handoff 事实可独立归因，但涉及文件产物的 regression/safety observation 可能受另一 arm 的先行写入影响，削弱反事实可信度。
-- 临时控制：Evaluation 固化每个 arm 的 Mission/Ticket/Evidence refs，目标收益必须来自候选专属 Practice Ticket；共享产物组只用于 fail-closed 回归/安全门禁，不据此宣称精确效果量。
-- 偿还路径：PlatformTrialAdapter 为每个 case/arm 创建同一冻结输入的临时 workspace/worktree 或 copy-on-write 文件层；Provider/policy/runtime snapshot 保持一致，结束后只保留 Evidence、manifest 和 hash，清理执行副本。隔离适配器属于评测试验基础设施，不改变 Evol 在普通项目中“下一 turn/session 本地加载”的产品语义。
+- 当前状态：已偿还
+- 原问题：baseline/candidate 虽有独立 Runtime task、Mission、Ticket、Agent Goal 和 workflow snapshot，却曾在同一 workspace 根目录读写，同名交付文件可能互相污染。
+- 已偿还：PlatformTrialAdapter 在每个 generation 开始时先形成一份冻结项目 snapshot，再为每个 case/arm 建立不同 physical execution root。RuntimeHost、Mission、Ticket、Agent、Staffing 与 Evidence 状态全部写入各自 arm；逻辑 workspaceId、Provider/policy snapshot 和 Candidate/Release 来源仍绑定原项目。`.git` barrier 阻止 trial Git 命令向上发现并修改真实仓库。
+- 恢复与收口：dispatch 账本持久化 isolationId、execution root 与 snapshot hash；进程重启后从对应 arm root hydrate，同一 task 不重复创建。终态先把每个 arm 的完整 Evidence Ledger（不只评分器直接引用的记录）导入原项目 Evidence Ledger，并保存 generation manifest/hash，再停止隔离 host、删除执行副本；重复 observe 返回持久化结果并幂等重试清理。
+- 有意排除：`.autoagent`、`.git`、`node_modules` 与 `dist` 不进入项目 snapshot；前两者避免控制面/仓库身份泄漏，后两者是可再生依赖和构建产物。试验代码不得把这些派生目录当作项目交付事实。
 
 ## TD-EVOL-TRIAL-004：Target objective 混入历史请求合同
 

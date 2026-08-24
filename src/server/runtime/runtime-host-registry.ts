@@ -32,10 +32,13 @@ import { PlatformEvolutionTrialRouter, type EvolutionTrialRuntimeFacade } from "
 import { EvidenceLedger } from "../evidence/evidence-ledger.js";
 import { AgentTraceStore } from "../agent-engine/trace-store.js";
 import { EvolutionPairedTrialStore } from "../evolution/paired-trial-store.js";
+import { TrialWorkspaceIsolationManager, trialIsolationBaseRoot, type TrialExecutionWorkspace } from "../evolution-adapters/trial-workspace-isolation.js";
 
 export class RuntimeHostRegistry {
   private readonly hosts = new Map<string, RuntimeHost>();
   private readonly pendingHosts = new Map<string, Promise<RuntimeHost>>();
+  private readonly trialHosts = new Map<string, RuntimeHost>();
+  private readonly pendingTrialHosts = new Map<string, Promise<RuntimeHost>>();
   private readonly scheduler: RuntimeHostScheduler;
   private readonly executionGate: RuntimeExecutionGate;
   private readonly evolutionCoordinator: EvolutionCoordinator;
@@ -59,6 +62,7 @@ export class RuntimeHostRegistry {
       available: (workspaceId) => this.evolutionTrialRuntimeAvailable(workspaceId),
       start: (input) => this.startEvolutionTrialRuntimeTask(input),
       observe: (input) => this.observeEvolutionTrialRuntimeTask(input),
+      release: (input) => this.releaseEvolutionTrialRuntimeTask(input),
     };
     this.evolutionCoordinator = new EvolutionCoordinator(workspaces, {
       observationPort: (workspace) => new PlatformEvolutionObservationAdapter(workspace),
@@ -85,19 +89,26 @@ export class RuntimeHostRegistry {
   }
 
   private async startEvolutionTrialRuntimeTask(input: Parameters<EvolutionTrialRuntimeFacade["start"]>[0]): Promise<void> {
-    const workspace = await this.workspaces.get(input.workspaceId);
+    const sourceWorkspace = await this.workspaces.get(input.workspaceId);
+    const workspace = input.execution ? { ...sourceWorkspace, rootPath: input.execution.rootPath } : sourceWorkspace;
     const store = new RuntimeHostStore(workspace.rootPath);
     const existing = await store.get(input.taskId);
     if (existing) {
       if (existing.objective !== input.objective || JSON.stringify(existing.evolutionTrial) !== JSON.stringify(input.trial)) throw new Error("Evolution trial Runtime task identity conflict");
+      if (input.execution) await this.trialHost(sourceWorkspace, input.execution, true);
       return;
     }
-    const host = await this.host(input.workspaceId, true);
+    if (input.execution) await this.trialIsolation(sourceWorkspace).verify(input.execution);
+    const host = input.execution
+      ? await this.trialHost(sourceWorkspace, input.execution, true)
+      : await this.host(input.workspaceId, true);
     await host.createTask({ taskId: input.taskId, title: input.title, objective: input.objective, evolutionTrial: input.trial });
   }
 
   private async observeEvolutionTrialRuntimeTask(input: Parameters<EvolutionTrialRuntimeFacade["observe"]>[0]): ReturnType<EvolutionTrialRuntimeFacade["observe"]> {
-    const workspace = await this.workspaces.get(input.workspaceId);
+    const sourceWorkspace = await this.workspaces.get(input.workspaceId);
+    if (input.execution) this.trialIsolation(sourceWorkspace).assertExecutionRoot(input.execution.rootPath);
+    const workspace = input.execution ? { ...sourceWorkspace, rootPath: input.execution.rootPath } : sourceWorkspace;
     const record = await new RuntimeHostStore(workspace.rootPath).get(input.taskId);
     if (!record) return { status: "pending" };
     if (record.runtimeError?.source === "staffing") return { status: "infrastructure_failed", message: `Staffing infrastructure failed: ${record.runtimeError.message}` };
@@ -145,6 +156,18 @@ export class RuntimeHostRegistry {
       },
       evidenceRefs: [{ kind: "evidence", ref: evidenceId, workspaceId: workspace.id, taskId: record.taskId, taskRunId: record.runId }],
     };
+  }
+
+  private async releaseEvolutionTrialRuntimeTask(input: Parameters<NonNullable<EvolutionTrialRuntimeFacade["release"]>>[0]): Promise<void> {
+    if (!input.execution) return;
+    const sourceWorkspace = await this.workspaces.get(input.workspaceId);
+    this.trialIsolation(sourceWorkspace).assertExecutionRoot(input.execution.rootPath);
+    const key = this.trialHostKey(input.workspaceId, input.execution);
+    const pending = this.pendingTrialHosts.get(key);
+    const host = this.trialHosts.get(key) ?? (pending ? await pending : undefined);
+    this.trialHosts.delete(key);
+    this.pendingTrialHosts.delete(key);
+    await host?.stop();
   }
 
   /**
@@ -237,13 +260,16 @@ export class RuntimeHostRegistry {
   }
 
   async stopAll(): Promise<void> {
-    const pending = await Promise.allSettled(this.pendingHosts.values());
+    const pending = await Promise.allSettled([...this.pendingHosts.values(), ...this.pendingTrialHosts.values()]);
     const hosts = [
       ...this.hosts.values(),
+      ...this.trialHosts.values(),
       ...pending.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
     ];
     this.hosts.clear();
     this.pendingHosts.clear();
+    this.trialHosts.clear();
+    this.pendingTrialHosts.clear();
     await Promise.allSettled([...new Set(hosts)].map((host) => host.stop()));
     await this.evolutionCoordinator.stop();
     await this.scheduler.stop();
@@ -258,6 +284,15 @@ export class RuntimeHostRegistry {
     this.hosts.delete(workspaceId);
     this.pendingHosts.delete(workspaceId);
     if (host) await host.stop();
+    const trialKeys = [...new Set([...this.trialHosts.keys(), ...this.pendingTrialHosts.keys()])]
+      .filter((key) => key.startsWith(`${workspaceId}:`));
+    for (const key of trialKeys) {
+      const trialPending = this.pendingTrialHosts.get(key);
+      const trialHost = this.trialHosts.get(key) ?? (trialPending ? await trialPending : undefined);
+      this.trialHosts.delete(key);
+      this.pendingTrialHosts.delete(key);
+      await trialHost?.stop();
+    }
     return this.workspaces.remove(workspaceId, options);
   }
 
@@ -344,6 +379,60 @@ export class RuntimeHostRegistry {
     const host = await pending;
     if (startScheduler) await host.start();
     return host;
+  }
+
+  private async trialHost(sourceWorkspace: Workspace, execution: TrialExecutionWorkspace, startScheduler: boolean): Promise<RuntimeHost> {
+    const key = this.trialHostKey(sourceWorkspace.id, execution);
+    const existing = this.trialHosts.get(key);
+    if (existing) {
+      if (startScheduler) await existing.start();
+      return existing;
+    }
+    let pending = this.pendingTrialHosts.get(key);
+    if (!pending) {
+      pending = this.createTrialHost(sourceWorkspace, execution, key, startScheduler);
+      this.pendingTrialHosts.set(key, pending);
+    }
+    const host = await pending;
+    if (startScheduler) await host.start();
+    return host;
+  }
+
+  private async createTrialHost(sourceWorkspace: Workspace, execution: TrialExecutionWorkspace, key: string, startScheduler: boolean): Promise<RuntimeHost> {
+    try {
+      const workspace = { ...sourceWorkspace, rootPath: execution.rootPath };
+      const profiles = await this.profiles.list();
+      await migrateAndValidateWorkspaceAgentProfiles(workspace, profiles);
+      await ensureProjectOwner(workspace, profiles);
+      await seedMinimalTeamPlanPolicy(this.policyStore, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG);
+      const host = new RuntimeHost(workspace, this.profiles, this.providers, this.policyStore, this.policyRef, {
+        scheduler: this.scheduler,
+        schedulerKey: `evolution-trial:${execution.isolationId}`,
+        executionGate: this.executionGate,
+        // Release/Candidate state is read from the logical project. Runtime,
+        // Ticket, Agent and Evidence state is written only to the arm root.
+        evolution: new EvolutionPlatformRuntimeAdapter(sourceWorkspace.rootPath, sourceWorkspace.id, {
+          organizationMemorySources: () => resolveOrganizationMemorySources(this.workspaces, sourceWorkspace.id),
+          sharedEvolutionLayerSources: (profileId) => resolveSharedEvolutionLayerSources(this.workspaces.homePath(), profileId),
+        }),
+        ...this.evolutionRuntimeConfigs.get(sourceWorkspace.id)?.settings,
+      });
+      if (startScheduler) await host.start(); else await host.hydrate();
+      this.trialHosts.set(key, host);
+      return host;
+    } finally {
+      this.pendingTrialHosts.delete(key);
+    }
+  }
+
+  private trialHostKey(workspaceId: string, execution: TrialExecutionWorkspace): string {
+    return `${workspaceId}:${execution.isolationId}`;
+  }
+
+  private trialIsolation(workspace: Workspace): TrialWorkspaceIsolationManager {
+    return new TrialWorkspaceIsolationManager(workspace.rootPath, {
+      baseRoot: trialIsolationBaseRoot(this.workspaces.homePath(), workspace.rootPath),
+    });
   }
 
   private async createHost(workspaceId: string, startScheduler: boolean): Promise<RuntimeHost> {

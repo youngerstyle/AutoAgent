@@ -189,6 +189,8 @@ Paired trial、Canary 与普通生产经历在数据用途上必须严格区分�
 - 同一 `kind + target + scope` 采用 incumbent/challenger 单飞模型。新证据可以继续形成 Practice revision 和 proposed binding，但不能并发启动多个 challenger；
 - Provider、Staffing 和 Agent Engine 的基础设施失败必须跨框架归因到 trial 的 `infrastructure_failed`，不得作为候选质量失败或 human business input；
 - 每次干净重跑创建新的 immutable EvalSuite/Trial lineage，历史失败保留，不覆盖、不改写。
+- 每个 paired generation 只冻结一次项目文件 snapshot，再为各 case 的 baseline/candidate 派生独立 physical execution root；逻辑 workspace identity 保持不变，Candidate/Release 从原项目只读解析。
+- arm 内 Runtime、Mission、Ticket、Agent、Staffing 与 Evidence 状态不得在执行期写回原项目。终态汇聚该 arm 的完整 Evidence Ledger、generation manifest 和 snapshot hash，随后停止 host 并清理执行副本；进程重启必须从同一 arm root 恢复。
 
 ## 12. 2026-08-19 真实发布验收结论
 
@@ -200,4 +202,4 @@ Paired trial、Canary 与普通生产经历在数据用途上必须严格区分�
 - Production Release `release_debe5ddbe6f8cc19805c37a21ec9d02b` 在冷重启后的新任务中以 `stage=production` 加载，并完成实践宣讲 -> 规划 -> 实现 -> 独立 QA -> 最终验收；
 - 随后真实回滚把 Production 指针置为 inactive。再次冷重启的新任务加载 builtin 并完成，证明 Release 与 rollback 均在下一 session/turn 边界生效；验收环境最终停留在安全 baseline。
 
-该结论不消除 `TD-EVOL-TRIAL-003`：paired arms 仍共用 workspace 文件面。本次 target 收益依赖候选专属 Practice handoff，不能把共享文件产物解释成严格隔离的反事实效果量。
+历史验收发生在文件面隔离落地前，因此其效果量仍按当时的限制解释；后续 paired generation 已使用独立 execution root，历史 Evaluation 不追溯改写。
