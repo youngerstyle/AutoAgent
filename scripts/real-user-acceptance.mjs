@@ -681,7 +681,8 @@ async function runBrownfieldOrderUpgradeAcceptance() {
 
 async function seedAcceptanceWorkspace(seedName) {
   const entries = await readdir(workspaceRoot);
-  assert.deepEqual(entries, [], `seeded acceptance workspace 必须为空：${entries.join(", ")}`);
+  const nonPlatformEntries = entries.filter((entry) => entry !== ".autoagent");
+  assert.deepEqual(nonPlatformEntries, [], `seeded acceptance workspace 除平台 .autoagent 外必须为空：${entries.join(", ")}`);
   const seedRoot = path.join(projectRoot, "scripts", "fixtures", seedName);
   assert.ok(existsSync(seedRoot), `找不到 acceptance seed：${seedName}`);
   await cp(seedRoot, workspaceRoot, { recursive: true });
