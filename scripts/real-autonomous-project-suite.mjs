@@ -87,7 +87,7 @@ const cases = [
     seed: "brownfield-order-service",
     goal: [
       "第一轮升级当前已有的 Node.js Order Service：保留既有订单 API，把 schemaVersion 1 原子迁移到 2。",
-      "为订单补 version=1 与 order.created 审计。新增 POST /api/orders/:id/cancel，接收 {reason,expectedVersion}；只有 pending 且版本匹配时可取消，旧版本或终态冲突返回 409，非法输入返回 400，不存在返回 404。",
+      "v1 文件里的每个旧订单迁移后都必须补 version=1，并各自生成且仅生成一个 order.created 审计事件；重复启动不得重复生成。新增 POST /api/orders/:id/cancel，接收 {reason,expectedVersion}；只有 pending 且版本匹配时可取消，旧版本或终态冲突返回 409，非法输入返回 400，不存在返回 404。",
       "新增 GET /api/orders/:id/audit 返回 {events}；取消必须留下 order.cancelled 事件，并在事件顶层保留原始 reason、orderId、version 与时间。",
       "补齐旧 API、迁移幂等、并发写入、取消冲突、审计和重启恢复测试，更新 README；不得请求 human 代为测试或编辑。",
     ].join(" "),

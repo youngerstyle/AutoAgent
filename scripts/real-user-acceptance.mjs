@@ -204,40 +204,44 @@ try {
 }
 
 async function verifyArtifactWithMissionRepair(stage, verifier) {
-  try {
-    return await verifier();
-  } catch (error) {
-    const failedTaskId = snapshot?.activeTask?.id;
-    const failure = error instanceof Error ? error.message : String(error);
-    console.warn(`[真实验收] ${stage} 黑盒验收失败，交回持久团队修复：${failure}`);
-    snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
-      method: "POST",
-      body: {
-        title: `${stage} 外部验收修复`,
-        goal: [
-          "独立于团队内部测试的生产黑盒验收发现了真实交付缺陷。",
-          `失败阶段：${stage}。失败事实：${failure}`,
-          "请在当前 Workspace 中复现并修复根因，保留所有既有 API、数据和审计契约；补充能阻止该回归的自动化测试。",
-          "不要修改或绕过 .autoagent 下的验收器。完成后运行完整测试并确保 Git 工作树干净。",
-        ].join("\n"),
-      },
-    }).then((value) => value.snapshot);
-    snapshot = await waitForTerminal(workspace.id);
-    assertRuntimeSnapshot(snapshot, { terminal: true });
-    assert.equal(snapshot.status, "completed", failureMessage(`${stage} 验收修复 Mission 未完成`, snapshot));
-    assert.ok(snapshot.tickets.length > 0, `${stage} 验收修复 Mission 没有生成 Ticket`);
-    assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage(`${stage} 验收修复存在未完成 Ticket`, snapshot));
-    assertAuditablePlan(snapshot.tickets);
-    const repository = await inspectRepository();
-    if (initializeGit) assert.equal(repository.clean, true, `${stage} 验收修复后 Git 工作树不干净：${repository.status.join(", ")}`);
-    acceptanceRepairMissions.push({
-      stage,
-      failedTaskId,
-      repairTaskId: snapshot.activeTask?.id,
-      failure,
-      targetAgentIds: [...new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean))],
-    });
-    return verifier();
+  const maxRepairMissions = 2;
+  for (let repairAttempt = 0; ; repairAttempt += 1) {
+    try {
+      return await verifier();
+    } catch (error) {
+      if (repairAttempt >= maxRepairMissions) throw error;
+      const failedTaskId = snapshot?.activeTask?.id;
+      const failure = error instanceof Error ? error.message : String(error);
+      console.warn(`[真实验收] ${stage} 黑盒验收失败，交回持久团队修复 ${repairAttempt + 1}/${maxRepairMissions}：${failure}`);
+      snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
+        method: "POST",
+        body: {
+          title: `${stage} 外部验收修复 ${repairAttempt + 1}`,
+          goal: [
+            "独立于团队内部测试的生产黑盒验收发现了真实交付缺陷。",
+            `失败阶段：${stage}。这是第 ${repairAttempt + 1} 次修复。失败事实：${failure}`,
+            "请在当前 Workspace 中复现并修复根因，保留所有既有 API、数据和审计契约；补充能阻止该回归的自动化测试。",
+            "不要修改或绕过 .autoagent 下的验收器。完成后运行完整测试并确保 Git 工作树干净。",
+          ].join("\n"),
+        },
+      }).then((value) => value.snapshot);
+      snapshot = await waitForTerminal(workspace.id);
+      assertRuntimeSnapshot(snapshot, { terminal: true });
+      assert.equal(snapshot.status, "completed", failureMessage(`${stage} 验收修复 Mission 未完成`, snapshot));
+      assert.ok(snapshot.tickets.length > 0, `${stage} 验收修复 Mission 没有生成 Ticket`);
+      assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage(`${stage} 验收修复存在未完成 Ticket`, snapshot));
+      assertAuditablePlan(snapshot.tickets);
+      const repository = await inspectRepository();
+      if (initializeGit) assert.equal(repository.clean, true, `${stage} 验收修复后 Git 工作树不干净：${repository.status.join(", ")}`);
+      acceptanceRepairMissions.push({
+        stage,
+        repairAttempt: repairAttempt + 1,
+        failedTaskId,
+        repairTaskId: snapshot.activeTask?.id,
+        failure,
+        targetAgentIds: [...new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean))],
+      });
+    }
   }
 }
 
@@ -716,7 +720,11 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
     assert.equal(migrated.value.order?.version, 1, "迁移后的旧 order version 不是 1");
     const migratedAudit = await requestIssueApi(serviceUrl, `/api/orders/${legacyOrder.id}/audit`);
     assert.equal(migratedAudit.response.status, 200, "迁移后旧 order 审计接口不可用");
-    assert.deepEqual(migratedAudit.value.events?.map((event) => event.type), ["order.created"], "迁移没有补齐 order.created 审计");
+    assert.deepEqual(
+      migratedAudit.value.events?.map((event) => event.type),
+      ["order.created"],
+      `v1 文件中的旧订单 ${legacyOrder.id} 迁移后，GET /api/orders/${legacyOrder.id}/audit 必须返回且仅返回一个 order.created；当前没有为旧订单生成迁移审计`,
+    );
 
     const created = await requestIssueApi(serviceUrl, "/api/orders", {
       method: "POST",
