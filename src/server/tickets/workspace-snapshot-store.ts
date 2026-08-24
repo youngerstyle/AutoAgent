@@ -6,6 +6,7 @@ import type {
   TicketAttemptChangeSet,
   TicketAttemptWorkspaceBaseline,
 } from "../../shared/contracts/ticket-engine.js";
+import { GitWorktreeAttemptStore } from "./git-worktree-attempt-store.js";
 
 interface WorkspaceFileFact {
   path: string;
@@ -25,22 +26,27 @@ interface WorkspaceManifest {
 const EXCLUDED_DIRECTORIES = new Set([".autoagent", ".git", "node_modules"]);
 
 export interface TicketAttemptWorkspacePort {
-  captureBaseline(attemptId: string): Promise<TicketAttemptWorkspaceBaseline>;
-  captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<TicketAttemptChangeSet>;
+  captureBaseline(attemptId: string, options?: { isolate?: boolean }): Promise<TicketAttemptWorkspaceBaseline>;
+  captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options?: { integrate?: boolean }): Promise<TicketAttemptChangeSet>;
+  cleanupAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
+  discardAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
 }
 
 export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
   private readonly root: string;
   private readonly attemptDirectory: string;
+  private readonly worktrees: GitWorktreeAttemptStore;
 
   constructor(workspaceRoot: string, private readonly now: () => Date = () => new Date()) {
     this.root = path.resolve(workspaceRoot);
     this.attemptDirectory = path.join(this.root, ".autoagent", "tickets", "attempts");
+    this.worktrees = new GitWorktreeAttemptStore(this.root, now);
   }
 
-  async captureBaseline(attemptId: string): Promise<TicketAttemptWorkspaceBaseline> {
+  async captureBaseline(attemptId: string, options: { isolate?: boolean } = {}): Promise<TicketAttemptWorkspaceBaseline> {
     const baselineId = randomUUID();
-    const manifest = await this.captureManifest();
+    const isolation = options.isolate ? await this.worktrees.prepare(attemptId) : undefined;
+    const manifest = await this.captureManifest(isolation?.rootPath ?? this.root);
     const manifestRef = path.posix.join(".autoagent", "tickets", "attempts", `${attemptId}.${baselineId}.baseline.json`);
     await this.writeManifest(manifestRef, manifest);
     return {
@@ -48,12 +54,14 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
       capturedAt: manifest.capturedAt,
       artifactVersion: manifest.artifactVersion,
       manifestRef,
+      ...(isolation ? { isolation } : {}),
     };
   }
 
-  async captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<TicketAttemptChangeSet> {
+  async captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options: { integrate?: boolean } = {}): Promise<TicketAttemptChangeSet> {
     const before = await this.readManifest(baseline.manifestRef);
-    const after = await this.captureManifest();
+    const executionRoot = baseline.isolation?.rootPath ?? this.root;
+    const after = await this.captureManifest(executionRoot);
     const beforeByPath = new Map(before.files.map((item) => [item.path, item]));
     const afterByPath = new Map(after.files.map((item) => [item.path, item]));
     const added = after.files
@@ -74,6 +82,9 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
       .map((item) => ({ path: item.path, beforeSha256: item.sha256 }));
     const manifestRef = path.posix.join(".autoagent", "tickets", "attempts", `${attemptId}.${baseline.baselineId}.result.json`);
     await this.writeManifest(manifestRef, after);
+    const integration = options.integrate && baseline.isolation
+      ? await this.worktrees.integrate(attemptId, baseline.isolation)
+      : undefined;
     return {
       baselineId: baseline.baselineId,
       capturedAt: baseline.capturedAt,
@@ -83,38 +94,51 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
       added,
       modified,
       deleted,
+      ...(integration ? { integration } : {}),
     };
   }
 
-  private async captureManifest(): Promise<WorkspaceManifest> {
-    const files = await this.listFiles(this.root);
+  async cleanupAttempt(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void> {
+    if (baseline.isolation) await this.worktrees.cleanup(attemptId, baseline.isolation);
+  }
+
+  async discardAttempt(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void> {
+    if (baseline.isolation) await this.worktrees.discard(attemptId, baseline.isolation);
+  }
+
+  executionRoot(attemptId: string): Promise<string | undefined> {
+    return this.worktrees.executionRoot(attemptId);
+  }
+
+  private async captureManifest(workspaceRoot: string): Promise<WorkspaceManifest> {
+    const files = await this.listFiles(workspaceRoot, workspaceRoot);
     files.sort((left, right) => left.path.localeCompare(right.path));
     const artifactVersion = createHash("sha256")
       .update(JSON.stringify(files.map(({ path: filePath, sha256 }) => [filePath, sha256])))
       .digest("hex");
     return {
       schemaVersion: 1,
-      workspaceRoot: this.root,
+      workspaceRoot,
       capturedAt: this.now().toISOString(),
       artifactVersion,
       files,
     };
   }
 
-  private async listFiles(directory: string): Promise<WorkspaceFileFact[]> {
+  private async listFiles(directory: string, workspaceRoot: string): Promise<WorkspaceFileFact[]> {
     const entries = await readdir(directory, { withFileTypes: true });
     const facts: WorkspaceFileFact[] = [];
     for (const entry of entries) {
-      if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
+      if (EXCLUDED_DIRECTORIES.has(entry.name)) continue;
       const absolutePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
-        facts.push(...await this.listFiles(absolutePath));
+        facts.push(...await this.listFiles(absolutePath, workspaceRoot));
         continue;
       }
       if (!entry.isFile()) continue;
       const info = await stat(absolutePath);
       facts.push({
-        path: path.relative(this.root, absolutePath).split(path.sep).join("/"),
+        path: path.relative(workspaceRoot, absolutePath).split(path.sep).join("/"),
         size: info.size,
         modifiedAt: info.mtime.toISOString(),
         sha256: await hashFile(absolutePath),

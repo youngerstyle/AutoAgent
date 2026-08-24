@@ -123,7 +123,7 @@ OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent �
 
 每个项目同一时间只允许一个活跃 `TaskRun`。
 
-Plan Compiler 会把规划结果中的连续同角色语义 Todo 最多四项合并为一个持久执行 Ticket，同时保留每项 objective 和 success criteria。角色切换、独立质量验证和最终验收仍是有序边界。当前所有成员共享项目工作区，因此系统不会让多个写入型 Goal 在同一工作区并发执行；真正的并行交付需要先提供每 Ticket 独立分支或 worktree 以及可验证的合并流程。
+Plan Compiler 会把规划结果中的连续同角色语义 Todo 最多四项合并为一个持久执行 Ticket，同时保留每项 objective 和 success criteria。角色切换、独立质量验证和最终验收仍是有序边界。干净 Git 仓库中获得 `writeFile` 或 `editFile` 能力的 Ticket 会获得独立分支和 worktree：Agent 只修改隔离目录，完成时由 Ticket Engine 提交、合入最新主工作区并以 fast-forward 发布；冲突会保留 worktree 并返回可恢复的 `workspace_conflict`。非 Git 或已有未提交修改的工作区会安全退化为共享目录单写者，不会并发运行多个写入型 Ticket。
 
 每个 Plan 还持久化独立的收敛预算。产品默认最多 64 张 Ticket、8 次正式采纳的 Plan 修订；Workflow 可以通过 `convergenceLimits` 覆盖。修订请求本身只占用 Ticket 容量，只有成功的 `apply_change` 才增加正式修订计数。预算耗尽时原命令不会改变 Plan 或 Ticket，Mission 会把当前执行持久化为由 planner 负责的阻塞状态并禁止自动重试；运行台直接展示权威 Ticket 容量和修订使用量。旧版 Plan 没有该字段时保留现有图，从首次迁移后的正式修订开始计数。
 

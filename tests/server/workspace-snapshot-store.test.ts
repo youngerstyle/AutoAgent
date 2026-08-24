@@ -1,10 +1,38 @@
+import { execFile } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { WorkspaceSnapshotStore } from "../../src/server/tickets/workspace-snapshot-store.js";
 
 describe("WorkspaceSnapshotStore", () => {
+  it("captures an isolated Git worktree and integrates its delivery before cleanup", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-attempt-git-parent-"));
+    const root = path.join(parent, "workspace");
+    try {
+      await git(parent, ["init", "workspace"]);
+      await writeFile(path.join(root, ".gitignore"), ".autoagent/\n", "utf8");
+      await writeFile(path.join(root, "baseline.txt"), "baseline\n", "utf8");
+      await git(root, ["add", ".gitignore", "baseline.txt"]);
+      await git(root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "baseline"]);
+      const store = new WorkspaceSnapshotStore(root, monotonicClock());
+
+      const baseline = await store.captureBaseline("attempt-isolated", { isolate: true });
+      expect(baseline.isolation).toMatchObject({ mode: "git_worktree" });
+      await writeFile(path.join(baseline.isolation!.rootPath, "delivery.txt"), "delivery\n", "utf8");
+      const changeSet = await store.captureChangeSet("attempt-isolated", baseline, { integrate: true });
+
+      expect(changeSet.added.map((item) => item.path)).toEqual(["delivery.txt"]);
+      expect(changeSet.integration).toMatchObject({ status: "integrated" });
+      expect((await readFile(path.join(root, "delivery.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("delivery\n");
+      await store.cleanupAttempt("attempt-isolated", baseline);
+      expect(await store.executionRoot("attempt-isolated")).toBeUndefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("records only changes made after the Ticket Attempt baseline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-attempt-"));
     await mkdir(path.join(root, "src"), { recursive: true });
@@ -45,4 +73,10 @@ describe("WorkspaceSnapshotStore", () => {
 function monotonicClock(): () => Date {
   let tick = 0;
   return () => new Date(Date.UTC(2026, 6, 24, 0, 0, tick++));
+}
+
+const execFileAsync = promisify(execFile);
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
 }

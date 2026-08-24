@@ -45,6 +45,38 @@ describe("AgentToolRuntime", () => {
     expect(await readFile(path.join(root, "note.txt"), "utf8")).toBe("hello");
   });
 
+  it("scopes Ticket tools to an isolated root while retaining canonical evidence ownership", async () => {
+    const canonical = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-canonical-"));
+    const isolated = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-isolated-"));
+    const runtime = new AgentToolRuntime({
+      profile: "development",
+      workspaceRoot: canonical,
+      canReadWorkspace: true,
+      canWriteWorkspace: true,
+      canExecuteCommands: false,
+    }, ["writeFile"]);
+    const scoped = runtime.scoped(isolated);
+
+    const result = await scoped.execute({ tool: "writeFile", path: "delivery.txt", content: "isolated" }, {
+      agentId: "dev",
+      threadId: "thread",
+      goalId: "goal",
+      attemptId: "attempt",
+      turnId: "turn",
+      toolCallId: "write-isolated",
+    });
+
+    expect(await readFile(path.join(isolated, "delivery.txt"), "utf8")).toBe("isolated");
+    await expect(readFile(path.join(canonical, "delivery.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await new EvidenceLedger(canonical).get(String(result.evidenceId))).toMatchObject({
+      workspaceRoot: canonical,
+      artifact: { path: "delivery.txt" },
+      attemptId: "attempt",
+    });
+    await scoped.dispose();
+    await runtime.dispose();
+  });
+
   it("edits one unique text occurrence without rewriting the whole file", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-tool-v2-edit-"));
     const target = path.join(root, "game.js");

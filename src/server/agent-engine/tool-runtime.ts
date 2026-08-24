@@ -41,6 +41,7 @@ interface AgentToolRuntimeOptions {
     cwd: string,
     timeoutMs?: number,
   ) => Promise<ExecutableResult>;
+  evidenceWorkspaceRoot?: string;
 }
 
 export interface AgentToolIntent {
@@ -83,6 +84,7 @@ export class AgentToolRuntime {
   private readonly enabled: Set<WorkspaceToolName>;
   private readonly evidence: EvidenceLedger;
   private readonly pipeline: ToolExecutionPipeline<AgentToolIntent, AgentToolExecutionContext, AgentToolResult>;
+  private readonly evidenceWorkspaceRoot: string;
   private fileMutationTail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -91,7 +93,8 @@ export class AgentToolRuntime {
     private readonly options: AgentToolRuntimeOptions = {},
   ) {
     this.enabled = new Set(enabledTools);
-    this.evidence = new EvidenceLedger(policy.workspaceRoot);
+    this.evidenceWorkspaceRoot = path.resolve(options.evidenceWorkspaceRoot ?? policy.workspaceRoot);
+    this.evidence = new EvidenceLedger(this.evidenceWorkspaceRoot);
     this.orphanBrowserCleanup = ensureWorkspaceBrowserCleanup(policy.workspaceRoot);
     this.pipeline = new ToolExecutionPipeline<AgentToolIntent, AgentToolExecutionContext, AgentToolResult>(
       [({ intent }) => this.enabled.has(intent.tool)
@@ -108,6 +111,16 @@ export class AgentToolRuntime {
     return this.pipeline.run(
       { intent, ...(context ? { context } : {}) },
       (request) => this.executeRaw(request.intent, request.context),
+    );
+  }
+
+  scoped(workspaceRoot: string): AgentToolRuntime {
+    const resolved = path.resolve(workspaceRoot);
+    if (resolved === path.resolve(this.policy.workspaceRoot)) return this;
+    return new AgentToolRuntime(
+      { ...this.policy, workspaceRoot: resolved },
+      [...this.enabled],
+      { ...this.options, evidenceWorkspaceRoot: this.evidenceWorkspaceRoot },
     );
   }
 
@@ -129,7 +142,7 @@ export class AgentToolRuntime {
         status: captureError ? "not_observed" : "observed",
         result: evidenceResult(result),
       },
-      workspaceRoot: this.policy.workspaceRoot,
+      workspaceRoot: this.evidenceWorkspaceRoot,
       createdAt: new Date().toISOString(),
       input: structuredClone(intent),
       artifact: await this.artifactFact(intent, result),

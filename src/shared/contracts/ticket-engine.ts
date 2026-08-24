@@ -287,6 +287,13 @@ export interface TicketAttemptWorkspaceBaseline {
   capturedAt: string;
   artifactVersion: string;
   manifestRef: string;
+  isolation?: {
+    mode: "git_worktree";
+    rootPath: string;
+    branch: string;
+    baseCommit: string;
+    stateRef: string;
+  };
 }
 
 export interface TicketAttemptArtifactChange {
@@ -304,6 +311,15 @@ export interface TicketAttemptChangeSet {
   added: TicketAttemptArtifactChange[];
   modified: TicketAttemptArtifactChange[];
   deleted: TicketAttemptArtifactChange[];
+  integration?: {
+    status: "integrated" | "no_changes" | "conflict";
+    branch: string;
+    baseCommit: string;
+    deliveryCommit?: string;
+    integratedCommit?: string;
+    conflictingPaths?: string[];
+    reason?: string;
+  };
 }
 
 export interface TicketAttempt {
@@ -412,6 +428,7 @@ export type TicketCommandResult =
         | "plan_paused"
         | "plan_terminal"
         | "idempotency_conflict"
+        | "workspace_conflict"
         | "budget_exhausted";
       reason: string;
       currentTicketVersion?: number;

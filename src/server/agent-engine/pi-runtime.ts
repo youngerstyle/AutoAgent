@@ -57,6 +57,7 @@ import {
 
 interface SessionState {
   session: AgentSession;
+  tools: AgentToolRuntime;
   goalVersions: Map<string, number>;
   resolution: ResolutionBinding;
   toolExecution: ToolExecutionBinding;
@@ -569,10 +570,13 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const pendingSessions = [...this.sessions.values()];
     this.sessions.clear();
     this.turnTails.clear();
-    await Promise.allSettled([
-      ...pendingSessions.map((pending) => disposePendingPiSessionPromptly(pending, DEFAULT_SESSION_ABORT_GRACE_MS)),
-      this.tools.dispose(),
-    ]);
+    const scopedTools = new Set<AgentToolRuntime>();
+    await Promise.allSettled(pendingSessions.map(async (pending) => {
+      const state = await pending;
+      if (state.tools !== this.tools) scopedTools.add(state.tools);
+      await abortPiSessionPromptly(state.session, DEFAULT_SESSION_ABORT_GRACE_MS);
+    }));
+    await Promise.allSettled([this.tools.dispose(), ...[...scopedTools].map((tools) => tools.dispose())]);
   }
 
   async releaseGoalResources(input: {
@@ -584,9 +588,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const key = piWorkSessionKey(input.threadId, input.goalId);
     const pending = this.sessions.get(key);
     this.sessions.delete(key);
-    const release = this.tools.releaseExecutionResources(input);
+    const state = pending ? await pending : undefined;
+    const release = (state?.tools ?? this.tools).releaseExecutionResources(input);
     if (pending) {
-      const { session } = await pending;
+      const { session } = state!;
       const cleanup = Promise.allSettled([
         abortPiSessionPromptly(session, DEFAULT_SESSION_ABORT_GRACE_MS),
         release,
@@ -617,6 +622,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     input: AgentExecutionSliceInput,
     runtimeEvolutionFingerprint: string,
   ): Promise<SessionState> {
+    const executionRoot = path.resolve(input.executionRoot ?? this.workspaceRoot);
+    const executionTools = this.tools.scoped(executionRoot);
     const sessionDir = piWorkSessionDirectory(
       this.workspaceRoot,
       input.agent.id,
@@ -627,7 +634,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     // AgentThread is the authoritative conversation log. Pi's session file is
     // an execution trace only; rebuilding from AgentThread prevents a stale or
     // rejected Pi tool call from bypassing our context projection after restart.
-    const sessionManager = SessionManager.create(this.workspaceRoot, sessionDir);
+    const sessionManager = SessionManager.create(executionRoot, sessionDir);
     const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
     const registry = new ModelRegistry(modelRuntime);
     const model = await configureModel(
@@ -662,7 +669,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     const configuredNames = effectiveAgentSkills(evolvedProfile, input.agent).filter((name) => !evolvedNames.has(name));
     const enabledSkillNames = [...new Set([...configuredNames, ...evolvedSkills.map((skill) => skill.name)])];
     const loader = new DefaultResourceLoader({
-      cwd: this.workspaceRoot,
+      cwd: executionRoot,
       agentDir: input.agent.agentDir,
       settingsManager: settings,
       additionalSkillPaths: [...configuredSkillPaths(this.workspaceRoot, configuredNames), ...evolvedSkills.map((skill) => skill.directory)],
@@ -713,8 +720,8 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       seenUsefulToolSignatures: new Set(),
     };
     const baseTools = [
-      ...workspaceTools(this.tools, toolExecution),
-      piReadTool(this.tools, skills, toolExecution),
+      ...workspaceTools(executionTools, toolExecution),
+      piReadTool(executionTools, skills, toolExecution),
       ...evolution.agentTools({ enabled: evolvedProfile.capabilities.includes("company:evolve"), agentId: input.agent.id }),
       goalTool(
         resolution,
@@ -727,10 +734,10 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
       planChangeTool(resolution, this.now, sessionGoal?.spec.outputContract),
       humanInputTool(resolution, this.now),
     ];
-    const mountedEvolution = evolution.mountTools({ baseTools, projection: evolutionProjection, toolRuntime: this.tools, binding: toolExecution });
+    const mountedEvolution = evolution.mountTools({ baseTools, projection: evolutionProjection, toolRuntime: executionTools, binding: toolExecution });
     const customTools = mountedEvolution.tools;
     const { session } = await createAgentSession({
-      cwd: this.workspaceRoot,
+      cwd: executionRoot,
       agentDir: input.agent.agentDir,
       modelRuntime,
       model,
@@ -783,7 +790,7 @@ export class PiAgentRuntime implements AgentExecutionRuntime {
     });
     const traceRef = { kind: "trace" as const, ref: inheritanceTraceId, workspaceId: input.agent.workspaceId, agentId: input.agent.id, profileId: input.agent.profileId };
     await evolution.observe({ projection: evolutionProjection, turnId: inheritanceTurnId, sessionId: session.sessionId, traceRef });
-    return { session, goalVersions, resolution, toolExecution, safety, runtimeEvolutionFingerprint, evolutionToolNames: mountedEvolution.evolutionToolNames };
+    return { session, tools: executionTools, goalVersions, resolution, toolExecution, safety, runtimeEvolutionFingerprint, evolutionToolNames: mountedEvolution.evolutionToolNames };
   }
 
   private async rebuildLiveModelContext(
@@ -2252,6 +2259,9 @@ function stableSystemPrompt(input: AgentExecutionSliceInput, evolutionMemories: 
     ].join("\n\n") : "",
     input.policy.canWriteWorkspace
       ? "## 新建交付物\n当 Goal 要求创建新的代码、文档、配置或其他交付物时，空工作区、尚无源码、尚无构建入口都不是缺少 human 输入，也不是 blocked 条件。你已经获得工作区写入授权，必须采用可逆的专业默认值，从零创建必要目录和文件，并使用可用工具持续实现与验证。不得仅因没有现成项目文件而要求 human 提供仓库、源码根目录或运行入口。"
+      : "",
+    input.executionRoot
+      ? "## 隔离交付工作区\n当前 Goal 在专属 Git worktree 中执行。只在当前工作区内编辑、运行测试和修复问题；不要切换分支、删除 worktree 或手工向主工作区合并。完成提案由 Ticket Engine 验证并集成。若完成提案返回 workspace_conflict，在当前 worktree 中解决冲突并 git add 已解决文件，再重新提交完成提案。"
       : "",
     "你是一个持续工作的通用 Agent。当前 Ticket 是你的 Goal。根据岗位、成功标准和输出契约完成工作；仅在工作本身需要时使用文件或命令工具，不要为了证明认知型交付物而寻找不存在的项目文件。Skill 说明是参考资料，不是交付物；不要把读取 Skill、探索工具或输出工作计划当成完成。需要创建交付物时，先用最少必要的工作区观察确认现状，空目录或入口缺失时直接创建可逆的最小实现；只有当前成功标准要求时才继续加载并执行 Skill 验证。正常完成或失败时调用 goal_resolution；发现上游交付需要纠正时调用 report_goal_correction；当前 Plan 无法支撑目标时调用 request_goal_plan_change；缺少不可替代的 human 输入时调用 request_human_input。evidenceId 只能引用本 Goal 工具调用真实返回的 ID，或 Host 在当前 Goal 中明确注入的继承证据 ID；没有证据时使用空数组。工具调用只是向 Host 提交提案，Ticket 和 Plan 状态仍由 Host 校验并提交。不要寻找或写入另一个提交文件、接口或平台内部状态，普通回复也不代表 Goal 完成。",
   ].filter(Boolean).join("\n\n");

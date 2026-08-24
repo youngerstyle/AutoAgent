@@ -62,6 +62,52 @@ describe("Mission completion evidence boundary", () => {
     )).resolves.toBeUndefined();
   });
 
+  it("validates current-attempt artifact freshness inside its isolated execution root", async () => {
+    const fixture = await evidenceFixture();
+    const isolated = await mkdtemp(path.join(os.tmpdir(), "autoagent-evidence-worktree-"));
+    const relativePath = path.join("src", "isolated.ts");
+    const target = path.join(isolated, relativePath);
+    await mkdir(path.dirname(target), { recursive: true });
+    const content = "export const isolated = true;";
+    await writeFile(target, content, "utf8");
+    const info = await stat(target);
+    const fact = await new EvidenceLedger(fixture.root).append({
+      agentId: "dev",
+      threadId: "thread-dev",
+      goalId: "goal-dev",
+      attemptId: "attempt-dev",
+      turnId: "turn-isolated",
+      toolCallId: "read-isolated",
+      toolName: "readFile",
+      kind: "file_read",
+      capture: { status: "recorded" },
+      observation: { status: "observed", result: { path: relativePath } },
+      workspaceRoot: fixture.root,
+      createdAt: new Date().toISOString(),
+      input: { path: relativePath },
+      artifact: {
+        path: relativePath,
+        size: info.size,
+        modifiedAt: info.mtime.toISOString(),
+        sha256: createHash("sha256").update(content).digest("hex"),
+      },
+    });
+
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(fact.evidenceId),
+      { artifactWorkspaceRoot: isolated },
+    )).resolves.toBeUndefined();
+    await expect(validateEvidenceFacts(
+      fixture.root,
+      "dev",
+      fixture.goal,
+      proposal(fact.evidenceId),
+    )).resolves.toContain("已经不存在");
+  });
+
   it("accepts a recorded negative observation from the current Agent Goal", async () => {
     const fixture = await evidenceFixture();
     const ledger = new EvidenceLedger(fixture.root);

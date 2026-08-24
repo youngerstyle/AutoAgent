@@ -1,13 +1,123 @@
 ﻿import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
+import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { PlanCommandEnvelope, PlanConvergenceLimits, PlanId, PlanPolicyPort, TicketCommandEnvelope, TicketId } from "../../src/shared/contracts/ticket-engine.js";
 import { createPlanPolicy } from "../../src/server/tickets/plan-policy-store.js";
 import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
+import { WorkspaceSnapshotStore } from "../../src/server/tickets/workspace-snapshot-store.js";
 
 describe("TicketEngine single Plan flow", () => {
+  it("runs a writable delivery Ticket in a Git worktree and integrates it before completion", async () => {
+    const fixture = await createFixture({ gitIsolation: true });
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({ requestId: "claim-isolated-planning", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    await fixture.engine.applyPlan({
+      commandId: "append-isolated-delivery", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning,
+        sourceAuthority: { kind: "claim", claimId: planningClaim!.claimId, fencingToken: planningClaim!.fencingToken },
+        change: {
+          additions: [{
+            ...draft("isolated-dev", "隔离开发"),
+            assignment: { principalId: "dev", requiredTools: ["readFile", "writeFile", "shell"] },
+            outputContract: { schemaRef: "delivery-v1" },
+          }],
+          dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "isolated-dev" } }],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "isolated-dev" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, planningClaim!, "complete-isolated-planning", completePayload()));
+    const deliveryId = (await fixture.engine.getPlan(fixture.planId)).graph.ticketIds[1]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-isolated-delivery", planId: fixture.planId, ticketId: deliveryId, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 });
+    const running = await fixture.engine.getTicket(deliveryId);
+    const attempt = running!.attempts.find((candidate) => candidate.attemptId === claim!.attemptId)!;
+    expect(attempt.workspaceBaseline?.isolation).toMatchObject({ mode: "git_worktree" });
+    await writeFile(path.join(attempt.workspaceBaseline!.isolation!.rootPath, "delivery.txt"), "isolated\n", "utf8");
+
+    expect(await fixture.engine.applyTicket(ticketCommand(fixture.planId, deliveryId, claim!, "complete-isolated-delivery", completePayload())))
+      .toMatchObject({ accepted: true, ticketStatus: "completed", planStatus: "completed" });
+    expect((await readFile(path.join(fixture.root, "delivery.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("isolated\n");
+    expect((await fixture.engine.getTicket(deliveryId))?.attempts[0]?.changeSet?.integration)
+      .toMatchObject({ status: "integrated", deliveryCommit: expect.any(String) });
+  });
+
+  it("integrates parallel writable Tickets serially and retains a conflicting worktree for recovery", async () => {
+    const fixture = await createFixture({ gitIsolation: true });
+    await writeFile(path.join(fixture.root, "shared.txt"), "baseline\n", "utf8");
+    await git(fixture.root, ["add", "shared.txt"]);
+    await git(fixture.root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "shared baseline"]);
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({ requestId: "claim-parallel-planning", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    await fixture.engine.applyPlan({
+      commandId: "append-parallel-deliveries", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning,
+        sourceAuthority: { kind: "claim", claimId: planningClaim!.claimId, fencingToken: planningClaim!.fencingToken },
+        change: {
+          additions: ["a", "b"].map((clientRef) => ({
+            ...draft(clientRef, `并行交付 ${clientRef}`),
+            assignment: { principalId: "dev", requiredTools: ["writeFile", "shell"] },
+            outputContract: { schemaRef: "delivery-v1" },
+          })),
+          dependencyAdditions: ["a", "b"].map((clientRef) => ({ from: { ticketId: planning }, to: { clientRef } })),
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "a" }, { clientRef: "b" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, planningClaim!, "complete-parallel-planning", completePayload()));
+    const [, firstId, secondId] = (await fixture.engine.getPlan(fixture.planId)).graph.ticketIds;
+    const firstClaim = await fixture.engine.claimReady({ requestId: "claim-parallel-a", planId: fixture.planId, ticketId: firstId!, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 });
+    const secondClaim = await fixture.engine.claimReady({ requestId: "claim-parallel-b", planId: fixture.planId, ticketId: secondId!, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 });
+    const firstRoot = (await fixture.engine.getTicket(firstId!))!.attempts[0]!.workspaceBaseline!.isolation!.rootPath;
+    const secondRoot = (await fixture.engine.getTicket(secondId!))!.attempts[0]!.workspaceBaseline!.isolation!.rootPath;
+    await writeFile(path.join(firstRoot, "shared.txt"), "from a\n", "utf8");
+    await writeFile(path.join(secondRoot, "shared.txt"), "from b\n", "utf8");
+
+    expect(await fixture.engine.applyTicket(ticketCommand(fixture.planId, firstId!, firstClaim!, "complete-parallel-a", completePayload())))
+      .toMatchObject({ accepted: true, ticketStatus: "completed" });
+    expect(await fixture.engine.applyTicket(ticketCommand(fixture.planId, secondId!, secondClaim!, "conflict-parallel-b", completePayload())))
+      .toMatchObject({ accepted: false, code: "workspace_conflict", reason: expect.stringContaining("shared.txt") });
+    expect(await fixture.engine.getTicket(secondId!)).toMatchObject({ status: "running" });
+    expect((await readFile(path.join(fixture.root, "shared.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("from a\n");
+
+    await writeFile(path.join(secondRoot, "shared.txt"), "from a and b\n", "utf8");
+    await git(secondRoot, ["add", "shared.txt"]);
+    expect(await fixture.engine.applyTicket(ticketCommand(fixture.planId, secondId!, secondClaim!, "complete-resolved-parallel-b", completePayload())))
+      .toMatchObject({ accepted: true, ticketStatus: "completed", planStatus: "completed" });
+    expect((await readFile(path.join(fixture.root, "shared.txt"), "utf8")).replaceAll("\r\n", "\n")).toBe("from a and b\n");
+  });
+
+  it("serializes writable Tickets when Git isolation is unavailable", async () => {
+    const fixture = await createFixture();
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({ requestId: "claim-shared-planning", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    await fixture.engine.applyPlan({
+      commandId: "append-shared-deliveries", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning,
+        sourceAuthority: { kind: "claim", claimId: planningClaim!.claimId, fencingToken: planningClaim!.fencingToken },
+        change: {
+          additions: ["a", "b"].map((clientRef) => ({ ...draft(clientRef, clientRef), assignment: { principalId: "dev", requiredTools: ["writeFile"] }, outputContract: { schemaRef: "delivery-v1" } })),
+          dependencyAdditions: ["a", "b"].map((clientRef) => ({ from: { ticketId: planning }, to: { clientRef } })),
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "a" }, { clientRef: "b" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, planningClaim!, "complete-shared-planning", completePayload()));
+    const [, firstId, secondId] = (await fixture.engine.getPlan(fixture.planId)).graph.ticketIds;
+    const firstClaim = await fixture.engine.claimReady({ requestId: "claim-shared-a", planId: fixture.planId, ticketId: firstId!, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 });
+    expect(firstClaim).toBeDefined();
+    expect(await fixture.engine.claimReady({ requestId: "claim-shared-b-too-soon", planId: fixture.planId, ticketId: secondId!, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 })).toBeUndefined();
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, firstId!, firstClaim!, "complete-shared-a", completePayload()));
+    expect(await fixture.engine.claimReady({ requestId: "claim-shared-b-after", planId: fixture.planId, ticketId: secondId!, expectedTicketVersion: 2, principalId: "dev", leaseDurationMs: 60_000 })).toBeDefined();
+  });
+
   it("enforces accepted amendment budget without mutating the Plan and replays the typed rejection", async () => {
     const fixture = await createFixture({ convergenceLimits: { maxTickets: 3, maxAcceptedAmendments: 1 } });
     const planning = fixture.plan.graph.ticketIds[0]!;
@@ -1224,8 +1334,14 @@ describe("TicketEngine single Plan flow", () => {
 const now = "2026-07-14T00:00:00.000Z";
 function draft(clientRef: string, title: string) { return { clientRef, title, objective: `完成 ${title}`, successCriteria: [`${title} 完成`], assignment: { principalId: "planner" }, outputContract: { schemaRef: "result-v1" } }; }
 function completePayload(output: unknown = {}) { return { type: "complete" as const, handoff: { schemaVersion: 1 as const, summary: "工作完成", output, evidence: [], criterionResults: [{ criterionIndex: 0, status: "satisfied" as const, evidence: [] }], residualRisks: [] } }; }
-async function createFixture(options: { convergenceLimits?: PlanConvergenceLimits } = {}) {
+async function createFixture(options: { convergenceLimits?: PlanConvergenceLimits; gitIsolation?: boolean } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plan-"));
+  if (options.gitIsolation) {
+    await git(root, ["init"]);
+    await writeFile(path.join(root, ".gitignore"), ".autoagent/\n", "utf8");
+    await git(root, ["add", ".gitignore"]);
+    await git(root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "baseline"]);
+  }
   const policy = createPlanPolicy({ policyId: "test", policyVersion: 1, grants: [
     { principalId: "planner", capabilities: ["plan:create", "plan:control", "ticket:claim", "blocked_ownership:transfer"] },
     { principalId: "dev", capabilities: ["ticket:claim"] },
@@ -1234,7 +1350,7 @@ async function createFixture(options: { convergenceLimits?: PlanConvergenceLimit
   ] });
   const policyPort: PlanPolicyPort = { getPolicy: async (ref) => ref.contentHash === policy.ref.contentHash ? policy : undefined };
   const store = new TicketStore(root, "task", "run");
-  const engine = new TicketEngine(store, policyPort);
+  const engine = new TicketEngine(store, policyPort, options.gitIsolation ? { workspacePort: new WorkspaceSnapshotStore(root) } : {});
   const planId = "f6f66a47-0c29-4c30-9461-f3de7525ad76" as PlanId;
   const command: PlanCommandEnvelope = { commandId: "create", planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "test", definitionVersion: 1, policyRef: policy.ref, plannerAssignment: { principalId: "planner" }, amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "change-v1" } }, ...(options.convergenceLimits ? { convergenceLimits: options.convergenceLimits } : {}), initialChange: { additions: [{ ...draft("planning", "计划拆解"), permissions: { amendPlan: true } }], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "planning" }] } } } };
   expect(await engine.createPlan(command)).toMatchObject({ accepted: true });
@@ -1280,4 +1396,9 @@ async function findTicketByTitle(engine: TicketEngine, planId: PlanId, title: st
 }
 function ticketCommand(planId: PlanId, ticketId: TicketId, claim: NonNullable<Awaited<ReturnType<TicketEngine["claimReady"]>>>, commandId: string, payload: TicketCommandEnvelope["payload"]): TicketCommandEnvelope {
   return { commandId, proposalId: `proposal-${commandId}`, planId, ticketId, expectedTicketVersion: claim.ticketVersion, actorPrincipalId: claim.principalId, executionRef: "goal", authority: { kind: "claim", claimId: claim.claimId, fencingToken: claim.fencingToken }, issuedAt: now, payload };
+}
+
+const execFileAsync = promisify(execFile);
+async function git(cwd: string, args: string[]): Promise<void> {
+  await execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
 }

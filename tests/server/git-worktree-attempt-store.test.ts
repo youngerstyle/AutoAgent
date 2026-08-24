@@ -1,0 +1,92 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, it } from "vitest";
+import { GitWorktreeAttemptStore } from "../../src/server/tickets/git-worktree-attempt-store.js";
+
+const execFileAsync = promisify(execFile);
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+describe("GitWorktreeAttemptStore", () => {
+  it("prepares, integrates, replays, and cleans an isolated Ticket delivery", async () => {
+    const root = await repository();
+    const store = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T08:00:00.000Z"));
+    const isolation = await store.prepare("attempt-a");
+
+    expect(isolation).toMatchObject({ mode: "git_worktree", branch: "autoagent/attempt/attempt-a" });
+    await writeFile(path.join(isolation!.rootPath, "delivery.txt"), "isolated delivery\n", "utf8");
+
+    const integrated = await store.integrate("attempt-a", isolation!);
+    expect(integrated).toMatchObject({
+      status: "integrated",
+      branch: "autoagent/attempt/attempt-a",
+      deliveryCommit: expect.any(String),
+      integratedCommit: expect.any(String),
+    });
+    expect(normalizeLines(await readFile(path.join(root, "delivery.txt"), "utf8"))).toBe("isolated delivery\n");
+    expect(await store.integrate("attempt-a", isolation!)).toEqual(integrated);
+
+    await store.cleanup("attempt-a", isolation!);
+    expect(await store.executionRoot("attempt-a")).toBeUndefined();
+  });
+
+  it("retains a conflicting worktree so the Ticket owner can resolve it and retry", async () => {
+    const root = await repository();
+    const store = new GitWorktreeAttemptStore(root);
+    const first = await store.prepare("attempt-first");
+    const second = await store.prepare("attempt-second");
+    await writeFile(path.join(first!.rootPath, "shared.txt"), "first delivery\n", "utf8");
+    await writeFile(path.join(second!.rootPath, "shared.txt"), "second delivery\n", "utf8");
+
+    expect(await store.integrate("attempt-first", first!)).toMatchObject({ status: "integrated" });
+    const conflict = await store.integrate("attempt-second", second!);
+    expect(conflict).toMatchObject({
+      status: "conflict",
+      conflictingPaths: ["shared.txt"],
+    });
+    expect(await store.executionRoot("attempt-second")).toBe(second!.rootPath);
+
+    await writeFile(path.join(second!.rootPath, "shared.txt"), "resolved delivery\n", "utf8");
+    await git(second!.rootPath, ["add", "shared.txt"]);
+    const retried = await store.integrate("attempt-second", second!);
+    expect(retried).toMatchObject({ status: "integrated" });
+    expect(normalizeLines(await readFile(path.join(root, "shared.txt"), "utf8"))).toBe("resolved delivery\n");
+  });
+
+  it("falls back without mutating a dirty or non-Git workspace", async () => {
+    const root = await repository();
+    await writeFile(path.join(root, "dirty.txt"), "not committed\n", "utf8");
+    expect(await new GitWorktreeAttemptStore(root).prepare("attempt-dirty")).toBeUndefined();
+
+    const plain = await mkdtemp(path.join(os.tmpdir(), "autoagent-plain-workspace-"));
+    roots.push(plain);
+    expect(await new GitWorktreeAttemptStore(plain).prepare("attempt-plain")).toBeUndefined();
+  });
+});
+
+async function repository(): Promise<string> {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-git-attempt-parent-"));
+  roots.push(parent);
+  const root = path.join(parent, "workspace");
+  await git(parent, ["init", "workspace"]);
+  await writeFile(path.join(root, ".gitignore"), ".autoagent/\n", "utf8");
+  await writeFile(path.join(root, "shared.txt"), "baseline\n", "utf8");
+  await git(root, ["add", ".gitignore", "shared.txt"]);
+  await git(root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "baseline"]);
+  return root;
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const result = await execFileAsync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+  return result.stdout;
+}
+
+function normalizeLines(value: string): string {
+  return value.replaceAll("\r\n", "\n");
+}

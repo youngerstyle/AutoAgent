@@ -20,6 +20,7 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
     private readonly agentId: string,
     private readonly now: () => Date = () => new Date(),
     private readonly workspaceRoot?: string,
+    private readonly attemptExecutionRoot?: (attemptId: string) => Promise<string | undefined>,
   ) {}
 
   async resolve<TStatus extends GoalResolutionStatus>(
@@ -39,7 +40,12 @@ export class MissionGoalResolutionPort implements GoalResolutionPort<MissionTick
         this.agentId,
         goal,
         proposal,
-        { validatesFinalArtifacts },
+        {
+          validatesFinalArtifacts,
+          artifactWorkspaceRoot: goal.spec.attemptId
+            ? await this.attemptExecutionRoot?.(goal.spec.attemptId)
+            : undefined,
+        },
       );
       if (evidenceError) {
         return { settle: true, decision: { accepted: false, disposition: "correctable", reason: evidenceError } };
@@ -77,7 +83,7 @@ export async function validateEvidenceFacts(
   agentId: string,
   goal: AgentGoal,
   proposal: Pick<GoalResolutionProposal, "evidence" | "criterionResults" | "domainOutcome">,
-  options: { validatesFinalArtifacts?: boolean } = {},
+  options: { validatesFinalArtifacts?: boolean; artifactWorkspaceRoot?: string } = {},
 ): Promise<string | undefined> {
   const direct = [
     ...proposal.evidence,
@@ -121,7 +127,7 @@ export async function validateEvidenceFacts(
 
   if (options.validatesFinalArtifacts !== false) {
     for (const { fact } of latestArtifactEvidence(verifiedFacts)) {
-      const freshnessError = await validateArtifactFreshness(workspaceRoot, fact);
+      const freshnessError = await validateArtifactFreshness(options.artifactWorkspaceRoot ?? workspaceRoot, fact);
       if (freshnessError) return freshnessError;
     }
   }

@@ -18,6 +18,7 @@ import type {
   TicketCommandEnvelope,
   TicketCommandPayload,
   TicketCommandResult,
+  TicketDefinition,
   TicketEvent,
   TicketEventPage,
   TicketEventQuery,
@@ -58,6 +59,8 @@ export interface TicketEngineOptions {
 export class TicketEngineOperationError extends Error {
   constructor(public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation", message: string) { super(message); }
 }
+
+class SharedWorkspaceWriterBusyError extends Error {}
 
 class ConvergenceBudgetError extends Error {
   constructor(readonly details: ConvergenceBudgetExhaustion) {
@@ -314,7 +317,11 @@ export class TicketEngine {
     const policy = await this.policyPort.getPolicy(aggregate.plan.policyRef);
     if (!policy || !hasCapability(policy, input.principalId, this.teamBindingIds, "ticket:claim")) throw new TicketEngineOperationError("policy_violation", "Principal cannot claim Ticket");
     const attemptId = randomUUID();
-    const workspaceBaseline = await this.workspacePort?.captureBaseline(attemptId);
+    const definition = aggregate.definitionsByTicketId[String(input.ticketId)];
+    const requiresIsolation = definitionRequiresGitIsolation(definition);
+    const workspaceBaseline = await this.workspacePort?.captureBaseline(attemptId, {
+      isolate: requiresIsolation,
+    });
     const receipt: ClaimReceipt = {
       requestId: input.requestId,
       claimId: randomUUID(),
@@ -328,6 +335,12 @@ export class TicketEngine {
     };
     try {
       await this.store.transact(input.planId, versions(aggregate), (current) => {
+        if (requiresIsolation && !workspaceBaseline?.isolation && current.tickets.some((candidate) => {
+          if (candidate.ticketId === input.ticketId || candidate.status !== "running") return false;
+          return definitionRequiresGitIsolation(current.definitionsByTicketId[String(candidate.ticketId)]);
+        })) {
+          throw new SharedWorkspaceWriterBusyError("A writable Ticket already owns the shared workspace");
+        }
         const tickets = current.tickets.map((item) => item.ticketId === input.ticketId ? {
           ...item,
           status: "running" as const,
@@ -349,9 +362,14 @@ export class TicketEngine {
       });
       return receipt;
     } catch (error) {
+      if (error instanceof SharedWorkspaceWriterBusyError) {
+        if (workspaceBaseline) await this.workspacePort?.discardAttempt?.(attemptId, workspaceBaseline).catch(() => undefined);
+        return undefined;
+      }
       if (!(error instanceof TicketStoreConflictError)) throw error;
       const raced = await this.store.findOperationRecord(input.requestId);
       if (raced?.kind === "claim" && raced.fingerprint === fingerprintOf(input)) return raced.claim;
+      if (workspaceBaseline) await this.workspacePort?.discardAttempt?.(attemptId, workspaceBaseline).catch(() => undefined);
       return undefined;
     }
   }
@@ -374,6 +392,9 @@ export class TicketEngine {
     const replay = await this.store.findOperationRecord(input.requestId);
     if (replay) {
       if (replay.kind !== "release_claim" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Release request was reused");
+      for (const attempt of replay.ticket.attempts.filter((candidate) => candidate.status === "released" && candidate.workspaceBaseline?.isolation)) {
+        await this.workspacePort?.discardAttempt?.(attempt.attemptId, attempt.workspaceBaseline!).catch(() => undefined);
+      }
       return structuredClone(replay.ticket);
     }
     const claim = await this.requireClaim(input.claimId, input.fencingToken);
@@ -391,7 +412,12 @@ export class TicketEngine {
       const released = tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
       return { ...current, plan: { ...current.plan, version: current.plan.version + 1 }, tickets, claims: current.claims.filter((item) => item.claimId !== claim.claimId), operationRecords: [...current.operationRecords, { kind: "release_claim", requestId: input.requestId, fingerprint: fingerprintOf(input), ticket: released }], pendingEvents: [ticketEvent(released, { type: "TicketReady", ticketVersion: released.version }, this.now().toISOString())] };
     });
-    return next.tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
+    const released = next.tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
+    const releasedAttempt = released.attempts.find((attempt) => attempt.attemptId === claim.attemptId);
+    if (releasedAttempt?.workspaceBaseline) {
+      await this.workspacePort?.discardAttempt?.(releasedAttempt.attemptId, releasedAttempt.workspaceBaseline).catch(() => undefined);
+    }
+    return released;
   }
 
   async transferBlockedOwnership(input: TransferBlockedOwnershipRequest): Promise<BlockedOwnershipReceipt> {
@@ -464,8 +490,22 @@ export class TicketEngine {
     }
     const activeAttempt = ticket.attempts.find((attempt) => attempt.attemptId === ticket.activeAttemptId);
     const changeSet = command.payload.type !== "block" && command.payload.type !== "resume_after_input" && activeAttempt?.workspaceBaseline
-      ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline)
+      ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline, {
+          integrate: command.payload.type === "complete",
+        })
       : undefined;
+    if (changeSet?.integration?.status === "conflict") {
+      const paths = changeSet.integration.conflictingPaths?.length
+        ? ` Conflicting paths: ${changeSet.integration.conflictingPaths.join(", ")}.`
+        : "";
+      return this.persistTicketRejection(
+        aggregate,
+        command,
+        fingerprint,
+        "workspace_conflict",
+        `${changeSet.integration.reason ?? "Ticket delivery could not be integrated into the canonical workspace."}${paths} Resolve the retained Attempt worktree and submit the Goal again.`,
+      );
+    }
     const correctionTargetId = command.payload.type === "request_correction" ? command.payload.targetTicketId : undefined;
     try {
       const next = await this.store.transact(command.planId, versions(aggregate), (current) => {
@@ -667,7 +707,11 @@ export class TicketEngine {
         : resumesBlockedAttempt ? current.blockedOwnerships : otherBlockedOwnerships;
       return appendCommand(current, { plan, tickets, definitionsByTicketId, claims: current.claims.filter((claim) => claim.ticketId !== command.ticketId), blockedOwnerships, pendingEvents }, command.commandId, fingerprint, result);
       });
-      return next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
+      const result = next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
+      if (result.accepted && command.payload.type === "complete" && activeAttempt?.workspaceBaseline) {
+        await this.workspacePort?.cleanupAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
+      }
+      return result;
     } catch (error) {
       if (error instanceof ConvergenceBudgetError) {
         return this.persistTicketRejection(aggregate, command, fingerprint, "budget_exhausted", error.message, error.details);
@@ -933,6 +977,11 @@ function canApplyChangeFromTicket(aggregate: TicketAggregate, ticketId: TicketId
 }
 function requirePositiveDuration(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) throw new TicketEngineOperationError("invalid_request", `${label} must be a positive integer`);
+}
+function definitionRequiresGitIsolation(definition: TicketDefinition | undefined): boolean {
+  if (!definition) return false;
+  const tools = new Set(definition.assignment.requiredTools ?? []);
+  return tools.has("writeFile") || tools.has("editFile");
 }
 function fingerprintOf(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function ticketEvent(ticket: TicketSnapshot, payload: TicketEvent<"ticket">["payload"], occurredAt: string): TicketEvent<"ticket"> {

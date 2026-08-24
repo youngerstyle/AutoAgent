@@ -8,6 +8,7 @@ export interface AgentExecutionSliceInput {
   triggerMessageId?: string;
   goalId?: string;
   attemptId?: string;
+  executionRoot?: string;
   profile: AgentProfile;
   agent: WorkspaceAgent;
   policy: EffectivePolicy;

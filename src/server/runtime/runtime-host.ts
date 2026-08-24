@@ -1675,13 +1675,14 @@ export class RuntimeHost {
     const persistedMission = await missionStore.read();
     const team = teamOverride ?? persistedMission?.record.teamBinding
       ?? createTeamBinding(this.workspace, workspaceAgents, profiles, "minimal-team");
+    const workspacePort = new WorkspaceSnapshotStore(this.workspace.rootPath, () => this.now());
     const tickets = new TicketEngine(
       new TicketStore(this.workspace.rootPath, record.taskId, record.runId),
       this.policyStore,
       {
         teamBindingIds: [team.teamBindingId],
         now: () => this.now(),
-        workspacePort: new WorkspaceSnapshotStore(this.workspace.rootPath, () => this.now()),
+        workspacePort,
       },
     );
     const engines = new Map<string, AgentEngine<MissionTicketOutcome>>();
@@ -1696,6 +1697,7 @@ export class RuntimeHost {
         agent.id,
         () => this.now(),
         this.workspace.rootPath,
+        (attemptId) => workspacePort.executionRoot(attemptId),
       );
       const store = new AgentStore(this.workspace.rootPath, agent.id);
       const engine = new AgentEngine<MissionTicketOutcome>(store, resolutionPort, { now: () => this.now() });
@@ -1780,6 +1782,7 @@ export class RuntimeHost {
 
   private async sliceInput(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string) {
     const workItem = await context.tickets.getWorkItem(link.ticketId);
+    const activeAttempt = workItem?.ticket.attempts.find((attempt) => attempt.attemptId === link.attemptId);
     return this.sliceInputForAgent(
       context,
       link.agentId,
@@ -1789,6 +1792,7 @@ export class RuntimeHost {
       triggerMessageId,
       link.attemptId,
       workItem?.definition.outputContract.schemaRef,
+      activeAttempt?.workspaceBaseline?.isolation?.rootPath,
     );
   }
 
@@ -1801,6 +1805,7 @@ export class RuntimeHost {
     triggerMessageId?: string,
     attemptId?: string,
     taskType?: string,
+    executionRoot?: string,
   ) {
     const storedAgent = (await listWorkspaceAgents(this.workspace)).find((item) => item.id === agentId)!;
     const baseProfile = (await this.profiles.list()).find((item) => item.id === storedAgent.profileId)!;
@@ -1818,6 +1823,7 @@ export class RuntimeHost {
       triggerMessageId,
       goalId,
       attemptId,
+      executionRoot,
       taskType,
       profile,
       agent,
