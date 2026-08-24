@@ -396,7 +396,8 @@ export class StaffingCoordinator {
         staffingDecision: {
           meaning: "staffed 表示所选团队能够对当前 Mission 的完整交付负责，不只是完成需求接收或计划拆解",
           memberCoverage: "每个成员必须声明 capabilityCoverage；平台只验证声明能力属于对应人才档案",
-          missingCapability: "如果人才池无法覆盖完整目标，提交 recruitment_required 和能力缺口，不要提交一个只有管理能力的 staffed 团队",
+          talentPoolMeaning: "talentPool 是本次可以直接选择并实例化到项目的现有人才，不是尚未招聘的外部候选；需要其中的成员时把对应 profileId 放入 staffed.members",
+          missingCapability: "只有 talentPool 中不存在任何能够覆盖所需能力和工具的人才时，才提交 recruitment_required；不得把尚未加入 currentTeam 误判为人才缺口",
         },
       },
       currentTeam: projectAgents.map((agent) => {
@@ -443,6 +444,42 @@ export class StaffingCoordinator {
   }
 }
 
+export function validateStaffingOutcomeAgainstTalentPool(
+  outcome: TeamStaffingOutcome,
+  profiles: readonly AgentProfile[],
+  requiredCapabilities: readonly string[],
+): void {
+  const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+  for (const member of outcome.members) {
+    const profile = byId.get(member.profileId);
+    if (!profile) throw new Error(`人才档案不存在：${member.profileId}`);
+    const invalidCoverage = member.capabilityCoverage.filter((capability) =>
+      !profile.capabilities.includes(capability),
+    );
+    if (invalidCoverage.length) {
+      throw new Error(`成员 ${member.profileId} 声明了档案未提供的能力：${invalidCoverage.join("、")}`);
+    }
+  }
+  if (outcome.status === "staffed") {
+    const selected = outcome.members.map((member) => byId.get(member.profileId)!);
+    const missing = requiredCapabilities.filter((capability) =>
+      !selected.some((profile) => profile.capabilities.includes(capability)),
+    );
+    if (missing.length) {
+      throw new Error(`当前组队方案不满足已提供的启动能力契约：${missing.join("、")}`);
+    }
+    return;
+  }
+  const alreadyCovered = outcome.recruitmentRequests.filter((request) =>
+    profiles.some((profile) => request.capabilities.every((capability) => profile.capabilities.includes(capability))),
+  );
+  if (alreadyCovered.length) {
+    throw new Error(
+      `招聘请求中的能力已由 talentPool 现有人才完整覆盖：${alreadyCovered.map((request) => request.capabilities.join("、")).join("；")}。从 talentPool 选择对应 profileId 并重新提交 staffed，不要把未加入 currentTeam 当成人才缺口。`,
+    );
+  }
+}
+
 class StaffingResolutionPort implements GoalResolutionPort<TeamStaffingOutcome> {
   constructor(
     private readonly taskId: string,
@@ -466,26 +503,7 @@ class StaffingResolutionPort implements GoalResolutionPort<TeamStaffingOutcome> 
     try {
       outcome = parseTeamStaffingOutcome(proposal.domainOutcome);
       const profiles = await this.profiles();
-      const byId = new Map(profiles.map((profile) => [profile.id, profile]));
-      for (const member of outcome.members) {
-        const profile = byId.get(member.profileId);
-        if (!profile) throw new Error(`人才档案不存在：${member.profileId}`);
-        const invalidCoverage = member.capabilityCoverage.filter((capability) =>
-          !profile.capabilities.includes(capability),
-        );
-        if (invalidCoverage.length) {
-          throw new Error(`成员 ${member.profileId} 声明了档案未提供的能力：${invalidCoverage.join("、")}`);
-        }
-      }
-      if (outcome.status === "staffed") {
-        const selected = outcome.members.map((member) => byId.get(member.profileId)!);
-        const missing = this.requiredCapabilities.filter((capability) =>
-          !selected.some((profile) => profile.capabilities.includes(capability)),
-        );
-        if (missing.length) {
-          throw new Error(`当前组队方案不满足已提供的启动能力契约：${missing.join("、")}`);
-        }
-      }
+      validateStaffingOutcomeAgainstTalentPool(outcome, profiles, this.requiredCapabilities);
     } catch (error) {
       return {
         settle: true,

@@ -5,12 +5,21 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 
 const execFileAsync = promisify(execFile);
 const baseUrl = process.env.AUTOAGENT_BASE_URL ?? "http://127.0.0.1:13748";
 const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 2 * 60 * 60_000);
+const initializeGit = process.env.AUTOAGENT_ACCEPTANCE_GIT_INIT === "true";
+const maxHumanInputs = process.env.AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS === undefined
+  ? Number.POSITIVE_INFINITY
+  : Number(process.env.AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS);
+assert.ok(
+  maxHumanInputs === Number.POSITIVE_INFINITY || (Number.isInteger(maxHumanInputs) && maxHumanInputs >= 0),
+  "AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS 必须是非负整数",
+);
 // The built-in goal is a todo demo. A custom goal must be checked as the
 // artifact it actually produced, rather than inheriting that demo UI.
 const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO
@@ -35,7 +44,9 @@ let acceptanceLock;
 let workspace;
 let serviceIdentity;
 let lastObservedAt;
+let repositoryResult;
 const acceptanceStartedAt = new Date().toISOString();
+const acceptanceStartedAtMs = Date.now();
 const answeredManualTestTickets = new Set();
 const resumedProviderFailures = new Set();
 
@@ -71,6 +82,10 @@ try {
   // state. A pre-terminal manual-test result must not stand in for the
   // artifact produced by a later Plan version.
   browserResult = await runArtifactAcceptance({ force: true });
+  repositoryResult = await inspectRepository();
+  if (initializeGit) {
+    assert.equal(repositoryResult.clean, true, `Mission 完成后 Git 工作树不干净：${repositoryResult.status.join(", ")}`);
+  }
 
   const report = {
     passed: true,
@@ -86,6 +101,13 @@ try {
     service: serviceIdentity,
     task: { id: snapshot.activeTask?.id, status: snapshot.status },
     runtimeInvariants: { passed: true },
+    autonomy: {
+      maxHumanInputs: Number.isFinite(maxHumanInputs) ? maxHumanInputs : null,
+      humanInputsProvided: answeredManualTestTickets.size,
+      providerRecoveries: resumedProviderFailures.size,
+    },
+    metrics: projectMetrics(snapshot, acceptanceStartedAtMs),
+    repository: repositoryResult,
     tickets: snapshot.tickets.map(({ id, type, brief, status, targetAgentId }) => ({ id, type, brief, status, targetAgentId })),
     artifactAcceptance: browserResult,
   };
@@ -106,6 +128,13 @@ try {
     service: serviceIdentity,
     workspace: workspace ? { id: workspace.id, rootPath: workspaceRoot } : { rootPath: workspaceRoot },
     terminal: Boolean(snapshot && ["completed", "failed", "blocked", "paused", "cancelled", "interrupted"].includes(snapshot.status)),
+    autonomy: {
+      maxHumanInputs: Number.isFinite(maxHumanInputs) ? maxHumanInputs : null,
+      humanInputsProvided: answeredManualTestTickets.size,
+      providerRecoveries: resumedProviderFailures.size,
+    },
+    metrics: snapshot ? projectMetrics(snapshot, acceptanceStartedAtMs) : undefined,
+    repository: repositoryResult,
     error: error instanceof Error ? error.stack ?? error.message : String(error),
     snapshot,
   };
@@ -175,6 +204,7 @@ async function resolveWorkspace() {
     return existing;
   }
   await mkdir(workspaceRoot, { recursive: true });
+  if (initializeGit) await initializeGitRepository();
   return api("/api/workspaces", {
     method: "POST",
     body: { name: `真实用户验收 ${new Date().toISOString()}`, rootPath: workspaceRoot, policyProfile: "development" },
@@ -224,7 +254,7 @@ async function waitForTerminal(workspaceId) {
     const signature = [
       current.status,
       current.agents.map((agent) => `${agent.name}:${agent.status}`).join(","),
-      current.tickets.map((ticket) => `${ticket.status}:${ticket.title}`).join(","),
+      current.tickets.map((ticket) => `${ticket.status}:${ticket.title ?? ticket.brief?.slice(0, 24) ?? ticket.id}`).join(","),
     ].join(" | ");
     if (signature !== lastSignature) console.log(`[真实验收] ${signature}`);
     lastSignature = signature;
@@ -234,6 +264,11 @@ async function waitForTerminal(workspaceId) {
       && !answeredManualTestTickets.has(ticket.id)
     );
     if (manualTest) {
+      if (answeredManualTestTickets.size >= maxHumanInputs) {
+        throw new Error(
+          `Mission 请求了人工测试 Ticket ${manualTest.id}，但本次自主交付门禁最多允许 ${maxHumanInputs} 次人工输入`,
+        );
+      }
       answeredManualTestTickets.add(manualTest.id);
       const result = await runArtifactAcceptance({ force: true });
       const taskId = current.activeTask?.id;
@@ -348,6 +383,8 @@ async function runBrowserAcceptance({ force = false } = {}) {
 
 async function runArtifactAcceptance({ force = false } = {}) {
   if (browserResult && !force) return browserResult;
+  if (scenario === "node-cli") return runNodeCliAcceptance();
+  if (scenario === "npm-library") return runNpmLibraryAcceptance();
   const htmlPath = await findHtmlEntryPath();
   if (htmlPath) return runBrowserAcceptance({ force });
 
@@ -368,6 +405,81 @@ async function runArtifactAcceptance({ force = false } = {}) {
       ...desktopEntries,
     ].join(", ")}`,
   );
+}
+
+async function runNodeCliAcceptance() {
+  const cliPath = path.join(workspaceRoot, "cli.mjs");
+  const packagePath = path.join(workspaceRoot, "package.json");
+  assert.ok(existsSync(cliPath), "Node CLI 交付缺少 cli.mjs");
+  assert.ok(existsSync(packagePath), "Node CLI 交付缺少 package.json");
+  const tests = await runNpm(["test"], 120_000);
+  const fixturePath = path.join(reportDir, "cli-black-box.ndjson");
+  await mkdir(reportDir, { recursive: true });
+  await writeFile(fixturePath, [
+    '{"level":"info","message":"boot"}',
+    '{"level":"warn","message":"slow"}',
+    '{broken json',
+    '{"level":"error","message":"down"}',
+    "",
+  ].join("\n"), "utf8");
+  const normal = await execFileAsync(
+    process.execPath,
+    [cliPath, "--input", fixturePath, "--level", "warn", "--json"],
+    { cwd: workspaceRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+  );
+  const parsed = JSON.parse(normal.stdout.trim());
+  assert.deepEqual(parsed, { total: 4, valid: 3, invalid: 1, matched: 2 }, "CLI JSON 汇总结果不符合黑盒契约");
+  let strictFailure;
+  try {
+    await execFileAsync(
+      process.execPath,
+      [cliPath, "--input", fixturePath, "--level", "warn", "--json", "--strict"],
+      { cwd: workspaceRoot, encoding: "utf8", timeout: 30_000, windowsHide: true },
+    );
+  } catch (error) {
+    strictFailure = error;
+  }
+  assert.ok(strictFailure, "CLI strict 模式遇到坏行时没有失败");
+  assert.equal(strictFailure.code, 1, `CLI strict 模式退出码不是 1：${strictFailure.code}`);
+  assert.match(String(strictFailure.stderr), /line\s+3/i, "CLI strict 模式没有定位坏行行号");
+  return {
+    scenario: "node-cli",
+    npmTestExitCode: 0,
+    npmTestOutput: tests.stdout.slice(-2_000),
+    summary: parsed,
+    strictExitCode: strictFailure.code,
+  };
+}
+
+async function runNpmLibraryAcceptance() {
+  const packagePath = path.join(workspaceRoot, "package.json");
+  const entryPath = path.join(workspaceRoot, "index.js");
+  assert.ok(existsSync(packagePath), "npm library 交付缺少 package.json");
+  assert.ok(existsSync(entryPath), "npm library 交付缺少 index.js");
+  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+  assert.deepEqual(manifest.dependencies ?? {}, {}, "npm library 不允许包含运行时依赖");
+  const tests = await runNpm(["test"], 120_000);
+  const moduleUrl = pathToFileURL(entryPath).href;
+  const library = await import(`${moduleUrl}?acceptance=${Date.now()}`);
+  assert.equal(typeof library.summarize, "function", "npm library 没有导出 summarize(values)");
+  assert.deepEqual(
+    library.summarize([2, 4, 8, 10]),
+    { count: 4, min: 2, max: 10, mean: 6 },
+    "summarize(values) 黑盒结果不符合契约",
+  );
+  assert.throws(() => library.summarize([1, Number.NaN]), /finite|number|数值/i, "summarize 没有拒绝非有限数值");
+  const packed = await runNpm(["pack", "--dry-run", "--json"], 60_000);
+  const packReport = JSON.parse(packed.stdout);
+  const files = packReport[0]?.files?.map((file) => file.path) ?? [];
+  assert.ok(files.includes("index.js"), "npm pack 结果缺少 index.js");
+  assert.equal(files.some((file) => file.startsWith("test") || file.includes("node_modules")), false, "npm pack 泄露测试或 node_modules");
+  return {
+    scenario: "npm-library",
+    npmTestExitCode: 0,
+    npmTestOutput: tests.stdout.slice(-2_000),
+    packageName: manifest.name,
+    packedFiles: files,
+  };
 }
 
 async function findHtmlEntryPath() {
@@ -648,6 +760,59 @@ async function api(route, options = {}) {
 async function saveReport(report) {
   await mkdir(reportDir, { recursive: true });
   await writeFile(path.join(reportDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
+async function initializeGitRepository() {
+  if (existsSync(path.join(workspaceRoot, ".git"))) return;
+  await execFileAsync("git", ["init"], { cwd: workspaceRoot, encoding: "utf8", windowsHide: true });
+  await writeFile(path.join(workspaceRoot, ".gitignore"), ".autoagent/\nnode_modules/\n", "utf8");
+  await execFileAsync("git", ["add", ".gitignore"], { cwd: workspaceRoot, encoding: "utf8", windowsHide: true });
+  await execFileAsync(
+    "git",
+    ["-c", "user.name=AutoAgent Acceptance", "-c", "user.email=acceptance@autoagent.local", "commit", "-m", "acceptance baseline"],
+    { cwd: workspaceRoot, encoding: "utf8", windowsHide: true },
+  );
+}
+
+async function runNpm(args, timeout) {
+  if (process.platform === "win32") {
+    return execFileAsync(
+      process.env.ComSpec ?? "cmd.exe",
+      ["/d", "/s", "/c", `npm.cmd ${args.join(" ")}`],
+      { cwd: workspaceRoot, encoding: "utf8", timeout, windowsHide: true },
+    );
+  }
+  return execFileAsync("npm", args, { cwd: workspaceRoot, encoding: "utf8", timeout, windowsHide: true });
+}
+
+async function inspectRepository() {
+  if (!existsSync(path.join(workspaceRoot, ".git"))) return { required: initializeGit, detected: false, clean: null, status: [] };
+  const { stdout } = await execFileAsync(
+    "git",
+    ["status", "--porcelain", "--untracked-files=all"],
+    { cwd: workspaceRoot, encoding: "utf8", windowsHide: true },
+  );
+  const status = stdout.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  return { required: initializeGit, detected: true, clean: status.length === 0, status };
+}
+
+function projectMetrics(current, startedAtMs) {
+  const tickets = current.tickets ?? [];
+  const workstreams = new Set(tickets.map((ticket) => ticket.workstream).filter(Boolean));
+  const taskStartedAt = Date.parse(current.activeTaskRun?.startedAt ?? "");
+  const taskEndedAt = Date.parse(current.activeTaskRun?.endedAt ?? "");
+  const effectiveStart = Number.isFinite(taskStartedAt) ? taskStartedAt : startedAtMs;
+  const effectiveEnd = Number.isFinite(taskEndedAt) ? taskEndedAt : Date.now();
+  return {
+    durationMs: Math.max(0, effectiveEnd - effectiveStart),
+    planVersion: current.mission?.planVersion ?? null,
+    ticketCount: tickets.length,
+    totalAttempts: tickets.reduce((sum, ticket) => sum + Math.max(0, Number(ticket.attempt ?? 0)), 0),
+    returnedTicketCount: tickets.filter((ticket) => ticket.status === "returned").length,
+    workstreamCount: workstreams.size,
+    isolatedTicketCount: tickets.filter((ticket) => ticket.execution?.workspaceMode === "git_worktree").length,
+    changedFileCount: tickets.reduce((sum, ticket) => sum + Math.max(0, Number(ticket.execution?.changedFileCount ?? 0)), 0),
+  };
 }
 
 function failureMessage(message, current) {

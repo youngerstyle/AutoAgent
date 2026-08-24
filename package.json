@@ -14,6 +14,7 @@
     "test:acceptance:real": "node scripts/real-user-acceptance.mjs",
     "test:acceptance:real-multi-plan": "node scripts/real-multi-plan-user-acceptance.mjs",
     "test:acceptance:real-endurance": "npm run build && node scripts/real-agent-endurance-acceptance.mjs",
+    "test:acceptance:autonomous-suite": "npm run build && node scripts/real-autonomous-project-suite.mjs",
     "test:acceptance:real-process-recovery": "npm run build && node scripts/real-provider-process-recovery-acceptance.mjs",
     "migrate:team-bindings": "tsx scripts/migrate-team-bindings.ts",
     "migrate:agent-stores": "tsx scripts/migrate-agent-stores.ts",

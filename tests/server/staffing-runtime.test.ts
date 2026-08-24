@@ -11,10 +11,32 @@ import { DEFAULT_MINIMAL_TEAM_POLICY_CONFIG, seedMinimalTeamPlanPolicy } from ".
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import { parseTeamStaffingOutcome } from "../../src/shared/contracts/staffing.js";
 import type { Workspace } from "../../src/shared/types.js";
-import { StaffingCoordinator } from "../../src/server/staffing/staffing-coordinator.js";
+import { StaffingCoordinator, validateStaffingOutcomeAgainstTalentPool } from "../../src/server/staffing/staffing-coordinator.js";
 import { StaffingRequestStore, type StaffingRequestRecord } from "../../src/server/staffing/staffing-request-store.js";
 
 describe("automatic project staffing", () => {
+  it("rejects recruitment when an existing talent-pool profile already covers the requested capabilities", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-staffing-talent-pool-home-"));
+    const profiles = await new AgentProfileStore(home).list();
+    const pm = profiles.find((profile) => profile.id === "prof_pm")!;
+    const redundant = parseTeamStaffingOutcome({
+      status: "recruitment_required",
+      members: [],
+      recruitmentRequests: [{ capabilities: [...pm.capabilities], reason: "需要 PM" }],
+    });
+
+    expect(() => validateStaffingOutcomeAgainstTalentPool(redundant, profiles, ["mission:intake", "plan:plan", "delivery:accept"]))
+      .toThrow("从 talentPool 选择对应 profileId");
+
+    const genuineGap = parseTeamStaffingOutcome({
+      status: "recruitment_required",
+      members: [],
+      recruitmentRequests: [{ capabilities: ["production:kubernetes"], reason: "现有人才没有生产集群能力" }],
+    });
+    expect(() => validateStaffingOutcomeAgainstTalentPool(genuineGap, profiles, ["mission:intake", "plan:plan", "delivery:accept"]))
+      .not.toThrow();
+  });
+
   it("requires each staffing member to declare auditable capability coverage", () => {
     const parsed = parseTeamStaffingOutcome({
       status: "staffed",
