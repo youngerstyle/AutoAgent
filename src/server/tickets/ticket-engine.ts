@@ -507,6 +507,26 @@ export class TicketEngine {
         `${changeSet.integration.reason ?? "Ticket delivery could not be integrated into the canonical workspace."}${paths} Resolve the retained Attempt worktree and submit the Goal again.`,
       );
     }
+    if (
+      command.payload.type === "complete"
+      && activeAttempt?.workspaceBaseline?.isolation
+      && !definitionIntegratesWorkspaceChanges(definition)
+      && changeSet
+    ) {
+      const changedPaths = [...changeSet.added, ...changeSet.modified, ...changeSet.deleted]
+        .map((change) => change.path);
+      if (changedPaths.length > 0) {
+        const displayedPaths = changedPaths.slice(0, 12);
+        const remaining = changedPaths.length - displayedPaths.length;
+        return this.persistTicketRejection(
+          aggregate,
+          command,
+          fingerprint,
+          "workspace_changes_not_allowed",
+          `This isolated Attempt is not authorized to integrate workspace changes, but verification left ${changedPaths.length} changed path(s): ${displayedPaths.join(", ")}${remaining > 0 ? `, and ${remaining} more` : ""}. Restore side effects created by diagnostics and submit the Goal again. If the project's documented verification command changes a clean checkout, report or request correction instead of hiding that product defect.`,
+        );
+      }
+    }
     const correctionTargetId = command.payload.type === "request_correction" ? command.payload.targetTicketId : undefined;
     try {
       const next = await this.store.transact(command.planId, versions(aggregate), (current) => {

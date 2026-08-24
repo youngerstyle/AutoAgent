@@ -433,6 +433,7 @@ export type TicketCommandResult =
         | "plan_terminal"
         | "idempotency_conflict"
         | "workspace_conflict"
+        | "workspace_changes_not_allowed"
         | "budget_exhausted";
       reason: string;
       currentTicketVersion?: number;

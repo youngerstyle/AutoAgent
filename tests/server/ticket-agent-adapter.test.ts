@@ -82,6 +82,10 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("human 明确本轮不提供该输入时");
     expect(instruction).toContain("不得改写成上游缺陷或计划缺口");
     expect(instruction).toContain("不得生成重复纠错、实现或验收工作");
+    expect(instruction).toContain("git status --porcelain --untracked-files=all");
+    expect(instruction).toContain("不得在脏工作树上提交完成");
+    expect(instruction).toContain("项目文档要求的构建或测试命令会修改原本干净的 checkout");
+    expect(instruction).toContain("调用 report_goal_correction");
   });
 
   it("keeps final Mission acceptance blocked instead of requesting repeated amendments", () => {
