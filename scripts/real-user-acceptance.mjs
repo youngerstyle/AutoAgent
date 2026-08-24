@@ -45,6 +45,7 @@ let workspace;
 let serviceIdentity;
 let lastObservedAt;
 let repositoryResult;
+let transportRetries = 0;
 const acceptanceStartedAt = new Date().toISOString();
 const acceptanceStartedAtMs = Date.now();
 const answeredManualTestTickets = new Set();
@@ -105,6 +106,7 @@ try {
       maxHumanInputs: Number.isFinite(maxHumanInputs) ? maxHumanInputs : null,
       humanInputsProvided: answeredManualTestTickets.size,
       providerRecoveries: resumedProviderFailures.size,
+      transportRetries,
     },
     metrics: projectMetrics(snapshot, acceptanceStartedAtMs),
     repository: repositoryResult,
@@ -132,6 +134,7 @@ try {
       maxHumanInputs: Number.isFinite(maxHumanInputs) ? maxHumanInputs : null,
       humanInputsProvided: answeredManualTestTickets.size,
       providerRecoveries: resumedProviderFailures.size,
+      transportRetries,
     },
     metrics: snapshot ? projectMetrics(snapshot, acceptanceStartedAtMs) : undefined,
     repository: repositoryResult,
@@ -766,19 +769,33 @@ function contentType(filePath) {
 }
 
 async function api(route, options = {}) {
-  const response = await fetch(`${baseUrl}${route}`, {
-    method: options.method ?? "GET",
-    headers: options.body ? { "content-type": "application/json" } : undefined,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  const method = options.method ?? "GET";
+  const maxTransportRetries = method === "GET" ? 3 : 0;
+  let response;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${baseUrl}${route}`, {
+        method,
+        headers: options.body ? { "content-type": "application/json" } : undefined,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+      break;
+    } catch (error) {
+      if (attempt >= maxTransportRetries) throw error;
+      transportRetries += 1;
+      const retryDelayMs = 500 * (2 ** attempt);
+      console.warn(`[真实验收] ${method} ${route} 传输失败，${retryDelayMs}ms 后进行第 ${attempt + 1}/${maxTransportRetries} 次重试`);
+      await sleep(retryDelayMs);
+    }
+  }
   const text = await response.text();
   let value;
   try {
     value = text ? JSON.parse(text) : {};
   } catch {
-    throw new Error(`${options.method ?? "GET"} ${route} 返回非 JSON (${response.status}): ${text.slice(0, 500)}`);
+    throw new Error(`${method} ${route} 返回非 JSON (${response.status}): ${text.slice(0, 500)}`);
   }
-  if (!response.ok) throw new Error(`${options.method ?? "GET"} ${route} 失败 (${response.status}): ${JSON.stringify(value)}`);
+  if (!response.ok) throw new Error(`${method} ${route} 失败 (${response.status}): ${JSON.stringify(value)}`);
   return value;
 }
 
