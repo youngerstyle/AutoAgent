@@ -95,7 +95,7 @@ const cases = [
       "这是同一 Workspace 的第二轮独立 Mission。基于上一轮 v2 Order Service 增量交付退款能力，不得重建项目或破坏已有创建、查询、取消和审计契约。",
       "将 schemaVersion 从 2 原子迁移到 3，并确保全新启动时也能从 v1 直接安全迁移到 v3；为每个订单持久化 refunds 数组。",
       "新增 POST /api/orders/:id/refunds，接收 {amount,expectedVersion} 并要求 Idempotency-Key。只有 cancelled 订单可以退款；amount 必须为正且累计退款不得超过订单 amount。",
-      "成功返回 {refund,order}，递增 order.version 并追加 order.refunded 审计；同一幂等键重放返回同一 refund 且不重复扣减，旧版本、错误状态或超额退款返回 409，非法输入 400，不存在 404。",
+      "首次成功退款返回 HTTP 201 与 {refund,order}，递增 order.version 并追加 order.refunded 审计；同一幂等键重放可返回 200 或 201，但必须返回同一 refund 且不重复扣减。旧版本、错误状态或超额退款返回 409，非法输入 400，不存在 404。",
       "新增 GET /api/orders/:id/refunds 返回 {refunds}，补充 v2→v3/v1→v3、幂等退款、并发冲突、累计上限、审计、旧 API 回归与重启恢复测试，并更新 README。",
       "仍由当前持久团队自行完成理解、实现、独立 QA 和最终验收；不得请求 human 代为测试、编辑或启动服务。",
     ].join(" "),
