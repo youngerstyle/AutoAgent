@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -388,6 +388,7 @@ async function runArtifactAcceptance({ force = false } = {}) {
   if (browserResult && !force) return browserResult;
   if (scenario === "node-cli") return runNodeCliAcceptance();
   if (scenario === "npm-library") return runNpmLibraryAcceptance();
+  if (scenario === "issue-tracker-service") return runIssueTrackerServiceAcceptance();
   const htmlPath = await findHtmlEntryPath();
   if (htmlPath) return runBrowserAcceptance({ force });
 
@@ -483,6 +484,173 @@ async function runNpmLibraryAcceptance() {
     packageName: manifest.name,
     packedFiles: files,
   };
+}
+
+async function runIssueTrackerServiceAcceptance() {
+  const entryPath = path.join(workspaceRoot, "server.mjs");
+  const packagePath = path.join(workspaceRoot, "package.json");
+  assert.ok(existsSync(entryPath), "Issue Tracker 交付缺少 server.mjs");
+  assert.ok(existsSync(packagePath), "Issue Tracker 交付缺少 package.json");
+  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+  assert.deepEqual(manifest.dependencies ?? {}, {}, "Issue Tracker 不允许包含运行时依赖");
+  const tests = await runNpm(["test"], 180_000);
+  await mkdir(reportDir, { recursive: true });
+  const dataFile = path.join(reportDir, "issue-tracker-black-box.json");
+  const port = await reservePort();
+  let service = await startIssueTracker(entryPath, port, dataFile);
+  const serviceUrl = `http://127.0.0.1:${port}`;
+  try {
+    const health = await requestIssueApi(serviceUrl, "/health");
+    assert.equal(health.response.status, 200, "GET /health 未返回 200");
+    assert.equal(health.value.ok, true, "GET /health 未返回 {ok:true}");
+
+    const createdProject = await requestIssueApi(serviceUrl, "/api/projects", {
+      method: "POST",
+      body: { name: "自主交付项目" },
+    });
+    assert.equal(createdProject.response.status, 201, "创建 project 未返回 201");
+    const projectId = createdProject.value.project?.id;
+    assert.ok(typeof projectId === "string" && projectId.length > 0, "创建 project 未返回稳定 id");
+
+    const firstIssue = await requestIssueApi(serviceUrl, `/api/projects/${projectId}/issues`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "acceptance-issue-1" },
+      body: { title: "修复持久化边界", priority: "high" },
+    });
+    assert.equal(firstIssue.response.status, 201, "首次创建 issue 未返回 201");
+    assert.equal(firstIssue.value.issue?.status, "open", "新 issue 状态不是 open");
+    assert.equal(firstIssue.value.issue?.version, 1, "新 issue version 不是 1");
+    const firstIssueId = firstIssue.value.issue?.id;
+    assert.ok(typeof firstIssueId === "string" && firstIssueId.length > 0, "创建 issue 未返回 id");
+
+    const replay = await requestIssueApi(serviceUrl, `/api/projects/${projectId}/issues`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "acceptance-issue-1" },
+      body: { title: "修复持久化边界", priority: "high" },
+    });
+    assert.ok([200, 201].includes(replay.response.status), "幂等重放未返回成功状态");
+    assert.equal(replay.value.issue?.id, firstIssueId, "幂等重放创建了不同 issue");
+
+    const secondIssue = await requestIssueApi(serviceUrl, `/api/projects/${projectId}/issues`, {
+      method: "POST",
+      headers: { "Idempotency-Key": "acceptance-issue-2" },
+      body: { title: "补充分页验证", priority: "low" },
+    });
+    assert.equal(secondIssue.response.status, 201, "创建第二条 issue 未返回 201");
+
+    const highOnly = await requestIssueApi(serviceUrl, `/api/issues?projectId=${projectId}&priority=high`);
+    assert.deepEqual(highOnly.value.items?.map((item) => item.id), [firstIssueId], "priority 筛选结果不准确");
+    const firstPage = await requestIssueApi(serviceUrl, `/api/issues?projectId=${projectId}&limit=1`);
+    assert.equal(firstPage.value.items?.length, 1, "第一页没有严格应用 limit=1");
+    assert.ok(typeof firstPage.value.nextCursor === "string" && firstPage.value.nextCursor.length > 0, "第一页缺少 nextCursor");
+    const secondPage = await requestIssueApi(
+      serviceUrl,
+      `/api/issues?projectId=${projectId}&limit=1&cursor=${encodeURIComponent(firstPage.value.nextCursor)}`,
+    );
+    assert.equal(secondPage.value.items?.length, 1, "第二页没有返回剩余 issue");
+    assert.notEqual(secondPage.value.items?.[0]?.id, firstPage.value.items?.[0]?.id, "cursor 分页返回了重复 issue");
+
+    const updated = await requestIssueApi(serviceUrl, `/api/issues/${firstIssueId}`, {
+      method: "PATCH",
+      body: { status: "closed", expectedVersion: 1 },
+    });
+    assert.equal(updated.response.status, 200, "合法状态更新未返回 200");
+    assert.equal(updated.value.issue?.status, "closed", "状态更新未生效");
+    assert.equal(updated.value.issue?.version, 2, "状态更新未递增 version");
+    const stale = await requestIssueApi(serviceUrl, `/api/issues/${firstIssueId}`, {
+      method: "PATCH",
+      body: { status: "open", expectedVersion: 1 },
+    });
+    assert.equal(stale.response.status, 409, "旧 expectedVersion 写入未返回 409");
+
+    const malformed = await fetch(`${serviceUrl}/api/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{broken",
+    });
+    assert.equal(malformed.status, 400, "非法 JSON 未返回 400");
+
+    await stopIssueTracker(service);
+    service = await startIssueTracker(entryPath, port, dataFile);
+    const afterRestart = await requestIssueApi(serviceUrl, `/api/issues?projectId=${projectId}&status=closed`);
+    assert.deepEqual(afterRestart.value.items?.map((item) => item.id), [firstIssueId], "重启后已关闭 issue 没有恢复");
+    assert.equal(afterRestart.value.items?.[0]?.version, 2, "重启后 issue version 没有恢复");
+
+    return {
+      scenario: "issue-tracker-service",
+      npmTestExitCode: 0,
+      npmTestOutput: tests.stdout.slice(-2_000),
+      projectId,
+      issueCount: 2,
+      idempotencyPreserved: true,
+      staleWriteStatus: stale.response.status,
+      paginationVerified: true,
+      restartPersistenceVerified: true,
+    };
+  } finally {
+    await stopIssueTracker(service);
+  }
+}
+
+async function reservePort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+async function startIssueTracker(entryPath, port, dataFile) {
+  const child = spawn(process.execPath, [entryPath], {
+    cwd: workspaceRoot,
+    env: { ...process.env, PORT: String(port), DATA_FILE: dataFile },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output = `${output}${chunk}`.slice(-4_000); });
+  child.stderr.on("data", (chunk) => { output = `${output}${chunk}`.slice(-4_000); });
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(`Issue Tracker 启动前退出 (${child.exitCode})：${output}`);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      if (response.ok) return child;
+    } catch {
+      // The process may not have bound its port yet.
+    }
+    await sleep(100);
+  }
+  child.kill();
+  throw new Error(`Issue Tracker 在 15 秒内未就绪：${output}`);
+}
+
+async function stopIssueTracker(child) {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill();
+  await Promise.race([exited, sleep(3_000)]);
+  if (child.exitCode === null) child.kill("SIGKILL");
+}
+
+async function requestIssueApi(serviceUrl, route, options = {}) {
+  const response = await fetch(`${serviceUrl}${route}`, {
+    method: options.method ?? "GET",
+    headers: {
+      ...(options.body ? { "content-type": "application/json" } : {}),
+      ...(options.headers ?? {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await response.text();
+  let value;
+  try {
+    value = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`${options.method ?? "GET"} ${route} 返回非 JSON (${response.status}): ${text.slice(0, 300)}`);
+  }
+  return { response, value };
 }
 
 async function findHtmlEntryPath() {

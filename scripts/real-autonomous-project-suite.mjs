@@ -11,7 +11,7 @@ const suiteRoot = process.env.AUTOAGENT_AUTONOMOUS_SUITE_ROOT
 const reportFile = path.join(suiteRoot, "suite-report.json");
 const timeoutMs = Number(process.env.AUTOAGENT_AUTONOMOUS_CASE_TIMEOUT_MS ?? 2 * 60 * 60_000);
 const selectedCaseIds = new Set(
-  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library")
+  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library,issue-tracker-service")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),
@@ -52,13 +52,27 @@ const cases = [
       "不得请求 human 替团队测试或编辑文件。",
     ].join(" "),
   },
+  {
+    id: "issue-tracker-service",
+    scenario: "issue-tracker-service",
+    goal: [
+      "在当前空目录交付一个 Node.js 20+、零运行时依赖的持久化 Issue Tracker HTTP 服务，固定入口为 server.mjs。",
+      "服务必须读取 PORT 和 DATA_FILE 环境变量，提供 GET /health，并以 JSON 文件持久化 projects、issues 和幂等键；进程重启后数据必须保留。",
+      "POST /api/projects 接收 {name} 并返回 {project}；POST /api/projects/:projectId/issues 接收 {title,priority}，priority 只能是 low、medium、high。",
+      "创建 issue 必须支持 Idempotency-Key：同一 key 重放不得新增第二条 issue，并返回同一 id。新 issue 的 status=open、version=1。",
+      "PATCH /api/issues/:id 接收 {status,expectedVersion}，status 只能是 open、in_progress、closed；版本匹配时递增 version，旧版本写入必须返回 409。",
+      "GET /api/issues 必须支持 projectId、status、priority 筛选以及 limit、cursor 稳定分页，返回 {items,nextCursor}。非法 JSON、字段或查询参数返回 400，不存在资源返回 404。",
+      "持久化写入必须避免留下半写 JSON；package.json 必须提供 npm test，并提供 README，测试要覆盖路由契约、幂等、并发冲突、分页、错误输入和重启持久化。",
+      "团队必须完成架构、分模块实现、自动化检查、独立 QA 和最终验收；不得请求 human 替团队测试、编辑文件或启动服务。",
+    ].join(" "),
+  },
 ].filter((item) => selectedCaseIds.has(item.id));
 
 assert.ok(cases.length > 0, "自主项目套件没有选中任何 case");
 assert.deepEqual(
   [...selectedCaseIds].sort(),
   cases.map((item) => item.id).sort(),
-  `存在未知 case；可选值：project-board,node-cli,npm-library`,
+  `存在未知 case；可选值：project-board,node-cli,npm-library,issue-tracker-service`,
 );
 
 console.log(`[自主项目套件] root=${suiteRoot}`);
