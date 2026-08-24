@@ -49,6 +49,7 @@ let lastObservedAt;
 let repositoryResult;
 let transportRetries = 0;
 let missionContinuity;
+const acceptanceRepairMissions = [];
 const acceptanceStartedAt = new Date().toISOString();
 const acceptanceStartedAtMs = Date.now();
 const answeredManualTestTickets = new Set();
@@ -83,6 +84,11 @@ try {
   assertAuditablePlan(snapshot.tickets);
 
   if (followupGoal) {
+    const initialFirstTaskId = snapshot.activeTask?.id;
+    await verifyArtifactWithMissionRepair(
+      "first_mission",
+      () => runBrownfieldOrderUpgradeAcceptance(),
+    );
     const firstSnapshot = snapshot;
     const firstRepository = await inspectRepository();
     if (initializeGit) assert.equal(firstRepository.clean, true, `第一轮 Mission 完成后 Git 工作树不干净：${firstRepository.status.join(", ")}`);
@@ -92,6 +98,7 @@ try {
       method: "POST",
       body: { title: "持久团队连续迭代", goal: followupGoal },
     }).then((value) => value.snapshot);
+    const initialSecondTaskId = snapshot.activeTask?.id;
     snapshot = await waitForTerminal(workspace.id);
     assertRuntimeSnapshot(snapshot, { terminal: true });
     assert.equal(snapshot.status, "completed", failureMessage("第二轮 Mission 未完成", snapshot));
@@ -102,6 +109,8 @@ try {
     const reusedAgentIds = [...secondTargetAgentIds].filter((agentId) => firstTargetAgentIds.has(agentId));
     assert.ok(reusedAgentIds.length >= 3, `第二轮没有复用足够的持久 Agent：${reusedAgentIds.join(", ")}`);
     missionContinuity = {
+      initialFirstTaskId,
+      initialSecondTaskId,
       firstTaskId: firstTask?.id,
       secondTaskId: snapshot.activeTask?.id,
       sameWorkspaceId: true,
@@ -116,7 +125,13 @@ try {
   // Always re-check the final artifact after Mission reaches a terminal
   // state. A pre-terminal manual-test result must not stand in for the
   // artifact produced by a later Plan version.
-  browserResult = await runArtifactAcceptance({ force: true });
+  browserResult = followupGoal
+    ? await verifyArtifactWithMissionRepair("final_mission", () => runArtifactAcceptance({ force: true }))
+    : await runArtifactAcceptance({ force: true });
+  if (missionContinuity && acceptanceRepairMissions.length > 0) {
+    missionContinuity.acceptanceRepairMissions = acceptanceRepairMissions;
+    missionContinuity.secondTaskId = snapshot.activeTask?.id;
+  }
   repositoryResult = await inspectRepository();
   if (initializeGit) {
     assert.equal(repositoryResult.clean, true, `Mission 完成后 Git 工作树不干净：${repositoryResult.status.join(", ")}`);
@@ -186,6 +201,44 @@ try {
   await new Promise((resolve) => staticServer?.close(resolve) ?? resolve());
   await acceptanceLock?.handle.close().catch(() => undefined);
   if (acceptanceLock) await rm(acceptanceLock.file, { force: true }).catch(() => undefined);
+}
+
+async function verifyArtifactWithMissionRepair(stage, verifier) {
+  try {
+    return await verifier();
+  } catch (error) {
+    const failedTaskId = snapshot?.activeTask?.id;
+    const failure = error instanceof Error ? error.message : String(error);
+    console.warn(`[真实验收] ${stage} 黑盒验收失败，交回持久团队修复：${failure}`);
+    snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
+      method: "POST",
+      body: {
+        title: `${stage} 外部验收修复`,
+        goal: [
+          "独立于团队内部测试的生产黑盒验收发现了真实交付缺陷。",
+          `失败阶段：${stage}。失败事实：${failure}`,
+          "请在当前 Workspace 中复现并修复根因，保留所有既有 API、数据和审计契约；补充能阻止该回归的自动化测试。",
+          "不要修改或绕过 .autoagent 下的验收器。完成后运行完整测试并确保 Git 工作树干净。",
+        ].join("\n"),
+      },
+    }).then((value) => value.snapshot);
+    snapshot = await waitForTerminal(workspace.id);
+    assertRuntimeSnapshot(snapshot, { terminal: true });
+    assert.equal(snapshot.status, "completed", failureMessage(`${stage} 验收修复 Mission 未完成`, snapshot));
+    assert.ok(snapshot.tickets.length > 0, `${stage} 验收修复 Mission 没有生成 Ticket`);
+    assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage(`${stage} 验收修复存在未完成 Ticket`, snapshot));
+    assertAuditablePlan(snapshot.tickets);
+    const repository = await inspectRepository();
+    if (initializeGit) assert.equal(repository.clean, true, `${stage} 验收修复后 Git 工作树不干净：${repository.status.join(", ")}`);
+    acceptanceRepairMissions.push({
+      stage,
+      failedTaskId,
+      repairTaskId: snapshot.activeTask?.id,
+      failure,
+      targetAgentIds: [...new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean))],
+    });
+    return verifier();
+  }
 }
 
 async function acquireAcceptanceLock() {
@@ -691,6 +744,8 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
     assert.equal(audit.value.events?.[1]?.reason, "customer request", "取消审计没有保留 reason");
 
     let refund;
+    let finalAudit = audit;
+    let overLimitRefundStatus;
     if (withRefunds) {
       const refunded = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
         method: "POST",
@@ -714,9 +769,17 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
         body: { amount: 5, expectedVersion: 2 },
       });
       assert.equal(staleRefund.response.status, 409, "旧版本退款未返回 409");
+      const overLimitRefund = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+        method: "POST",
+        headers: { "Idempotency-Key": "acceptance-refund-over-limit" },
+        body: { amount: 101, expectedVersion: 3 },
+      });
+      assert.equal(overLimitRefund.response.status, 409, "累计超额退款未返回 409");
+      overLimitRefundStatus = overLimitRefund.response.status;
       const refunds = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`);
       assert.deepEqual(refunds.value.refunds?.map((item) => item.id), [refund.id], "退款列表存在重复或缺失");
       const refundAudit = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/audit`);
+      finalAudit = refundAudit;
       assert.deepEqual(
         refundAudit.value.events?.map((event) => event.type),
         ["order.created", "order.cancelled", "order.refunded"],
@@ -741,8 +804,8 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
       legacyOrderPreserved: true,
       migratedSchemaVersion: persisted.schemaVersion,
       cancellationConflictStatus: stale.response.status,
-      auditTypes: audit.value.events.map((event) => event.type),
-      ...(withRefunds ? { refundId: refund.id, refundIdempotencyPreserved: true } : {}),
+      auditTypes: finalAudit.value.events.map((event) => event.type),
+      ...(withRefunds ? { refundId: refund.id, refundIdempotencyPreserved: true, overLimitRefundStatus } : {}),
       restartPersistenceVerified: true,
     };
   } finally {
