@@ -11,7 +11,7 @@ const suiteRoot = process.env.AUTOAGENT_AUTONOMOUS_SUITE_ROOT
 const reportFile = path.join(suiteRoot, "suite-report.json");
 const timeoutMs = Number(process.env.AUTOAGENT_AUTONOMOUS_CASE_TIMEOUT_MS ?? 2 * 60 * 60_000);
 const selectedCaseIds = new Set(
-  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade")
+  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade,persistent-team-order-evolution")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),
@@ -81,13 +81,31 @@ const cases = [
       "团队必须自行完成代码理解、架构影响分析、分模块实现、回归测试、独立 QA 和最终验收；不得请求 human 替团队测试或编辑文件。",
     ].join(" "),
   },
+  {
+    id: "persistent-team-order-evolution",
+    scenario: "persistent-team-order-evolution",
+    seed: "brownfield-order-service",
+    goal: [
+      "第一轮升级当前已有的 Node.js Order Service：保留既有订单 API，把 schemaVersion 1 原子迁移到 2。",
+      "为订单补 version=1 与 order.created 审计，新增带 expectedVersion 的取消 API 和审计查询；旧版本或终态冲突返回 409。",
+      "补齐旧 API、迁移幂等、并发写入、取消冲突、审计和重启恢复测试，更新 README；不得请求 human 代为测试或编辑。",
+    ].join(" "),
+    followupGoal: [
+      "这是同一 Workspace 的第二轮独立 Mission。基于上一轮 v2 Order Service 增量交付退款能力，不得重建项目或破坏已有创建、查询、取消和审计契约。",
+      "将 schemaVersion 从 2 原子迁移到 3，并确保全新启动时也能从 v1 直接安全迁移到 v3；为每个订单持久化 refunds 数组。",
+      "新增 POST /api/orders/:id/refunds，接收 {amount,expectedVersion} 并要求 Idempotency-Key。只有 cancelled 订单可以退款；amount 必须为正且累计退款不得超过订单 amount。",
+      "成功返回 {refund,order}，递增 order.version 并追加 order.refunded 审计；同一幂等键重放返回同一 refund 且不重复扣减，旧版本、错误状态或超额退款返回 409，非法输入 400，不存在 404。",
+      "新增 GET /api/orders/:id/refunds 返回 {refunds}，补充 v2→v3/v1→v3、幂等退款、并发冲突、累计上限、审计、旧 API 回归与重启恢复测试，并更新 README。",
+      "仍由当前持久团队自行完成理解、实现、独立 QA 和最终验收；不得请求 human 代为测试、编辑或启动服务。",
+    ].join(" "),
+  },
 ].filter((item) => selectedCaseIds.has(item.id));
 
 assert.ok(cases.length > 0, "自主项目套件没有选中任何 case");
 assert.deepEqual(
   [...selectedCaseIds].sort(),
   cases.map((item) => item.id).sort(),
-  `存在未知 case；可选值：project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade`,
+  `存在未知 case；可选值：project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade,persistent-team-order-evolution`,
 );
 
 console.log(`[自主项目套件] root=${suiteRoot}`);
@@ -138,6 +156,7 @@ async function runCase(definition) {
       AUTOAGENT_ACCEPTANCE_GIT_INIT: "true",
       AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS: "0",
       ...(definition.seed ? { AUTOAGENT_ACCEPTANCE_SEED: definition.seed } : {}),
+      ...(definition.followupGoal ? { AUTOAGENT_ACCEPTANCE_FOLLOWUP_GOAL: definition.followupGoal } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,

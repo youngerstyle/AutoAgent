@@ -25,6 +25,7 @@ assert.ok(
 // artifact it actually produced, rather than inheriting that demo UI.
 const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO
   ?? (process.env.AUTOAGENT_ACCEPTANCE_GOAL ? "html" : "todo");
+const followupGoal = process.env.AUTOAGENT_ACCEPTANCE_FOLLOWUP_GOAL;
 let workspaceRoot = process.env.AUTOAGENT_ACCEPTANCE_ROOT
   ?? await mkdtemp(path.join(os.tmpdir(), "autoagent-real-acceptance-"));
 let reportDir = path.join(workspaceRoot, ".autoagent", "user-acceptance");
@@ -47,6 +48,7 @@ let serviceIdentity;
 let lastObservedAt;
 let repositoryResult;
 let transportRetries = 0;
+let missionContinuity;
 const acceptanceStartedAt = new Date().toISOString();
 const acceptanceStartedAtMs = Date.now();
 const answeredManualTestTickets = new Set();
@@ -80,6 +82,37 @@ try {
   assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("存在未完成 Ticket", snapshot));
   assertAuditablePlan(snapshot.tickets);
 
+  if (followupGoal) {
+    const firstSnapshot = snapshot;
+    const firstRepository = await inspectRepository();
+    if (initializeGit) assert.equal(firstRepository.clean, true, `第一轮 Mission 完成后 Git 工作树不干净：${firstRepository.status.join(", ")}`);
+    const firstTargetAgentIds = new Set(firstSnapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean));
+    const firstTask = firstSnapshot.activeTask;
+    snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
+      method: "POST",
+      body: { title: "持久团队连续迭代", goal: followupGoal },
+    }).then((value) => value.snapshot);
+    snapshot = await waitForTerminal(workspace.id);
+    assertRuntimeSnapshot(snapshot, { terminal: true });
+    assert.equal(snapshot.status, "completed", failureMessage("第二轮 Mission 未完成", snapshot));
+    assert.ok(snapshot.tickets.length > 0, "第二轮 Mission 没有生成 Ticket");
+    assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("第二轮存在未完成 Ticket", snapshot));
+    assertAuditablePlan(snapshot.tickets);
+    const secondTargetAgentIds = new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean));
+    const reusedAgentIds = [...secondTargetAgentIds].filter((agentId) => firstTargetAgentIds.has(agentId));
+    assert.ok(reusedAgentIds.length >= 3, `第二轮没有复用足够的持久 Agent：${reusedAgentIds.join(", ")}`);
+    missionContinuity = {
+      firstTaskId: firstTask?.id,
+      secondTaskId: snapshot.activeTask?.id,
+      sameWorkspaceId: true,
+      firstTargetAgentCount: firstTargetAgentIds.size,
+      secondTargetAgentCount: secondTargetAgentIds.size,
+      reusedAgentIds,
+      firstRepositoryClean: firstRepository.clean,
+      firstMetrics: projectMetrics(firstSnapshot, acceptanceStartedAtMs),
+    };
+  }
+
   // Always re-check the final artifact after Mission reaches a terminal
   // state. A pre-terminal manual-test result must not stand in for the
   // artifact produced by a later Plan version.
@@ -109,6 +142,7 @@ try {
       providerRecoveries: resumedProviderFailures.size,
       transportRetries,
     },
+    ...(missionContinuity ? { missionContinuity } : {}),
     metrics: projectMetrics(snapshot, acceptanceStartedAtMs),
     repository: repositoryResult,
     tickets: snapshot.tickets.map(({ id, type, brief, status, targetAgentId }) => ({ id, type, brief, status, targetAgentId })),
@@ -137,6 +171,7 @@ try {
       providerRecoveries: resumedProviderFailures.size,
       transportRetries,
     },
+    ...(missionContinuity ? { missionContinuity } : {}),
     metrics: snapshot ? projectMetrics(snapshot, acceptanceStartedAtMs) : undefined,
     repository: repositoryResult,
     error: error instanceof Error ? error.stack ?? error.message : String(error),
@@ -392,6 +427,7 @@ async function runArtifactAcceptance({ force = false } = {}) {
   if (scenario === "npm-library") return runNpmLibraryAcceptance();
   if (scenario === "issue-tracker-service") return runIssueTrackerServiceAcceptance();
   if (scenario === "brownfield-order-upgrade") return runBrownfieldOrderUpgradeAcceptance();
+  if (scenario === "persistent-team-order-evolution") return runBrownfieldOrderUpgradeAcceptance({ withRefunds: true });
   const htmlPath = await findHtmlEntryPath();
   if (htmlPath) return runBrowserAcceptance({ force });
 
@@ -595,7 +631,7 @@ async function runIssueTrackerServiceAcceptance() {
   }
 }
 
-async function runBrownfieldOrderUpgradeAcceptance() {
+async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {}) {
   const entryPath = path.join(workspaceRoot, "server.mjs");
   const packagePath = path.join(workspaceRoot, "package.json");
   assert.ok(existsSync(entryPath), "brownfield Order Service 缺少原有 server.mjs");
@@ -654,24 +690,59 @@ async function runBrownfieldOrderUpgradeAcceptance() {
     assert.deepEqual(audit.value.events?.map((event) => event.type), ["order.created", "order.cancelled"], "新 order 审计事件不完整或顺序错误");
     assert.equal(audit.value.events?.[1]?.reason, "customer request", "取消审计没有保留 reason");
 
+    let refund;
+    if (withRefunds) {
+      const refunded = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+        method: "POST",
+        headers: { "Idempotency-Key": "acceptance-refund-1" },
+        body: { amount: 25, expectedVersion: 2 },
+      });
+      assert.equal(refunded.response.status, 201, "合法退款未返回 201");
+      assert.equal(refunded.value.order?.version, 3, "合法退款未递增 order.version");
+      refund = refunded.value.refund;
+      assert.ok(typeof refund?.id === "string" && refund.id.length > 0, "合法退款未返回 refund id");
+      const replayed = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+        method: "POST",
+        headers: { "Idempotency-Key": "acceptance-refund-1" },
+        body: { amount: 25, expectedVersion: 2 },
+      });
+      assert.ok([200, 201].includes(replayed.response.status), "退款幂等重放未返回成功状态");
+      assert.equal(replayed.value.refund?.id, refund.id, "退款幂等重放生成了不同 refund");
+      const staleRefund = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+        method: "POST",
+        headers: { "Idempotency-Key": "acceptance-refund-stale" },
+        body: { amount: 5, expectedVersion: 2 },
+      });
+      assert.equal(staleRefund.response.status, 409, "旧版本退款未返回 409");
+      const refunds = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`);
+      assert.deepEqual(refunds.value.refunds?.map((item) => item.id), [refund.id], "退款列表存在重复或缺失");
+      const refundAudit = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/audit`);
+      assert.deepEqual(
+        refundAudit.value.events?.map((event) => event.type),
+        ["order.created", "order.cancelled", "order.refunded"],
+        "退款后审计事件不完整或顺序错误",
+      );
+    }
+
     await stopIssueTracker(service);
     service = await startIssueTracker(entryPath, port, dataFile);
     const afterRestart = await requestIssueApi(serviceUrl, `/api/orders/${orderId}`);
     assert.equal(afterRestart.value.order?.status, "cancelled", "重启后取消状态没有恢复");
-    assert.equal(afterRestart.value.order?.version, 2, "重启后 order version 没有恢复");
+    assert.equal(afterRestart.value.order?.version, withRefunds ? 3 : 2, "重启后 order version 没有恢复");
     const persisted = JSON.parse(await readFile(dataFile, "utf8"));
-    assert.equal(persisted.schemaVersion, 2, "迁移后磁盘 schemaVersion 不是 2");
+    assert.equal(persisted.schemaVersion, withRefunds ? 3 : 2, `迁移后磁盘 schemaVersion 不是 ${withRefunds ? 3 : 2}`);
     const siblingFiles = await readdir(path.dirname(dataFile));
     assert.equal(siblingFiles.some((name) => name.includes(".tmp")), false, "原子写入留下了临时文件");
 
     return {
-      scenario: "brownfield-order-upgrade",
+      scenario: withRefunds ? "persistent-team-order-evolution" : "brownfield-order-upgrade",
       npmTestExitCode: 0,
       npmTestOutput: tests.stdout.slice(-2_000),
       legacyOrderPreserved: true,
       migratedSchemaVersion: persisted.schemaVersion,
       cancellationConflictStatus: stale.response.status,
       auditTypes: audit.value.events.map((event) => event.type),
+      ...(withRefunds ? { refundId: refund.id, refundIdempotencyPreserved: true } : {}),
       restartPersistenceVerified: true,
     };
   } finally {
