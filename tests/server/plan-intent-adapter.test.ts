@@ -18,6 +18,8 @@ describe("plan-intent-v1 adapter", () => {
     expect(instruction).toContain("不同 workstream 名称");
     expect(instruction).toContain("具备 delivery:implement 的成员数量");
     expect(instruction).toContain("共享文件、接口未稳定或合并风险高时省略 workstream");
+    expect(instruction).toContain('"teamMembers":[{"principalId":"principal:dev"');
+    expect(instruction).toContain('"principalId":"principal:dev-integration"');
     expect(instruction).toContain('todos:[{kind:"architecture"|"implementation",title,objective,successCriteria,workstream?}]');
     expect(instruction).not.toContain("dependencyAdditions");
     expect(instruction).not.toContain("requiredTerminalRefs");
@@ -106,6 +108,7 @@ const plan: SharedPlanContext = {
   requiredTerminalCapabilities: ["delivery:accept"],
   teamMembers: [
     { principalId: "principal:dev", name: "Dev", capabilities: ["delivery:implement"], enabledTools: ["listFiles", "readFile", "writeFile", "shell"] },
+    { principalId: "principal:dev-integration", name: "Integration Dev", capabilities: ["delivery:implement", "并行交付"], enabledTools: ["listFiles", "readFile", "writeFile", "shell"] },
     { principalId: "principal:qa", name: "QA", capabilities: ["delivery:verify"], enabledTools: ["listFiles", "readFile", "shell", "browser"] },
     { principalId: "principal:boss", name: "Boss", capabilities: ["delivery:accept"], enabledTools: ["listFiles", "readFile"] },
   ],

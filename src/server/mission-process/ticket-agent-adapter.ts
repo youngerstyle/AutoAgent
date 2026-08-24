@@ -1165,6 +1165,12 @@ export function missionOutcomeInstruction(schemaRef: string, availableCapabiliti
         title: increment.title,
         objective: increment.objective,
       })),
+      teamMembers: (sharedPlanContext?.teamMembers ?? []).map((member) => ({
+        principalId: member.principalId,
+        name: member.name,
+        capabilities: member.capabilities,
+        enabledTools: member.enabledTools,
+      })),
       currentWork: assignmentContext ? {
         title: assignmentContext.ticket.title,
         objective: assignmentContext.ticket.objective,
