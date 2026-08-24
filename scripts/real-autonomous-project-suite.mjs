@@ -55,9 +55,12 @@ const cases = [
   {
     id: "issue-tracker-service",
     scenario: "issue-tracker-service",
+    minWorkstreams: 2,
+    minWorkstreamAgents: 2,
+    minConcurrentWorkstreamAgents: 2,
     goal: [
       "在当前空目录交付一个 Node.js 20+、零运行时依赖的持久化 Issue Tracker HTTP 服务，固定入口为 server.mjs。",
-      "服务必须读取 PORT 和 DATA_FILE 环境变量，提供 GET /health，并以 JSON 文件持久化 projects、issues 和幂等键；进程重启后数据必须保留。",
+      "服务必须读取 PORT 和 DATA_FILE 环境变量，GET /health 必须返回 HTTP 200 和 JSON {ok:true}，并以 JSON 文件持久化 projects、issues 和幂等键；进程重启后数据必须保留。",
       "POST /api/projects 接收 {name} 并返回 {project}；POST /api/projects/:projectId/issues 接收 {title,priority}，priority 只能是 low、medium、high。",
       "创建 issue 必须支持 Idempotency-Key：同一 key 重放不得新增第二条 issue，并返回同一 id。新 issue 的 status=open、version=1。",
       "PATCH /api/issues/:id 接收 {status,expectedVersion}，status 只能是 open、in_progress、closed；版本匹配时递增 version，旧版本写入必须返回 409。",
@@ -156,6 +159,9 @@ async function runCase(definition) {
       AUTOAGENT_ACCEPTANCE_TIMEOUT_MS: String(timeoutMs),
       AUTOAGENT_ACCEPTANCE_GIT_INIT: "true",
       AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS: "0",
+      AUTOAGENT_ACCEPTANCE_MIN_WORKSTREAMS: String(definition.minWorkstreams ?? 0),
+      AUTOAGENT_ACCEPTANCE_MIN_WORKSTREAM_AGENTS: String(definition.minWorkstreamAgents ?? 0),
+      AUTOAGENT_ACCEPTANCE_MIN_CONCURRENT_WORKSTREAM_AGENTS: String(definition.minConcurrentWorkstreamAgents ?? 0),
       ...(definition.seed ? { AUTOAGENT_ACCEPTANCE_SEED: definition.seed } : {}),
       ...(definition.followupGoal ? { AUTOAGENT_ACCEPTANCE_FOLLOWUP_GOAL: definition.followupGoal } : {}),
     },

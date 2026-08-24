@@ -21,6 +21,9 @@ assert.ok(
   maxHumanInputs === Number.POSITIVE_INFINITY || (Number.isInteger(maxHumanInputs) && maxHumanInputs >= 0),
   "AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS 必须是非负整数",
 );
+const minWorkstreams = Number(process.env.AUTOAGENT_ACCEPTANCE_MIN_WORKSTREAMS ?? 0);
+const minWorkstreamAgents = Number(process.env.AUTOAGENT_ACCEPTANCE_MIN_WORKSTREAM_AGENTS ?? 0);
+const minConcurrentWorkstreamAgents = Number(process.env.AUTOAGENT_ACCEPTANCE_MIN_CONCURRENT_WORKSTREAM_AGENTS ?? 0);
 // The built-in goal is a todo demo. A custom goal must be checked as the
 // artifact it actually produced, rather than inheriting that demo UI.
 const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO
@@ -49,7 +52,10 @@ let lastObservedAt;
 let repositoryResult;
 let transportRetries = 0;
 let missionContinuity;
+let preExternalVerificationMetrics;
+let preExternalParallelEvidence;
 const acceptanceRepairMissions = [];
+const parallelEvidenceByTask = new Map();
 const acceptanceStartedAt = new Date().toISOString();
 const acceptanceStartedAtMs = Date.now();
 const answeredManualTestTickets = new Set();
@@ -82,6 +88,7 @@ try {
   assert.ok(snapshot.tickets.length > 0, "Mission 没有生成 Ticket");
   assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("存在未完成 Ticket", snapshot));
   assertAuditablePlan(snapshot.tickets);
+  assertParallelDelivery(snapshot);
 
   if (followupGoal) {
     const initialFirstTaskId = snapshot.activeTask?.id;
@@ -125,9 +132,9 @@ try {
   // Always re-check the final artifact after Mission reaches a terminal
   // state. A pre-terminal manual-test result must not stand in for the
   // artifact produced by a later Plan version.
-  browserResult = followupGoal
-    ? await verifyArtifactWithMissionRepair("final_mission", () => runArtifactAcceptance({ force: true }))
-    : await runArtifactAcceptance({ force: true });
+  preExternalVerificationMetrics = projectMetrics(snapshot, acceptanceStartedAtMs);
+  preExternalParallelEvidence = parallelEvidenceFor(snapshot);
+  browserResult = await verifyArtifactWithMissionRepair("final_mission", () => runArtifactAcceptance({ force: true }));
   if (missionContinuity && acceptanceRepairMissions.length > 0) {
     missionContinuity.acceptanceRepairMissions = acceptanceRepairMissions;
     missionContinuity.secondTaskId = snapshot.activeTask?.id;
@@ -158,6 +165,9 @@ try {
       transportRetries,
     },
     ...(missionContinuity ? { missionContinuity } : {}),
+    ...(acceptanceRepairMissions.length > 0 ? { acceptanceRepairMissions } : {}),
+    preExternalVerificationMetrics,
+    preExternalParallelEvidence,
     metrics: projectMetrics(snapshot, acceptanceStartedAtMs),
     repository: repositoryResult,
     tickets: snapshot.tickets.map(({ id, type, brief, status, targetAgentId }) => ({ id, type, brief, status, targetAgentId })),
@@ -187,6 +197,9 @@ try {
       transportRetries,
     },
     ...(missionContinuity ? { missionContinuity } : {}),
+    ...(acceptanceRepairMissions.length > 0 ? { acceptanceRepairMissions } : {}),
+    preExternalVerificationMetrics,
+    preExternalParallelEvidence,
     metrics: snapshot ? projectMetrics(snapshot, acceptanceStartedAtMs) : undefined,
     repository: repositoryResult,
     error: error instanceof Error ? error.stack ?? error.message : String(error),
@@ -346,6 +359,7 @@ async function waitForTerminal(workspaceId) {
     // Otherwise a timeout only records the initial POST snapshot and hides
     // the ticket/agent state that actually caused the timeout.
     snapshot = current;
+    observeParallelExecution(current);
     assertRuntimeSnapshot(current);
     lastObservedAt = new Date().toISOString();
     const signature = [
@@ -408,6 +422,48 @@ async function waitForTerminal(workspaceId) {
     await sleep(1_000);
   }
   throw new AcceptanceDriverTimeoutError({ timeoutMs, lastObservedAt, snapshot });
+}
+
+function observeParallelExecution(current) {
+  const taskId = current.activeTask?.id;
+  if (!taskId) return;
+  const workstreamTickets = (current.tickets ?? []).filter((ticket) => ticket.workstream);
+  const workstreamAgentIds = [...new Set(workstreamTickets.map((ticket) => ticket.targetAgentId).filter(Boolean))];
+  const concurrentlyRunningAgentIds = [...new Set(workstreamTickets
+    .filter((ticket) => ticket.status === "running")
+    .map((ticket) => ticket.targetAgentId)
+    .filter(Boolean))];
+  const previous = parallelEvidenceByTask.get(taskId) ?? {
+    workstreams: [],
+    workstreamAgentIds: [],
+    maxConcurrentWorkstreamAgents: 0,
+    concurrentAgentIds: [],
+  };
+  const next = {
+    workstreams: [...new Set(workstreamTickets.map((ticket) => ticket.workstream).filter(Boolean))],
+    workstreamAgentIds,
+    maxConcurrentWorkstreamAgents: Math.max(previous.maxConcurrentWorkstreamAgents, concurrentlyRunningAgentIds.length),
+    concurrentAgentIds: concurrentlyRunningAgentIds.length > previous.concurrentAgentIds.length
+      ? concurrentlyRunningAgentIds
+      : previous.concurrentAgentIds,
+  };
+  parallelEvidenceByTask.set(taskId, next);
+}
+
+function parallelEvidenceFor(current) {
+  return parallelEvidenceByTask.get(current.activeTask?.id) ?? {
+    workstreams: [],
+    workstreamAgentIds: [],
+    maxConcurrentWorkstreamAgents: 0,
+    concurrentAgentIds: [],
+  };
+}
+
+function assertParallelDelivery(current) {
+  const evidence = parallelEvidenceFor(current);
+  assert.ok(evidence.workstreams.length >= minWorkstreams, `并行交付只有 ${evidence.workstreams.length} 个 workstream，要求至少 ${minWorkstreams} 个`);
+  assert.ok(evidence.workstreamAgentIds.length >= minWorkstreamAgents, `并行交付只使用 ${evidence.workstreamAgentIds.length} 名实现 Agent，要求至少 ${minWorkstreamAgents} 名`);
+  assert.ok(evidence.maxConcurrentWorkstreamAgents >= minConcurrentWorkstreamAgents, `并行执行峰值只有 ${evidence.maxConcurrentWorkstreamAgents} 名 Agent，要求至少 ${minConcurrentWorkstreamAgents} 名`);
 }
 
 /**
