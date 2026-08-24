@@ -44,7 +44,7 @@ export async function startServer(config: AppConfig = loadConfig()): Promise<Aut
       const releaseAndReject = (error: Error) => {
         void instanceLock.release().finally(() => reject(error));
       };
-      const server = app.listen(config.port, () => {
+      const server = app.listen(config.port, config.host ?? "127.0.0.1", () => {
         server.off("error", releaseAndReject);
         const managedServer = Object.assign(server, {
           stopRuntimeHosts: () => (app.locals.runtimeHostRegistry as RuntimeHostRegistry | undefined)?.stopAll() ?? Promise.resolve(),

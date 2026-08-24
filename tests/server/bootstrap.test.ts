@@ -17,6 +17,7 @@ import {
 import { WorkspaceStore } from "../../src/server/storage/workspace-store.js";
 import { RuntimeHostRegistry } from "../../src/server/runtime/runtime-host-registry.js";
 import { ServiceInstanceLockError } from "../../src/server/storage/service-instance-lock.js";
+import type { AddressInfo } from "node:net";
 
 describe("server bootstrap", () => {
   it("seeds the immutable minimal-team policy before returning the production app", async () => {
@@ -29,6 +30,16 @@ describe("server bootstrap", () => {
       await request(server).get("/api/health").expect(200);
     } finally {
       server.close();
+    }
+  });
+
+  it("binds the production server to IPv4 loopback by default", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-bootstrap-loopback-"));
+    const server = await startServer({ ...config(home), port: 0 });
+    try {
+      expect((server.address() as AddressInfo).address).toBe("127.0.0.1");
+    } finally {
+      await closeServer(server);
     }
   });
 

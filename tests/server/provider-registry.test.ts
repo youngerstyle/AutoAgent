@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -56,6 +56,9 @@ describe("ProviderRegistry", () => {
     await expect(registry.configs()).resolves.toMatchObject({ openai: { apiKey: "********" } });
     const raw = JSON.parse(await readFile(path.join(home, "providers.json"), "utf8"));
     expect(raw.openai.apiKey).toBe("secret");
+    if (process.platform !== "win32") {
+      expect((await stat(path.join(home, "providers.json"))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("projects environment provider config without leaking secrets", async () => {

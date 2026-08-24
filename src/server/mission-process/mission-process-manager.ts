@@ -1212,11 +1212,20 @@ export class MissionProcessManager {
         if (!rejection) throw new Error("Rejected Plan result must produce a Goal decision");
         const settled = await this.settleAgentProposal(agent, link.agentGoalId, proposalId, decisionId, rejection);
         if (!settled.applied) return aggregate;
-        return this.updateLink(aggregate, dispatchId, {
+        const updated = await this.updateLink(aggregate, dispatchId, {
           ...active,
           status: "running",
           lastDecisionId: decisionId,
         });
+        if (planResult.code === "budget_exhausted" && planResult.budget) {
+          return this.blockAgentExecution({
+            agentId: link.agentId,
+            turnId: storedProposal.turnId ?? proposalId,
+            reason: planResult.reason,
+            requiredInput: planResult.budget.requiredInput,
+          });
+        }
+        return updated;
       }
     }
     const command = proposalToTicketCommand(proposal as never, active, this.now().toISOString());
@@ -1320,7 +1329,16 @@ export class MissionProcessManager {
           finalGoalVersion: settled.goal.version,
       };
     }
-    return this.updateLinkAndRecord(currentAggregate, dispatchId, nextLink, recordMutation);
+    const updated = await this.updateLinkAndRecord(currentAggregate, dispatchId, nextLink, recordMutation);
+    if (!result.accepted && result.code === "budget_exhausted" && result.budget) {
+      return this.blockAgentExecution({
+        agentId: link.agentId,
+        turnId: storedProposal.turnId ?? proposalId,
+        reason: result.reason,
+        requiredInput: result.budget.requiredInput,
+      });
+    }
+    return updated;
   }
 
   private async listCorrectionTargets(planId: PlanId, ticketId: TicketId): Promise<Array<{ ticketId: TicketId; title: string; missionCriterionIds?: string[] }>> {
@@ -1342,7 +1360,9 @@ export class MissionProcessManager {
     const targets: Array<{ ticketId: TicketId; title: string; missionCriterionIds?: string[] }> = [];
     for (const ancestorId of ancestorIds) {
       const work = await this.tickets.getWorkItem(ancestorId);
-      if (work?.ticket.status === "completed") {
+      if (work?.ticket.status === "completed"
+        && !work.definition.assurance
+        && !work.definition.permissions?.settleMission) {
         const missionCriterionIds = correctionTargetMissionCriterionIds(work.definition);
         targets.push({
           ticketId: ancestorId,

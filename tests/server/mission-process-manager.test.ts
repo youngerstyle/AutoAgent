@@ -79,6 +79,79 @@ describe("MissionProcessManager", () => {
     expect(await fixture.ticketStore.listPlanIds()).toEqual([first.record.planId]);
   });
 
+  it("turns exhausted convergence budget into a durable planner-owned block", async () => {
+    const fixture = await createFixture();
+    fixture.team.members.find((member) => member.agentId === "dev")!.capabilities.push("delivery:implement");
+    fixture.team.members.find((member) => member.agentId === "qa")!.capabilities.push("delivery:verify");
+    const definition = createMinimalTeamPlanDefinition(fixture.policy.ref, "build");
+    definition.convergenceLimits = { maxTickets: definition.initialChange.additions.length, maxAcceptedAmendments: 1 };
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: { planDefinition: definition, teamBindingId: fixture.team.teamBindingId },
+    });
+
+    let mission = await fixture.manager.tick();
+    const intakeLink = mission.links.find((link) => link.agentId === "boss" && link.status === "running")!;
+    const boss = fixture.engines.get("boss")!;
+    const intakeGoal = (await boss.getGoal(intakeLink.agentGoalId!))!;
+    await boss.proposeGoalResolution({
+      proposalId: "budget-intake", goalId: intakeGoal.spec.id, expectedGoalVersion: intakeGoal.version,
+      resolvingGoalVersion: intakeGoal.version + 1, status: "completed", summary: "需求已确认", evidence: [],
+      criterionResults: satisfied(intakeGoal), residualRisks: [], domainOutcome: baselineOutcome(), createdAt: NOW,
+    });
+    await fixture.manager.tick();
+
+    mission = await fixture.manager.tick();
+    const planningLink = mission.links.find((link) => link.agentId === "pm" && link.status === "running")!;
+    const pm = fixture.engines.get("pm")!;
+    const planningGoal = (await pm.getGoal(planningLink.agentGoalId!))!;
+    await pm.proposeGoalResolution({
+      proposalId: "budget-planning", goalId: planningGoal.spec.id, expectedGoalVersion: planningGoal.version,
+      resolvingGoalVersion: planningGoal.version + 1, status: "completed", summary: "计划已形成", evidence: [],
+      criterionResults: satisfied(planningGoal), residualRisks: [],
+      domainOutcome: {
+        intent: {
+          rationale: "形成一个可验证交付",
+          todos: [{ kind: "implementation", title: "开发", objective: "实现交付", successCriteria: ["产物可运行"] }],
+        },
+      },
+      createdAt: NOW,
+    });
+
+    mission = await fixture.manager.tick();
+    const blockedLink = mission.links.find((link) => link.dispatchId === planningLink.dispatchId)!;
+    const blockedTicket = await fixture.tickets.getTicket(planningLink.ticketId);
+    const blockedGoal = await pm.getGoal(planningLink.agentGoalId!);
+    const plan = await fixture.tickets.getPlan(mission.record.planId);
+
+    if (blockedLink.status !== "blocked") {
+      throw new Error(`Expected convergence block: ${JSON.stringify({ link: blockedLink, ticket: blockedTicket, goal: blockedGoal, plan })}`);
+    }
+
+    expect(blockedLink).toMatchObject({ status: "blocked", authority: { kind: "blocked_owner" } });
+    expect(blockedTicket).toMatchObject({
+      status: "blocked",
+      attempts: [expect.objectContaining({
+        status: "blocked",
+        requiredInput: expect.objectContaining({
+          kind: "agent_recovery",
+          description: expect.stringContaining("budget is exhausted"),
+        }),
+      })],
+    });
+    expect(blockedGoal).toMatchObject({ status: "paused" });
+    expect(plan.graph.ticketIds).toHaveLength(definition.initialChange.additions.length);
+    expect(plan.convergence).toMatchObject({ acceptedAmendments: 0 });
+
+    const recovered = await fixture.manager.recover();
+    expect(recovered.links.find((link) => link.dispatchId === planningLink.dispatchId)).toMatchObject({ status: "blocked" });
+    expect(await pm.getGoal(planningLink.agentGoalId!)).toMatchObject({ status: "paused" });
+  });
+
   it("never reopens a completed Mission or reuses its completed Plan", async () => {
     const fixture = await createFixture();
     const request = {

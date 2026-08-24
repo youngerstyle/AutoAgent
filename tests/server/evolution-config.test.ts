@@ -5,6 +5,13 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../../src/server/config.js";
 
 describe("Evolution worker configuration", () => {
+  it("defaults to loopback and rejects remote listening addresses", () => {
+    expect(loadConfig({})).toMatchObject({ host: "127.0.0.1" });
+    expect(loadConfig({ AUTOAGENT_HOST: "::1" })).toMatchObject({ host: "::1" });
+    expect(() => loadConfig({ AUTOAGENT_HOST: "0.0.0.0" })).toThrow("loopback-only local operation");
+    expect(() => loadConfig({ AUTOAGENT_HOST: "192.168.1.10" })).toThrow("loopback-only local operation");
+  });
+
   it("accepts only an existing server-owned JavaScript evaluator program", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-evolution-config-"));
     const program = path.join(root, "evaluator.mjs");

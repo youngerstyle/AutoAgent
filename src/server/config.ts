@@ -4,6 +4,7 @@ import { existsSync, statSync } from "node:fs";
 
 export interface AppConfig {
   port: number;
+  host?: "127.0.0.1" | "::1";
   autoAgentHome: string;
   useMockProvider: boolean;
   providerRetryCount: number;
@@ -18,6 +19,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const port = Number(env.PORT ?? "8787");
   if (!Number.isFinite(port) || port <= 0) {
     throw new Error(`Invalid PORT: ${env.PORT}`);
+  }
+  const host = env.AUTOAGENT_HOST?.trim() || "127.0.0.1";
+  if (host !== "127.0.0.1" && host !== "::1") {
+    throw new Error("Invalid AUTOAGENT_HOST: AutoAgent currently supports loopback-only local operation");
   }
 
   const runtimeRestoreConcurrency = Number(env.AUTOAGENT_RUNTIME_RESTORE_CONCURRENCY ?? "2");
@@ -52,6 +57,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   return {
     port,
+    host,
     autoAgentHome: env.AUTOAGENT_HOME
       ? path.resolve(env.AUTOAGENT_HOME)
       : path.join(os.homedir(), ".autoagent"),

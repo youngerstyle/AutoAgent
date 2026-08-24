@@ -35,7 +35,9 @@ npm.cmd run dev
 
 ## 模型服务配置
 
-模拟模型服务始终可用，并用于协议与故障恢复测试。它不会真实写文件、启动服务或完成浏览器验收；当任务要求真实交付时，模拟服务会明确阻塞并要求配置真实 Provider，不会伪报完成。OpenAI 和 Anthropic 可以在网页的“模型服务”页配置模型、接口密钥和可选服务地址。密钥保存在 `AUTOAGENT_HOME/providers.json`，通过 API 读取时会脱敏。
+模拟模型服务始终可用，并用于协议与故障恢复测试。它不会真实写文件、启动服务或完成浏览器验收；当任务要求真实交付时，模拟服务会明确阻塞并要求配置真实 Provider，不会伪报完成。OpenAI 和 Anthropic 可以在网页的“模型服务”页配置模型、接口密钥和可选服务地址。密钥保存在 `AUTOAGENT_HOME/providers.json`，通过 API 读取时会脱敏；新写入的 JSON 控制面文件使用仅当前 OS 账户可读写的权限（Windows 仍依赖用户目录 ACL）。更高安全要求下应通过 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 环境变量注入，并把 `AUTOAGENT_HOME` 放在仅当前账户可访问的位置。
+
+AutoAgent 当前只支持本机单用户运行，默认并强制监听 `127.0.0.1`（也可显式使用 `::1`）。`AUTOAGENT_HOST=0.0.0.0`、局域网地址和公网地址会拒绝启动；当前版本没有远程多人认证边界，不应通过端口转发或反向代理暴露。
 
 也可以用环境变量配置：
 
@@ -121,6 +123,8 @@ OpenAI、Anthropic、Mock 等模型 Provider 仍由“模型服务”和 Agent �
 
 每个项目同一时间只允许一个活跃 `TaskRun`。
 
+每个 Plan 还持久化独立的收敛预算。产品默认最多 64 张 Ticket、8 次正式采纳的 Plan 修订；Workflow 可以通过 `convergenceLimits` 覆盖。修订请求本身只占用 Ticket 容量，只有成功的 `apply_change` 才增加正式修订计数。预算耗尽时原命令不会改变 Plan 或 Ticket，Mission 会把当前执行持久化为由 planner 负责的阻塞状态并禁止自动重试；运行台直接展示权威 Ticket 容量和修订使用量。旧版 Plan 没有该字段时保留现有图，从首次迁移后的正式修订开始计数。
+
 ## 安全策略
 
 生产策略会把文件访问限制在项目目录内。开发策略允许本机路径访问，适合本地实验。
@@ -134,9 +138,11 @@ npm.cmd run test:run
 npm.cmd run test:e2e
 npm.cmd run typecheck
 npm.cmd run build
+npm.cmd run verify:plan-convergence
 ```
 
 E2E 测试会创建项目，通过 HTTP API 跑完整模拟团队流程，验证 Ticket DAG、Agent Goal、私聊隔离和完成后的权威快照。
+`verify:plan-convergence` 会强制耗尽两类预算，并验证类型化拒绝、状态不变、幂等重放和重启稳定性。
 
 ## 当前边界
 

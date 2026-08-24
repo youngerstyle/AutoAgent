@@ -24,6 +24,8 @@
     "test:acceptance:multi-plan": "npm run build && node scripts/verify-multi-plan-acceptance.mjs",
     "test:acceptance:runtime-soak": "npm run build && node scripts/verify-runtime-soak.mjs",
     "test:process:recovery": "npm run build && node scripts/verify-process-recovery.mjs",
+    "verify:autonomous-closure": "npm run build && node scripts/verify-autonomous-runtime-closure.mjs",
+    "verify:plan-convergence": "npm run build && node scripts/verify-plan-convergence-closure.mjs",
     "verify:linux-node": "node scripts/verify-linux-node.mjs",
     "typecheck": "tsc --noEmit"
   },

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,7 +20,7 @@ import {
   runtimeTaskStatusFor,
   RuntimeHost,
 } from "../../src/server/runtime/runtime-host.js";
-import { missionProcessFile, runtimeHostFile } from "../../src/server/storage/paths.js";
+import { missionProcessFile, runtimeHostFile, ticketEngineFile } from "../../src/server/storage/paths.js";
 import { seedMinimalTeamPlanPolicy, DEFAULT_MINIMAL_TEAM_POLICY_CONFIG } from "../../src/server/tickets/plan-policy-config.js";
 import { PlanPolicyStore } from "../../src/server/tickets/plan-policy-store.js";
 import type { Workspace } from "../../src/shared/types.js";
@@ -42,6 +42,20 @@ afterEach(async () => {
 });
 
 describe("RuntimeHost", () => {
+  it("projects authoritative convergence usage into the task snapshot", async () => {
+    const fixture = await createFixture();
+    await fixture.host.createTask({ taskId: "task-convergence-projection", title: "收敛投影", objective: "展示预算使用量" });
+
+    expect((await fixture.host.snapshot()).mission?.convergence).toEqual({
+      ticketCount: 2,
+      maxTickets: 64,
+      remainingTickets: 62,
+      acceptedAmendments: 0,
+      maxAcceptedAmendments: 8,
+      remainingAcceptedAmendments: 8,
+    });
+  });
+
   it("freezes the inherited Workflow release and DAG hash in each new TaskRun", async () => {
     const fixture = await createFixture({ evolution: true });
     const first = await publishWorkflow(fixture.root, fixture.workspace.id, fixture.policyRef, 101);
@@ -323,6 +337,81 @@ describe("RuntimeHost", () => {
     await fixture.host.createTask({ taskId: "fresh-task", title: "新任务", objective: "重新开始" });
     expect((await fixture.host.snapshot()).mission?.planId).toMatch(/^[0-9a-f-]{36}$/i);
   });
+
+  it("isolates a persisted task whose Mission history is missing instead of failing its snapshot", async () => {
+    const fixture = await createFixture();
+    const createdAt = new Date().toISOString();
+    await writeFile(runtimeHostFile(fixture.root), JSON.stringify({
+      schemaVersion: 2,
+      tasks: [{
+        taskId: "missing-mission-task",
+        runId: "missing-mission-run",
+        missionId: "missing-mission",
+        title: "缺失 Mission 的历史任务",
+        objective: "历史仍应可打开",
+        status: "completed",
+        createdAt,
+        updatedAt: createdAt,
+      }],
+    }), "utf8");
+
+    await fixture.host.hydrate();
+    const snapshot = await fixture.host.snapshot();
+
+    expect(snapshot.status).toBe("interrupted");
+    expect(snapshot.readOnlyReason).toContain("缺少可验证的 Mission 历史");
+    expect(snapshot.runtimeError).toBeUndefined();
+  });
+
+  it("isolates a historical Ticket aggregate rejected by current invariants without rewriting it", async () => {
+    const fixture = await createFixture();
+    const task = await fixture.host.createTask({
+      taskId: "historical-invalid-correction",
+      title: "旧版纠正链",
+      objective: "形成可验证交付",
+    });
+    await waitForTaskStatus(fixture.host, task.taskId, "completed");
+    const completed = await fixture.host.snapshot();
+    const planId = completed.mission?.planId;
+    expect(planId).toBeTruthy();
+    await fixture.host.stop();
+
+    const aggregateFile = ticketEngineFile(fixture.root, task.taskId, task.runId, planId!);
+    const aggregate = JSON.parse(await readFile(aggregateFile, "utf8")) as {
+      definitionsByTicketId: Record<string, {
+        assurance?: unknown;
+        permissions?: { settleMission?: boolean };
+        correction?: { targetTicketId: string; sourceTicketId: string };
+      }>;
+    };
+    const assuranceId = Object.entries(aggregate.definitionsByTicketId)
+      .find(([, definition]) => Boolean(definition.assurance))?.[0];
+    const delivery = Object.values(aggregate.definitionsByTicketId)
+      .find((definition) => !definition.assurance && !definition.permissions?.settleMission);
+    expect(assuranceId).toBeTruthy();
+    expect(delivery).toBeTruthy();
+    delivery!.correction = { targetTicketId: assuranceId!, sourceTicketId: assuranceId! };
+    const corruptedContent = `${JSON.stringify(aggregate, null, 2)}\n`;
+    await writeFile(aggregateFile, corruptedContent, "utf8");
+
+    const restarted = new RuntimeHost(
+      fixture.workspace,
+      fixture.profiles,
+      fixture.providers,
+      fixture.policyStore,
+      fixture.policyRef,
+      { intervalMs: 60_000 },
+    );
+    try {
+      await restarted.hydrate();
+      const snapshot = await restarted.snapshot();
+      expect(snapshot.status).toBe("interrupted");
+      expect(snapshot.readOnlyReason).toContain("原始账本未被修改");
+      expect(await readFile(aggregateFile, "utf8")).toBe(corruptedContent);
+    } finally {
+      await restarted.stop();
+    }
+  }, 60_000);
 
   it("runs a fresh mock mission through ticket DAG and survives host recreation", async () => {
     const fixture = await createFixture();

@@ -1778,6 +1778,28 @@ describe("Ticket Agent resolution adapter", () => {
     }])).toEqual({ valid: true });
   });
 
+  it("rejects a settlement correction aimed at assurance work before Ticket state is mutated", () => {
+    const assuranceTicketId = "c7504f17-71d1-45f8-8e31-31a8ee99c89c" as TicketId;
+    const settlementTicket = {
+      ticketId: "settlement" as TicketId,
+      title: "settlement",
+      objective: "decide final acceptance",
+      successCriteria: ["decision is traceable"],
+      outputContract: { schemaRef: "mission-settlement-v1" },
+      permissions: { settleMission: true },
+    };
+
+    expect(validateMissionCorrectionOwnership(settlementTicket, {
+      disposition: "correction_required",
+      targetTicketId: assuranceTicketId,
+      reason: "assurance evidence is incomplete",
+      correctionMissionCriterionIds: ["criterion-delivery"],
+    }, [])).toMatchObject({
+      valid: false,
+      reason: expect.stringContaining("assurance 或 settlement Ticket"),
+    });
+  });
+
   it("maps Plan change separately from ordinary correction", () => {
     const outcome = { disposition: "plan_change_required", reason: "成功标准相互冲突" };
     expect(proposalToTicketCommand(proposal("completed", outcome), link, NOW).payload).toEqual({

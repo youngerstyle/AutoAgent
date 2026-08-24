@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const writeQueues = new Map<string, Promise<void>>();
@@ -56,9 +56,13 @@ export async function updateJson<T>(filePath: string, fallback: T, update: (curr
 async function writeJsonNow(filePath: string, value: unknown): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   try {
     await renameWithRetry(tmp, filePath);
+    // JSON state may contain credentials, policies, prompts, or project facts.
+    // Keep every newly written control-plane file private to the owning OS
+    // account on platforms that implement POSIX permission bits.
+    await chmod(filePath, 0o600);
   } catch (error) {
     await rm(tmp, { force: true }).catch(() => undefined);
     throw error;

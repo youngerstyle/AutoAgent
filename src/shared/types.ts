@@ -281,6 +281,14 @@ export interface WorkspaceSnapshot {
     planId: string;
     planStatus: "active" | "paused" | "blocked" | "completed" | "failed" | "cancelled";
     planVersion: number;
+    convergence?: {
+      ticketCount: number;
+      maxTickets: number;
+      remainingTickets: number;
+      acceptedAmendments: number;
+      maxAcceptedAmendments: number;
+      remainingAcceptedAmendments: number;
+    };
   };
   consistency?: {
     state: "consistent" | "reconciling";

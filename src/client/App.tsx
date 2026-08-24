@@ -745,8 +745,16 @@ export function App() {
                   <p>{mode === "blocked" ? blockedPanelCopy.hint : currentWorkspace?.rootPath ?? "先创建项目，再发布第一条任务。"}</p>
                 </div>
                 <div className="mission-progress" aria-label="工单完成进度">
-                  <div><span>计划</span><strong>{snapshot?.mission ? `v${snapshot.mission.planVersion}` : "—"}</strong></div>
-                  <div><span>工单</span><strong>{completedTicketCount}/{ticketItems.length}</strong></div>
+                  <div title={snapshot?.mission?.convergence ? `剩余 ${snapshot.mission.convergence.remainingAcceptedAmendments} 次正式修订` : undefined}>
+                    <span>计划</span>
+                    <strong>{snapshot?.mission ? `v${snapshot.mission.planVersion}` : "—"}</strong>
+                    {snapshot?.mission?.convergence ? <small>修订 {snapshot.mission.convergence.acceptedAmendments}/{snapshot.mission.convergence.maxAcceptedAmendments}</small> : null}
+                  </div>
+                  <div title={snapshot?.mission?.convergence ? `剩余 ${snapshot.mission.convergence.remainingTickets} 张工单容量` : undefined}>
+                    <span>工单</span>
+                    <strong>{completedTicketCount}/{ticketItems.length}</strong>
+                    {snapshot?.mission?.convergence ? <small>容量 {snapshot.mission.convergence.ticketCount}/{snapshot.mission.convergence.maxTickets}</small> : null}
+                  </div>
                   <div><span>成员</span><strong>{nodes.length}</strong></div>
                   <div className={snapshot?.status === "running" ? "mission-latest-activity live" : "mission-latest-activity"} title={latestActivity ? `${latestActivity.detail}\n${new Date(latestActivity.timestamp).toLocaleString("zh-CN")}` : "暂无运行活动"}>
                     <span>活动</span>

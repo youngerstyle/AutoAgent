@@ -2,12 +2,125 @@
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PlanCommandEnvelope, PlanId, PlanPolicyPort, TicketCommandEnvelope, TicketId } from "../../src/shared/contracts/ticket-engine.js";
+import type { PlanCommandEnvelope, PlanConvergenceLimits, PlanId, PlanPolicyPort, TicketCommandEnvelope, TicketId } from "../../src/shared/contracts/ticket-engine.js";
 import { createPlanPolicy } from "../../src/server/tickets/plan-policy-store.js";
 import { TicketEngine } from "../../src/server/tickets/ticket-engine.js";
 import { TicketStore } from "../../src/server/tickets/ticket-store.js";
 
 describe("TicketEngine single Plan flow", () => {
+  it("enforces accepted amendment budget without mutating the Plan and replays the typed rejection", async () => {
+    const fixture = await createFixture({ convergenceLimits: { maxTickets: 3, maxAcceptedAmendments: 1 } });
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-budgeted-plan", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    const authority = { kind: "claim" as const, claimId: claim!.claimId, fencingToken: claim!.fencingToken };
+
+    const acceptedChange = await fixture.engine.applyPlan({
+      commandId: "budget-change-1", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: 2, sourceTicketId: planning, sourceAuthority: authority,
+        change: {
+          additions: [draft("first-budget-work", "首次预算工作")],
+          dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "first-budget-work" } }],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "first-budget-work" }],
+        },
+      },
+    });
+    if (!acceptedChange.accepted) throw new Error(`Expected budgeted Plan change: ${JSON.stringify(acceptedChange)}`);
+    const beforeRejected = await fixture.engine.getPlan(fixture.planId);
+
+    const command: PlanCommandEnvelope = {
+      commandId: "budget-change-2", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: beforeRejected.version, sourceTicketId: planning, sourceAuthority: authority,
+        change: {
+          additions: [draft("second-budget-work", "超额预算工作")],
+          dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "second-budget-work" } }],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "second-budget-work" }],
+        },
+      },
+    };
+    const rejected = await fixture.engine.applyPlan(command);
+
+    expect(rejected).toMatchObject({
+      accepted: false,
+      code: "budget_exhausted",
+      currentPlanVersion: beforeRejected.version,
+      budget: {
+        dimension: "accepted_amendments",
+        used: 1,
+        limit: 1,
+        remaining: 0,
+        owner: "planner",
+        automaticRetry: false,
+      },
+    });
+    expect(await fixture.engine.applyPlan(command)).toEqual(rejected);
+    expect(await fixture.engine.getPlan(fixture.planId)).toEqual(beforeRejected);
+  });
+
+  it("counts a Plan change request only as Ticket capacity and increments amendments on acceptance", async () => {
+    const fixture = await createFixture({ convergenceLimits: { maxTickets: 3, maxAcceptedAmendments: 1 } });
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const planningClaim = await fixture.engine.claimReady({ requestId: "claim-request-budget", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+
+    expect(await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, planningClaim!, "request-budgeted-change", {
+      type: "request_plan_change", reason: "需要正式修订", evidence: [],
+    }))).toMatchObject({ accepted: true, ticketStatus: "returned" });
+    const requested = await fixture.engine.getPlan(fixture.planId);
+    expect(requested.convergence).toEqual({ maxTickets: 3, maxAcceptedAmendments: 1, acceptedAmendments: 0 });
+    const amendment = requested.graph.ticketIds.at(-1)!;
+    const amendmentClaim = await fixture.engine.claimReady({ requestId: "claim-budget-amendment", planId: fixture.planId, ticketId: amendment, expectedTicketVersion: 2, principalId: "planner", leaseDurationMs: 60_000 });
+    const claimedPlan = await fixture.engine.getPlan(fixture.planId);
+
+    const acceptedAmendment = await fixture.engine.applyPlan({
+      commandId: "accept-budgeted-change", planId: fixture.planId, actorPrincipalId: "planner", issuedAt: now,
+      payload: {
+        type: "apply_change", expectedPlanVersion: claimedPlan.version, sourceTicketId: amendment,
+        sourceAuthority: { kind: "claim", claimId: amendmentClaim!.claimId, fencingToken: amendmentClaim!.fencingToken },
+        change: {
+          additions: [draft("budgeted-delivery", "预算内交付")],
+          dependencyAdditions: [{ from: { ticketId: amendment }, to: { clientRef: "budgeted-delivery" } }],
+          cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "budgeted-delivery" }],
+        },
+      },
+    });
+    if (!acceptedAmendment.accepted) throw new Error(`Expected requested Plan change: ${JSON.stringify(acceptedAmendment)}`);
+    expect((await fixture.engine.getPlan(fixture.planId)).convergence).toEqual({
+      maxTickets: 3, maxAcceptedAmendments: 1, acceptedAmendments: 1,
+    });
+  });
+
+  it("rejects a resolution Ticket beyond capacity without settling the running Ticket", async () => {
+    const fixture = await createFixture({ convergenceLimits: { maxTickets: 1, maxAcceptedAmendments: 1 } });
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({ requestId: "claim-full-ticket-budget", planId: fixture.planId, ticketId: planning, expectedTicketVersion: 1, principalId: "planner", leaseDurationMs: 60_000 });
+    const beforeRejected = await fixture.engine.getPlan(fixture.planId);
+    const beforeTicket = await fixture.engine.getTicket(planning);
+    const command = ticketCommand(fixture.planId, planning, claim!, "request-over-ticket-budget", {
+      type: "request_plan_change", reason: "没有容量再创建修订工单", evidence: [],
+    });
+
+    const rejected = await fixture.engine.applyTicket(command);
+    expect(rejected).toMatchObject({
+      accepted: false,
+      code: "budget_exhausted",
+      currentPlanVersion: beforeRejected.version,
+      currentTicketVersion: beforeTicket!.version,
+      budget: {
+        dimension: "tickets",
+        used: 1,
+        limit: 1,
+        remaining: 0,
+        owner: "planner",
+        requiredInput: { kind: "agent_recovery" },
+        automaticRetry: false,
+      },
+    });
+    expect(await fixture.engine.applyTicket(command)).toEqual(rejected);
+    expect(await fixture.engine.getPlan(fixture.planId)).toEqual(beforeRejected);
+    expect(await fixture.engine.getTicket(planning)).toEqual(beforeTicket);
+  });
+
   it("rejects appended work that can run before its source planning Ticket completes", async () => {
     const fixture = await createFixture();
     const planning = fixture.plan.graph.ticketIds[0]!;
@@ -1111,7 +1224,7 @@ describe("TicketEngine single Plan flow", () => {
 const now = "2026-07-14T00:00:00.000Z";
 function draft(clientRef: string, title: string) { return { clientRef, title, objective: `完成 ${title}`, successCriteria: [`${title} 完成`], assignment: { principalId: "planner" }, outputContract: { schemaRef: "result-v1" } }; }
 function completePayload(output: unknown = {}) { return { type: "complete" as const, handoff: { schemaVersion: 1 as const, summary: "工作完成", output, evidence: [], criterionResults: [{ criterionIndex: 0, status: "satisfied" as const, evidence: [] }], residualRisks: [] } }; }
-async function createFixture() {
+async function createFixture(options: { convergenceLimits?: PlanConvergenceLimits } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-plan-"));
   const policy = createPlanPolicy({ policyId: "test", policyVersion: 1, grants: [
     { principalId: "planner", capabilities: ["plan:create", "plan:control", "ticket:claim", "blocked_ownership:transfer"] },
@@ -1123,7 +1236,7 @@ async function createFixture() {
   const store = new TicketStore(root, "task", "run");
   const engine = new TicketEngine(store, policyPort);
   const planId = "f6f66a47-0c29-4c30-9461-f3de7525ad76" as PlanId;
-  const command: PlanCommandEnvelope = { commandId: "create", planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "test", definitionVersion: 1, policyRef: policy.ref, plannerAssignment: { principalId: "planner" }, amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "change-v1" } }, initialChange: { additions: [{ ...draft("planning", "计划拆解"), permissions: { amendPlan: true } }], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "planning" }] } } } };
+  const command: PlanCommandEnvelope = { commandId: "create", planId, actorPrincipalId: "planner", issuedAt: now, payload: { type: "create_plan", missionId: "mission", definition: { definitionId: "test", definitionVersion: 1, policyRef: policy.ref, plannerAssignment: { principalId: "planner" }, amendmentTemplate: { title: "计划修订", successCriteria: ["完成修订"], outputContract: { schemaRef: "change-v1" } }, ...(options.convergenceLimits ? { convergenceLimits: options.convergenceLimits } : {}), initialChange: { additions: [{ ...draft("planning", "计划拆解"), permissions: { amendPlan: true } }], dependencyAdditions: [], cancelTicketIds: [], requiredTerminalRefs: [{ clientRef: "planning" }] } } } };
   expect(await engine.createPlan(command)).toMatchObject({ accepted: true });
   return { root, store, engine, planId, plan: await engine.getPlan(planId) };
 }

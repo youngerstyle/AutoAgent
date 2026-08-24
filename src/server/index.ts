@@ -14,4 +14,4 @@ async function shutdown() {
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 
-console.log(`AutoAgent listening on http://127.0.0.1:${config.port}`);
+console.log(`AutoAgent listening on http://${config.host ?? "127.0.0.1"}:${config.port}`);

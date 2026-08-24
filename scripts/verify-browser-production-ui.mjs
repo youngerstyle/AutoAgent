@@ -13,10 +13,14 @@ let server;
 let browser;
 const previousHoldGoal = process.env.AUTOAGENT_MOCK_HOLD_GOAL_ONCE_MS;
 const previousAutoAgentHome = process.env.AUTOAGENT_HOME;
+const previousAllowMockDelivery = process.env.AUTOAGENT_ALLOW_MOCK_DELIVERY;
 
 try {
   process.env.AUTOAGENT_HOME = path.join(home, "home");
   process.env.AUTOAGENT_MOCK_HOLD_GOAL_ONCE_MS = "1500";
+  // This acceptance uses Mock as a deterministic protocol fixture. Normal
+  // runtime must continue to block Mock from claiming a real delivery.
+  process.env.AUTOAGENT_ALLOW_MOCK_DELIVERY = "1";
   server = await startServer({
     port: 0,
     autoAgentHome: process.env.AUTOAGENT_HOME,
@@ -85,10 +89,15 @@ try {
   await waitForProjectedStatus(page, baseUrl, workspace.workspace.id, taskId, "running", 30_000);
   const terminal = await waitUntil(async () => {
     const snapshot = await getSnapshot(baseUrl, workspace.workspace.id);
-    return ["completed", "failed", "paused", "interrupted"].includes(snapshot.status) ? snapshot : undefined;
+    return ["completed", "failed", "blocked", "paused", "interrupted"].includes(snapshot.status) ? snapshot : undefined;
   }, 90_000, "state projection acceptance did not reach a terminal state");
   await waitForProjectedStatus(page, baseUrl, workspace.workspace.id, taskId, terminal.status, 10_000);
   await assertReadableState(page, workspace.workspace.id);
+  assert.equal(terminal.status, "completed", `deterministic Mock UI delivery did not complete: ${JSON.stringify({
+    status: terminal.status,
+    phase: terminal.phase,
+    tickets: terminal.tickets,
+  })}`);
 
   const station = page.locator(".agent-station").first();
   await station.click();
@@ -136,6 +145,8 @@ try {
   else process.env.AUTOAGENT_MOCK_HOLD_GOAL_ONCE_MS = previousHoldGoal;
   if (previousAutoAgentHome === undefined) delete process.env.AUTOAGENT_HOME;
   else process.env.AUTOAGENT_HOME = previousAutoAgentHome;
+  if (previousAllowMockDelivery === undefined) delete process.env.AUTOAGENT_ALLOW_MOCK_DELIVERY;
+  else process.env.AUTOAGENT_ALLOW_MOCK_DELIVERY = previousAllowMockDelivery;
   await rm(home, { recursive: true, force: true });
 }
 

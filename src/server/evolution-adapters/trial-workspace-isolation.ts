@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { cp, lstat, mkdir, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 
 export interface TrialExecutionWorkspace {
   isolationId: string;
@@ -22,8 +24,27 @@ interface SnapshotManifest {
   createdAt: string;
 }
 
-const EXCLUDED_TOP_LEVEL_PATHS = new Set([".autoagent", ".git", "node_modules", "dist"]);
+const EXCLUDED_TOP_LEVEL_PATHS = new Set([
+  ".acceptance",
+  ".agents",
+  ".autoagent",
+  ".codex",
+  ".codegraph",
+  ".git",
+  ".gstack",
+  ".tmp",
+  ".worktrees",
+  "coverage",
+  "dist",
+  "node_modules",
+]);
+const EXCLUDED_TOP_LEVEL_PREFIXES = [".tmp-"];
 const preparationQueues = new Map<string, Promise<void>>();
+const execFileAsync = promisify(execFile);
+
+function isExcludedTopLevelPath(name: string): boolean {
+  return EXCLUDED_TOP_LEVEL_PATHS.has(name) || EXCLUDED_TOP_LEVEL_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
 
 /**
  * Platform-owned physical isolation for paired trials. The logical workspace
@@ -71,7 +92,7 @@ export class TrialWorkspaceIsolationManager {
     try {
       await validateSourceSymlinks(this.sourceRoot);
       for (const entry of await readdir(this.sourceRoot, { withFileTypes: true })) {
-        if (EXCLUDED_TOP_LEVEL_PATHS.has(entry.name)) continue;
+        if (isExcludedTopLevelPath(entry.name)) continue;
         await cp(path.join(this.sourceRoot, entry.name), path.join(seedRoot, entry.name), {
           recursive: true,
           force: false,
@@ -173,9 +194,11 @@ export class TrialWorkspaceIsolationManager {
     const rootPath = path.join(armRoot, "workspace");
     await mkdir(armRoot, { recursive: true });
     await cp(seedRoot, rootPath, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
-    // Prevent Git from walking up into the user's real repository. Trial tasks
-    // may inspect files, but cannot accidentally commit against the source tree.
-    await mkdir(path.join(rootPath, ".git"), { recursive: true });
+    // A merely empty `.git` directory is not a repository: Git ignores it and
+    // keeps walking upward, which can expose the user's real source checkout.
+    // Give every arm an independent baseline commit so status/diff/commit are
+    // both useful and physically confined to the frozen execution workspace.
+    await initializeTrialRepository(rootPath);
     const manifestPath = path.join(armRoot, "manifest.json");
     await writeFile(manifestPath, `${JSON.stringify({
       schemaVersion: 1,
@@ -186,7 +209,7 @@ export class TrialWorkspaceIsolationManager {
       sourceRoot: path.resolve(this.sourceRoot),
       executionRoot: path.resolve(rootPath),
       snapshotHash,
-      excludedTopLevelPaths: [...EXCLUDED_TOP_LEVEL_PATHS].sort(),
+      excludedTopLevelPaths: [...EXCLUDED_TOP_LEVEL_PATHS, ...EXCLUDED_TOP_LEVEL_PREFIXES.map((prefix) => `${prefix}*`)].sort(),
       createdAt: this.now().toISOString(),
     } satisfies SnapshotManifest, null, 2)}\n`, "utf8");
     return { isolationId, rootPath, snapshotHash, manifestPath };
@@ -209,7 +232,7 @@ export function trialIsolationBaseRoot(homeRoot: string, sourceRoot: string): st
 async function validateSourceSymlinks(root: string, relative = ""): Promise<void> {
   const directory = path.join(root, relative);
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (!relative && EXCLUDED_TOP_LEVEL_PATHS.has(entry.name)) continue;
+    if (!relative && isExcludedTopLevelPath(entry.name)) continue;
     const child = path.join(relative, entry.name);
     const file = path.join(root, child);
     const info = await lstat(file);
@@ -256,4 +279,22 @@ async function listEntries(root: string, relative = ""): Promise<string[]> {
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function initializeTrialRepository(rootPath: string): Promise<void> {
+  const runGit = (...args: string[]) => execFileAsync("git", args, {
+    cwd: rootPath,
+    windowsHide: true,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  await runGit("init", "--quiet", "--initial-branch=main");
+  await runGit("config", "core.autocrlf", "false");
+  await runGit("config", "core.filemode", "false");
+  await runGit("config", "core.longpaths", "true");
+  await runGit("add", "--all", "--force");
+  await runGit(
+    "-c", "user.name=AutoAgent Trial",
+    "-c", "user.email=trial@autoagent.local",
+    "commit", "--quiet", "--allow-empty", "--message", "AutoAgent trial baseline",
+  );
 }

@@ -326,14 +326,20 @@ export function validateMissionCorrectionOwnership(
   outcome: MissionTicketOutcome | undefined,
   targets: readonly CorrectionTargetContext[],
 ): { valid: true } | { valid: false; reason: string } {
-  if (assignment.outputContract.schemaRef !== "mission-assurance-v1" || outcome?.disposition !== "correction_required") {
+  if (outcome?.disposition !== "correction_required") {
     return { valid: true };
   }
   const criterionIds = Array.isArray(outcome.correctionMissionCriterionIds)
     ? outcome.correctionMissionCriterionIds.filter(isNonEmptyString)
     : [];
   const target = targets.find((item) => String(item.ticketId) === String(outcome.targetTicketId));
-  if (!target) return { valid: false, reason: "correction_required 的目标不是当前工单的已完成上游工单" };
+  if (!target) {
+    return {
+      valid: false,
+      reason: "correction_required 的目标不是当前工单的已完成上游 delivery Ticket；assurance 或 settlement Ticket 不能作为纠正目标",
+    };
+  }
+  if (assignment.outputContract.schemaRef !== "mission-assurance-v1") return { valid: true };
   const owned = new Set(target.missionCriterionIds ?? []);
   const unowned = criterionIds.filter((criterionId) => !owned.has(criterionId));
   if (unowned.length) {

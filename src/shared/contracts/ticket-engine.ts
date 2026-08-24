@@ -128,6 +128,32 @@ export interface PlanCompletionPolicy {
   blockedPolicy: "wait";
 }
 
+export interface PlanConvergenceLimits {
+  maxTickets: number;
+  maxAcceptedAmendments: number;
+}
+
+export interface PlanConvergenceState extends PlanConvergenceLimits {
+  acceptedAmendments: number;
+}
+
+export type ConvergenceBudgetDimension = "tickets" | "accepted_amendments" | "multiple";
+
+export interface ConvergenceBudgetExhaustion {
+  dimension: ConvergenceBudgetDimension;
+  used: number;
+  limit: number;
+  remaining: number;
+  owner: "planner";
+  requiredInput: TicketRequiredInput;
+  automaticRetry: false;
+}
+
+export const DEFAULT_PLAN_CONVERGENCE_LIMITS: Readonly<PlanConvergenceLimits> = Object.freeze({
+  maxTickets: 64,
+  maxAcceptedAmendments: 8,
+});
+
 export interface PlanPolicyRef {
   policyId: string;
   policyVersion: number;
@@ -385,10 +411,12 @@ export type TicketCommandResult =
         | "stale_authority"
         | "plan_paused"
         | "plan_terminal"
-        | "idempotency_conflict";
+        | "idempotency_conflict"
+        | "budget_exhausted";
       reason: string;
       currentTicketVersion?: number;
       currentPlanVersion?: number;
+      budget?: ConvergenceBudgetExhaustion;
     };
 
 export interface PlanDefinition {
@@ -402,6 +430,7 @@ export interface PlanDefinition {
     successCriteria: string[];
     outputContract: TicketOutputContract;
   };
+  convergenceLimits?: PlanConvergenceLimits;
 }
 
 export type PlanCommand =
@@ -441,9 +470,11 @@ export type PlanCommandResult =
         | "policy_violation"
         | "version_conflict"
         | "plan_terminal"
-        | "idempotency_conflict";
+        | "idempotency_conflict"
+        | "budget_exhausted";
       reason: string;
       currentPlanVersion?: number;
+      budget?: ConvergenceBudgetExhaustion;
     };
 
 export interface ClaimCommandEnvelope {
@@ -500,6 +531,8 @@ export interface PlanSnapshot {
   deferredOutcome?: "active" | "blocked" | "completed" | "failed";
   graph: PlanGraphSnapshot;
   completionPolicy: PlanCompletionPolicy;
+  /** Missing only on legacy aggregates; readers derive a compatibility state. */
+  convergence?: PlanConvergenceState;
   policyRef: PlanPolicyRef;
   plannerAssignment: PlannedTicketAssignment;
   amendmentTemplate: PlanDefinition["amendmentTemplate"];

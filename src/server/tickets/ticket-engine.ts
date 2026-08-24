@@ -1,11 +1,15 @@
 ﻿import { createHash, randomUUID } from "node:crypto";
+import { DEFAULT_PLAN_CONVERGENCE_LIMITS } from "../../shared/contracts/ticket-engine.js";
 import type {
   BlockedOwnershipReceipt,
   ClaimReceipt,
   ClaimRequest,
+  ConvergenceBudgetExhaustion,
   PlanAuthorizationPolicy,
   PlanCommandEnvelope,
   PlanCommandResult,
+  PlanConvergenceLimits,
+  PlanConvergenceState,
   PlanId,
   PlanPolicyPort,
   PlanStatus,
@@ -53,6 +57,12 @@ export interface TicketEngineOptions {
 }
 export class TicketEngineOperationError extends Error {
   constructor(public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation", message: string) { super(message); }
+}
+
+class ConvergenceBudgetError extends Error {
+  constructor(readonly details: ConvergenceBudgetExhaustion) {
+    super(`Plan convergence budget exhausted: ${details.dimension}`);
+  }
 }
 
 export class TicketEngine {
@@ -121,6 +131,10 @@ export class TicketEngine {
     }
     try {
       const materialized = materializePlanGraph({ planId: command.planId, change: command.payload.definition.initialChange });
+      const convergence = createConvergenceState(
+        command.payload.definition.convergenceLimits,
+        materialized.graph.ticketIds.length,
+      );
       const tickets = createTickets(materialized, command.planId);
       initializeReady(tickets, materialized.graph);
       const plan = {
@@ -130,6 +144,7 @@ export class TicketEngine {
         status: "active" as const,
         graph: materialized.graph,
         completionPolicy: materialized.completionPolicy,
+        convergence,
         policyRef: command.payload.definition.policyRef,
         plannerAssignment: command.payload.definition.plannerAssignment,
         amendmentTemplate: structuredClone(command.payload.definition.amendmentTemplate),
@@ -150,6 +165,9 @@ export class TicketEngine {
       });
       return result;
     } catch (error) {
+      if (error instanceof ConvergenceBudgetError) {
+        return { accepted: false, commandId: command.commandId, code: "budget_exhausted", reason: error.message, budget: error.details };
+      }
       if (error instanceof PlanGraphError) return { accepted: false, commandId: command.commandId, code: "invalid_definition", reason: error.message };
       if (error instanceof TicketStoreConflictError) {
         const raced = await this.store.read(command.planId);
@@ -212,6 +230,13 @@ export class TicketEngine {
             change: payload.change,
             ticketStatuses: statusMap(current.tickets),
           });
+          const convergence = convergenceStateFor(current.plan);
+          assertConvergenceAvailable(
+            convergence,
+            current.plan.graph.ticketIds.length,
+            materialized.graph.ticketIds.length,
+            convergence.acceptedAmendments + 1,
+          );
           if (materialized.addedTicketIds.some((ticketId) => !isStrictAncestor(materialized.graph, payload.sourceTicketId, ticketId))) {
             throw new PlanGraphError("Every appended Ticket must have the source Ticket as an ancestor");
           }
@@ -247,7 +272,13 @@ export class TicketEngine {
           const cancelledById = new Map(cancelled.map((ticket) => [String(ticket.ticketId), ticket]));
           tickets = [...tickets.map((ticket) => cancelledById.get(String(ticket.ticketId)) ?? ticket), ...added];
           initializeReady(tickets, materialized.graph);
-          plan = { ...plan, status: "active", graph: materialized.graph, completionPolicy: materialized.completionPolicy };
+          plan = {
+            ...plan,
+            status: "active",
+            graph: materialized.graph,
+            completionPolicy: materialized.completionPolicy,
+            convergence: { ...convergence, acceptedAmendments: convergence.acceptedAmendments + 1 },
+          };
           definitions = { ...materialized.definitionsByTicketId };
           pendingEvents.push(planEvent(command.planId, plan.version, { type: "PlanChanged", addedTicketIds: [...materialized.addedTicketIds] }, command.issuedAt));
           for (const ticket of cancelled) pendingEvents.push(ticketEvent(ticket, { type: "TicketTerminal", status: "cancelled" }, command.issuedAt));
@@ -260,6 +291,9 @@ export class TicketEngine {
       });
       return next.commandResults.find((item) => item.commandId === command.commandId)! as PlanCommandResult;
     } catch (error) {
+      if (error instanceof ConvergenceBudgetError) {
+        return this.persistPlanRejection(aggregate, command, fingerprint, "budget_exhausted", error.message, error.details);
+      }
       if (error instanceof PlanGraphError) return this.persistPlanRejection(aggregate, command, fingerprint, "invalid_command", error.message);
       if (error instanceof TicketStoreConflictError) return this.persistPlanRejection(await this.requirePlan(command.planId), command, fingerprint, "version_conflict", error.message);
       throw error;
@@ -436,6 +470,18 @@ export class TicketEngine {
     try {
       const next = await this.store.transact(command.planId, versions(aggregate), (current) => {
       const currentTicket = current.tickets.find((item) => item.ticketId === command.ticketId)!;
+      const appendsResolutionTicket = command.payload.type === "request_correction"
+        || command.payload.type === "request_plan_change"
+        || (command.payload.type === "fail" && current.plan.completionPolicy.failurePolicy === "require_resolution");
+      const convergence = convergenceStateFor(current.plan);
+      if (appendsResolutionTicket) {
+        assertConvergenceAvailable(
+          convergence,
+          current.plan.graph.ticketIds.length,
+          current.plan.graph.ticketIds.length + 1,
+          convergence.acceptedAmendments,
+        );
+      }
       let status: TicketStatus;
       if (command.payload.type === "complete") status = "completed";
       else if (command.payload.type === "block") status = "blocked";
@@ -570,7 +616,14 @@ export class TicketEngine {
       if (status === "blocked" || command.payload.type === "request_plan_change" || requiresPlanResolution) {
         planStatus = "blocked";
       }
-      const plan = { ...current.plan, version: current.plan.version + 1, status: planStatus, graph, completionPolicy };
+      const plan = {
+        ...current.plan,
+        version: current.plan.version + 1,
+        status: planStatus,
+        graph,
+        completionPolicy,
+        ...(appendsResolutionTicket ? { convergence } : {}),
+      };
       const settled = tickets.find((item) => item.ticketId === command.ticketId)!;
       const result: TicketCommandResult = {
         accepted: true, commandId: command.commandId, proposalId: command.proposalId,
@@ -616,6 +669,9 @@ export class TicketEngine {
       });
       return next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
     } catch (error) {
+      if (error instanceof ConvergenceBudgetError) {
+        return this.persistTicketRejection(aggregate, command, fingerprint, "budget_exhausted", error.message, error.details);
+      }
       if (error instanceof PlanGraphError) return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", error.message);
       if (!(error instanceof TicketStoreConflictError)) throw error;
       const latest = await this.requirePlan(command.planId);
@@ -657,14 +713,14 @@ export class TicketEngine {
     return replay;
   }
   private rejectPlan(command: PlanCommandEnvelope, code: "invalid_command", reason: string): PlanCommandResult { return { accepted: false, commandId: command.commandId, code, reason }; }
-  private async persistPlanRejection(aggregate: TicketAggregate, command: PlanCommandEnvelope, fingerprint: string, code: Extract<PlanCommandResult, { accepted: false }>["code"], reason: string): Promise<PlanCommandResult> {
-    const result: PlanCommandResult = { accepted: false, commandId: command.commandId, code, reason, currentPlanVersion: aggregate.plan.version };
+  private async persistPlanRejection(aggregate: TicketAggregate, command: PlanCommandEnvelope, fingerprint: string, code: Extract<PlanCommandResult, { accepted: false }>["code"], reason: string, budget?: ConvergenceBudgetExhaustion): Promise<PlanCommandResult> {
+    const result: PlanCommandResult = { accepted: false, commandId: command.commandId, code, reason, currentPlanVersion: aggregate.plan.version, ...(budget ? { budget } : {}) };
     await this.store.recordCommandResult(command.planId, { commandId: command.commandId, fingerprint }, result);
     return result;
   }
-  private async persistTicketRejection(aggregate: TicketAggregate, command: TicketCommandEnvelope, fingerprint: string, code: Extract<TicketCommandResult, { accepted: false }>["code"], reason: string): Promise<TicketCommandResult> {
+  private async persistTicketRejection(aggregate: TicketAggregate, command: TicketCommandEnvelope, fingerprint: string, code: Extract<TicketCommandResult, { accepted: false }>["code"], reason: string, budget?: ConvergenceBudgetExhaustion): Promise<TicketCommandResult> {
     const ticket = aggregate.tickets.find((item) => item.ticketId === command.ticketId);
-    const result: TicketCommandResult = { accepted: false, commandId: command.commandId, proposalId: command.proposalId, code, reason, currentPlanVersion: aggregate.plan.version, ...(ticket ? { currentTicketVersion: ticket.version } : {}) };
+    const result: TicketCommandResult = { accepted: false, commandId: command.commandId, proposalId: command.proposalId, code, reason, currentPlanVersion: aggregate.plan.version, ...(ticket ? { currentTicketVersion: ticket.version } : {}), ...(budget ? { budget } : {}) };
     await this.store.recordCommandResult(command.planId, { commandId: command.commandId, fingerprint }, result);
     return result;
   }
@@ -673,6 +729,81 @@ export class TicketEngine {
 function asMaterialized(aggregate: TicketAggregate): MaterializedPlanGraph {
   return { planId: aggregate.plan.planId, graph: aggregate.plan.graph, completionPolicy: aggregate.plan.completionPolicy, definitionsByTicketId: aggregate.definitionsByTicketId, addedTicketIds: [] };
 }
+
+function createConvergenceState(
+  configured: PlanConvergenceLimits | undefined,
+  initialTicketCount: number,
+): PlanConvergenceState {
+  const limits = configured ?? DEFAULT_PLAN_CONVERGENCE_LIMITS;
+  validateConvergenceLimits(limits);
+  const state: PlanConvergenceState = {
+    maxTickets: limits.maxTickets,
+    maxAcceptedAmendments: limits.maxAcceptedAmendments,
+    acceptedAmendments: 0,
+  };
+  assertConvergenceAvailable(state, 0, initialTicketCount, 0);
+  return state;
+}
+
+function convergenceStateFor(plan: TicketAggregate["plan"]): PlanConvergenceState {
+  if (plan.convergence) {
+    validateConvergenceLimits(plan.convergence);
+    if (!Number.isSafeInteger(plan.convergence.acceptedAmendments) || plan.convergence.acceptedAmendments < 0) {
+      throw new PlanGraphError("Plan convergence acceptedAmendments must be a non-negative safe integer");
+    }
+    return structuredClone(plan.convergence);
+  }
+
+  // Legacy snapshots have no convergence state. Preserve their existing graph and
+  // start amendment accounting from the first post-migration accepted change.
+  return {
+    maxTickets: Math.max(DEFAULT_PLAN_CONVERGENCE_LIMITS.maxTickets, plan.graph.ticketIds.length),
+    maxAcceptedAmendments: DEFAULT_PLAN_CONVERGENCE_LIMITS.maxAcceptedAmendments,
+    acceptedAmendments: 0,
+  };
+}
+
+function validateConvergenceLimits(limits: PlanConvergenceLimits): void {
+  if (!Number.isSafeInteger(limits.maxTickets) || limits.maxTickets <= 0 || limits.maxTickets > DEFAULT_GRAPH_LIMITS.maxTickets) {
+    throw new PlanGraphError(`Plan convergence maxTickets must be an integer from 1 to ${DEFAULT_GRAPH_LIMITS.maxTickets}`);
+  }
+  if (!Number.isSafeInteger(limits.maxAcceptedAmendments) || limits.maxAcceptedAmendments < 0 || limits.maxAcceptedAmendments > 1_000) {
+    throw new PlanGraphError("Plan convergence maxAcceptedAmendments must be an integer from 0 to 1000");
+  }
+}
+
+function assertConvergenceAvailable(
+  state: PlanConvergenceState,
+  currentTicketCount: number,
+  nextTicketCount: number,
+  nextAcceptedAmendments: number,
+): void {
+  const ticketsExceeded = nextTicketCount > state.maxTickets;
+  const amendmentsExceeded = nextAcceptedAmendments > state.maxAcceptedAmendments;
+  if (!ticketsExceeded && !amendmentsExceeded) return;
+
+  const dimension = ticketsExceeded && amendmentsExceeded
+    ? "multiple"
+    : ticketsExceeded ? "tickets" : "accepted_amendments";
+  const used = ticketsExceeded ? currentTicketCount : state.acceptedAmendments;
+  const limit = ticketsExceeded ? state.maxTickets : state.maxAcceptedAmendments;
+  throw new ConvergenceBudgetError({
+    dimension,
+    used,
+    limit,
+    remaining: Math.max(0, limit - used),
+    owner: "planner",
+    requiredInput: {
+      kind: "agent_recovery",
+      description: `Plan convergence ${dimension} budget is exhausted`,
+      details: {
+        action: "Reduce scope, close the current Plan, or explicitly create a replacement Plan with a new convergence budget.",
+      },
+    },
+    automaticRetry: false,
+  });
+}
+
 function createTickets(graph: MaterializedPlanGraph, planId: PlanId): TicketSnapshot[] {
   return graph.graph.ticketIds.map((ticketId) => ({ ticketId, planId, version: 1, status: "pending", attempts: [], ...(graph.definitionsByTicketId[String(ticketId)]?.parentTicketId ? { parentTicketId: graph.definitionsByTicketId[String(ticketId)].parentTicketId } : {}) }));
 }

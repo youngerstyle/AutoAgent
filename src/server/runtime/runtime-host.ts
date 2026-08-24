@@ -28,7 +28,7 @@ import { ensureWorkspaceAgent, listWorkspaceAgents } from "../agents/roster.js";
 import type { AgentProfileStore } from "../agents/profile-store.js";
 import { MissionGoalResolutionPort } from "../mission-process/mission-goal-resolution-port.js";
 import { MissionProcessManager } from "../mission-process/mission-process-manager.js";
-import { LegacyMissionPlanError, MissionStore } from "../mission-process/mission-store.js";
+import { LegacyMissionPlanError, MissionStore, MissionStoreCorruptionError } from "../mission-process/mission-store.js";
 import type { MissionTicketOutcome } from "../mission-process/ticket-agent-adapter.js";
 import { createMinimalTeamPlanDefinition, DEFAULT_PLAN_TEMPLATE_ID } from "../product/plan-template.js";
 import { createTeamBinding } from "../product/team-binding.js";
@@ -36,7 +36,7 @@ import type { ProviderRegistry } from "../providers/provider-registry.js";
 import { intersectEffectivePolicies, resolvePolicy } from "../policy/policy.js";
 import { configuredToolsInclude, toolsForPolicy } from "../../shared/tool-catalog.js";
 import { TicketEngine } from "../tickets/ticket-engine.js";
-import { TicketStore } from "../tickets/ticket-store.js";
+import { TicketStore, TicketStoreCorruptionError } from "../tickets/ticket-store.js";
 import { WorkspaceSnapshotStore } from "../tickets/workspace-snapshot-store.js";
 import { projectRuntimeConsistency } from "./runtime-consistency.js";
 import type { PlanPolicyStore } from "../tickets/plan-policy-store.js";
@@ -344,6 +344,8 @@ export class RuntimeHost {
           const staffing = await this.staffing.get(record.taskId);
           if (staffing?.status === "completed" && staffing.proposal?.status === "staffed") {
             await this.initializeMissionFromStaffing(record, staffing.proposal);
+          } else if (!staffing) {
+            this.readOnlyTasks.set(record.taskId, historicalIsolationReason("missing_mission"));
           }
           continue;
         }
@@ -356,7 +358,7 @@ export class RuntimeHost {
           // Process startup keeps terminal history cold. Explicit hydration can
           // still materialize it for a read-only snapshot on demand.
           if (!options.deferActive) {
-            const context = await this.compose(record);
+            const context = await this.composeReadable(record);
             this.contexts.set(record.taskId, context);
           }
           continue;
@@ -410,8 +412,8 @@ export class RuntimeHost {
         await context.manager.recover();
       } catch (error) {
         this.contexts.delete(record.taskId);
-        if (!(error instanceof LegacyMissionPlanError)) throw error;
-        this.readOnlyTasks.set(record.taskId, "这是旧版任务，只能查看历史，不能继续调度。请重新描述目标以创建新的 Mission 和 Plan。");
+        if (!isHistoricalIsolationError(error)) throw error;
+        this.readOnlyTasks.set(record.taskId, historicalIsolationReason("incompatible_history"));
       }
     }
   }
@@ -421,14 +423,19 @@ export class RuntimeHost {
       if (this.contexts.has(record.taskId)) continue;
       try {
         const persistedMission = await new MissionStore(this.workspace.rootPath, record.missionId).read();
-        if (!persistedMission) continue;
-        const context = await this.compose(record);
+        if (!persistedMission) {
+          if (!await this.staffing.get(record.taskId)) {
+            this.readOnlyTasks.set(record.taskId, historicalIsolationReason("missing_mission"));
+          }
+          continue;
+        }
+        const context = await this.composeReadable(record);
         this.contexts.set(record.taskId, context);
         this.restoreRetryStates(record);
       } catch (error) {
         this.contexts.delete(record.taskId);
-        if (!(error instanceof LegacyMissionPlanError)) throw error;
-        this.readOnlyTasks.set(record.taskId, "这是旧版任务，只能查看历史，不能继续调度。请重新描述目标以创建新的 Mission 和 Plan。");
+        if (!isHistoricalIsolationError(error)) throw error;
+        this.readOnlyTasks.set(record.taskId, historicalIsolationReason("incompatible_history"));
       }
     }
   }
@@ -996,6 +1003,19 @@ export class RuntimeHost {
         planId: String(plan.planId),
         planStatus: plan.status,
         planVersion: plan.version,
+        ...(plan.convergence ? {
+          convergence: {
+            ticketCount: plan.graph.ticketIds.length,
+            maxTickets: plan.convergence.maxTickets,
+            remainingTickets: Math.max(0, plan.convergence.maxTickets - plan.graph.ticketIds.length),
+            acceptedAmendments: plan.convergence.acceptedAmendments,
+            maxAcceptedAmendments: plan.convergence.maxAcceptedAmendments,
+            remainingAcceptedAmendments: Math.max(
+              0,
+              plan.convergence.maxAcceptedAmendments - plan.convergence.acceptedAmendments,
+            ),
+          },
+        } : {}),
       },
       consistency,
       activeTask: {
@@ -1719,6 +1739,13 @@ export class RuntimeHost {
     return context;
   }
 
+  private async composeReadable(record: RuntimeTaskRecord): Promise<RuntimeContext> {
+    const context = await this.compose(record);
+    const mission = await context.manager.current();
+    await context.tickets.getPlan(mission.record.planId);
+    return context;
+  }
+
   private async restoreActiveContext(context: RuntimeContext, record: RuntimeTaskRecord): Promise<void> {
     if (TERMINAL_RUNTIME_TASK_STATUSES.has(context.record.status)) return;
     const mission = await context.manager.current();
@@ -2127,6 +2154,18 @@ async function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<
 
 function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash("sha256").update(JSON.stringify(parts)).digest("base64url")}`;
+}
+
+function isHistoricalIsolationError(error: unknown): boolean {
+  return error instanceof LegacyMissionPlanError
+    || error instanceof MissionStoreCorruptionError
+    || error instanceof TicketStoreCorruptionError;
+}
+
+function historicalIsolationReason(reason: "missing_mission" | "incompatible_history"): string {
+  return reason === "missing_mission"
+    ? "任务缺少可验证的 Mission 历史，已安全隔离为只读，不能继续调度。请重新描述目标以创建新的 Mission 和 Plan。"
+    : "这是旧版任务，历史与当前运行时契约不兼容，已安全隔离为只读，原始账本未被修改。请重新描述目标以创建新的 Mission 和 Plan。";
 }
 
 function missionLinkKey(link: MissionLink): string {

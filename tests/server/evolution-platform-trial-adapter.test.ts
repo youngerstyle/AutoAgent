@@ -1,4 +1,5 @@
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +10,41 @@ import { workspaceEvolutionTrialDispatchFile } from "../../src/server/storage/pa
 import { fixtureRequest } from "./evolution-paired-trial-store.test.js";
 
 describe("Platform evolution trial adapter", () => {
+  it("excludes local derived and scratch directories from frozen trial workspaces", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-platform-trial-derived-index-"));
+    await writeFile(path.join(root, "project.txt"), "source", "utf8");
+    for (const derived of [".acceptance", ".codegraph", ".tmp", ".tmp-runtime", ".worktrees", "coverage"]) {
+      await mkdir(path.join(root, derived), { recursive: true });
+      await writeFile(path.join(root, derived, "derived.bin"), "not project source", "utf8");
+    }
+    execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, windowsHide: true });
+    const isolation = new TrialWorkspaceIsolationManager(root);
+
+    const pair = (await isolation.prepare("trial-derived-index", 1, [{ caseId: "target" }])).get("target")!;
+
+    expect(await readFile(path.join(pair.candidate.rootPath, "project.txt"), "utf8")).toBe("source");
+    for (const derived of [".acceptance", ".codegraph", ".tmp", ".tmp-runtime", ".worktrees", "coverage"]) {
+      await expect(access(path.join(pair.candidate.rootPath, derived))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(path.resolve(execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: pair.candidate.rootPath,
+      encoding: "utf8",
+      windowsHide: true,
+    }).trim())).toBe(path.resolve(pair.candidate.rootPath));
+    expect(execFileSync("git", ["status", "--short"], {
+      cwd: pair.candidate.rootPath,
+      encoding: "utf8",
+      windowsHide: true,
+    })).toBe("");
+    await writeFile(path.join(pair.candidate.rootPath, "project.txt"), "candidate change", "utf8");
+    expect(execFileSync("git", ["status", "--short"], {
+      cwd: pair.candidate.rootPath,
+      encoding: "utf8",
+      windowsHide: true,
+    })).toContain("project.txt");
+    await isolation.cleanupGeneration("trial-derived-index", 1);
+  });
+
   it("prepares one idempotent frozen generation under concurrent dispatch preparation", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-platform-trial-concurrent-isolation-"));
     await writeFile(path.join(root, "project.txt"), "one frozen value", "utf8");
