@@ -609,13 +609,37 @@ async function verifyTodoInBrowser(browserInstance, url) {
 
   const firstRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
   const firstCheckbox = firstRow.getByRole("checkbox").first();
-  await assertVisible(firstCheckbox, "第一条待办没有完成勾选框");
-  await firstCheckbox.check();
-  assert.equal(await firstCheckbox.isChecked(), true, "勾选完成没有生效");
+  const usesCheckbox = await firstCheckbox.count() > 0 && await firstCheckbox.isVisible();
+  if (usesCheckbox) {
+    await firstCheckbox.check();
+    assert.equal(await firstCheckbox.isChecked(), true, "勾选完成没有生效");
+  } else {
+    const completeButton = firstRow.getByRole("button", { name: /完成/ }).first();
+    await assertVisible(completeButton, "第一条待办没有可访问的完成控件（checkbox 或完成按钮）");
+    await completeButton.click();
+    const completedRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
+    const restoreButton = completedRow.getByRole("button", { name: /恢复|取消完成/ }).first();
+    const completedStatus = completedRow.getByText(/已完成/, { exact: true }).first();
+    assert.ok(
+      (await restoreButton.count() > 0 && await restoreButton.isVisible())
+        || (await completedStatus.count() > 0 && await completedStatus.isVisible()),
+      "点击完成按钮后没有可观察到的已完成状态",
+    );
+  }
 
   await page.reload({ waitUntil: "load" });
   const persistedRow = page.getByText("真实验收任务一", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
-  assert.equal(await persistedRow.getByRole("checkbox").first().isChecked(), true, "刷新后完成状态没有持久化");
+  if (usesCheckbox) {
+    assert.equal(await persistedRow.getByRole("checkbox").first().isChecked(), true, "刷新后完成状态没有持久化");
+  } else {
+    const persistedRestoreButton = persistedRow.getByRole("button", { name: /恢复|取消完成/ }).first();
+    const persistedCompletedStatus = persistedRow.getByText(/已完成/, { exact: true }).first();
+    assert.ok(
+      (await persistedRestoreButton.count() > 0 && await persistedRestoreButton.isVisible())
+        || (await persistedCompletedStatus.count() > 0 && await persistedCompletedStatus.isVisible()),
+      "刷新后按钮式完成状态没有持久化",
+    );
+  }
 
   const secondRow = page.getByText("真实验收任务二", { exact: true }).locator("xpath=ancestor::*[self::li or self::article][1]");
   page.once("dialog", async (dialog) => {
@@ -637,6 +661,7 @@ async function verifyTodoInBrowser(browserInstance, url) {
   await context.close();
   return {
     added: 2,
+    completionControl: usesCheckbox ? "checkbox" : "button",
     completionPersistedAfterReload: true,
     deleted: 1,
     mobileWidth: 390,
