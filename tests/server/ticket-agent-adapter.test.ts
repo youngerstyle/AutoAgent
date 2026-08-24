@@ -294,7 +294,7 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("不得仅因提案结构或契约校验被退回就改成 failed");
   });
 
-  it("keeps assignment and terminal policy out of the planner contract", () => {
+  it("exposes team execution capacity while keeping assignment and terminal policy out of the planner output contract", () => {
     const instruction = missionOutcomeInstruction("plan-intent-v1", ["delivery:implement", "delivery:verify", "delivery:accept"], [], undefined, {
       planId: "plan-a",
       version: 1,
@@ -313,7 +313,9 @@ describe("Ticket Agent resolution adapter", () => {
     expect(instruction).toContain("Plan Compiler 会固定追加独立验证和最终验收");
     expect(instruction).toContain("不要生成 capability、tool、schemaRef");
     expect(instruction).not.toContain('"requiredTerminalCapabilities"');
-    expect(instruction).not.toContain('"enabledTools"');
+    expect(instruction).toContain('"enabledTools"');
+    expect(instruction).not.toContain('"requiredTools"');
+    expect(instruction).not.toContain('"assignment"');
   });
 
   it("requires a structured authoritative Mission baseline", () => {
