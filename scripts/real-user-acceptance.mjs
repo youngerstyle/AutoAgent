@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { chromium } from "playwright-core";
 
 const execFileAsync = promisify(execFile);
+const projectRoot = path.resolve(".");
 const baseUrl = process.env.AUTOAGENT_BASE_URL ?? "http://127.0.0.1:13748";
 const timeoutMs = Number(process.env.AUTOAGENT_ACCEPTANCE_TIMEOUT_MS ?? 2 * 60 * 60_000);
 const initializeGit = process.env.AUTOAGENT_ACCEPTANCE_GIT_INIT === "true";
@@ -207,6 +208,7 @@ async function resolveWorkspace() {
     return existing;
   }
   await mkdir(workspaceRoot, { recursive: true });
+  if (process.env.AUTOAGENT_ACCEPTANCE_SEED) await seedAcceptanceWorkspace(process.env.AUTOAGENT_ACCEPTANCE_SEED);
   if (initializeGit) await initializeGitRepository();
   return api("/api/workspaces", {
     method: "POST",
@@ -389,6 +391,7 @@ async function runArtifactAcceptance({ force = false } = {}) {
   if (scenario === "node-cli") return runNodeCliAcceptance();
   if (scenario === "npm-library") return runNpmLibraryAcceptance();
   if (scenario === "issue-tracker-service") return runIssueTrackerServiceAcceptance();
+  if (scenario === "brownfield-order-upgrade") return runBrownfieldOrderUpgradeAcceptance();
   const htmlPath = await findHtmlEntryPath();
   if (htmlPath) return runBrowserAcceptance({ force });
 
@@ -590,6 +593,98 @@ async function runIssueTrackerServiceAcceptance() {
   } finally {
     await stopIssueTracker(service);
   }
+}
+
+async function runBrownfieldOrderUpgradeAcceptance() {
+  const entryPath = path.join(workspaceRoot, "server.mjs");
+  const packagePath = path.join(workspaceRoot, "package.json");
+  assert.ok(existsSync(entryPath), "brownfield Order Service 缺少原有 server.mjs");
+  assert.ok(existsSync(packagePath), "brownfield Order Service 缺少原有 package.json");
+  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+  assert.deepEqual(manifest.dependencies ?? {}, {}, "brownfield Order Service 不允许新增运行时依赖");
+  const tests = await runNpm(["test"], 180_000);
+  await mkdir(reportDir, { recursive: true });
+  const dataFile = path.join(reportDir, "brownfield-v1-data.json");
+  const legacyOrder = {
+    id: "legacy-order-001",
+    customer: "Legacy Customer",
+    amount: 73.5,
+    status: "pending",
+    createdAt: "2025-01-02T03:04:05.000Z",
+  };
+  await writeFile(dataFile, `${JSON.stringify({ schemaVersion: 1, orders: [legacyOrder] }, null, 2)}\n`, "utf8");
+  const port = await reservePort();
+  let service = await startIssueTracker(entryPath, port, dataFile);
+  const serviceUrl = `http://127.0.0.1:${port}`;
+  try {
+    const migrated = await requestIssueApi(serviceUrl, `/api/orders/${legacyOrder.id}`);
+    assert.equal(migrated.response.status, 200, "迁移后旧 order 无法读取");
+    assert.deepEqual(
+      Object.fromEntries(Object.keys(legacyOrder).map((key) => [key, migrated.value.order?.[key]])),
+      legacyOrder,
+      "v1→v2 迁移没有完整保留旧 order 字段",
+    );
+    assert.equal(migrated.value.order?.version, 1, "迁移后的旧 order version 不是 1");
+    const migratedAudit = await requestIssueApi(serviceUrl, `/api/orders/${legacyOrder.id}/audit`);
+    assert.equal(migratedAudit.response.status, 200, "迁移后旧 order 审计接口不可用");
+    assert.deepEqual(migratedAudit.value.events?.map((event) => event.type), ["order.created"], "迁移没有补齐 order.created 审计");
+
+    const created = await requestIssueApi(serviceUrl, "/api/orders", {
+      method: "POST",
+      body: { customer: "New Customer", amount: 125 },
+    });
+    assert.equal(created.response.status, 201, "升级后原有 POST /api/orders 契约失效");
+    const orderId = created.value.order?.id;
+    assert.ok(typeof orderId === "string" && orderId.length > 0, "升级后创建 order 未返回 id");
+    assert.equal(created.value.order?.version, 1, "新 order version 不是 1");
+
+    const cancelled = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/cancel`, {
+      method: "POST",
+      body: { reason: "customer request", expectedVersion: 1 },
+    });
+    assert.equal(cancelled.response.status, 200, "合法取消未返回 200");
+    assert.equal(cancelled.value.order?.status, "cancelled", "合法取消未改变状态");
+    assert.equal(cancelled.value.order?.version, 2, "合法取消未递增 version");
+    const stale = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/cancel`, {
+      method: "POST",
+      body: { reason: "stale retry", expectedVersion: 1 },
+    });
+    assert.equal(stale.response.status, 409, "旧版本或终态重复取消未返回 409");
+    const audit = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/audit`);
+    assert.deepEqual(audit.value.events?.map((event) => event.type), ["order.created", "order.cancelled"], "新 order 审计事件不完整或顺序错误");
+    assert.equal(audit.value.events?.[1]?.reason, "customer request", "取消审计没有保留 reason");
+
+    await stopIssueTracker(service);
+    service = await startIssueTracker(entryPath, port, dataFile);
+    const afterRestart = await requestIssueApi(serviceUrl, `/api/orders/${orderId}`);
+    assert.equal(afterRestart.value.order?.status, "cancelled", "重启后取消状态没有恢复");
+    assert.equal(afterRestart.value.order?.version, 2, "重启后 order version 没有恢复");
+    const persisted = JSON.parse(await readFile(dataFile, "utf8"));
+    assert.equal(persisted.schemaVersion, 2, "迁移后磁盘 schemaVersion 不是 2");
+    const siblingFiles = await readdir(path.dirname(dataFile));
+    assert.equal(siblingFiles.some((name) => name.includes(".tmp")), false, "原子写入留下了临时文件");
+
+    return {
+      scenario: "brownfield-order-upgrade",
+      npmTestExitCode: 0,
+      npmTestOutput: tests.stdout.slice(-2_000),
+      legacyOrderPreserved: true,
+      migratedSchemaVersion: persisted.schemaVersion,
+      cancellationConflictStatus: stale.response.status,
+      auditTypes: audit.value.events.map((event) => event.type),
+      restartPersistenceVerified: true,
+    };
+  } finally {
+    await stopIssueTracker(service);
+  }
+}
+
+async function seedAcceptanceWorkspace(seedName) {
+  const entries = await readdir(workspaceRoot);
+  assert.deepEqual(entries, [], `seeded acceptance workspace 必须为空：${entries.join(", ")}`);
+  const seedRoot = path.join(projectRoot, "scripts", "fixtures", seedName);
+  assert.ok(existsSync(seedRoot), `找不到 acceptance seed：${seedName}`);
+  await cp(seedRoot, workspaceRoot, { recursive: true });
 }
 
 async function reservePort() {

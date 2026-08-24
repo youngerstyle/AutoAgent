@@ -11,7 +11,7 @@ const suiteRoot = process.env.AUTOAGENT_AUTONOMOUS_SUITE_ROOT
 const reportFile = path.join(suiteRoot, "suite-report.json");
 const timeoutMs = Number(process.env.AUTOAGENT_AUTONOMOUS_CASE_TIMEOUT_MS ?? 2 * 60 * 60_000);
 const selectedCaseIds = new Set(
-  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library,issue-tracker-service")
+  (process.env.AUTOAGENT_AUTONOMOUS_CASES ?? "project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean),
@@ -66,13 +66,28 @@ const cases = [
       "团队必须完成架构、分模块实现、自动化检查、独立 QA 和最终验收；不得请求 human 替团队测试、编辑文件或启动服务。",
     ].join(" "),
   },
+  {
+    id: "brownfield-order-upgrade",
+    scenario: "brownfield-order-upgrade",
+    seed: "brownfield-order-service",
+    goal: [
+      "升级当前已有的 Node.js 20+ 零依赖 Order Service；这是 brownfield 变更，不得重写成不兼容的新项目。",
+      "必须保留现有 POST /api/orders、GET /api/orders、GET /api/orders/:id 的成功与错误契约，并保持现有 npm test 通过。",
+      "将磁盘 schemaVersion 从 1 升级到 2；启动时自动迁移 v1 文件，完整保留旧 order 的 id、customer、amount、status、createdAt，并为旧 order 补 version=1 和 order.created 审计事件。迁移结果必须原子持久化且可重复启动。",
+      "新增 POST /api/orders/:id/cancel，接收 {reason,expectedVersion}。只有 pending order 且版本匹配时可取消，成功返回 {order}、status=cancelled、version 递增；旧版本或终态重复取消返回 409，非法输入返回 400，不存在返回 404。",
+      "新增 GET /api/orders/:id/audit 返回 {events}；新建与取消必须分别留下 order.created、order.cancelled，事件包含 orderId、时间，取消事件还要保留 reason。",
+      "单进程内的并发写入必须串行化，所有数据写入继续使用同目录临时文件加原子替换，不得留下半写 JSON 或临时文件。",
+      "补充自动化测试覆盖旧 API 回归、v1→v2 迁移、取消冲突、审计、并发写入和重启恢复，并更新 README 的升级与数据兼容说明。",
+      "团队必须自行完成代码理解、架构影响分析、分模块实现、回归测试、独立 QA 和最终验收；不得请求 human 替团队测试或编辑文件。",
+    ].join(" "),
+  },
 ].filter((item) => selectedCaseIds.has(item.id));
 
 assert.ok(cases.length > 0, "自主项目套件没有选中任何 case");
 assert.deepEqual(
   [...selectedCaseIds].sort(),
   cases.map((item) => item.id).sort(),
-  `存在未知 case；可选值：project-board,node-cli,npm-library,issue-tracker-service`,
+  `存在未知 case；可选值：project-board,node-cli,npm-library,issue-tracker-service,brownfield-order-upgrade`,
 );
 
 console.log(`[自主项目套件] root=${suiteRoot}`);
@@ -122,6 +137,7 @@ async function runCase(definition) {
       AUTOAGENT_ACCEPTANCE_TIMEOUT_MS: String(timeoutMs),
       AUTOAGENT_ACCEPTANCE_GIT_INIT: "true",
       AUTOAGENT_ACCEPTANCE_MAX_HUMAN_INPUTS: "0",
+      ...(definition.seed ? { AUTOAGENT_ACCEPTANCE_SEED: definition.seed } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
