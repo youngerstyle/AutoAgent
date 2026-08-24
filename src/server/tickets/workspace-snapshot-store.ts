@@ -46,7 +46,13 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
 
   async captureBaseline(attemptId: string, options: { isolate?: boolean } = {}): Promise<TicketAttemptWorkspaceBaseline> {
     const baselineId = randomUUID();
-    const isolation = options.isolate ? await this.worktrees.prepare(attemptId) : undefined;
+    const isolation = options.isolate
+      ? await this.worktrees.prepare(attemptId).catch((error) => {
+          if (!isGitWorktreeUnavailable(error)) throw error;
+          console.warn(`Ticket Attempt ${attemptId} is using serialized shared-workspace fallback: ${error.message}`);
+          return undefined;
+        })
+      : undefined;
     const manifest = await this.captureManifest(isolation?.rootPath ?? this.root);
     const manifestRef = path.posix.join(".autoagent", "tickets", "attempts", `${attemptId}.${baselineId}.baseline.json`);
     await this.writeManifest(manifestRef, manifest);
@@ -159,6 +165,10 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
     const { readFile } = await import("node:fs/promises");
     return JSON.parse(await readFile(target, "utf8")) as WorkspaceManifest;
   }
+}
+
+function isGitWorktreeUnavailable(error: unknown): error is Error {
+  return error instanceof Error && /^git worktree failed:/.test(error.message);
 }
 
 async function hashFile(filePath: string): Promise<string> {

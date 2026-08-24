@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
@@ -37,7 +38,10 @@ export class GitWorktreeAttemptStore {
     this.canonicalRoot = path.resolve(workspaceRoot);
     this.stateDirectory = path.join(this.canonicalRoot, ".autoagent", "tickets", "worktrees");
     const workspaceKey = createHash("sha256").update(this.canonicalRoot.toLowerCase()).digest("hex").slice(0, 16);
-    this.worktreeParent = path.join(path.dirname(this.canonicalRoot), ".autoagent-worktrees", workspaceKey);
+    // Trial arms and deeply nested user projects can already be close to the
+    // Windows path limit. Keeping another worktree beside the canonical root
+    // compounds that path and makes Git for Windows fail before checkout.
+    this.worktreeParent = path.join(os.tmpdir(), "autoagent-worktrees", workspaceKey);
   }
 
   prepare(attemptId: string): Promise<GitAttemptIsolation | undefined> {

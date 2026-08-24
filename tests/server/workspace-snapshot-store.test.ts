@@ -33,6 +33,28 @@ describe("WorkspaceSnapshotStore", () => {
     }
   });
 
+  it("keeps Attempt worktrees on a short external path for deeply nested trial workspaces", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-deep-attempt-"));
+    const root = path.join(parent, "trial-executions", "a".repeat(32), "b".repeat(32), "1", "c".repeat(24), "candidate", "workspace");
+    try {
+      await mkdir(root, { recursive: true });
+      await git(root, ["init"]);
+      await writeFile(path.join(root, ".gitignore"), ".autoagent/\n", "utf8");
+      await writeFile(path.join(root, "baseline.txt"), "baseline\n", "utf8");
+      await git(root, ["add", ".gitignore", "baseline.txt"]);
+      await git(root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "baseline"]);
+      const store = new WorkspaceSnapshotStore(root, monotonicClock());
+
+      const baseline = await store.captureBaseline("deep-trial-attempt", { isolate: true });
+      expect(baseline.isolation?.rootPath).toContain(path.join(os.tmpdir(), "autoagent-worktrees"));
+      expect(baseline.isolation?.rootPath).not.toContain("trial-executions");
+      await store.captureChangeSet("deep-trial-attempt", baseline, { integrate: true });
+      await store.cleanupAttempt("deep-trial-attempt", baseline);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("records only changes made after the Ticket Attempt baseline", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-attempt-"));
     await mkdir(path.join(root, "src"), { recursive: true });
