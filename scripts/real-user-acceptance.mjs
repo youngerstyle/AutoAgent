@@ -1072,7 +1072,7 @@ async function initializeGitRepository() {
   if (existsSync(path.join(workspaceRoot, ".git"))) return;
   await execFileAsync("git", ["init"], { cwd: workspaceRoot, encoding: "utf8", windowsHide: true });
   await writeFile(path.join(workspaceRoot, ".gitignore"), ".autoagent/\nnode_modules/\n", "utf8");
-  await execFileAsync("git", ["add", ".gitignore"], { cwd: workspaceRoot, encoding: "utf8", windowsHide: true });
+  await execFileAsync("git", ["add", "--all"], { cwd: workspaceRoot, encoding: "utf8", windowsHide: true });
   await execFileAsync(
     "git",
     ["-c", "user.name=AutoAgent Acceptance", "-c", "user.email=acceptance@autoagent.local", "commit", "-m", "acceptance baseline"],
