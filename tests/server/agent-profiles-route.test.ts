@@ -4,6 +4,7 @@ import path from "node:path";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/server/app";
+import { defaultAgentProfiles } from "../../src/server/agents/profile-store.js";
 
 describe("agent profiles route", () => {
   let homeDir: string;
@@ -52,6 +53,59 @@ describe("agent profiles route", () => {
     expect(persistedPm.identity).toBe(pm.identity);
     expect(persistedPm.contentVersion).toBe(10);
     expect(persistedPm.capabilities).toContain("plan:plan");
+  });
+
+  it("inherits the configured developer runtime when adding the integration developer profile", async () => {
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify([{
+      id: "prof_dev",
+      name: "开发",
+      role: "dev",
+      contentVersion: 10,
+      capabilities: ["delivery:implement"],
+      defaultProvider: "openai",
+      defaultModel: "configured-dev-model",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true },
+    }, {
+      id: "prof_dev_integration",
+      name: "集成开发",
+      role: "dev",
+      contentVersion: 10,
+      capabilities: ["delivery:implement", "并行交付"],
+      defaultProvider: "mock",
+      defaultModel: "mock-dev",
+      defaultPolicy: { canReadWorkspace: true, canWriteWorkspace: true, canExecuteCommands: true },
+    }], null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    const integrationDeveloper = listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_dev_integration");
+
+    expect(integrationDeveloper).toMatchObject({
+      defaultProvider: "openai",
+      defaultModel: "configured-dev-model",
+    });
+    const persisted = JSON.parse(await readFile(path.join(homeDir, "agent-profiles.json"), "utf8"));
+    expect(persisted.find((profile: { id: string }) => profile.id === "prof_dev_integration")).toMatchObject({
+      defaultProvider: "openai",
+      defaultModel: "configured-dev-model",
+    });
+  });
+
+  it("preserves an explicitly configured integration developer runtime", async () => {
+    const seeded = defaultAgentProfiles();
+    const profiles = seeded.map((profile) => profile.id === "prof_dev"
+      ? { ...profile, defaultProvider: "openai" as const, defaultModel: "primary-model" }
+      : profile.id === "prof_dev_integration"
+        ? { ...profile, defaultProvider: "anthropic" as const, defaultModel: "integration-model" }
+        : profile);
+    await writeFile(path.join(homeDir, "agent-profiles.json"), JSON.stringify(profiles, null, 2));
+
+    const app = createApp();
+    const listed = await request(app).get("/api/agent-profiles").expect(200);
+    expect(listed.body.profiles.find((profile: { id: string }) => profile.id === "prof_dev_integration")).toMatchObject({
+      defaultProvider: "anthropic",
+      defaultModel: "integration-model",
+    });
   });
 
   it("migrates v3 rule-like soul into v4 soul traits while preserving model and agent.md", async () => {

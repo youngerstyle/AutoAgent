@@ -89,7 +89,13 @@ function mergeDefaults(stored: AgentProfile[]): AgentProfile[] {
   const byId = new Map(stored.map((profile) => [profile.id, profile]));
   const merged = defaultAgentProfiles().map((profile) => {
     const stored = byId.get(profile.id);
-    const result = normalizeSkillToolContract(mergeDefaultProfile(profile, stored));
+    const source = profile.id === "prof_dev_integration" ? byId.get("prof_dev") : undefined;
+    const shouldInheritRuntime = profile.id === "prof_dev_integration"
+      && (!stored || (stored.defaultProvider === profile.defaultProvider && stored.defaultModel === profile.defaultModel));
+    const mergedProfile = mergeDefaultProfile(profile, stored);
+    const result = normalizeSkillToolContract(shouldInheritRuntime
+      ? inheritRuntimeSelection(mergedProfile, source)
+      : mergedProfile);
     const migrated = stored && (stored.contentVersion ?? 0) < 9
       ? withProtocolCapabilities(result, profile)
       : result;
@@ -100,6 +106,15 @@ function mergeDefaults(stored: AgentProfile[]): AgentProfile[] {
     .map(stripRemovedProfileFields)
     .map(normalizeSkillToolContract);
   return [...merged, ...custom];
+}
+
+function inheritRuntimeSelection(profile: AgentProfile, source?: AgentProfile): AgentProfile {
+  if (!source) return profile;
+  return {
+    ...profile,
+    defaultProvider: source.defaultProvider,
+    defaultModel: source.defaultModel,
+  };
 }
 
 function mergeDefaultProfile(defaultProfile: AgentProfile, storedProfile?: AgentProfile): AgentProfile {
