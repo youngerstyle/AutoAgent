@@ -30,6 +30,7 @@ export interface TicketAttemptWorkspacePort {
   captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options?: { integrate?: boolean }): Promise<TicketAttemptChangeSet>;
   cleanupAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
   discardAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
+  executionRoot?(attemptId: string): Promise<string | undefined>;
 }
 
 export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   AgentProfile,
   AgentThreadEvent,
@@ -50,6 +51,7 @@ interface RuntimeContext {
   record: RuntimeTaskRecord;
   team: TeamBinding;
   tickets: TicketEngine;
+  workspaceAttempts: WorkspaceSnapshotStore;
   manager: MissionProcessManager;
   engines: Map<string, AgentEngine<MissionTicketOutcome>>;
   loops: Map<string, AgentExecutionRuntime>;
@@ -1727,7 +1729,7 @@ export class RuntimeHost {
       "minimal-team-planner",
       () => this.now(),
     );
-    return { record, team, tickets, manager, engines, loops };
+    return { record, team, tickets, workspaceAttempts: workspacePort, manager, engines, loops };
   }
 
   private async requireContext(taskId: string): Promise<RuntimeContext> {
@@ -1783,6 +1785,16 @@ export class RuntimeHost {
   private async sliceInput(context: RuntimeContext, link: ActiveMissionLink, turnId?: string, triggerMessageId?: string) {
     const workItem = await context.tickets.getWorkItem(link.ticketId);
     const activeAttempt = workItem?.ticket.attempts.find((attempt) => attempt.attemptId === link.attemptId);
+    const baselineRoot = activeAttempt?.workspaceBaseline?.isolation?.rootPath;
+    let executionRoot = baselineRoot;
+    if (baselineRoot) {
+      if (!link.attemptId) throw new Error("Active isolated Ticket has no Attempt ID");
+      const recoveredRoot = await context.workspaceAttempts.executionRoot(link.attemptId);
+      if (!recoveredRoot || path.resolve(recoveredRoot) !== path.resolve(baselineRoot)) {
+        throw new Error(`Attempt worktree state does not match the active Ticket baseline: ${link.attemptId}`);
+      }
+      executionRoot = recoveredRoot;
+    }
     return this.sliceInputForAgent(
       context,
       link.agentId,
@@ -1792,7 +1804,7 @@ export class RuntimeHost {
       triggerMessageId,
       link.attemptId,
       workItem?.definition.outputContract.schemaRef,
-      activeAttempt?.workspaceBaseline?.isolation?.rootPath,
+      executionRoot,
     );
   }
 

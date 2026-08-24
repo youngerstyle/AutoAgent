@@ -59,6 +59,36 @@ describe("GitWorktreeAttemptStore", () => {
     expect(normalizeLines(await readFile(path.join(root, "shared.txt"), "utf8"))).toBe("resolved delivery\n");
   });
 
+  it("recovers a dirty isolated delivery across store recreation and integrates it exactly once", async () => {
+    const root = await repository();
+    const firstProcess = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T08:00:00.000Z"));
+    const isolation = await firstProcess.prepare("attempt-restart");
+    await writeFile(path.join(isolation!.rootPath, "recovered.txt"), "survived restart\n", "utf8");
+
+    const restartedProcess = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T08:01:00.000Z"));
+    expect(await restartedProcess.executionRoot("attempt-restart")).toBe(isolation!.rootPath);
+    expect(await restartedProcess.prepare("attempt-restart")).toEqual(isolation);
+    const integrated = await restartedProcess.integrate("attempt-restart", isolation!);
+    expect(integrated).toMatchObject({ status: "integrated", deliveryCommit: expect.any(String) });
+
+    const replayProcess = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T08:02:00.000Z"));
+    expect(await replayProcess.integrate("attempt-restart", isolation!)).toEqual(integrated);
+    expect(normalizeLines(await readFile(path.join(root, "recovered.txt"), "utf8"))).toBe("survived restart\n");
+    await replayProcess.cleanup("attempt-restart", isolation!);
+  });
+
+  it("rejects a persisted state that points outside the managed worktree parent", async () => {
+    const root = await repository();
+    const store = new GitWorktreeAttemptStore(root);
+    const isolation = await store.prepare("attempt-tampered");
+    const statePath = path.join(root, isolation!.stateRef);
+    const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    await writeFile(statePath, JSON.stringify({ ...state, rootPath: root }), "utf8");
+
+    await expect(new GitWorktreeAttemptStore(root).executionRoot("attempt-tampered"))
+      .rejects.toThrow("Attempt worktree state is invalid");
+  });
+
   it("falls back without mutating a dirty or non-Git workspace", async () => {
     const root = await repository();
     await writeFile(path.join(root, "dirty.txt"), "not committed\n", "utf8");

@@ -4,6 +4,10 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const projectRoot = path.resolve(".");
 const sourceHome = process.env.AUTOAGENT_HOME
@@ -15,11 +19,12 @@ const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-real-process-recove
 const port = await reservePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const timeoutMs = Number(process.env.AUTOAGENT_REAL_RECOVERY_TIMEOUT_MS ?? 30 * 60_000);
-const goal = process.env.AUTOAGENT_REAL_RECOVERY_GOAL ?? [
+const defaultGoal = [
   "在当前工作目录创建一个可以直接用浏览器打开的中文 HTML 交付物。",
   "页面需要有清晰标题、三段可读内容和更新时间，并确认文件确实写入工作区。",
   "完成前请读取并检查最终文件；只有真实交付物满足目标后，才提交完成结论。",
 ].join(" ");
+const goal = process.env.AUTOAGENT_REAL_RECOVERY_GOAL ?? defaultGoal;
 
 let first;
 let second;
@@ -31,9 +36,11 @@ let selectedAgentId;
 let selectedThreadId;
 let humanMessage;
 let finalSnapshot;
+let interruptedAttempt;
 
 try {
   await prepareIsolatedHome();
+  await prepareWorkspaceRepository();
   first = spawnServer();
   await waitForHealth(first);
   workspace = (await api("/api/workspaces", {
@@ -55,8 +62,9 @@ try {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     crashedSnapshot = (await api(`/api/workspaces/${workspace.id}/snapshot`)).snapshot;
+    interruptedAttempt = await dirtyIsolatedAttempt();
     const running = (crashedSnapshot.agents ?? []).find((agent) => agent.status === "running");
-    if (running) {
+    if (running && interruptedAttempt) {
       selectedAgentId = running.id;
       selectedThreadId = findLatestThreadId(crashedSnapshot, selectedAgentId);
       if (selectedThreadId) break;
@@ -71,7 +79,7 @@ try {
     }
     await sleep(1_000);
   }
-  assert.ok(selectedAgentId && selectedThreadId, `没有观察到真实 Agent 正在工作：${JSON.stringify(crashedSnapshot)}`);
+  assert.ok(selectedAgentId && selectedThreadId && interruptedAttempt, `没有观察到真实 Agent 在隔离 worktree 中产生未提交改动：${JSON.stringify(crashedSnapshot)}`);
 
   humanMessage = await sendAgentMessage(
     selectedAgentId,
@@ -104,7 +112,7 @@ try {
   assert.ok((finalSnapshot.tickets ?? []).every((ticket) => ["completed", "returned", "cancelled"].includes(ticket.status)), "最终存在未关闭 Ticket");
   assert.equal((finalSnapshot.agents ?? []).some((agent) => agent.status === "running"), false, "任务完成后仍有 Agent 在运行");
 
-  const artifact = await inspectArtifact(workspaceRoot);
+  const artifact = goal === defaultGoal ? await inspectArtifact(workspaceRoot) : await inspectRepository(workspaceRoot);
   const report = {
     passed: true,
     generatedAt: new Date().toISOString(),
@@ -116,6 +124,7 @@ try {
     threadId: selectedThreadId,
     humanMessage,
     crashedStatus: crashedSnapshot?.status,
+    interruptedAttempt,
     restartedStatus: restartedSnapshot.status,
     finalStatus: finalSnapshot.status,
     ticketCount: finalSnapshot.tickets?.length ?? 0,
@@ -152,6 +161,59 @@ async function prepareIsolatedHome() {
     const source = path.join(sourceHome, file);
     if (!existsSync(source)) throw new Error(`真实 Provider 验收缺少配置文件：${source}`);
     await copyFile(source, path.join(home, file));
+  }
+}
+
+async function prepareWorkspaceRepository() {
+  await mkdir(workspaceRoot, { recursive: true });
+  const topLevel = await gitResult(["rev-parse", "--show-toplevel"]);
+  if (topLevel.ok) {
+    assert.equal(path.resolve(topLevel.stdout.trim()), path.resolve(workspaceRoot), "验收目录必须是独立 Git 根目录");
+    const status = await gitResult(["status", "--porcelain", "--untracked-files=all"]);
+    assert.equal(status.stdout.trim(), "", "验收开始前 Git 工作区必须干净");
+    return;
+  }
+  await git(["init"]);
+  await writeFile(path.join(workspaceRoot, ".gitignore"), ".autoagent/\nnode_modules/\n", "utf8");
+  await writeFile(path.join(workspaceRoot, "README.md"), "# AutoAgent process recovery challenge\n", "utf8");
+  await git(["add", ".gitignore", "README.md"]);
+  await git(["-c", "user.name=AutoAgent Acceptance", "-c", "user.email=acceptance@local.invalid", "commit", "-m", "Initialize recovery challenge"]);
+}
+
+async function dirtyIsolatedAttempt() {
+  const directory = path.join(workspaceRoot, ".autoagent", "tickets", "worktrees");
+  let names;
+  try {
+    names = await readdir(directory);
+  } catch {
+    return undefined;
+  }
+  for (const name of names.filter((item) => item.endsWith(".json")).sort()) {
+    const state = JSON.parse(await readFile(path.join(directory, name), "utf8"));
+    if (!state.rootPath || !["prepared", "conflict"].includes(state.status) || !existsSync(state.rootPath)) continue;
+    const status = await gitResult(["status", "--porcelain", "--untracked-files=all"], state.rootPath);
+    if (status.ok && status.stdout.trim()) {
+      return {
+        attemptId: state.attemptId,
+        branch: state.branch,
+        rootPath: state.rootPath,
+        dirtyPaths: status.stdout.trim().split(/\r?\n/),
+      };
+    }
+  }
+  return undefined;
+}
+
+async function git(args, cwd = workspaceRoot) {
+  const result = await execFileAsync("git", args, { cwd, windowsHide: true, encoding: "utf8" });
+  return result.stdout;
+}
+
+async function gitResult(args, cwd = workspaceRoot) {
+  try {
+    return { ok: true, stdout: await git(args, cwd) };
+  } catch (error) {
+    return { ok: false, stdout: error?.stdout ?? "", stderr: error?.stderr ?? String(error) };
   }
 }
 
@@ -213,6 +275,64 @@ async function sendAgentMessage(agentId, message) {
     body: { message, messageId },
   });
   return { messageId, sentAt: new Date().toISOString() };
+}
+
+async function inspectRepository(root) {
+  const status = await gitResult(["status", "--porcelain", "--untracked-files=all"], root);
+  assert.equal(status.ok, true, `无法读取最终 Git 状态：${status.stderr ?? "unknown error"}`);
+  assert.equal(status.stdout.trim(), "", `最终 Git 工作区不干净：\n${status.stdout}`);
+  const packageFile = path.join(root, "package.json");
+  assert.equal(existsSync(packageFile), true, "自定义工程任务没有生成 package.json");
+  const packageJson = JSON.parse(await readFile(packageFile, "utf8"));
+  assert.ok(packageJson.scripts?.test, "自定义工程任务没有 npm test 命令");
+  const verification = await verifyInDisposableWorktree(root);
+  const files = await projectFiles(root);
+  const head = (await git(["rev-parse", "HEAD"], root)).trim();
+  return {
+    type: "git_project",
+    head,
+    fileCount: files.length,
+    sourceFiles: files.filter((file) => /^(src|lib)\//.test(file)).length,
+    testFiles: files.filter((file) => /^(test|tests)\//.test(file)).length,
+    verificationDirtyPaths: verification.dirtyPaths,
+    installOutput: `${verification.install.stdout ?? ""}${verification.install.stderr ?? ""}`.trim().slice(-1_000),
+    testOutput: `${verification.test.stdout ?? ""}${verification.test.stderr ?? ""}`.trim().slice(-2_000),
+  };
+}
+
+async function verifyInDisposableWorktree(root) {
+  const parent = await mkdtemp(path.join(path.dirname(root), ".autoagent-acceptance-verify-"));
+  const verificationRoot = path.join(parent, "workspace");
+  try {
+    await git(["worktree", "add", "--detach", verificationRoot, "HEAD"], root);
+    const install = await runNpm(verificationRoot, ["install", "--ignore-scripts"]);
+    const test = await runNpm(verificationRoot, ["test"]);
+    const status = await gitResult(["status", "--porcelain", "--untracked-files=all"], verificationRoot);
+    return { install, test, dirtyPaths: status.stdout.trim() ? status.stdout.trim().split(/\r?\n/) : [] };
+  } finally {
+    if (existsSync(verificationRoot)) await git(["worktree", "remove", "--force", verificationRoot], root).catch(() => undefined);
+    await rm(parent, { recursive: true, force: true });
+  }
+}
+
+async function runNpm(root, args) {
+  if (process.platform !== "win32") {
+    return execFileAsync("npm", args, { cwd: root, windowsHide: true, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+  }
+  return execFileAsync(process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe", ["/d", "/s", "/c", "npm", ...args], {
+    cwd: root, windowsHide: true, encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+  });
+}
+
+async function projectFiles(root, directory = root) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if ([".autoagent", ".git", "node_modules"].includes(entry.name)) continue;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await projectFiles(root, absolute));
+    else if (entry.isFile()) files.push(path.relative(root, absolute).split(path.sep).join("/"));
+  }
+  return files;
 }
 
 async function inspectArtifact(root) {

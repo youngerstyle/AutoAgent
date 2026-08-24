@@ -467,6 +467,7 @@ export class TicketEngine {
     if (!ticket || ticket.version !== command.expectedTicketVersion) return this.persistTicketRejection(aggregate, command, fingerprint, "version_conflict", "Ticket version conflict");
     if (!authorityMatches(ticket.activeAuthority, command.authority)) return this.persistTicketRejection(aggregate, command, fingerprint, "stale_authority", "Ticket authority is stale");
     if (ticket.status !== "running" && ticket.status !== "blocked") return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Ticket is not executing");
+    const definition = aggregate.definitionsByTicketId[String(command.ticketId)];
     if (command.payload.type === "resume_after_input") {
       if (ticket.status !== "blocked" || command.authority.kind !== "blocked_owner") {
         return this.persistTicketRejection(aggregate, command, fingerprint, "invalid_command", "Only the current blocked owner can resume a blocked Ticket after input");
@@ -491,7 +492,7 @@ export class TicketEngine {
     const activeAttempt = ticket.attempts.find((attempt) => attempt.attemptId === ticket.activeAttemptId);
     const changeSet = command.payload.type !== "block" && command.payload.type !== "resume_after_input" && activeAttempt?.workspaceBaseline
       ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline, {
-          integrate: command.payload.type === "complete",
+          integrate: command.payload.type === "complete" && definitionIntegratesWorkspaceChanges(definition),
         })
       : undefined;
     if (changeSet?.integration?.status === "conflict") {
@@ -709,7 +710,11 @@ export class TicketEngine {
       });
       const result = next.commandResults.find((item) => item.commandId === command.commandId)! as TicketCommandResult;
       if (result.accepted && command.payload.type === "complete" && activeAttempt?.workspaceBaseline) {
-        await this.workspacePort?.cleanupAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
+        if (definitionIntegratesWorkspaceChanges(definition)) {
+          await this.workspacePort?.cleanupAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
+        } else {
+          await this.workspacePort?.discardAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
+        }
       }
       return result;
     } catch (error) {
@@ -979,6 +984,11 @@ function requirePositiveDuration(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) throw new TicketEngineOperationError("invalid_request", `${label} must be a positive integer`);
 }
 function definitionRequiresGitIsolation(definition: TicketDefinition | undefined): boolean {
+  if (!definition) return false;
+  const tools = new Set(definition.assignment.requiredTools ?? []);
+  return tools.has("writeFile") || tools.has("editFile") || tools.has("shell") || tools.has("startService");
+}
+function definitionIntegratesWorkspaceChanges(definition: TicketDefinition | undefined): boolean {
   if (!definition) return false;
   const tools = new Set(definition.assignment.requiredTools ?? []);
   return tools.has("writeFile") || tools.has("editFile");

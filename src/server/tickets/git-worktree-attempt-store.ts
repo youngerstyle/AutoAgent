@@ -58,7 +58,9 @@ export class GitWorktreeAttemptStore {
 
   async executionRoot(attemptId: string): Promise<string | undefined> {
     const state = await this.readState(attemptId);
-    return state && state.status !== "cleaned" ? state.rootPath : undefined;
+    if (!state || state.status === "cleaned") return undefined;
+    if (!existsSync(state.rootPath)) throw new Error(`Attempt worktree is missing: ${state.rootPath}`);
+    return state.rootPath;
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -238,7 +240,8 @@ export class GitWorktreeAttemptStore {
 
   private async readState(attemptId: string): Promise<GitAttemptState | undefined> {
     try {
-      return JSON.parse(await readFile(this.stateFile(attemptId), "utf8")) as GitAttemptState;
+      const value: unknown = JSON.parse(await readFile(this.stateFile(attemptId), "utf8"));
+      return validateState(value, attemptId, this.canonicalRoot, this.worktreeParent);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
@@ -311,4 +314,33 @@ function assertManagedWorktreePath(parent: string, candidate: string): void {
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`Refusing to manage a worktree outside the configured parent: ${candidate}`);
   }
+}
+
+function validateState(value: unknown, attemptId: string, canonicalRoot: string, worktreeParent: string): GitAttemptState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Attempt worktree state is invalid: ${attemptId}`);
+  }
+  const state = value as Record<string, unknown>;
+  const safeId = safeAttemptId(attemptId);
+  const expectedBranch = `autoagent/attempt/${safeId}`;
+  const expectedStateRef = path.posix.join(".autoagent", "tickets", "worktrees", `${safeId}.json`);
+  const expectedRootPath = path.join(worktreeParent, safeId);
+  const statuses = new Set(["prepared", "conflict", "integrated", "cleaned"]);
+  if (state.schemaVersion !== 1
+    || state.attemptId !== attemptId
+    || typeof state.canonicalRoot !== "string"
+    || path.resolve(state.canonicalRoot) !== canonicalRoot
+    || typeof state.rootPath !== "string"
+    || path.resolve(state.rootPath) !== path.resolve(expectedRootPath)
+    || state.branch !== expectedBranch
+    || typeof state.baseCommit !== "string"
+    || !/^[0-9a-f]{40,64}$/i.test(state.baseCommit)
+    || state.stateRef !== expectedStateRef
+    || typeof state.status !== "string"
+    || !statuses.has(state.status)
+    || typeof state.updatedAt !== "string") {
+    throw new Error(`Attempt worktree state is invalid: ${attemptId}`);
+  }
+  assertManagedWorktreePath(worktreeParent, state.rootPath);
+  return value as GitAttemptState;
 }
