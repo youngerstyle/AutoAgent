@@ -1128,6 +1128,27 @@ export class RuntimeHost {
       if (!readiness.ready) {
         if (readiness.reason === "agent_busy") continue;
         if (AGENT_STALL_REASONS.has(readiness.reason)) {
+          const recoveryCount = await engine!.stallRecoveryCount(goal.spec.id, readiness.reason);
+          if (recoveryCount < MAX_AUTONOMOUS_STALL_RECOVERIES) {
+            const recoveryAttempt = recoveryCount + 1;
+            await engine!.appendToolItem({
+              itemId: stableId("agent_stall_recovery", context.record.taskId, link.agentId, goal.spec.id, readiness.reason, String(recoveryAttempt)),
+              threadId: link.agentThreadId,
+              goalId: goal.spec.id,
+              kind: "observation",
+              value: {
+                type: "agent_stall_recovery",
+                goalId: goal.spec.id,
+                reason: readiness.reason,
+                recoveryAttempt,
+                recoveryBudget: MAX_AUTONOMOUS_STALL_RECOVERIES,
+                message: "The previous execution made no acceptable durable progress. Re-ground in the current Ticket, inspect the latest tool results and artifact state, choose a materially different approach, and continue autonomously.",
+              },
+              createdAt: this.now().toISOString(),
+            });
+            await this.clearRetryState(context, link.agentId);
+            continue;
+          }
           await context.manager.blockAgentExecution({
             agentId: link.agentId,
             turnId: stableId("agent_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
@@ -1136,23 +1157,6 @@ export class RuntimeHost {
           });
           await this.clearRetryState(context, link.agentId);
           continue;
-        }
-        if (readiness.reason === "repeated_turn_without_progress"
-          || readiness.reason === "no_durable_progress_window_elapsed") {
-          await engine!.appendToolItem({
-            itemId: stableId("agent_turn_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version)),
-            threadId: link.agentThreadId,
-            goalId: goal.spec.id,
-            kind: "observation",
-            value: {
-              type: "agent_turn_stalled",
-              reason: readiness.reason,
-              message: readiness.reason === "repeated_turn_without_progress"
-                ? "Agent produced repeated turns without a new conclusion or durable progress."
-                : "Agent produced no durable progress within the configured runtime window.",
-            },
-            createdAt: this.now().toISOString(),
-          });
         }
         await engine!.controlGoal({
           requestId: stableId("no_progress", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
@@ -2133,6 +2137,8 @@ const AGENT_STALL_REASONS = new Set([
   "repeated_turn_without_progress",
   "no_durable_progress_window_elapsed",
 ]);
+
+const MAX_AUTONOMOUS_STALL_RECOVERIES = 2;
 
 function agentRecoveryInput(reason: string, goalId: string): TicketRequiredInput {
   return {

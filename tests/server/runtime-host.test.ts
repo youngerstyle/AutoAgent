@@ -757,7 +757,7 @@ describe("RuntimeHost", () => {
     expect(modelInputs.every((value) => !value.instructions.includes("handoffLineage"))).toBe(true);
   });
 
-  it("pauses an active goal after repeated idle turns without replaying it forever", async () => {
+  it("uses bounded autonomous recovery for repeated idle turns without replaying forever", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
     fixture.providers.get = async () => ({
@@ -773,13 +773,17 @@ describe("RuntimeHost", () => {
     const boss = context.engines.get("wa_boss")!;
     const thread = await boss.getThreadForAgent("wa_boss", "task-resume-active");
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
-    await fixture.host.tick();
-    await fixture.host.tick();
+    for (let index = 0; index < 8; index += 1) {
+      await fixture.host.tick();
+      if ((await fixture.host.snapshot()).status === "blocked") break;
+    }
 
-    expect(modelTurns).toBe(2);
+    expect(modelTurns).toBe(4);
     const updated = await boss.getThread(thread!.threadId);
     expect(updated.items.some((item) => item.kind === "control")).toBe(true);
+    expect(await boss.stallRecoveryCount(link.agentGoalId!, "repeated_turn_without_progress")).toBe(2);
     expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect((await fixture.host.snapshot()).status).toBe("blocked");
     expect(fixture.host.providerRetryState("task-resume-active", "wa_boss")).toBeUndefined();
   });
 
@@ -1037,7 +1041,7 @@ describe("RuntimeHost", () => {
     expect(planningTurns).toBe(2);
   });
 
-  it("blocks and exposes ownership after repeated invalid terminal submissions", async () => {
+  it("autonomously retries stalled terminal submissions twice before exposing ownership", async () => {
     let now = new Date("2026-07-24T07:00:00.000Z");
     const fixture = await createFixture({
       now: () => now,
@@ -1076,10 +1080,18 @@ describe("RuntimeHost", () => {
     now = new Date(now.getTime() + 5_000);
     await fixture.host.tick();
     expect(modelTurns).toBe(4);
-    now = new Date(now.getTime() + 5_000);
-    await fixture.host.tick();
+    for (let index = 0; index < 12; index += 1) {
+      now = new Date(now.getTime() + 5_000);
+      await fixture.host.tick();
+      if ((await fixture.host.snapshot()).status === "blocked") break;
+    }
 
     const snapshot = await fixture.host.snapshot();
+    expect(modelTurns).toBeGreaterThan(4);
+    expect(await context.engines.get("wa_boss")!.stallRecoveryCount(
+      link.agentGoalId!,
+      "repeated_execution_retry_without_progress",
+    )).toBe(2);
     expect(snapshot.status).toBe("blocked");
     expect(snapshot.tickets?.find((ticket) => ticket.status === "blocked")).toMatchObject({
       targetAgentId: "wa_boss",

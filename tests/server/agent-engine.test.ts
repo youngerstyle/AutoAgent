@@ -542,7 +542,7 @@ describe("AgentEngine", () => {
     });
   });
 
-  it("pauses repeated execution retries until a human provides new direction", async () => {
+  it("accepts durable autonomous stall recovery context before requiring human direction", async () => {
     const fixture = await activeGoalFixture(new RetryPort());
     const appendAttempt = async (turnId: string) => {
       await fixture.engine.appendModelItem({
@@ -575,6 +575,34 @@ describe("AgentEngine", () => {
     });
 
     await appendAttempt("attempt-2");
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: false,
+      reason: "repeated_execution_retry_without_progress",
+    });
+
+    await fixture.engine.appendToolItem({
+      itemId: "stall-recovery-1",
+      threadId: fixture.goal.spec.threadId,
+      goalId: fixture.goal.spec.id,
+      kind: "observation",
+      value: {
+        type: "agent_stall_recovery",
+        goalId: fixture.goal.spec.id,
+        reason: "repeated_execution_retry_without_progress",
+        recoveryAttempt: 1,
+      },
+      createdAt: T1,
+    });
+    expect(await fixture.engine.stallRecoveryCount(
+      fixture.goal.spec.id,
+      "repeated_execution_retry_without_progress",
+    )).toBe(1);
+    expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
+      ready: true,
+      reason: "host_correction",
+    });
+
+    await appendAttempt("attempt-3");
     expect(await fixture.engine.executionReadiness(fixture.goal.spec.id)).toEqual({
       ready: false,
       reason: "repeated_execution_retry_without_progress",

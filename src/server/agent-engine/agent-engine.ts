@@ -359,6 +359,20 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
     if (hasUnconsumedHumanTurn(aggregate, thread.threadId, goalId)) {
       return { ready: true, reason: "new_input" };
     }
+    let lastAgentOutputIndex = -1;
+    for (let index = thread.items.length - 1; index >= 0; index -= 1) {
+      const item = thread.items[index]!;
+      if ((item.kind === "model" || item.kind === "tool")
+        && payloadGoalId(payloads, item.payloadRef) === goalId
+        && !isAgentStallRecovery(payloads, item.payloadRef, goalId)) {
+        lastAgentOutputIndex = index;
+        break;
+      }
+    }
+    const afterOutput = lastAgentOutputIndex < 0 ? [] : thread.items.slice(lastAgentOutputIndex + 1);
+    if (afterOutput.some((item) => isAgentStallRecovery(payloads, item.payloadRef, goalId))) {
+      return { ready: true, reason: "host_correction" };
+    }
     const goalProposalIds = new Set(aggregate.proposals
       .filter((item) => item.goalId === goalId)
       .map((item) => item.proposalId));
@@ -448,17 +462,7 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
               : "provider_retry_due",
       };
     }
-    let lastAgentOutputIndex = -1;
-    for (let index = thread.items.length - 1; index >= 0; index -= 1) {
-      const item = thread.items[index]!;
-      if ((item.kind === "model" || item.kind === "tool")
-        && payloadGoalId(payloads, item.payloadRef) === goalId) {
-        lastAgentOutputIndex = index;
-        break;
-      }
-    }
     if (lastAgentOutputIndex < 0) return { ready: true, reason: "goal_not_started" };
-    const afterOutput = thread.items.slice(lastAgentOutputIndex + 1);
     if (afterOutput.some((item) => item.kind === "message")) {
       return { ready: true, reason: "new_input" };
     }
@@ -467,6 +471,22 @@ export class AgentEngine<TDomainOutcome = unknown> implements AgentPort<TDomainO
       .find((reason): reason is string => Boolean(reason));
     if (latestCorrection) return { ready: true, reason: "host_correction" };
     return { ready: false, reason: "no_new_input_after_agent_output" };
+  }
+
+  async stallRecoveryCount(goalId: string, reason: string): Promise<number> {
+    const aggregate = await this.store.read();
+    const goal = aggregate.goals.find((item) => item.spec.id === goalId);
+    if (!goal) throw new Error("Goal does not exist");
+    const thread = aggregate.threads.find((item) => item.threadId === goal.spec.threadId);
+    if (!thread) throw new Error("Goal thread does not exist");
+    const payloads = new Map(aggregate.payloads.map((item) => [item.payloadRef, item.value]));
+    return thread.items.filter((item) => {
+      const value = payloads.get(item.payloadRef);
+      return isRecord(value)
+        && value.type === "agent_stall_recovery"
+        && value.goalId === goalId
+        && value.reason === reason;
+    }).length;
   }
 
   async tokenUsageSinceLastHumanMessage(goalId: string): Promise<number> {
@@ -900,6 +920,17 @@ function correctionReason(payloads: ReadonlyMap<string, unknown>, payloadRef: st
   if (!decision || typeof decision !== "object" || Array.isArray(decision)) return undefined;
   const reason = (decision as Record<string, unknown>).reason;
   return typeof reason === "string" ? reason : undefined;
+}
+
+function isAgentStallRecovery(
+  payloads: ReadonlyMap<string, unknown>,
+  payloadRef: string,
+  goalId: string,
+): boolean {
+  const value = payloads.get(payloadRef);
+  return isRecord(value)
+    && value.type === "agent_stall_recovery"
+    && value.goalId === goalId;
 }
 
 function hasUnconsumedHumanTurn(
