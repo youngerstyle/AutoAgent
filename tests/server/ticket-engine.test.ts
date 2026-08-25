@@ -35,7 +35,7 @@ describe("TicketEngine single Plan flow", () => {
         sourceTicketId: planning,
         sourceAuthority: { kind: "claim", claimId: claim!.claimId, fencingToken: claim!.fencingToken },
         change: {
-          additions: [{ ...draft("salvage-delivery", "实现可恢复交付"), assignment: { principalId: "dev", requiredTools: ["shell"] } }],
+          additions: [{ ...draft("salvage-delivery", "实现可恢复交付"), assignment: { principalId: "dev", requiredTools: ["shell", "writeFile"] } }],
           dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "salvage-delivery" } }],
           cancelTicketIds: [],
           requiredTerminalRefs: [{ clientRef: "salvage-delivery" }],
@@ -89,6 +89,10 @@ describe("TicketEngine single Plan flow", () => {
       principalId: "qa",
       leaseDurationMs: 60_000,
     });
+    const replacementTicket = await fixture.engine.getTicket(delivery);
+    const replacementAttempt = replacementTicket!.attempts.find((candidate) => candidate.attemptId === replacementClaim!.attemptId)!;
+    const salvageCommit = released.attempts[0]!.changeSet!.salvage!.deliveryCommit!;
+    await git(replacementAttempt.workspaceBaseline!.isolation!.rootPath, ["cherry-pick", salvageCommit]);
     expect(await fixture.engine.applyTicket(ticketCommand(
       fixture.planId,
       delivery,
@@ -96,6 +100,8 @@ describe("TicketEngine single Plan flow", () => {
       "complete-salvage-replacement",
       completePayload(),
     ))).toMatchObject({ accepted: true, ticketStatus: "completed" });
+    expect((await readFile(path.join(fixture.root, "partial-plan.txt"), "utf8")).replaceAll("\r\n", "\n"))
+      .toBe("partial plan\n");
     expect(existsSync(attempt.workspaceBaseline!.isolation!.rootPath)).toBe(false);
     expect(await fixture.engine.getTicket(delivery)).toMatchObject({
       attempts: expect.arrayContaining([expect.objectContaining({
