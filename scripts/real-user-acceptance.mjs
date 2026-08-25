@@ -29,6 +29,8 @@ const minConcurrentWorkstreamAgents = Number(process.env.AUTOAGENT_ACCEPTANCE_MI
 const scenario = process.env.AUTOAGENT_ACCEPTANCE_SCENARIO
   ?? (process.env.AUTOAGENT_ACCEPTANCE_GOAL ? "html" : "todo");
 const followupGoal = process.env.AUTOAGENT_ACCEPTANCE_FOLLOWUP_GOAL;
+const thirdGoal = process.env.AUTOAGENT_ACCEPTANCE_THIRD_GOAL;
+assert.ok(!thirdGoal || followupGoal, "AUTOAGENT_ACCEPTANCE_THIRD_GOAL 需要同时提供第二轮 Goal");
 let workspaceRoot = process.env.AUTOAGENT_ACCEPTANCE_ROOT
   ?? await mkdtemp(path.join(os.tmpdir(), "autoagent-real-acceptance-"));
 let reportDir = path.join(workspaceRoot, ".autoagent", "user-acceptance");
@@ -112,6 +114,8 @@ try {
     assert.ok(snapshot.tickets.length > 0, "第二轮 Mission 没有生成 Ticket");
     assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("第二轮存在未完成 Ticket", snapshot));
     assertAuditablePlan(snapshot.tickets);
+    assertParallelDelivery(snapshot);
+    const secondSnapshot = snapshot;
     const secondTargetAgentIds = new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean));
     const reusedAgentIds = [...secondTargetAgentIds].filter((agentId) => firstTargetAgentIds.has(agentId));
     assert.ok(reusedAgentIds.length >= 3, `第二轮没有复用足够的持久 Agent：${reusedAgentIds.join(", ")}`);
@@ -126,7 +130,43 @@ try {
       reusedAgentIds,
       firstRepositoryClean: firstRepository.clean,
       firstMetrics: projectMetrics(firstSnapshot, acceptanceStartedAtMs),
+      secondMetrics: projectMetrics(secondSnapshot, acceptanceStartedAtMs),
     };
+    if (thirdGoal) {
+      await verifyArtifactWithMissionRepair(
+        "second_mission",
+        () => runBrownfieldOrderUpgradeAcceptance({ withRefunds: true }),
+      );
+      const secondRepository = await inspectRepository();
+      if (initializeGit) assert.equal(secondRepository.clean, true, `第二轮 Mission 完成后 Git 工作树不干净：${secondRepository.status.join(", ")}`);
+      snapshot = await api(`/api/workspaces/${workspace.id}/tasks`, {
+        method: "POST",
+        body: { title: "持久团队生产事故修复", goal: thirdGoal },
+      }).then((value) => value.snapshot);
+      const initialThirdTaskId = snapshot.activeTask?.id;
+      snapshot = await waitForTerminal(workspace.id);
+      assertRuntimeSnapshot(snapshot, { terminal: true });
+      assert.equal(snapshot.status, "completed", failureMessage("第三轮 Mission 未完成", snapshot));
+      assert.ok(snapshot.tickets.length > 0, "第三轮 Mission 没有生成 Ticket");
+      assert.ok(snapshot.tickets.every((ticket) => ticket.status === "completed"), failureMessage("第三轮存在未完成 Ticket", snapshot));
+      assertAuditablePlan(snapshot.tickets);
+      assertParallelDelivery(snapshot);
+      const thirdTargetAgentIds = new Set(snapshot.tickets.map((ticket) => ticket.targetAgentId).filter(Boolean));
+      const secondToThirdReusedAgentIds = [...thirdTargetAgentIds].filter((agentId) => secondTargetAgentIds.has(agentId));
+      const reusedAcrossAllMissionIds = [...thirdTargetAgentIds].filter((agentId) => firstTargetAgentIds.has(agentId) && secondTargetAgentIds.has(agentId));
+      assert.ok(secondToThirdReusedAgentIds.length >= 3, `第三轮没有复用足够的第二轮持久 Agent：${secondToThirdReusedAgentIds.join(", ")}`);
+      assert.ok(reusedAcrossAllMissionIds.length >= 3, `三轮 Mission 没有持续复用足够的同一批 Agent：${reusedAcrossAllMissionIds.join(", ")}`);
+      missionContinuity = {
+        ...missionContinuity,
+        initialThirdTaskId,
+        thirdTaskId: snapshot.activeTask?.id,
+        thirdTargetAgentCount: thirdTargetAgentIds.size,
+        secondToThirdReusedAgentIds,
+        reusedAcrossAllMissionIds,
+        secondRepositoryClean: secondRepository.clean,
+        thirdMetrics: projectMetrics(snapshot, acceptanceStartedAtMs),
+      };
+    }
   }
 
   // Always re-check the final artifact after Mission reaches a terminal
@@ -137,7 +177,8 @@ try {
   browserResult = await verifyArtifactWithMissionRepair("final_mission", () => runArtifactAcceptance({ force: true }));
   if (missionContinuity && acceptanceRepairMissions.length > 0) {
     missionContinuity.acceptanceRepairMissions = acceptanceRepairMissions;
-    missionContinuity.secondTaskId = snapshot.activeTask?.id;
+    if (thirdGoal) missionContinuity.thirdTaskId = snapshot.activeTask?.id;
+    else missionContinuity.secondTaskId = snapshot.activeTask?.id;
   }
   repositoryResult = await inspectRepository();
   if (initializeGit) {
@@ -540,7 +581,7 @@ async function runArtifactAcceptance({ force = false } = {}) {
   if (scenario === "npm-library") return runNpmLibraryAcceptance();
   if (scenario === "issue-tracker-service") return runIssueTrackerServiceAcceptance();
   if (scenario === "brownfield-order-upgrade") return runBrownfieldOrderUpgradeAcceptance();
-  if (scenario === "persistent-team-order-evolution") return runBrownfieldOrderUpgradeAcceptance({ withRefunds: true });
+  if (scenario === "persistent-team-order-evolution") return runBrownfieldOrderUpgradeAcceptance({ withRefunds: true, withIncidentHardening: Boolean(thirdGoal) });
   const htmlPath = await findHtmlEntryPath();
   if (htmlPath) return runBrowserAcceptance({ force });
 
@@ -744,7 +785,7 @@ async function runIssueTrackerServiceAcceptance() {
   }
 }
 
-async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {}) {
+async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false, withIncidentHardening = false } = {}) {
   const entryPath = path.join(workspaceRoot, "server.mjs");
   const packagePath = path.join(workspaceRoot, "package.json");
   assert.ok(existsSync(entryPath), "brownfield Order Service 缺少原有 server.mjs");
@@ -810,6 +851,7 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
     let refund;
     let finalAudit = audit;
     let overLimitRefundStatus;
+    let incidentHardening;
     if (withRefunds) {
       const refunded = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
         method: "POST",
@@ -827,6 +869,57 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
       });
       assert.ok([200, 201].includes(replayed.response.status), "退款幂等重放未返回成功状态");
       assert.equal(replayed.value.refund?.id, refund.id, "退款幂等重放生成了不同 refund");
+      let expectedRefundIds = [refund.id];
+      if (withIncidentHardening) {
+        const fingerprintConflict = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+          method: "POST",
+          headers: { "Idempotency-Key": "acceptance-refund-1" },
+          body: { amount: 26, expectedVersion: 2 },
+        });
+        assert.equal(fingerprintConflict.response.status, 409, "相同退款幂等键配合不同请求体未返回 409");
+
+        const siblingOrder = await requestIssueApi(serviceUrl, "/api/orders", {
+          method: "POST",
+          body: { customer: "Independent Key Scope", amount: 50 },
+        });
+        const siblingOrderId = siblingOrder.value.order?.id;
+        const siblingCancelled = await requestIssueApi(serviceUrl, `/api/orders/${siblingOrderId}/cancel`, {
+          method: "POST",
+          body: { reason: "independent refund", expectedVersion: 1 },
+        });
+        assert.equal(siblingCancelled.response.status, 200, "跨订单幂等作用域测试无法取消第二个订单");
+        const siblingRefund = await requestIssueApi(serviceUrl, `/api/orders/${siblingOrderId}/refunds`, {
+          method: "POST",
+          headers: { "Idempotency-Key": "acceptance-refund-1" },
+          body: { amount: 10, expectedVersion: 2 },
+        });
+        assert.equal(siblingRefund.response.status, 201, "不同订单使用相同退款幂等键未被独立处理");
+        assert.notEqual(siblingRefund.value.refund?.id, refund.id, "不同订单使用相同幂等键错误重放了原订单退款");
+
+        const concurrentRefunds = await Promise.all([
+          requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+            method: "POST",
+            headers: { "Idempotency-Key": "acceptance-refund-concurrent-a" },
+            body: { amount: 60, expectedVersion: 3 },
+          }),
+          requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
+            method: "POST",
+            headers: { "Idempotency-Key": "acceptance-refund-concurrent-b" },
+            body: { amount: 60, expectedVersion: 3 },
+          }),
+        ]);
+        const concurrentStatuses = concurrentRefunds.map((result) => result.response.status).sort((left, right) => left - right);
+        assert.deepEqual(concurrentStatuses, [201, 409], "并发累计超额退款没有严格产生一个成功和一个 409");
+        const concurrentSuccess = concurrentRefunds.find((result) => result.response.status === 201);
+        assert.ok(concurrentSuccess?.value.refund?.id, "并发退款成功响应缺少 refund id");
+        expectedRefundIds = [refund.id, concurrentSuccess.value.refund.id];
+        incidentHardening = {
+          fingerprintConflictStatus: fingerprintConflict.response.status,
+          crossOrderKeyScoped: true,
+          concurrentStatuses,
+          successfulConcurrentRefundId: concurrentSuccess.value.refund.id,
+        };
+      }
       const staleRefund = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
         method: "POST",
         headers: { "Idempotency-Key": "acceptance-refund-stale" },
@@ -836,17 +929,19 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
       const overLimitRefund = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`, {
         method: "POST",
         headers: { "Idempotency-Key": "acceptance-refund-over-limit" },
-        body: { amount: 101, expectedVersion: 3 },
+        body: { amount: 101, expectedVersion: withIncidentHardening ? 4 : 3 },
       });
       assert.equal(overLimitRefund.response.status, 409, "累计超额退款未返回 409");
       overLimitRefundStatus = overLimitRefund.response.status;
       const refunds = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`);
-      assert.deepEqual(refunds.value.refunds?.map((item) => item.id), [refund.id], "退款列表存在重复或缺失");
+      assert.deepEqual(refunds.value.refunds?.map((item) => item.id), expectedRefundIds, "退款列表存在重复或缺失");
       const refundAudit = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/audit`);
       finalAudit = refundAudit;
       assert.deepEqual(
         refundAudit.value.events?.map((event) => event.type),
-        ["order.created", "order.cancelled", "order.refunded"],
+        withIncidentHardening
+          ? ["order.created", "order.cancelled", "order.refunded", "order.refunded"]
+          : ["order.created", "order.cancelled", "order.refunded"],
         "退款后审计事件不完整或顺序错误",
       );
     }
@@ -855,7 +950,16 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
     service = await startIssueTracker(entryPath, port, dataFile);
     const afterRestart = await requestIssueApi(serviceUrl, `/api/orders/${orderId}`);
     assert.equal(afterRestart.value.order?.status, "cancelled", "重启后取消状态没有恢复");
-    assert.equal(afterRestart.value.order?.version, withRefunds ? 3 : 2, "重启后 order version 没有恢复");
+    assert.equal(afterRestart.value.order?.version, withIncidentHardening ? 4 : withRefunds ? 3 : 2, "重启后 order version 没有恢复");
+    if (withIncidentHardening) {
+      const refundsAfterRestart = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/refunds`);
+      const auditAfterRestart = await requestIssueApi(serviceUrl, `/api/orders/${orderId}/audit`);
+      assert.equal(refundsAfterRestart.value.refunds?.length, 2, "重启后并发退款成功集合没有完整恢复");
+      assert.equal(auditAfterRestart.value.events?.filter((event) => event.type === "order.refunded").length, 2, "重启后退款审计数量与成功退款数不一致");
+      const totalRefunded = refundsAfterRestart.value.refunds.reduce((sum, item) => sum + Number(item.amount), 0);
+      assert.equal(totalRefunded, 85, "重启后累计退款额不正确或超过订单金额");
+      incidentHardening = { ...incidentHardening, restartRefundCount: 2, restartRefundAuditCount: 2, totalRefunded };
+    }
     const persisted = JSON.parse(await readFile(dataFile, "utf8"));
     assert.equal(persisted.schemaVersion, withRefunds ? 3 : 2, `迁移后磁盘 schemaVersion 不是 ${withRefunds ? 3 : 2}`);
     const siblingFiles = await readdir(path.dirname(dataFile));
@@ -870,6 +974,7 @@ async function runBrownfieldOrderUpgradeAcceptance({ withRefunds = false } = {})
       cancellationConflictStatus: stale.response.status,
       auditTypes: finalAudit.value.events.map((event) => event.type),
       ...(withRefunds ? { refundId: refund.id, refundIdempotencyPreserved: true, overLimitRefundStatus } : {}),
+      ...(withIncidentHardening ? { incidentHardening } : {}),
       restartPersistenceVerified: true,
     };
   } finally {

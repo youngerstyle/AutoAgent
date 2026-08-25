@@ -25,6 +25,7 @@ const defaultGoal = [
   "完成前请读取并检查最终文件；只有真实交付物满足目标后，才提交完成结论。",
 ].join(" ");
 const goal = process.env.AUTOAGENT_REAL_RECOVERY_GOAL ?? defaultGoal;
+const injectRecoveryMessage = process.env.AUTOAGENT_REAL_RECOVERY_INJECT_MESSAGE !== "false";
 
 let first;
 let second;
@@ -81,10 +82,12 @@ try {
   }
   assert.ok(selectedAgentId && selectedThreadId && interruptedAttempt, `没有观察到真实 Agent 在隔离 worktree 中产生未提交改动：${JSON.stringify(crashedSnapshot)}`);
 
-  humanMessage = await sendAgentMessage(
-    selectedAgentId,
-    "这是服务重启前进入当前 Agent Thread 的事实：最终交付必须保留中文标题，并在完成前重新读取文件。",
-  );
+  if (injectRecoveryMessage) {
+    humanMessage = await sendAgentMessage(
+      selectedAgentId,
+      "这是服务重启前进入当前 Agent Thread 的事实：最终交付必须保留中文标题，并在完成前重新读取文件。",
+    );
+  }
   crashedSnapshot = (await api(`/api/workspaces/${workspace.id}/snapshot`)).snapshot;
   assert.equal(crashedSnapshot.activeTask?.id, taskId, "崩溃前任务 ID 发生变化");
 
@@ -96,11 +99,12 @@ try {
   restartedSnapshot = await waitUntil(async () => {
     const current = (await api(`/api/workspaces/${workspace.id}/snapshot`)).snapshot;
     const currentThreadId = findLatestThreadId(current, selectedAgentId);
-    return currentThreadId === selectedThreadId && current.status !== "failed" ? current : undefined;
+    return currentThreadId === selectedThreadId && hasAttempt(current, interruptedAttempt.attemptId) && current.status !== "failed" ? current : undefined;
   }, 60_000, "服务重启后没有恢复原 Agent Thread");
   assert.equal(restartedSnapshot.activeTask?.id, taskId, "服务重启后任务 ID 发生变化");
   assert.equal(findLatestThreadId(restartedSnapshot, selectedAgentId), selectedThreadId, "服务重启后切换了 Agent Thread");
-  assert.ok(hasHumanMessage(restartedSnapshot, selectedAgentId, humanMessage.messageId), "服务重启后丢失了重启前的人类消息");
+  if (humanMessage) assert.ok(hasHumanMessage(restartedSnapshot, selectedAgentId, humanMessage.messageId), "服务重启后丢失了重启前的人类消息");
+  assert.ok(hasAttempt(restartedSnapshot, interruptedAttempt.attemptId), "服务重启后切换或丢失了运行中的 Ticket attempt");
 
   finalSnapshot = await waitUntil(async () => {
     const current = (await api(`/api/workspaces/${workspace.id}/snapshot`)).snapshot;
@@ -108,6 +112,7 @@ try {
   }, timeoutMs, "服务重启后真实任务没有完成");
   assert.equal(finalSnapshot.activeTask?.id, taskId, "最终任务 ID 发生变化");
   assert.equal(new Set((finalSnapshot.tickets ?? []).map((ticket) => ticket.id)).size, (finalSnapshot.tickets ?? []).length, "服务重启后出现重复 Ticket");
+  assert.ok(hasAttempt(finalSnapshot, interruptedAttempt.attemptId), "最终快照没有保留被中断 Ticket attempt 的审计身份");
   assert.ok((finalSnapshot.tickets ?? []).length > 0, "最终没有可审计 Ticket");
   assert.ok((finalSnapshot.tickets ?? []).every((ticket) => ["completed", "returned", "cancelled"].includes(ticket.status)), "最终存在未关闭 Ticket");
   assert.equal((finalSnapshot.agents ?? []).some((agent) => agent.status === "running"), false, "任务完成后仍有 Agent 在运行");
@@ -123,6 +128,7 @@ try {
     agentId: selectedAgentId,
     threadId: selectedThreadId,
     humanMessage,
+    autonomousRecovery: !injectRecoveryMessage,
     crashedStatus: crashedSnapshot?.status,
     interruptedAttempt,
     restartedStatus: restartedSnapshot.status,
@@ -266,6 +272,10 @@ function findLatestThreadId(snapshot, agentId) {
 
 function hasHumanMessage(snapshot, agentId, messageId) {
   return (snapshot.agentThreads?.[agentId] ?? []).some((event) => event.kind === "human_message" && event.payload?.messageId === messageId);
+}
+
+function hasAttempt(snapshot, attemptId) {
+  return (snapshot.tickets ?? []).some((ticket) => ticket.execution?.attemptId === attemptId);
 }
 
 async function sendAgentMessage(agentId, message) {

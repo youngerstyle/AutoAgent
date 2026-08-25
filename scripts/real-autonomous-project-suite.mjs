@@ -102,6 +102,13 @@ const cases = [
       "新增 GET /api/orders/:id/refunds 返回 {refunds}，补充 v2→v3/v1→v3、幂等退款、并发冲突、累计上限、审计、旧 API 回归与重启恢复测试，并更新 README。",
       "仍由当前持久团队自行完成理解、实现、独立 QA 和最终验收；不得请求 human 代为测试、编辑或启动服务。",
     ].join(" "),
+    thirdGoal: [
+      "这是同一 Workspace、同一常驻团队的第三轮独立 Mission。生产验收发现退款幂等与并发边界需要加固；必须在现有 schemaVersion 3 服务上修复，不得重建项目或破坏前三版 API、迁移与审计契约。",
+      "同一订单使用相同 Idempotency-Key 且请求体完全相同时必须返回同一 refund；若 amount 或 expectedVersion 不同，必须返回 409，不能把不同请求错误重放为旧退款。不同订单可独立使用相同 key。",
+      "两个并发退款在各自单独合法、但合计超过订单 amount 时，最多一个可以成功，另一个必须返回 409；磁盘累计退款额不得超过订单 amount，order.version 与 order.refunded 审计数量必须和成功退款数严格一致。",
+      "修复必须保留 v1→v3、v2→v3 迁移、取消、退款列表、审计、原子持久化和重启恢复；新增针对幂等请求指纹、跨订单 key 作用域、并发累计上限和重启后审计一致性的回归测试。",
+      "把这次工作作为生产事故闭环：先复现和定位，再最小修复，独立 QA 必须运行完整回归；不得请求 human 代为测试、编辑、清理数据或启动服务。",
+    ].join(" "),
   },
 ].filter((item) => selectedCaseIds.has(item.id));
 
@@ -164,6 +171,7 @@ async function runCase(definition) {
       AUTOAGENT_ACCEPTANCE_MIN_CONCURRENT_WORKSTREAM_AGENTS: String(definition.minConcurrentWorkstreamAgents ?? 0),
       ...(definition.seed ? { AUTOAGENT_ACCEPTANCE_SEED: definition.seed } : {}),
       ...(definition.followupGoal ? { AUTOAGENT_ACCEPTANCE_FOLLOWUP_GOAL: definition.followupGoal } : {}),
+      ...(definition.thirdGoal ? { AUTOAGENT_ACCEPTANCE_THIRD_GOAL: definition.thirdGoal } : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
