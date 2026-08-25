@@ -27,7 +27,7 @@ const EXCLUDED_DIRECTORIES = new Set([".autoagent", ".git", "node_modules"]);
 
 export interface TicketAttemptWorkspacePort {
   captureBaseline(attemptId: string, options?: { isolate?: boolean }): Promise<TicketAttemptWorkspaceBaseline>;
-  captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options?: { integrate?: boolean }): Promise<TicketAttemptChangeSet>;
+  captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options?: { integrate?: boolean; checkpoint?: boolean }): Promise<TicketAttemptChangeSet>;
   cleanupAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
   discardAttempt?(attemptId: string, baseline: TicketAttemptWorkspaceBaseline): Promise<void>;
   executionRoot?(attemptId: string): Promise<string | undefined>;
@@ -65,7 +65,7 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
     };
   }
 
-  async captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options: { integrate?: boolean } = {}): Promise<TicketAttemptChangeSet> {
+  async captureChangeSet(attemptId: string, baseline: TicketAttemptWorkspaceBaseline, options: { integrate?: boolean; checkpoint?: boolean } = {}): Promise<TicketAttemptChangeSet> {
     const before = await this.readManifest(baseline.manifestRef);
     const executionRoot = baseline.isolation?.rootPath ?? this.root;
     const after = await this.captureManifest(executionRoot);
@@ -92,6 +92,9 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
     const integration = options.integrate && baseline.isolation
       ? await this.worktrees.integrate(attemptId, baseline.isolation)
       : undefined;
+    const salvage = options.checkpoint && baseline.isolation
+      ? await this.worktrees.checkpoint(attemptId, baseline.isolation)
+      : undefined;
     return {
       baselineId: baseline.baselineId,
       capturedAt: baseline.capturedAt,
@@ -102,6 +105,7 @@ export class WorkspaceSnapshotStore implements TicketAttemptWorkspacePort {
       modified,
       deleted,
       ...(integration ? { integration } : {}),
+      ...(salvage ? { salvage } : {}),
     };
   }
 

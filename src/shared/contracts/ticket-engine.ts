@@ -324,6 +324,14 @@ export interface TicketAttemptChangeSet {
     conflictingPaths?: string[];
     reason?: string;
   };
+  salvage?: {
+    status: "checkpointed" | "no_changes" | "conflict";
+    branch: string;
+    baseCommit: string;
+    deliveryCommit?: string;
+    conflictingPaths?: string[];
+    reason?: string;
+  };
 }
 
 export interface TicketAttempt {

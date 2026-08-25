@@ -14,6 +14,26 @@ afterEach(async () => {
 });
 
 describe("GitWorktreeAttemptStore", () => {
+  it("checkpoints a dirty attempt without advancing canonical and replays across restart", async () => {
+    const root = await repository();
+    const store = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T07:00:00.000Z"));
+    const isolation = await store.prepare("attempt-salvage");
+    await writeFile(path.join(isolation!.rootPath, "salvaged.txt"), "partial delivery\n", "utf8");
+
+    const checkpoint = await store.checkpoint("attempt-salvage", isolation!);
+    expect(checkpoint).toMatchObject({
+      status: "checkpointed",
+      branch: "autoagent/attempt/attempt-salvage",
+      deliveryCommit: expect.any(String),
+    });
+    await expect(readFile(path.join(root, "salvaged.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(normalizeLines(await git(root, ["show", `${checkpoint.deliveryCommit}:salvaged.txt`]))).toBe("partial delivery\n");
+
+    const restarted = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T07:01:00.000Z"));
+    expect(await restarted.checkpoint("attempt-salvage", isolation!)).toEqual(checkpoint);
+    expect(await restarted.executionRoot("attempt-salvage")).toBe(isolation!.rootPath);
+  });
+
   it("prepares, integrates, replays, and cleans an isolated Ticket delivery", async () => {
     const root = await repository();
     const store = new GitWorktreeAttemptStore(root, () => new Date("2026-08-24T08:00:00.000Z"));

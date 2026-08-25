@@ -7,6 +7,28 @@ import { describe, expect, it } from "vitest";
 import { WorkspaceSnapshotStore } from "../../src/server/tickets/workspace-snapshot-store.js";
 
 describe("WorkspaceSnapshotStore", () => {
+  it("captures a salvage checkpoint without integrating partial work", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-attempt-salvage-parent-"));
+    const root = path.join(parent, "workspace");
+    try {
+      await git(parent, ["init", "workspace"]);
+      await writeFile(path.join(root, ".gitignore"), ".autoagent/\n", "utf8");
+      await git(root, ["add", ".gitignore"]);
+      await git(root, ["-c", "user.name=Test", "-c", "user.email=test@local.invalid", "commit", "-m", "baseline"]);
+      const store = new WorkspaceSnapshotStore(root, monotonicClock());
+      const baseline = await store.captureBaseline("attempt-salvage", { isolate: true });
+      await writeFile(path.join(baseline.isolation!.rootPath, "partial.txt"), "partial\n", "utf8");
+
+      const changeSet = await store.captureChangeSet("attempt-salvage", baseline, { checkpoint: true });
+      expect(changeSet.added.map((item) => item.path)).toEqual(["partial.txt"]);
+      expect(changeSet.salvage).toMatchObject({ status: "checkpointed", deliveryCommit: expect.any(String) });
+      await expect(readFile(path.join(root, "partial.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await store.executionRoot("attempt-salvage")).toBe(baseline.isolation!.rootPath);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("captures an isolated Git worktree and integrates its delivery before cleanup", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "autoagent-attempt-git-parent-"));
     const root = path.join(parent, "workspace");

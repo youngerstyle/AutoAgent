@@ -392,13 +392,18 @@ export class TicketEngine {
     const replay = await this.store.findOperationRecord(input.requestId);
     if (replay) {
       if (replay.kind !== "release_claim" || replay.fingerprint !== fingerprintOf(input)) throw new TicketEngineOperationError("idempotency_conflict", "Release request was reused");
-      for (const attempt of replay.ticket.attempts.filter((candidate) => candidate.status === "released" && candidate.workspaceBaseline?.isolation)) {
+      for (const attempt of replay.ticket.attempts.filter((candidate) => candidate.status === "released" && candidate.reason !== "agent_unavailable" && candidate.workspaceBaseline?.isolation)) {
         await this.workspacePort?.discardAttempt?.(attempt.attemptId, attempt.workspaceBaseline!).catch(() => undefined);
       }
       return structuredClone(replay.ticket);
     }
     const claim = await this.requireClaim(input.claimId, input.fencingToken);
     const aggregate = await this.requirePlan(claim.planId);
+    const ticket = aggregate.tickets.find((candidate) => candidate.ticketId === claim.ticketId);
+    const activeAttempt = ticket?.attempts.find((attempt) => attempt.attemptId === claim.attemptId);
+    const salvageChangeSet = input.reason === "agent_unavailable" && activeAttempt?.workspaceBaseline
+      ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline, { checkpoint: true })
+      : undefined;
     const next = await this.store.transact(claim.planId, versions(aggregate), (current) => {
       const endedAt = this.now().toISOString();
       const tickets = current.tickets.map((ticket) => ticket.ticketId === claim.ticketId && ticket.status === "running" ? {
@@ -407,14 +412,19 @@ export class TicketEngine {
         version: ticket.version + 1,
         activeAuthority: undefined,
         activeAttemptId: undefined,
-        attempts: settleAttempt(ticket, claim.attemptId, { status: "released", endedAt, reason: input.reason }),
+        attempts: settleAttempt(ticket, claim.attemptId, {
+          status: "released",
+          endedAt,
+          reason: input.reason,
+          ...(salvageChangeSet ? { changeSet: salvageChangeSet } : {}),
+        }),
       } : ticket);
       const released = tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
       return { ...current, plan: { ...current.plan, version: current.plan.version + 1 }, tickets, claims: current.claims.filter((item) => item.claimId !== claim.claimId), operationRecords: [...current.operationRecords, { kind: "release_claim", requestId: input.requestId, fingerprint: fingerprintOf(input), ticket: released }], pendingEvents: [ticketEvent(released, { type: "TicketReady", ticketVersion: released.version }, this.now().toISOString())] };
     });
     const released = next.tickets.find((ticket) => ticket.ticketId === claim.ticketId)!;
     const releasedAttempt = released.attempts.find((attempt) => attempt.attemptId === claim.attemptId);
-    if (releasedAttempt?.workspaceBaseline) {
+    if (releasedAttempt?.workspaceBaseline && input.reason !== "agent_unavailable") {
       await this.workspacePort?.discardAttempt?.(releasedAttempt.attemptId, releasedAttempt.workspaceBaseline).catch(() => undefined);
     }
     return released;

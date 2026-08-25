@@ -17,7 +17,7 @@ interface GitAttemptState {
   branch: string;
   baseCommit: string;
   stateRef: string;
-  status: "prepared" | "conflict" | "integrated" | "cleaned";
+  status: "prepared" | "checkpointed" | "conflict" | "integrated" | "cleaned";
   deliveryCommit?: string;
   integratedCommit?: string;
   conflictingPaths?: string[];
@@ -27,6 +27,7 @@ interface GitAttemptState {
 
 export type GitAttemptIsolation = NonNullable<TicketAttemptWorkspaceBaseline["isolation"]>;
 export type GitAttemptIntegration = NonNullable<TicketAttemptChangeSet["integration"]>;
+export type GitAttemptSalvage = NonNullable<TicketAttemptChangeSet["salvage"]>;
 
 export class GitWorktreeAttemptStore {
   private operationTail: Promise<unknown> = Promise.resolve();
@@ -50,6 +51,10 @@ export class GitWorktreeAttemptStore {
 
   integrate(attemptId: string, isolation: GitAttemptIsolation): Promise<GitAttemptIntegration> {
     return this.exclusive(() => this.integrateUnlocked(attemptId, isolation));
+  }
+
+  checkpoint(attemptId: string, isolation: GitAttemptIsolation): Promise<GitAttemptSalvage> {
+    return this.exclusive(() => this.checkpointUnlocked(attemptId, isolation));
   }
 
   cleanup(attemptId: string, isolation: GitAttemptIsolation): Promise<void> {
@@ -179,6 +184,46 @@ export class GitWorktreeAttemptStore {
       }
     }
     return this.persistConflict(state, "Canonical branch advanced repeatedly during integration; retry from the retained worktree");
+  }
+
+  private async checkpointUnlocked(attemptId: string, isolation: GitAttemptIsolation): Promise<GitAttemptSalvage> {
+    const state = await this.requireMatchingState(attemptId, isolation);
+    if (state.status === "checkpointed" || state.status === "integrated" || state.status === "cleaned") {
+      return salvageFrom(state, state.deliveryCommit ? "checkpointed" : "no_changes");
+    }
+    if (!existsSync(state.rootPath)) throw new Error(`Attempt worktree is missing: ${state.rootPath}`);
+    const conflictingPaths = await this.unmergedPaths(state.rootPath);
+    if (conflictingPaths.length > 0) {
+      const conflict = {
+        ...state,
+        status: "conflict" as const,
+        conflictingPaths,
+        reason: "Attempt worktree contains unresolved merge conflicts and cannot be checkpointed",
+        updatedAt: this.now().toISOString(),
+      };
+      await this.writeState(conflict);
+      return salvageFrom(conflict, "conflict");
+    }
+    const dirty = (await this.git(state.rootPath, ["status", "--porcelain", "--untracked-files=all"])).trim();
+    if (dirty) {
+      await this.git(state.rootPath, ["add", "-A"]);
+      await this.git(state.rootPath, [
+        "-c", "user.name=AutoAgent",
+        "-c", "user.email=autoagent@local.invalid",
+        "commit", "-m", `AutoAgent salvage checkpoint ${attemptId}`,
+      ]);
+    }
+    const deliveryCommit = (await this.git(state.rootPath, ["rev-parse", "HEAD"])).trim();
+    const checkpointed = {
+      ...state,
+      status: "checkpointed" as const,
+      ...(deliveryCommit === state.baseCommit ? { deliveryCommit: undefined } : { deliveryCommit }),
+      conflictingPaths: undefined,
+      reason: undefined,
+      updatedAt: this.now().toISOString(),
+    };
+    await this.writeState(checkpointed);
+    return salvageFrom(checkpointed, checkpointed.deliveryCommit ? "checkpointed" : "no_changes");
   }
 
   private async cleanupUnlocked(attemptId: string, isolation: GitAttemptIsolation): Promise<void> {
@@ -329,7 +374,7 @@ function validateState(value: unknown, attemptId: string, canonicalRoot: string,
   const expectedBranch = `autoagent/attempt/${safeId}`;
   const expectedStateRef = path.posix.join(".autoagent", "tickets", "worktrees", `${safeId}.json`);
   const expectedRootPath = path.join(worktreeParent, safeId);
-  const statuses = new Set(["prepared", "conflict", "integrated", "cleaned"]);
+  const statuses = new Set(["prepared", "checkpointed", "conflict", "integrated", "cleaned"]);
   if (state.schemaVersion !== 1
     || state.attemptId !== attemptId
     || typeof state.canonicalRoot !== "string"
@@ -347,4 +392,15 @@ function validateState(value: unknown, attemptId: string, canonicalRoot: string,
   }
   assertManagedWorktreePath(worktreeParent, state.rootPath);
   return value as GitAttemptState;
+}
+
+function salvageFrom(state: GitAttemptState, status: GitAttemptSalvage["status"]): GitAttemptSalvage {
+  return {
+    status,
+    branch: state.branch,
+    baseCommit: state.baseCommit,
+    ...(state.deliveryCommit ? { deliveryCommit: state.deliveryCommit } : {}),
+    ...(state.conflictingPaths?.length ? { conflictingPaths: state.conflictingPaths } : {}),
+    ...(state.reason ? { reason: state.reason } : {}),
+  };
 }

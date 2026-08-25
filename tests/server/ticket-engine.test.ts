@@ -13,6 +13,75 @@ import { TicketStore } from "../../src/server/tickets/ticket-store.js";
 import { WorkspaceSnapshotStore } from "../../src/server/tickets/workspace-snapshot-store.js";
 
 describe("TicketEngine single Plan flow", () => {
+  it("salvages an unavailable Agent attempt before releasing its claim", async () => {
+    const fixture = await createFixture({ gitIsolation: true });
+    const planning = fixture.plan.graph.ticketIds[0]!;
+    const claim = await fixture.engine.claimReady({
+      requestId: "claim-before-salvage",
+      planId: fixture.planId,
+      ticketId: planning,
+      expectedTicketVersion: 1,
+      principalId: "planner",
+      leaseDurationMs: 60_000,
+    });
+    await fixture.engine.applyPlan({
+      commandId: "append-salvage-delivery",
+      planId: fixture.planId,
+      actorPrincipalId: "planner",
+      issuedAt: now,
+      payload: {
+        type: "apply_change",
+        expectedPlanVersion: 2,
+        sourceTicketId: planning,
+        sourceAuthority: { kind: "claim", claimId: claim!.claimId, fencingToken: claim!.fencingToken },
+        change: {
+          additions: [{ ...draft("salvage-delivery", "实现可恢复交付"), assignment: { principalId: "dev", requiredTools: ["shell"] } }],
+          dependencyAdditions: [{ from: { ticketId: planning }, to: { clientRef: "salvage-delivery" } }],
+          cancelTicketIds: [],
+          requiredTerminalRefs: [{ clientRef: "salvage-delivery" }],
+        },
+      },
+    });
+    await fixture.engine.applyTicket(ticketCommand(fixture.planId, planning, claim!, "complete-before-salvage", completePayload()));
+    const delivery = (await fixture.engine.getPlan(fixture.planId)).graph.ticketIds[1]!;
+    const deliveryClaim = await fixture.engine.claimReady({
+      requestId: "claim-salvage-delivery",
+      planId: fixture.planId,
+      ticketId: delivery,
+      expectedTicketVersion: 2,
+      principalId: "dev",
+      leaseDurationMs: 60_000,
+    });
+    const running = await fixture.engine.getTicket(delivery);
+    const attempt = running!.attempts.find((candidate) => candidate.attemptId === deliveryClaim!.attemptId)!;
+    await writeFile(path.join(attempt.workspaceBaseline!.isolation!.rootPath, "partial-plan.txt"), "partial plan\n", "utf8");
+
+    const released = await fixture.engine.releaseClaim({
+      requestId: "release-unavailable-with-salvage",
+      claimId: deliveryClaim!.claimId,
+      fencingToken: deliveryClaim!.fencingToken,
+      reason: "agent_unavailable",
+    });
+    expect(released).toMatchObject({
+      status: "ready",
+      attempts: [{
+        attemptId: deliveryClaim!.attemptId,
+        status: "released",
+        reason: "agent_unavailable",
+        changeSet: { salvage: { status: "checkpointed", deliveryCommit: expect.any(String) } },
+      }],
+    });
+    expect(existsSync(attempt.workspaceBaseline!.isolation!.rootPath)).toBe(true);
+    expect(existsSync(path.join(fixture.root, "partial-plan.txt"))).toBe(false);
+    expect(await fixture.engine.releaseClaim({
+      requestId: "release-unavailable-with-salvage",
+      claimId: deliveryClaim!.claimId,
+      fencingToken: deliveryClaim!.fencingToken,
+      reason: "agent_unavailable",
+    })).toEqual(released);
+    expect(existsSync(attempt.workspaceBaseline!.isolation!.rootPath)).toBe(true);
+  });
+
   it("runs a writable delivery Ticket in a Git worktree and integrates it before completion", async () => {
     const fixture = await createFixture({ gitIsolation: true });
     const planning = fixture.plan.graph.ticketIds[0]!;
