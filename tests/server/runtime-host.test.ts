@@ -1101,6 +1101,40 @@ describe("RuntimeHost", () => {
     expect(snapshot.agents.find((agent) => agent.id === "wa_boss")?.status).toBe("blocked");
   });
 
+  it("automatically hands a repeatedly stalled Ticket to a compatible standby Agent", async () => {
+    const fixture = await createFixture({ standbyBoss: true });
+    fixture.providers.get = async () => ({
+      name: "mock",
+      async runModelTurn() {
+        return { items: [{ type: "assistant_message" as const, content: "仍在处理中。" }] };
+      },
+    });
+
+    await fixture.host.createTask({ taskId: "task-stall-reassignment", title: "演示", objective: "构建演示" });
+    let mission = fixture.host.context("task-stall-reassignment")
+      ? await fixture.host.context("task-stall-reassignment")!.manager.current()
+      : undefined;
+    for (let index = 0; index < 12; index += 1) {
+      await fixture.host.tick();
+      mission = await fixture.host.context("task-stall-reassignment")!.manager.current();
+      if (mission.links.some((link) => link.agentId === "wa_boss_standby" && link.status === "running")) break;
+    }
+
+    const oldLink = mission!.links.find((link) => link.agentId === "wa_boss")!;
+    const standbyLink = mission!.links.find((link) => link.agentId === "wa_boss_standby")!;
+    const snapshot = await fixture.host.snapshot();
+    expect(oldLink).toMatchObject({
+      status: "cancelled",
+      reassignment: expect.objectContaining({
+        fromAgentId: "wa_boss",
+        toAgentId: "wa_boss_standby",
+      }),
+    });
+    expect(standbyLink).toMatchObject({ status: "running", reassignment: oldLink.reassignment });
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.tickets?.some((ticket) => ticket.blocker?.type === "agent_stalled")).toBe(false);
+  });
+
   it("continues beyond twenty successful Pi tool calls and returns each result to the next model turn", async () => {
     const fixture = await createFixture();
     let modelTurns = 0;
@@ -2596,6 +2630,7 @@ async function createFixture(options: {
   providerRetryMaxMs?: number;
   useStaffing?: boolean;
   evolution?: boolean;
+  standbyBoss?: boolean;
 } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-home-"));
   const root = await mkdtemp(path.join(os.tmpdir(), "autoagent-runtime-ws-"));
@@ -2609,6 +2644,22 @@ async function createFixture(options: {
   const profiles = new AgentProfileStore(home);
   for (const profile of (await profiles.list()).filter((candidate) => candidate.role !== "specialist")) {
     await ensureWorkspaceAgent(workspace, profile, `wa_${profile.role}`);
+  }
+  if (options.standbyBoss) {
+    const source = (await profiles.list()).find((profile) => profile.role === "boss")!;
+    const standbyProfile = await profiles.create({
+      name: "Standby Boss",
+      role: source.role,
+      identity: source.identity!,
+      soul: source.soul!,
+      agentMd: source.agentMd!,
+      capabilities: [...source.capabilities],
+      defaultSkills: [...(source.defaultSkills ?? [])],
+      defaultProvider: source.defaultProvider,
+      defaultModel: source.defaultModel,
+      defaultPolicy: structuredClone(source.defaultPolicy),
+    });
+    await ensureWorkspaceAgent(workspace, standbyProfile, "wa_boss_standby");
   }
   const providers = new ProviderRegistry({ homeDir: home, retryCount: 0 });
   const policyStore = new PlanPolicyStore(home);

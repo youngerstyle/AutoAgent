@@ -1149,6 +1149,15 @@ export class RuntimeHost {
             await this.clearRetryState(context, link.agentId);
             continue;
           }
+          const reassignment = await context.manager.reassignStalledAgent({
+            agentId: link.agentId,
+            turnId: stableId("agent_stalled_reassign", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),
+            reason: readiness.reason,
+          });
+          if (reassignment.reassigned) {
+            await this.clearRetryState(context, link.agentId);
+            continue;
+          }
           await context.manager.blockAgentExecution({
             agentId: link.agentId,
             turnId: stableId("agent_stalled", context.record.taskId, link.agentId, goal.spec.id, String(goal.version), readiness.reason),

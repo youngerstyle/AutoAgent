@@ -140,6 +140,19 @@ export type MissionRecord =
   | (MissionRecordBase & { status: "completed"; linkedAt: string; baseline: MissionBaseline; settlement: MissionSettlement })
   | (MissionRecordBase & { status: "start_failed"; failure: string });
 
+export interface MissionAgentReassignment {
+  kind: "agent_stall";
+  reason: string;
+  fromAgentId: string;
+  fromPrincipalId: string;
+  toAgentId: string;
+  toPrincipalId: string;
+  recoverySequence: number;
+  initiatedAt: string;
+  readyTicketVersion?: number;
+  salvageAttemptId?: string;
+}
+
 interface MissionLinkBase {
   dispatchId: string;
   missionId: string;
@@ -156,6 +169,7 @@ interface MissionLinkBase {
   lastProposalId?: string;
   lastCommandId?: string;
   lastDecisionId?: string;
+  reassignment?: MissionAgentReassignment;
 }
 
 export type DispatchingMissionLink = MissionLinkBase & {

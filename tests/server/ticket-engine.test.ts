@@ -80,6 +80,31 @@ describe("TicketEngine single Plan flow", () => {
       reason: "agent_unavailable",
     })).toEqual(released);
     expect(existsSync(attempt.workspaceBaseline!.isolation!.rootPath)).toBe(true);
+
+    const replacementClaim = await fixture.engine.claimReady({
+      requestId: "claim-salvage-replacement",
+      planId: fixture.planId,
+      ticketId: delivery,
+      expectedTicketVersion: released.version,
+      principalId: "qa",
+      leaseDurationMs: 60_000,
+    });
+    expect(await fixture.engine.applyTicket(ticketCommand(
+      fixture.planId,
+      delivery,
+      replacementClaim!,
+      "complete-salvage-replacement",
+      completePayload(),
+    ))).toMatchObject({ accepted: true, ticketStatus: "completed" });
+    expect(existsSync(attempt.workspaceBaseline!.isolation!.rootPath)).toBe(false);
+    expect(await fixture.engine.getTicket(delivery)).toMatchObject({
+      attempts: expect.arrayContaining([expect.objectContaining({
+        attemptId: deliveryClaim!.attemptId,
+        changeSet: expect.objectContaining({
+          salvage: expect.objectContaining({ status: "checkpointed", deliveryCommit: expect.any(String) }),
+        }),
+      })]),
+    });
   });
 
   it("runs a writable delivery Ticket in a Git worktree and integrates it before completion", async () => {

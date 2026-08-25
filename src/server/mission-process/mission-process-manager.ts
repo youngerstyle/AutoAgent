@@ -8,6 +8,7 @@ import type {
 } from "../../shared/contracts/agent-engine.js";
 import type {
   ActiveMissionLink,
+  MissionAgentReassignment,
   MissionBaseline,
   MissionLink,
   MissionStartRequest,
@@ -166,6 +167,7 @@ export class MissionProcessManager {
     let aggregate = await this.requireAggregate();
     if (aggregate.record.status !== "linked") return aggregate;
     await this.tickets.scanExpiredClaims(this.now());
+    aggregate = await this.resumeRecoveringReassignments(aggregate);
     aggregate = await this.reconcileAuthoritativeLinks(aggregate);
     aggregate = await this.renewActiveClaims(aggregate);
     aggregate = await this.reconcileResolvingLinks(aggregate);
@@ -180,6 +182,13 @@ export class MissionProcessManager {
     for (const link of aggregate.links) {
       if (link.status === "dispatching" || link.status === "starting") {
         aggregate = await this.continueDispatch(aggregate, link.dispatchId);
+      } else if (link.status === "recovering" && link.reassignment) {
+        try {
+          aggregate = await this.continueStalledReassignment(aggregate, link.dispatchId);
+        } catch (error) {
+          if (!isWorkspaceConflict(error)) throw error;
+          aggregate = await this.restoreRunningAfterWorkspaceConflict(link.dispatchId);
+        }
       } else if (link.status === "resolving" && link.lastProposalId) {
         aggregate = await this.continueSettlement(aggregate, link.dispatchId, link.lastProposalId);
       }
@@ -293,8 +302,134 @@ export class MissionProcessManager {
     return aggregate;
   }
 
+  /**
+   * Persist a deterministic replacement before touching either the Ticket
+   * claim or the old Goal. The recovery can therefore resume after a process
+   * crash without selecting a different Agent or losing the old Attempt.
+   */
+  async reassignStalledAgent(input: {
+    agentId: string;
+    turnId: string;
+    reason: string;
+  }): Promise<{ reassigned: boolean; aggregate: MissionAggregate }> {
+    let aggregate = await this.requireAggregate();
+    if (aggregate.record.status !== "linked") return { reassigned: false, aggregate };
+    const link = aggregate.links.find((item) => item.agentId === input.agentId && item.status === "running");
+    if (!link || !isActiveLink(link) || link.authority.kind !== "claim") {
+      return { reassigned: false, aggregate };
+    }
+    const work = await this.tickets.getWorkItem(link.ticketId);
+    if (!work || work.ticket.status !== "running") return { reassigned: false, aggregate };
+    const replacement = selectReplacementMember(this.team, work.definition.assignment, link.agentId, aggregate.links, link.ticketId);
+    if (!replacement) return { reassigned: false, aggregate };
+    const reassignment: MissionAgentReassignment = {
+      kind: "agent_stall",
+      reason: input.reason,
+      fromAgentId: link.agentId,
+      fromPrincipalId: link.agentPrincipalId,
+      toAgentId: replacement.agentId,
+      toPrincipalId: replacement.principalId,
+      recoverySequence: Math.max(
+        0,
+        ...aggregate.links
+          .filter((item) => item.ticketId === link.ticketId)
+          .map((item) => item.reassignment?.recoverySequence ?? 0),
+      ) + 1,
+      initiatedAt: this.now().toISOString(),
+      salvageAttemptId: link.attemptId,
+    };
+    aggregate = await this.updateLink(aggregate, link.dispatchId, {
+      ...link,
+      status: "recovering",
+      reassignment,
+      updatedAt: this.now().toISOString(),
+    });
+    try {
+      aggregate = await this.continueStalledReassignment(aggregate, link.dispatchId);
+      return { reassigned: true, aggregate };
+    } catch (error) {
+      if (!isWorkspaceConflict(error)) throw error;
+      aggregate = await this.restoreRunningAfterWorkspaceConflict(link.dispatchId);
+      return { reassigned: false, aggregate };
+    }
+  }
+
   async current(): Promise<MissionAggregate> {
     return this.requireAggregate();
+  }
+
+  private async resumeRecoveringReassignments(aggregate: MissionAggregate): Promise<MissionAggregate> {
+    let current = aggregate;
+    for (const persisted of aggregate.links) {
+      const link = current.links.find((item) => item.dispatchId === persisted.dispatchId);
+      if (link?.status === "recovering" && link.reassignment) {
+        try {
+          current = await this.continueStalledReassignment(current, link.dispatchId);
+        } catch (error) {
+          if (!isWorkspaceConflict(error)) throw error;
+          current = await this.restoreRunningAfterWorkspaceConflict(link.dispatchId);
+        }
+      }
+    }
+    return current;
+  }
+
+  private async continueStalledReassignment(aggregate: MissionAggregate, dispatchId: string): Promise<MissionAggregate> {
+    let link = aggregate.links.find((item) => item.dispatchId === dispatchId);
+    if (!link || link.status !== "recovering" || !link.reassignment) return aggregate;
+    let ticket = await this.tickets.getTicket(link.ticketId);
+    if (!ticket) throw new MissionRecoveryError(`Ticket ${link.ticketId} is missing during Agent reassignment`);
+    if (ticket.status === "running" && link.authority.kind === "claim") {
+      ticket = await this.tickets.releaseClaim({
+        requestId: stableId("stall_release", link.dispatchId),
+        claimId: link.authority.claimId,
+        fencingToken: link.authority.fencingToken,
+        reason: "agent_unavailable",
+      });
+    }
+    const oldAgent = this.agents.get(link.agentId);
+    const goal = await oldAgent.getGoal(link.agentGoalId);
+    let finalGoalVersion = goal?.version;
+    if (goal && !new Set(["completed", "failed", "cancelled"]).has(goal.status)) {
+      const cancelled = await oldAgent.controlGoal({
+        requestId: stableId("stall_cancel_goal", link.dispatchId),
+        goalId: goal.spec.id,
+        expectedGoalVersion: goal.version,
+        action: "cancel",
+        reason: `Ticket reassigned after Agent execution stalled: ${link.reassignment.reason}`,
+      });
+      finalGoalVersion = cancelled.version;
+    }
+    aggregate = await this.requireAggregate();
+    link = aggregate.links.find((item) => item.dispatchId === dispatchId);
+    if (!link || link.status === "cancelled") {
+      return ticket.status === "ready" ? this.ensureDispatch(aggregate, ticket.ticketId, ticket.version) : aggregate;
+    }
+    if (link.status !== "recovering" || !link.reassignment) return aggregate;
+    const reassignment: MissionAgentReassignment = {
+      ...link.reassignment,
+      readyTicketVersion: ticket.version,
+      salvageAttemptId: link.reassignment.salvageAttemptId ?? link.attemptId,
+    };
+    aggregate = await this.updateLink(aggregate, dispatchId, {
+      ...link,
+      status: "cancelled",
+      finalTicketVersion: ticket.version,
+      finalGoalVersion,
+      reassignment,
+    });
+    return ticket.status === "ready" ? this.ensureDispatch(aggregate, ticket.ticketId, ticket.version) : aggregate;
+  }
+
+  private async restoreRunningAfterWorkspaceConflict(dispatchId: string): Promise<MissionAggregate> {
+    const aggregate = await this.requireAggregate();
+    const recovering = aggregate.links.find((item) => item.dispatchId === dispatchId);
+    if (recovering?.status !== "recovering" || !isActiveLink(recovering)) return aggregate;
+    return this.updateLink(aggregate, dispatchId, {
+      ...recovering,
+      status: "running",
+      reassignment: undefined,
+    });
   }
 
   async markActiveLinksCancelled(): Promise<MissionAggregate> {
@@ -364,7 +499,10 @@ export class MissionProcessManager {
     const dispatchId = stableId("dispatch", aggregate.missionId, ticketId, String(ticketVersion));
     const existing = aggregate.links.find((item) => item.dispatchId === dispatchId);
     if (existing) return this.continueDispatch(aggregate, dispatchId);
-    const member = selectMember(this.team, work.definition.assignment);
+    const recovery = latestReassignmentForReadyTicket(aggregate.links, ticketId, ticketVersion);
+    const member = recovery
+      ? selectRecordedReplacement(this.team, work.definition.assignment, recovery)
+      : selectMember(this.team, work.definition.assignment);
     if (!member) return aggregate;
     if (aggregate.links.some((link) => link.agentId === member.agentId && isActiveLink(link))) {
       return aggregate;
@@ -381,6 +519,7 @@ export class MissionProcessManager {
       goalStartKey: stableId("goal_start", dispatchId),
       updatedAt: this.now().toISOString(),
       status: "dispatching",
+      ...(recovery ? { reassignment: recovery } : {}),
     };
     let expected = aggregate;
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -493,6 +632,23 @@ export class MissionProcessManager {
       const inheritedEvidenceIds = collectEvidenceIds([upstreamDeliveries, settlementAssuranceSources]);
       const correctionTargets = await this.listCorrectionTargets(link.planId, link.ticketId);
       const authoritativeMission = await this.requireAggregate();
+      const recoveryAttempt = link.reassignment?.salvageAttemptId
+        ? work.ticket.attempts.find((attempt) => attempt.attemptId === link.reassignment!.salvageAttemptId)
+        : undefined;
+      const recoveryContext = link.reassignment ? {
+        reason: link.reassignment.reason,
+        fromAgentId: link.reassignment.fromAgentId,
+        toAgentId: link.reassignment.toAgentId,
+        priorAttemptId: link.reassignment.salvageAttemptId,
+        ...(recoveryAttempt?.changeSet?.salvage ? {
+          salvage: {
+            ...recoveryAttempt.changeSet.salvage,
+            addedPaths: recoveryAttempt.changeSet.added.map((change) => change.path),
+            modifiedPaths: recoveryAttempt.changeSet.modified.map((change) => change.path),
+            deletedPaths: recoveryAttempt.changeSet.deleted.map((change) => change.path),
+          },
+        } : {}),
+      } : undefined;
       const prior = await agent.getGoalByStartKey(link.goalStartKey);
       const goal = prior ?? await agent.startGoal({
         agentId: link.agentId,
@@ -554,6 +710,7 @@ export class MissionProcessManager {
                     work.definition.correction?.targetTicketId ?? link.ticketId,
                   ),
                 },
+                ...(recoveryContext ? { recovery: recoveryContext } : {}),
               },
               work.definition.permissions?.settleMission && authoritativeMission.record.baseline
                 ? await this.missionSettlementEvidence(link.planId, link.ticketId, authoritativeMission.record.baseline)
@@ -1499,6 +1656,66 @@ function selectMember(team: TeamBinding, assignment: PlannedTicketAssignment) {
     && tools.every((tool) => configuredToolsInclude(item.enabledTools, tool)));
 }
 
+function selectReplacementMember(
+  team: TeamBinding,
+  assignment: PlannedTicketAssignment,
+  unavailableAgentId: string,
+  links: readonly MissionLink[],
+  ticketId: TicketId,
+) {
+  const original = team.members.find((member) => member.agentId === unavailableAgentId);
+  const capabilities = assignment.requiredCapabilities?.length
+    ? assignment.requiredCapabilities
+    : assignment.principalId ? original?.capabilities ?? [] : [];
+  const tools = assignment.requiredTools?.length
+    ? assignment.requiredTools
+    : assignment.principalId ? original?.enabledTools ?? [] : [];
+  const previouslyTried = new Set(
+    links.filter((link) => link.ticketId === ticketId).flatMap((link) => [
+      link.agentId,
+      ...(link.reassignment ? [link.reassignment.fromAgentId, link.reassignment.toAgentId] : []),
+    ]),
+  );
+  const activeAgentIds = new Set(links.filter(isActiveLink).map((link) => link.agentId));
+  return team.members.find((member) => (
+    member.agentId !== unavailableAgentId
+    && !previouslyTried.has(member.agentId)
+    && !activeAgentIds.has(member.agentId)
+    && capabilities.every((capability) => member.capabilities.includes(capability))
+    && tools.every((tool) => configuredToolsInclude(member.enabledTools, tool))
+  ));
+}
+
+function latestReassignmentForReadyTicket(
+  links: readonly MissionLink[],
+  ticketId: TicketId,
+  ticketVersion: number,
+): MissionAgentReassignment | undefined {
+  return [...links].reverse().find((link) => (
+    link.ticketId === ticketId
+    && link.status === "cancelled"
+    && link.reassignment?.readyTicketVersion === ticketVersion
+  ))?.reassignment;
+}
+
+function selectRecordedReplacement(
+  team: TeamBinding,
+  assignment: PlannedTicketAssignment,
+  recovery: MissionAgentReassignment,
+) {
+  const member = team.members.find((candidate) => (
+    candidate.agentId === recovery.toAgentId
+    && candidate.principalId === recovery.toPrincipalId
+  ));
+  if (!member) return undefined;
+  const capabilities = assignment.requiredCapabilities ?? [];
+  const tools = assignment.requiredTools ?? [];
+  return capabilities.every((capability) => member.capabilities.includes(capability))
+    && tools.every((tool) => configuredToolsInclude(member.enabledTools, tool))
+    ? member
+    : undefined;
+}
+
 export async function validateTeamAssignments(
   outcome: MissionTicketOutcome | undefined,
   schemaRef: string | undefined,
@@ -1618,6 +1835,11 @@ function collectEvidenceIds(value: unknown): string[] {
 
 function isActiveLink(link: MissionLink): link is ActiveMissionLink {
   return new Set(["running", "blocked", "resolving", "paused", "recovering"]).has(link.status);
+}
+
+function isWorkspaceConflict(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && error.code === "workspace_conflict";
 }
 
 function stableId(prefix: string, ...parts: string[]): string {

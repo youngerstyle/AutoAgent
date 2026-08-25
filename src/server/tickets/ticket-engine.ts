@@ -57,7 +57,7 @@ export interface TicketEngineOptions {
   workspacePort?: TicketAttemptWorkspacePort;
 }
 export class TicketEngineOperationError extends Error {
-  constructor(public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation", message: string) { super(message); }
+  constructor(public readonly code: "invalid_request" | "idempotency_conflict" | "stale_authority" | "policy_violation" | "workspace_conflict", message: string) { super(message); }
 }
 
 class SharedWorkspaceWriterBusyError extends Error {}
@@ -404,6 +404,12 @@ export class TicketEngine {
     const salvageChangeSet = input.reason === "agent_unavailable" && activeAttempt?.workspaceBaseline
       ? await this.workspacePort?.captureChangeSet(activeAttempt.attemptId, activeAttempt.workspaceBaseline, { checkpoint: true })
       : undefined;
+    if (salvageChangeSet?.salvage?.status === "conflict") {
+      throw new TicketEngineOperationError(
+        "workspace_conflict",
+        `Cannot release unavailable Agent attempt with unresolved workspace conflicts: ${salvageChangeSet.salvage.conflictingPaths?.join(", ") ?? "unknown paths"}`,
+      );
+    }
     const next = await this.store.transact(claim.planId, versions(aggregate), (current) => {
       const endedAt = this.now().toISOString();
       const tickets = current.tickets.map((ticket) => ticket.ticketId === claim.ticketId && ticket.status === "running" ? {
@@ -744,6 +750,16 @@ export class TicketEngine {
           await this.workspacePort?.cleanupAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
         } else {
           await this.workspacePort?.discardAttempt?.(activeAttempt.attemptId, activeAttempt.workspaceBaseline).catch(() => undefined);
+        }
+      }
+      if (result.accepted && command.payload.type === "complete") {
+        const settledTicket = next.tickets.find((item) => item.ticketId === command.ticketId);
+        for (const salvaged of settledTicket?.attempts.filter((attempt) => (
+          attempt.status === "released"
+          && attempt.reason === "agent_unavailable"
+          && attempt.workspaceBaseline?.isolation
+        )) ?? []) {
+          await this.workspacePort?.discardAttempt?.(salvaged.attemptId, salvaged.workspaceBaseline!).catch(() => undefined);
         }
       }
       return result;

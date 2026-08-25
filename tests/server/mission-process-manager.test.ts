@@ -535,6 +535,92 @@ describe("MissionProcessManager", () => {
     expect(after.links[0]?.agentGoalId).toBe(before.links[0]?.agentGoalId);
   });
 
+  it("durably reassigns a stalled Agent and resumes after interruption between claim release and Goal cancellation", async () => {
+    const fixture = await createFixture();
+    const replacement = {
+      agentId: "boss-standby",
+      principalId: "principal-boss-standby",
+      capabilities: ["mission:intake", "delivery:accept"],
+      enabledTools: [],
+    };
+    fixture.team.members.push(replacement);
+    fixture.engines.set(
+      replacement.agentId,
+      new AgentEngine<MissionTicketOutcome>(
+        new AgentStore(fixture.root, replacement.agentId),
+        new MissionGoalResolutionPort(() => undefined, replacement.agentId, () => new Date(NOW)),
+        { now: () => new Date(NOW) },
+      ),
+    );
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const before = await fixture.manager.tick();
+    const oldLink = before.links.find((link) => link.agentId === "boss" && link.status === "running")!;
+    const oldGoal = await fixture.engines.get("boss")!.getGoal(oldLink.agentGoalId!);
+    const originalRelease = fixture.tickets.releaseClaim.bind(fixture.tickets);
+    let interrupted = false;
+    fixture.tickets.releaseClaim = async (input) => {
+      const released = await originalRelease(input);
+      if (!interrupted) {
+        interrupted = true;
+        throw new Error("simulated reassignment interruption");
+      }
+      return released;
+    };
+
+    await expect(fixture.manager.reassignStalledAgent({
+      agentId: "boss",
+      turnId: "stall-turn",
+      reason: "no_progress",
+    })).rejects.toThrow("simulated reassignment interruption");
+    expect(await fixture.manager.current()).toMatchObject({
+      links: [expect.objectContaining({
+        dispatchId: oldLink.dispatchId,
+        status: "recovering",
+        reassignment: expect.objectContaining({
+          fromAgentId: "boss",
+          toAgentId: "boss-standby",
+        }),
+      })],
+    });
+
+    fixture.tickets.releaseClaim = originalRelease;
+    const recovered = await fixture.manager.recover();
+    const replacementLink = recovered.links.find((link) => link.agentId === "boss-standby" && link.status === "running")!;
+    const ticket = await fixture.tickets.getTicket(oldLink.ticketId);
+    const replacementThread = await fixture.engines.get("boss-standby")!.getThread(replacementLink.agentThreadId!);
+    const replacementPayloads = await fixture.engines.get("boss-standby")!.getPayloads(replacementThread.items.map((item) => item.payloadRef));
+    const instruction = [...replacementPayloads.values()].find((value) => (
+      typeof value === "object" && value !== null && "senderPrincipalId" in value
+      && value.senderPrincipalId === "mission-process"
+    )) as { content: string };
+
+    expect(recovered.links.find((link) => link.dispatchId === oldLink.dispatchId)).toMatchObject({
+      status: "cancelled",
+      reassignment: expect.objectContaining({ readyTicketVersion: expect.any(Number) }),
+    });
+    expect(await fixture.engines.get("boss")!.getGoal(oldGoal!.spec.id)).toMatchObject({ status: "cancelled" });
+    expect(ticket).toMatchObject({
+      status: "running",
+      attempts: [
+        expect.objectContaining({ status: "released", reason: "agent_unavailable" }),
+        expect.objectContaining({ status: "running", principalId: "principal-boss-standby" }),
+      ],
+    });
+    expect(instruction.content).toContain('"recoveryHandoff"');
+    expect(instruction.content).toContain('"fromAgentId":"boss"');
+    expect(instruction.content).toContain('"toAgentId":"boss-standby"');
+  });
+
   it("rebuilds Mission, Plan, Ticket and Agent engines from the same durable identities after restart", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({
