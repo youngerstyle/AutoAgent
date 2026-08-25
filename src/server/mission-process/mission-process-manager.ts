@@ -1677,13 +1677,24 @@ function selectReplacementMember(
     ]),
   );
   const activeAgentIds = new Set(links.filter(isActiveLink).map((link) => link.agentId));
-  return team.members.find((member) => (
+  const alternative = team.members.find((member) => (
     member.agentId !== unavailableAgentId
     && !previouslyTried.has(member.agentId)
     && !activeAgentIds.has(member.agentId)
     && capabilities.every((capability) => member.capabilities.includes(capability))
     && tools.every((tool) => configuredToolsInclude(member.enabledTools, tool))
   ));
+  if (alternative) return alternative;
+  const alreadyRestartedSameAgent = links.some((link) => (
+    link.ticketId === ticketId
+    && link.reassignment?.fromAgentId === unavailableAgentId
+    && link.reassignment.toAgentId === unavailableAgentId
+  ));
+  if (alreadyRestartedSameAgent || !original) return undefined;
+  return capabilities.every((capability) => original.capabilities.includes(capability))
+    && tools.every((tool) => configuredToolsInclude(original.enabledTools, tool))
+    ? original
+    : undefined;
 }
 
 function latestReassignmentForReadyTicket(

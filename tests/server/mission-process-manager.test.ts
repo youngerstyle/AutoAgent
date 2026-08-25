@@ -621,6 +621,52 @@ describe("MissionProcessManager", () => {
     expect(instruction.content).toContain('"toAgentId":"boss-standby"');
   });
 
+  it("gives a persistent Agent one clean Attempt restart when no compatible standby exists", async () => {
+    const fixture = await createFixture();
+    await fixture.manager.startMission({
+      missionId: "mission-a",
+      objective: "build",
+      requestedByPrincipalId: "human",
+      ownerPrincipalId: "principal-boss",
+      teamBinding: fixture.team,
+      resolvedStart: {
+        planDefinition: createMinimalTeamPlanDefinition(fixture.policy.ref, "build"),
+        teamBindingId: fixture.team.teamBindingId,
+      },
+    });
+    const before = await fixture.manager.tick();
+    const first = before.links.find((link) => link.agentId === "boss" && link.status === "running")!;
+
+    const restarted = await fixture.manager.reassignStalledAgent({
+      agentId: "boss",
+      turnId: "first-stall",
+      reason: "no_progress",
+    });
+    const second = restarted.aggregate.links.find((link) => (
+      link.agentId === "boss" && link.dispatchId !== first.dispatchId
+    ))!;
+    expect(restarted.reassigned).toBe(true);
+    expect(restarted.aggregate.links.find((link) => link.dispatchId === first.dispatchId)).toMatchObject({
+      status: "cancelled",
+      reassignment: expect.objectContaining({ fromAgentId: "boss", toAgentId: "boss", recoverySequence: 1 }),
+    });
+    expect(second).toMatchObject({
+      status: "running",
+      reassignment: expect.objectContaining({ fromAgentId: "boss", toAgentId: "boss", recoverySequence: 1 }),
+    });
+    expect(second.agentThreadId).toBe(first.agentThreadId);
+    expect(second.agentGoalId).not.toBe(first.agentGoalId);
+
+    const exhausted = await fixture.manager.reassignStalledAgent({
+      agentId: "boss",
+      turnId: "second-stall",
+      reason: "no_progress",
+    });
+    expect(exhausted.reassigned).toBe(false);
+    expect(exhausted.aggregate.links).toHaveLength(2);
+    expect(exhausted.aggregate.links.find((link) => link.dispatchId === second.dispatchId)).toMatchObject({ status: "running" });
+  });
+
   it("rebuilds Mission, Plan, Ticket and Agent engines from the same durable identities after restart", async () => {
     const fixture = await createFixture();
     await fixture.manager.startMission({

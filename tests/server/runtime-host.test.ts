@@ -773,16 +773,24 @@ describe("RuntimeHost", () => {
     const boss = context.engines.get("wa_boss")!;
     const thread = await boss.getThreadForAgent("wa_boss", "task-resume-active");
     const link = (await context.manager.current()).links.find((item) => item.agentId === "wa_boss")!;
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       await fixture.host.tick();
       if ((await fixture.host.snapshot()).status === "blocked") break;
     }
 
-    expect(modelTurns).toBe(4);
+    expect(modelTurns).toBe(8);
     const updated = await boss.getThread(thread!.threadId);
     expect(updated.items.some((item) => item.kind === "control")).toBe(true);
     expect(await boss.stallRecoveryCount(link.agentGoalId!, "repeated_turn_without_progress")).toBe(2);
-    expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "paused" });
+    expect(await boss.getGoal(link.agentGoalId!)).toMatchObject({ status: "cancelled" });
+    const restartedLink = (await context.manager.current()).links.find((item) => (
+      item.agentId === "wa_boss" && item.dispatchId !== link.dispatchId
+    ))!;
+    expect(restartedLink).toMatchObject({
+      status: "blocked",
+      reassignment: expect.objectContaining({ fromAgentId: "wa_boss", toAgentId: "wa_boss" }),
+    });
+    expect(await boss.getGoal(restartedLink.agentGoalId!)).toMatchObject({ status: "paused" });
     expect((await fixture.host.snapshot()).status).toBe("blocked");
     expect(fixture.host.providerRetryState("task-resume-active", "wa_boss")).toBeUndefined();
   });
